@@ -19,11 +19,15 @@ class DownloadRelayServer(uvicorn.Server):
         config.date_header = False
         super().__init__(config)
         self.exit_event = asyncio.Event()
+        self.relay_loop = None
 
     async def main_loop(self):
+        self.relay_loop = asyncio.get_running_loop()
         if not await self.on_tick(0):
             await self.exit_event.wait()
 
     def handle_exit(self, sig, frame):
         super().handle_exit(sig, frame)
-        self.exit_event.set()
+        if self.relay_loop is not None:
+            # signal.signal can interrupt a blocked selector; wake its self-pipe too.
+            self.relay_loop.call_soon_threadsafe(self.exit_event.set)

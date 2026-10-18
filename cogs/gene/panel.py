@@ -144,7 +144,7 @@ class ScopedView(discord.ui.View):
 
 class InputModal(discord.ui.Modal):
     def __init__(self, cog, interaction, kind):
-        titles = {'play': 'Add music', 'request': 'Request a change', 'memory': 'Save a server fact'}
+        titles = {'play': 'Add music', 'request': 'Request a feature or fix', 'memory': 'Save a server fact'}
         super().__init__(title=titles[kind], timeout=600)
         self.cog, self.kind, self.user_id = cog, kind, interaction.user.id
         self.original = interaction.message
@@ -171,7 +171,8 @@ class InputModal(discord.ui.Modal):
             channel = getattr(interaction.channel, 'parent_id', None) or interaction.channel_id
             payload.update(source_id=str(interaction.id), channel_id=str(channel))
             job = await self.cog.api('POST', '/requests', payload)
-            await reply(self.cog, interaction, f"Request `{job['id']}` is queued. Use **Requests** to follow its progress.")
+            await reply(self.cog, interaction, f"Request `{job['id']}` is awaiting owner review. "
+                        'Coding starts only after the owner allows it. Use **Requests** to follow its progress.')
 
     async def on_error(self, interaction, error):
         await ScopedView.on_error(self, interaction, error, None)
@@ -231,19 +232,45 @@ async def show_requests(cog, interaction):
     await defer_panel(interaction)
     jobs = await cog.api('GET', '/requests')
     if not jobs:
-        await reply(cog, interaction, 'No requests yet. Choose **Request a change** to start one.')
+        await reply(cog, interaction, 'No requests yet. Choose **Request a feature or fix** to start one.')
         return
     view = ScopedView(cog, interaction.user.id)
     select = discord.ui.Select(placeholder='Choose a request', options=[
         discord.SelectOption(label=f"{j['state']} · {j['body'][:65]}", value=j['id'], description=j['id']) for j in jobs])
 
-    async def selected(event):
+    async def selected(event, page=0):
         await defer_panel(event)
         job = await cog.api('GET', '/requests/' + select.values[0])
-        description = job['body'][:1500]
+        body = discord.utils.escape_markdown(discord.utils.escape_mentions(job['body']))
+        pages = [body[start:start + 1500] for start in range(0, len(body), 1500)] or ['']
+        page = min(max(page, 0), len(pages) - 1)
+        description = f'Submitted request · page {page + 1}/{len(pages)}\n\n' + pages[page]
         if job.get('model'):
             description += f"\n\nWorker: `{job['model']}` · {job.get('effort', '')}"
         controls = ScopedView(cog, event.user.id)
+        for label, target in [('Previous page', page - 1), ('Next page', page + 1)]:
+            if 0 <= target < len(pages):
+                navigate = discord.ui.Button(label=label, row=3)
+
+                async def change_page(page_event, target=target):
+                    await selected(page_event, target)
+                navigate.callback = change_page
+                controls.add_item(navigate)
+        if job['state'] == 'awaiting_owner' and page == len(pages) - 1 and await cog.bot.is_owner(event.user):
+            from gene.reviews import request_reference
+            allow = discord.ui.Button(label='Allow coding', style=discord.ButtonStyle.primary)
+
+            async def allow_coding(approval_event):
+                if not await authorized(cog, approval_event, event.user.id, owner=True):
+                    return
+                await defer_panel(approval_event)
+                await cog.api('POST', f"/requests/{job['id']}/review", {
+                    **actor(approval_event), 'phase': 'intake', 'reference': request_reference(job),
+                    'decision': 'approve'})
+                await reply(cog, approval_event, 'Coding allowed. Deployment still needs approval of the tested commit.')
+            allow.callback = allow_coding
+            controls.add_item(allow)
+            description += '\n\nNo coding has started. Allow coding to prepare a tested proposal.'
         proposal = job.get('proposal')
         if proposal:
             description += f"\n\n{proposal.get('summary', '')[:800]}\n\nCommit: `{proposal['sha']}`"
@@ -264,7 +291,7 @@ async def show_requests(cog, interaction):
                 controls.add_item(approve)
         if job.get('result'):
             description += '\n\n' + job['result'][:700]
-        if job['state'] in ('queued', 'review') and await cog.bot.is_owner(event.user):
+        if job['state'] in ('awaiting_owner', 'queued', 'review') and await cog.bot.is_owner(event.user):
             reject = discord.ui.Button(label='Reject request', style=discord.ButtonStyle.danger)
 
             async def reject_request(rejection):
@@ -422,7 +449,7 @@ class HomeView(ScopedView):
         await reply(self.cog, interaction, embed=card('Music', 'Join a voice channel, then add a song name or YouTube link. '
             'The usual voice and DJ permissions apply.'), view=MusicView(self.cog, interaction.user.id))
 
-    @discord.ui.button(label='Request a change', style=discord.ButtonStyle.primary, custom_id='gene:home:request', row=0)
+    @discord.ui.button(label='Request a feature or fix', style=discord.ButtonStyle.primary, custom_id='gene:home:request', row=0)
     async def request(self, interaction, button):
         await interaction.response.send_modal(InputModal(self.cog, interaction, 'request'))
 

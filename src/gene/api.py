@@ -27,6 +27,12 @@ class Approval(Actor):
     sha: str
 
 
+class ReviewDecision(Actor):
+    phase: Literal['intake', 'release']
+    reference: str = Field(pattern=r'^[a-f0-9]{40}([a-f0-9]{24})?$')
+    decision: Literal['approve', 'reject']
+
+
 class Pause(Actor):
     paused: bool
 
@@ -38,6 +44,11 @@ class Memory(Actor):
 
 class Lease(BaseModel):
     lease: str
+
+
+class ReviewDelivery(Lease):
+    channel_id: str = Field(default='', pattern=r'^[0-9]*$')
+    message_id: str = Field(default='', pattern=r'^[0-9]*$')
 
 
 class BuildResult(Lease):
@@ -138,6 +149,24 @@ def create_app(settings: Settings | None = None):
     def approve(job_id: str, body: Approval):
         actor(body, owner=True)
         store.approve(job_id, body.sha, body.user_id)
+        return {'ok': True}
+
+    @app.post('/requests/{job_id}/review', dependencies=[auth('runtime')])
+    def review(job_id: str, body: ReviewDecision):
+        actor(body, owner=True)
+        store.review_decision(job_id, body.phase, body.reference, body.decision, body.user_id)
+        return {'ok': True}
+
+    @app.post('/reviews/claim', dependencies=[auth('runtime')])
+    def claim_review():
+        notice = store.claim_review_notice()
+        if notice:
+            notice['job'] = public_job(notice['job'])
+        return notice
+
+    @app.post('/reviews/{job_id}/delivered', dependencies=[auth('runtime')])
+    def review_delivered(job_id: str, body: ReviewDelivery):
+        store.finish_review_notice(job_id, body.lease, body.channel_id, body.message_id)
         return {'ok': True}
 
     @app.post('/requests/{job_id}/reject', dependencies=[auth('runtime')])

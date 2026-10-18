@@ -32,7 +32,12 @@ class Deployer:
     def activate(self, sha):
         destination = self.root / 'release.env'
         temporary = destination.with_suffix('.tmp')
-        temporary.write_text(f'GENE_RELEASE_SHA={sha}\nGENE_ROOT={self.root}\n')
+        # Cog releases inherit the maintainer-installed control-plane image.
+        # A feature job cannot select or replace the trusted runtime.
+        existing = dict(line.split('=', 1) for line in destination.read_text().splitlines()
+                        if '=' in line) if destination.exists() else {}
+        image = existing.get('GENE_RUNTIME_IMAGE', 'gene-runtime:bootstrap')
+        temporary.write_text(f'GENE_RELEASE_SHA={sha}\nGENE_ROOT={self.root}\nGENE_RUNTIME_IMAGE={image}\n')
         temporary.replace(destination)
         self.compose('up', '-d', '--no-deps', '--force-recreate', 'red')
 

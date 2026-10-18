@@ -93,6 +93,11 @@ when their services have stopped to reclaim their caches.
 LaunchAgents are `local.dan.gene.audio`, `local.dan.gene.audio.resolver`, and
 `local.dan.gene.audio.proxy`; files and
 logs live in ignored `.audio/`. Existing Cobalt ports, agents, and cookies are untouched.
+The Java audio LaunchAgent must use `ProcessType=Interactive`. On this Mac, the same
+native UDP sender emitted only 7.8 packets/sec under launchd's `Standard` scheduling,
+with gaps up to 170 ms; `Interactive` scheduling restored 50 packets/sec. A local
+decode check alone does not exercise this service scheduling problem. Keep the normal
+20 ms packet cadence and verify the running service, not just a foreground probe.
 The runtime sets Red's external-node settings directly without posting passwords in chat.
 YouTube may still fail due to source changes or IP checks. Do not claim playback works
 until it actually plays in a Discord voice channel. Mac offline means music is offline;
@@ -144,7 +149,21 @@ Catalog discovery does not grant model access or bypass account rate limits.
 
 ### Discord requests: approve and deploy
 
-Each Discord request produces a `codex/request-<id>` branch. The wrapper checks changed paths,
+New Discord requests enter `awaiting_owner`. They cannot reach the coding worker until
+the owner reviews the complete stored request and selects **Allow coding**. The controller
+binds that decision to a hash of the request and its source; changed requests and stale
+buttons fail closed. Existing queued requests without intake approval are held during
+migration. Intake approval never authorizes a live release.
+
+Gene sends the configured owner a DM with an untrusted-text preview and the full request
+as a text attachment. Once a tested proposal is ready, it edits that same DM with the
+code link and complete SHA for release approval. Notifications use persisted message IDs,
+short delivery leases, and ten-minute retries when DMs are unavailable. The lab's
+**Requests** panel remains a fallback. Delivery never grants approval. Only owner clicks
+on Gene-authored review components are admitted from DMs; ordinary DM messages, commands,
+other users' clicks, forged references, and stale approvals remain rejected.
+
+An allowed request produces a `codex/request-<id>` branch. The wrapper checks changed paths,
 rejects symlinks and likely secrets, and runs tests/lint without credentials or network.
 Failed tests or lint are returned to Astra for up to two repairs in the same worktree.
 Every attempt records its usage. Scope or credential violations stop the job immediately;
@@ -168,6 +187,11 @@ deployer credentials. Never manually mark an unknown runtime healthy.
 
 The trusted `gene` control cog should remain loadable. If a candidate breaks it, use
 SSH for recovery; Discord commands are not the only recovery path.
+
+Maintainer control-plane updates build a versioned runtime image and set
+`GENE_RUNTIME_IMAGE` in `release.env` before recreating the controller and Red. Ordinary
+cog releases preserve that trusted image setting. Retain the previous image and source
+for rollback; do not overwrite the `bootstrap` image tag with a new control plane.
 
 ## History recovery and privacy
 
@@ -207,7 +231,8 @@ are verified. The core suite has 70 passing checks. A real GPT-6 Astra request
 isolated container, and published [the first draft proposal](https://github.com/HumanMint/gene/pull/1).
 GitHub Actions also passed. That Discord proposal remains unapproved and has not been
 deployed. Subsequent maintainer changes added the separate panel and external audio
-source. The playback/panel suite now has 100 passing checks, including isolated
+source. The combined suite now has 119 passing checks, including owner review and
+DM failure recovery coverage. The preceding playback/panel suite also passed isolated
 Hostinger tests. A complete 174-second cached Nanobii Rainbow Road decode finished
 with zero buffer underruns, as did the direct-stream comparison; the reported voice
 pauses were not reproduced by these source-level checks. Rollback paths have isolated

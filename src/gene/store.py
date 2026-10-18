@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .privacy import clean
+from .reviews import pending_review, request_reference
 
 SHA = re.compile(r'^[a-f0-9]{40}$')
 
@@ -62,11 +63,21 @@ class Store:
                     job_id TEXT PRIMARY KEY, sha TEXT NOT NULL, previous_sha TEXT NOT NULL,
                     state TEXT NOT NULL, at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS review_notices (
+                    job_id TEXT PRIMARY KEY REFERENCES jobs(id), phase TEXT NOT NULL,
+                    reference TEXT NOT NULL, channel_id TEXT, message_id TEXT,
+                    delivered INTEGER NOT NULL DEFAULT 0, lease TEXT, lease_until REAL NOT NULL DEFAULT 0,
+                    retry_at REAL NOT NULL DEFAULT 0
+                );
             ''')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
-            for name in ('model', 'effort'):
+            for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref'):
                 if name not in columns:
                     db.execute(f'ALTER TABLE jobs ADD COLUMN {name} TEXT')
+            # Existing queued requests have never received intake approval. Fail closed
+            # during migration; completed/running jobs and release approvals retain their history.
+            db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
+                       'AND intake_approved_ref IS NULL')
         path.chmod(0o600)
 
     @contextmanager
@@ -135,17 +146,82 @@ class Store:
             if existing:
                 return self._job(existing)
             pending = db.execute('SELECT count(*) FROM jobs WHERE user_id=? AND state IN '
-                                 '("queued","building","review","approved","deploying")',
+                                 '("awaiting_owner","queued","building","review","approved","deploying")',
                                  (user_id,)).fetchone()[0]
             if pending >= 3:
                 raise Conflict('You already have three open requests; finish one first')
             job_id = uuid.uuid4().hex[:12]
             now = time.time()
-            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,created,updated) '
-                       'VALUES (?,?,?,?,?,?,?,?)',
+            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,created,updated,state) '
+                       'VALUES (?,?,?,?,?,?,?,?,"awaiting_owner")',
                        (job_id, guild_id, user_id, source_id, source_url, body, now, now))
             self._audit(db, user_id, 'request', job_id)
             return self._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
+
+    def review_decision(self, job_id, phase, reference, decision, actor):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            job = self._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
+            if pending_review(job, self._setting(db, 'active_sha')) != (phase, reference):
+                raise Conflict('This review is out of date. Open the current request before deciding')
+            if decision == 'reject':
+                db.execute('UPDATE jobs SET state="rejected",updated=? WHERE id=?', (time.time(), job_id))
+                self._audit(db, actor, 'reject', job_id, phase)
+            elif decision == 'approve' and phase == 'intake':
+                db.execute('UPDATE jobs SET state="queued",intake_approved_by=?,intake_approved_ref=?,'
+                           'updated=? WHERE id=?', (actor, reference, time.time(), job_id))
+                self._audit(db, actor, 'allow_coding', job_id, reference)
+            elif decision == 'approve' and phase == 'release':
+                db.execute('UPDATE jobs SET state="approved",approved_by=?,approved_sha=?,updated=? WHERE id=?',
+                           (actor, reference, time.time(), job_id))
+                self._audit(db, actor, 'approve', job_id, reference)
+            else:
+                raise ValueError('Unknown review decision')
+
+    def claim_review_notice(self):
+        """Lease one current review notification, retaining message IDs across phases/restarts."""
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            now = time.time()
+            active = self._setting(db, 'active_sha')
+            rows = db.execute('SELECT * FROM jobs WHERE state IN ("awaiting_owner","review") '
+                              'ORDER BY updated').fetchall()
+            for row in rows:
+                job = self._job(row)
+                current = pending_review(job, active)
+                if not current:
+                    continue
+                phase, reference = current
+                notice = db.execute('SELECT * FROM review_notices WHERE job_id=?', (job['id'],)).fetchone()
+                if notice and notice['lease_until'] > now:
+                    continue
+                same = notice and (notice['phase'], notice['reference']) == current
+                if same and (notice['delivered'] or notice['retry_at'] > now):
+                    continue
+                lease = uuid.uuid4().hex
+                db.execute('INSERT INTO review_notices(job_id,phase,reference,lease,lease_until) VALUES (?,?,?,?,?) '
+                           'ON CONFLICT(job_id) DO UPDATE SET phase=excluded.phase,reference=excluded.reference,'
+                           'lease=excluded.lease,lease_until=excluded.lease_until,delivered=0,retry_at=0',
+                           (job['id'], phase, reference, lease, now + 120))
+                return {'job': job, 'phase': phase, 'reference': reference, 'lease': lease,
+                        'channel_id': notice['channel_id'] if notice else None,
+                        'message_id': notice['message_id'] if notice else None}
+            return None
+
+    def finish_review_notice(self, job_id, lease, channel_id='', message_id=''):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            notice = db.execute('SELECT * FROM review_notices WHERE job_id=?', (job_id,)).fetchone()
+            if not notice or notice['lease'] != lease:
+                raise Conflict('The notification lease has changed')
+            if channel_id and message_id:
+                db.execute('UPDATE review_notices SET channel_id=?,message_id=?,delivered=1,lease=NULL,'
+                           'lease_until=0 WHERE job_id=?', (channel_id, message_id, job_id))
+            else:
+                db.execute('UPDATE review_notices SET lease=NULL,lease_until=0,retry_at=? WHERE job_id=?',
+                           (time.time() + 600, job_id))
+                self._audit(db, 'runtime', 'owner_dm_unavailable', job_id,
+                            'Request remains gated; owner can use the workshop review panel.')
 
     def get(self, job_id):
         with self.connection() as db:
@@ -178,6 +254,10 @@ class Store:
             effort = self._setting(db, 'code_effort') or catalog['default_effort']
             row = db.execute('SELECT * FROM jobs WHERE state="queued" ORDER BY created LIMIT 1').fetchone()
             if row is None:
+                return None
+            if not row['intake_approved_by'] or row['intake_approved_ref'] != request_reference(dict(row)):
+                db.execute('UPDATE jobs SET state="awaiting_owner",intake_approved_by=NULL,'
+                           'intake_approved_ref=NULL WHERE id=?', (row['id'],))
                 return None
             lease = uuid.uuid4().hex
             db.execute('UPDATE jobs SET state="building",lease=?,heartbeat=?,updated=?,model=?,effort=? WHERE id=?',
@@ -235,7 +315,7 @@ class Store:
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             job = self._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
-            if job['state'] not in ('queued', 'review', 'approved'):
+            if job['state'] not in ('awaiting_owner', 'queued', 'review', 'approved'):
                 raise Conflict('Only queued or pending proposals can be rejected')
             db.execute('UPDATE jobs SET state="rejected",updated=? WHERE id=?', (time.time(), job_id))
             self._audit(db, actor, 'reject', job_id)
@@ -346,12 +426,13 @@ class Store:
                     proposal['summary'] = '[User request erased]'
                 db.execute('UPDATE jobs SET user_id="deleted",body="[User request erased]",'
                            'source_url="",source_id=?,result="",proposal=?,'
-                           'state=CASE WHEN state IN ("queued","review","approved") THEN "rejected" '
+                           'state=CASE WHEN state IN ("awaiting_owner","queued","review","approved") THEN "rejected" '
                            'ELSE state END WHERE id=?',
                            ('erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
             db.execute('DELETE FROM memories WHERE approved_by=?', (user_id,))
             db.execute('UPDATE audit SET actor="deleted" WHERE actor=?', (user_id,))
             db.execute('UPDATE jobs SET approved_by="deleted" WHERE approved_by=?', (user_id,))
+            db.execute('UPDATE jobs SET intake_approved_by="deleted" WHERE intake_approved_by=?', (user_id,))
 
     def backup(self, destination: Path):
         destination.parent.mkdir(parents=True, exist_ok=True)

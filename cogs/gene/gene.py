@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -11,6 +12,9 @@ from discord.ext import tasks
 from redbot.core import commands
 
 from .panel import HomeView, card, reply, sessions
+from .review import ReviewButton, notify_owner
+
+LOG = logging.getLogger('gene')
 
 
 class Gene(commands.Cog):
@@ -19,6 +23,7 @@ class Gene(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.guild_id = int(os.getenv('GENE_GUILD_ID') or 0)
+        self.owner_id = int(os.getenv('GENE_OWNER_ID') or 0)
         self.workshop_id = int(os.getenv('GENE_WORKSHOP_CHANNEL_ID') or 0)
         self.url = os.getenv('GENE_CONTROLLER_URL', 'http://controller:8787').rstrip('/')
         self.token = os.getenv('GENE_RUNTIME_TOKEN', '')
@@ -26,10 +31,14 @@ class Gene(commands.Cog):
         self.health_path = Path(os.getenv('GENE_HEALTH_FILE', '/data/gene-health.json'))
         self.panel = HomeView(self)
         self.bot.add_view(self.panel)
+        self.bot.add_dynamic_items(ReviewButton)
         self.health.start()
+        self.owner_reviews.start()
 
     async def cog_unload(self):
         self.health.cancel()
+        self.owner_reviews.cancel()
+        self.bot.remove_dynamic_items(ReviewButton)
         self.panel.stop()
         await sessions(self).close_all()
         await self.session.close()
@@ -55,6 +64,17 @@ class Gene(commands.Cog):
 
     @health.before_loop
     async def before_health(self):
+        await self.bot.wait_until_red_ready()
+
+    @tasks.loop(seconds=15)
+    async def owner_reviews(self):
+        try:
+            await notify_owner(self)
+        except (commands.UserFeedbackCheckFailure, aiohttp.ClientError, TimeoutError) as exc:
+            LOG.warning('Owner review notification waiting: %s', type(exc).__name__)
+
+    @owner_reviews.before_loop
+    async def before_owner_reviews(self):
         await self.bot.wait_until_red_ready()
 
     async def api(self, method, path, payload=None):
@@ -102,14 +122,14 @@ class Gene(commands.Cog):
 
     @gene.command(name='request')
     async def request(self, ctx, *, description: str):
-        """Describe a feature or repair in the workshop. This creates a development job."""
+        """Request a feature or fix. The owner must allow coding before it starts."""
         channel = ctx.channel.parent_id if isinstance(ctx.channel, discord.Thread) else ctx.channel.id
         payload = {**self.actor(ctx), 'source_id': str(ctx.message.id),
                    'source_url': ctx.message.jump_url, 'body': description, 'channel_id': str(channel)}
         await ctx.defer()
         job = await self.api('POST', '/requests', payload)
-        await self.say(ctx, f"Request `{job['id']}` is {job['state']}. I'll prepare a tested proposal; "
-                           'the owner approves each live release.')
+        await self.say(ctx, f"Request `{job['id']}` is {job['state'].replace('_', ' ')}. "
+                           'The owner reviews requests by DM before coding and approves each live release separately.')
 
     @gene.command(name='status')
     async def status(self, ctx, request_id: str = ''):

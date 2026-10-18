@@ -97,7 +97,10 @@ def main():
         'local.dan.gene.audio.resolver': {'ProgramArguments': [str(folder / 'venv/bin/python'),
             '-u', str(folder / 'run_audio_resolver.py')]},
         'local.dan.gene.audio': {'ProgramArguments': ['/opt/homebrew/opt/openjdk@21/bin/java',
-            '-Xms64m', '-Xmx384m', '-jar', str(folder / 'Lavalink.jar')]},
+            '-Xms64m', '-Xmx384m', '-jar', str(folder / 'Lavalink.jar')],
+            # Standard launchd services have throttled timers on macOS. Discord
+            # needs one UDP frame every 20 ms; background scheduling starves it.
+            'ProcessType': 'Interactive'},
         'local.dan.gene.audio.proxy': {'ProgramArguments': [str(folder / 'venv/bin/python'),
             str(folder / 'audio_proxy.py')],
             'EnvironmentVariables': {'GENE_AUDIO_BIND': address, 'GENE_VPS_IP': '100.72.42.107'}},

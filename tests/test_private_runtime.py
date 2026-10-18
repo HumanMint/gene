@@ -51,3 +51,33 @@ def test_other_server_and_dm_events_never_reach_cogs(monkeypatch):
     finally:
         red_main.Red, red_bot.RedTree = original_red, original_tree
 
+
+def test_runtime_admits_only_owner_review_buttons_from_dms(monkeypatch):
+    import discord
+    import redbot.__main__ as red_main
+    import redbot.core.bot as red_bot
+    monkeypatch.setenv('GENE_GUILD_ID', '123')
+    monkeypatch.setenv('GENE_OWNER_ID', '10')
+    original_red, original_tree = red_main.Red, red_bot.RedTree
+    try:
+        main = install_private_runtime()
+        with patch.object(red_bot.Red, '__init__', return_value=None):
+            instance = main.Red()
+            instance._connection = SimpleNamespace(user=SimpleNamespace(id=99))
+        event = SimpleNamespace(guild_id=None, type=discord.InteractionType.component,
+            user=SimpleNamespace(id=10), message=SimpleNamespace(guild=None, author=SimpleNamespace(id=99)),
+            data={'custom_id': 'gene:review:i:a:012345abcdef:' + 'a' * 64})
+        with patch.object(red_bot.Red, 'dispatch') as dispatch:
+            instance.dispatch('interaction', event)
+            dispatch.assert_called_once_with('interaction', event)
+            dispatch.reset_mock()
+            event.user.id = 11
+            instance.dispatch('interaction', event)
+            event.user.id = 10
+            event.data['custom_id'] = 'gene:home:settings'
+            instance.dispatch('interaction', event)
+            instance.dispatch('message', SimpleNamespace(guild=None, author=SimpleNamespace(id=10)))
+            dispatch.assert_not_called()
+    finally:
+        red_main.Red, red_bot.RedTree = original_red, original_tree
+

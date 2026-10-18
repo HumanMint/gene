@@ -181,6 +181,7 @@ class Worker:
 
 def main():
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger('httpx').setLevel(logging.WARNING)
     worker = Worker()
     with (worker.root / 'worker.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

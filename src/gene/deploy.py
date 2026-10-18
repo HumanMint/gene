@@ -121,6 +121,7 @@ class Deployer:
 
 def main():
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger('httpx').setLevel(logging.WARNING)
     deployer = Deployer()
     with (deployer.root / 'deploy.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -134,4 +135,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

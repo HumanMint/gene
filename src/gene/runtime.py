@@ -93,6 +93,8 @@ def main():
     if not os.getenv('DISCORD_TOKEN') or not os.getenv('GENE_GUILD_ID'):
         raise SystemExit('Discord credentials and the allowed server must be configured')
     os.environ['RED_TOKEN'] = os.environ['DISCORD_TOKEN']
+    from .logging import install_secret_filter
+    install_secret_filter()
     os.environ.setdefault('XDG_CONFIG_HOME', '/data/config')
     from redbot.core import data_manager
     if not data_manager.config_file.exists():

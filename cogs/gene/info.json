@@ -1,0 +1,8 @@
+{
+  "author": ["HumanMint"],
+  "name": "Gene",
+  "short": "Requests, approved server context, and reviewed releases.",
+  "description": "Private project workflow for Gene. No passive chat collection.",
+  "end_user_data_statement": "Stores explicit feature requests, author and source IDs, owner-approved facts, release decisions, and operational usage. It does not collect ordinary chat. The owner can inspect and delete saved facts."
+}
+

@@ -1,0 +1,39 @@
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from gene.api import create_app
+from gene.config import Settings
+from gene.store import Store
+
+
+@pytest.fixture
+def store(tmp_path):
+    result = Store(tmp_path / 'gene.sqlite3')
+    result.bootstrap('a' * 40)
+    result.set_paused(False, 'owner')
+    return result
+
+
+@pytest.fixture
+def client(tmp_path):
+    settings = Settings(Path(tmp_path / 'api.sqlite3'), 'guild', 'owner',
+                        'runtime-' + 'x' * 32, 'worker-' + 'x' * 32, 'deploy-' + 'x' * 32,
+                        workshop_channel_id='workshop')
+    return TestClient(create_app(settings))
+
+
+def request(store, user='member', source='message-1'):
+    return store.request('guild', user, source, 'https://discord.com/channels/1/2/3',
+                         'Add a useful feature for our server')
+
+
+def proposed(store, sha='b' * 40, source='message-1'):
+    request(store, source=source)
+    job = store.claim()
+    store.finish_build(job['id'], job['lease'], {
+        'sha': sha, 'base_sha': job['base_sha'], 'branch': 'codex/test',
+        'tests_passed': True, 'summary': 'A tested change'})
+    return store.get(job['id'])
+

@@ -1,0 +1,22 @@
+[Unit]
+Description=Gene private coding worker
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/gene/source
+EnvironmentFile=/srv/gene/secrets/worker.env
+ExecStart=/srv/gene/venv/bin/gene-worker
+Restart=on-failure
+RestartSec=15
+UMask=0077
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/srv/gene
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+

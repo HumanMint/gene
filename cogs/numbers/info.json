@@ -1,0 +1,7 @@
+{
+  "author": ["HumanMint"],
+  "name": "Numbers",
+  "short": "Persistent meme votes and highlights.",
+  "end_user_data_statement": "Keeps source and highlight message IDs for configured meme channels. Votes are read from current Discord reactions; individual votes are not stored locally."
+}
+

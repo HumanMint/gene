@@ -1,0 +1,52 @@
+name: gene
+services:
+  controller:
+    image: gene-runtime:bootstrap
+    command: ["gene-controller"]
+    env_file: /srv/gene/secrets/controller.env
+    environment:
+      GENE_DB: /data/gene.sqlite3
+    ports:
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - /srv/gene/data/controller:/data
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+  red:
+    image: gene-runtime:bootstrap
+    command: ["python", "-m", "gene.runtime"]
+    env_file: /srv/gene/secrets/runtime.env
+    environment:
+      GENE_CONTROLLER_URL: http://controller:8787
+      GENE_RELEASE_SHA: ${GENE_RELEASE_SHA:?Set the immutable release SHA}
+      GENE_HEALTH_FILE: /data/gene-health.json
+      XDG_CONFIG_HOME: /data/config
+    volumes:
+      - /srv/gene/data/red:/data
+      - /srv/gene/releases/${GENE_RELEASE_SHA}/cogs:/app/cogs:ro
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 768m
+    cpus: 1
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,time; h=json.load(open('/data/gene-health.json')); assert h['guild_connected'] and time.time()-h['at']<30"]
+      interval: 20s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+

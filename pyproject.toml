@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "gene-control"
+version = "0.1.0"
+description = "Gene: a private Discord assistant with an owner-approved development loop"
+requires-python = ">=3.11,<3.12"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "httpx>=0.28,<1"]
+
+[project.optional-dependencies]
+red = ["Red-DiscordBot==3.5.24", "pip>=25,<27"]
+
+[dependency-groups]
+dev = ["pytest>=8,<9", "ruff>=0.11,<1"]
+
+[project.scripts]
+gene-controller = "gene.api:main"
+gene-worker = "gene.worker:main"
+gene-deployer = "gene.deploy:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/gene"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

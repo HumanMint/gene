@@ -1,0 +1,89 @@
+# Gene
+
+Gene is a private Discord assistant for a friend server: classic Red commands and
+music, meme highlights, and an owner-approved feature development loop.
+
+**Current mode: invisible, Discord Lab only.** Gene starts offline in Discord's
+presence list. Events from other servers and DMs are discarded before feature
+handlers run. Workshop slash commands are registered only in the configured lab.
+The original friend-server configuration stays in an ignored local file.
+
+## What is implemented
+
+- Red 3.5.24 runtime with custom `gene` and `numbers` cogs.
+- Requests, status, exact-commit approval, rejection, pause, rollback, and usage.
+- SQLite persistence, serialized jobs, distinct runtime/worker/deployer credentials.
+- An isolated Codex CLI coding worker using a dedicated ChatGPT subscription login.
+- Independent tests in a container with no credentials or network access.
+- Feature branches in this private repository; no automatic merge to `main`.
+- Immutable, owner-approved cog releases, pre-release backups, health checks, and
+  automatic code rollback when a release fails to reconnect.
+- Explicit, inspectable server facts. No passive chat memory.
+- A resumable, redacted `#bot-commands` importer that produces evidence for review.
+- Net meme voting with unique voters, self-vote exclusion, removal handling, and
+  persistent highlight IDs.
+- A Red-compatible Lavalink node on the Mac mini, reachable only from the VPS over
+  Tailscale. No browser cookies are used.
+
+Music availability depends on the Mac and source services. A successful search is
+not proof of voice playback; queue and sustained playback must be checked in the lab.
+History-derived settings are not applied until reviewed. Fri, general AI chat,
+Spotify integration, and infrastructure provisioning are later work.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  U[Discord Lab] --> R[Gene / Red runtime]
+  R --> C[Controller + SQLite]
+  C --> W[Trusted worker wrapper]
+  W --> S[Isolated Codex job]
+  S --> T[Independent tests]
+  T --> G[Private GitHub branch]
+  G --> A[Owner approves exact commit]
+  A --> D[Single deploy coordinator]
+  D --> R
+  R --> L[Mac Lavalink over Tailscale]
+```
+
+The coding job can change `cogs/`, `tests/features/`, and `docs/features/`. It cannot
+publish its own release or change the trusted controller/deployer. Control-plane
+and dependency changes go through a maintainer update. Candidate containers do not
+receive GitHub, Discord, controller, host SSH, or deployment credentials. The coding
+container receives its dedicated Codex authentication cache; tests receive none.
+
+## Local development
+
+```bash
+uv sync --extra red
+uv run --no-sync pytest -q
+uv run --no-sync ruff check .
+python3 scripts/configure.py
+```
+
+Python 3.11 is pinned by the project because this Red release requires Python below
+3.12. Dependencies are recorded in `uv.lock`. Populated environment files, auth,
+state, imported evidence, and audio configuration are ignored by Git.
+
+In the workshop, use `/gene request` or the configured prefix, for example:
+
+```text
+!gene request Add a small coin-flip command with a cooldown
+!gene status <request-id>
+!gene approve <request-id> <full-commit-sha>
+!gene usage
+!gene remember The lounge is the default music channel
+!gene memories
+!gene forget <memory-id>
+!gene pause true
+!gene rollback
+```
+
+`gene approve`, usage, memory administration, pause, and rollback are owner-only.
+`gene forgetme true` erases the caller's active request/context records and cancels
+pending proposals. Backups and already-produced code are separate records; see the runbook.
+
+[Operations](docs/operations.md) covers startup, authentication, release recovery,
+history import, privacy, and lab validation. [Roadmap](docs/roadmap.md) describes the
+next iterations and the future Gene/Fri split.
+

@@ -81,3 +81,21 @@ def test_gene_runtime_rejects_all_dm_components_after_fri_migration(monkeypatch)
     finally:
         red_main.Red, red_bot.RedTree = original_red, original_tree
 
+
+
+def test_red_cog_loader_does_not_confuse_gene_cog_with_control_package():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    code = '''
+import importlib.util
+import gene.runtime
+spec = importlib.util.spec_from_file_location('gene', 'cogs/gene/__init__.py')
+cog = spec.loader.load_module()
+assert cog.Gene.__module__ == 'gene.gene'
+'''
+    result = subprocess.run([sys.executable, '-c', code], cwd=root,
+                            env={**os.environ, 'PYTHONPATH': str(root / 'src')}, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

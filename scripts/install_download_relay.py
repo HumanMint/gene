@@ -28,7 +28,7 @@ def prepare(folder, env):
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
     (folder / 'gene').mkdir(exist_ok=True)
     (folder / 'gene/__init__.py').write_text('')
-    for name in ('audio_resolver.py', 'audio_cache.py'):
+    for name in ('audio_resolver.py', 'audio_cache.py', 'audio_relay_server.py'):
         shutil.copyfile(ROOT / 'src/gene' / name, folder / 'gene' / name)
     shutil.copyfile(ROOT / 'scripts/run_audio_resolver.py', folder / 'run_audio_resolver.py')
     requirements = subprocess.check_output(['uv', 'export', '--frozen', '--no-dev', '--extra', 'audio',

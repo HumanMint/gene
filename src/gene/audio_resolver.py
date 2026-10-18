@@ -351,12 +351,17 @@ def main():
         'ttl': int(os.getenv('GENE_AUDIO_CACHE_TTL', '604800')),
         'reserve_bytes': int(os.getenv('GENE_AUDIO_RESERVE_BYTES', str(2 * 1024**3))),
         'evict': True}
-    uvicorn.run(create_app(relay_url=os.getenv('GENE_RELAY_URL'),
-                          relay_token=os.getenv('GENE_RELAY_TOKEN'), relay_only=relay_only,
-                          allowed_peer=os.getenv('GENE_RELAY_PEER'), cache_options=options),
-                host=os.getenv('GENE_RESOLVER_BIND', '127.0.0.1'),
-                port=int(os.getenv('GENE_RESOLVER_PORT', '2334')),
-                access_log=False, log_level='warning', proxy_headers=False)
+    app = create_app(relay_url=os.getenv('GENE_RELAY_URL'),
+                     relay_token=os.getenv('GENE_RELAY_TOKEN'), relay_only=relay_only,
+                     allowed_peer=os.getenv('GENE_RELAY_PEER'), cache_options=options)
+    config = uvicorn.Config(app, host=os.getenv('GENE_RESOLVER_BIND', '127.0.0.1'),
+                            port=int(os.getenv('GENE_RESOLVER_PORT', '2334')),
+                            access_log=False, log_level='warning', proxy_headers=False)
+    if relay_only:
+        from gene.audio_relay_server import DownloadRelayServer
+        DownloadRelayServer(config).run()
+    else:
+        uvicorn.Server(config).run()
 
 
 if __name__ == '__main__':

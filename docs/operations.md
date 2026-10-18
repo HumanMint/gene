@@ -82,7 +82,11 @@ The private path is:
 6. Lavalink on Hostinger reads the local cached file and sends Discord voice packets.
 
 Only the download relay remains on the Mac. It runs at background priority and is idle
-between requests. There is no Mac Java audio process, continuous audio stream, or voice
+between requests. Its server waits for socket events instead of running Uvicorn's normal
+10 Hz housekeeping timer; termination signals still wake shutdown immediately. The relay
+has no request-count limit, supervisor heartbeat, or periodically refreshed Date header.
+Its independently pinned release is recorded in `.audio/relay-release.json`.
+There is no Mac Java audio process, continuous audio stream, or voice
 connection. Existing Cobalt agents, ports, and cookies remain independent.
 
 ### Cache policy

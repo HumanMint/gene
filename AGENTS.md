@@ -2,7 +2,7 @@
 
 Gene is a private Discord bot for one friend server. Red provides the established
 commands and music. A separate controller owns requests, approved context, usage,
-and releases. Fri is a future companion, not a second deployment authority.
+and releases. Fri is the separate chat and request companion. The controller remains the only deployment authority.
 
 ## Working here
 

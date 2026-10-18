@@ -15,6 +15,7 @@ class Settings:
     deploy_token: str
     workshop_channel_id: str = ''
     history_channel_id: str = ''
+    fri_token: str = ''
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -27,9 +28,10 @@ class Settings:
             deploy_token=os.environ.get('GENE_DEPLOY_TOKEN', ''),
             workshop_channel_id=os.environ.get('GENE_WORKSHOP_CHANNEL_ID', ''),
             history_channel_id=os.environ.get('GENE_HISTORY_CHANNEL_ID', ''),
+            fri_token=os.environ.get('GENE_FRI_TOKEN', ''),
         )
-        tokens = [settings.runtime_token, settings.worker_token, settings.deploy_token]
-        if any(len(token) < 32 for token in tokens) or len(set(tokens)) != 3:
-            raise ValueError('Three distinct service tokens of at least 32 characters are required')
+        tokens = [settings.runtime_token, settings.worker_token, settings.deploy_token, settings.fri_token]
+        if any(len(token) < 32 for token in tokens) or len(set(tokens)) != 4:
+            raise ValueError('Four distinct service tokens of at least 32 characters are required')
         return settings
 

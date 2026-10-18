@@ -113,7 +113,7 @@ class ScopedView(discord.ui.View):
                 home = discord.ui.Button(label='Home', row=4)
 
                 async def go_home(interaction):
-                    await reply(cog, interaction, embed=card('Gene', 'Choose music, requests, or settings.'),
+                    await reply(cog, interaction, embed=card('Gene', 'Music and server tools. Choose an action below.'),
                                 view=HomeView(cog, user_id))
                 home.callback = go_home
                 self.add_item(home)
@@ -143,36 +143,17 @@ class ScopedView(discord.ui.View):
 
 
 class InputModal(discord.ui.Modal):
-    def __init__(self, cog, interaction, kind):
-        titles = {'play': 'Add music', 'request': 'Request a feature or fix', 'memory': 'Save a server fact'}
-        super().__init__(title=titles[kind], timeout=600)
-        self.cog, self.kind, self.user_id = cog, kind, interaction.user.id
-        self.original = interaction.message
-        labels = {'play': 'Song name or YouTube link', 'request': 'What should Gene do or fix?',
-                  'memory': 'A small fact Gene should remember'}
-        self.value = discord.ui.TextInput(label=labels[kind], max_length=1000 if kind != 'request' else 4000,
-                                         style=discord.TextStyle.short if kind == 'play' else discord.TextStyle.paragraph)
+    def __init__(self, cog, interaction, kind='play'):
+        super().__init__(title='Add music', timeout=600)
+        self.cog, self.user_id, self.original = cog, interaction.user.id, interaction.message
+        self.value = discord.ui.TextInput(label='Song name or YouTube link', max_length=1000)
         self.add_item(self.value)
 
     async def interaction_check(self, interaction):
-        return await authorized(self.cog, interaction, self.user_id, self.kind == 'memory')
+        return await authorized(self.cog, interaction, self.user_id)
 
     async def on_submit(self, interaction):
-        if self.kind == 'play':
-            await music_command(self.cog, interaction, self.original, 'play', self.value.value)
-            return
-        await defer_panel(interaction)
-        payload = {**actor(interaction), 'body': self.value.value,
-                   'source_url': source_url(interaction, self.original)}
-        if self.kind == 'memory':
-            await self.cog.api('POST', '/memory', payload)
-            await reply(self.cog, interaction, 'Saved. Future development jobs can use this fact.')
-        else:
-            channel = getattr(interaction.channel, 'parent_id', None) or interaction.channel_id
-            payload.update(source_id=str(interaction.id), channel_id=str(channel))
-            job = await self.cog.api('POST', '/requests', payload)
-            await reply(self.cog, interaction, f"Request `{job['id']}` is awaiting owner review. "
-                        'Coding starts only after the owner allows it. Use **Requests** to follow its progress.')
+        await music_command(self.cog, interaction, self.original, 'play', self.value.value)
 
     async def on_error(self, interaction, error):
         await ScopedView.on_error(self, interaction, error, None)
@@ -228,218 +209,6 @@ async def show_queue(cog, interaction, page=0):
     await reply(cog, interaction, embed=card('Music queue', text), view=view)
 
 
-async def show_requests(cog, interaction):
-    await defer_panel(interaction)
-    jobs = await cog.api('GET', '/requests')
-    if not jobs:
-        await reply(cog, interaction, 'No requests yet. Choose **Request a feature or fix** to start one.')
-        return
-    view = ScopedView(cog, interaction.user.id)
-    select = discord.ui.Select(placeholder='Choose a request', options=[
-        discord.SelectOption(label=f"{j['state']} · {j['body'][:65]}", value=j['id'], description=j['id']) for j in jobs])
-
-    async def selected(event, page=0):
-        await defer_panel(event)
-        job = await cog.api('GET', '/requests/' + select.values[0])
-        body = discord.utils.escape_markdown(discord.utils.escape_mentions(job['body']))
-        pages = [body[start:start + 1500] for start in range(0, len(body), 1500)] or ['']
-        page = min(max(page, 0), len(pages) - 1)
-        description = f'Submitted request · page {page + 1}/{len(pages)}\n\n' + pages[page]
-        if job.get('model'):
-            description += f"\n\nWorker: `{job['model']}` · {job.get('effort', '')}"
-        controls = ScopedView(cog, event.user.id)
-        for label, target in [('Previous page', page - 1), ('Next page', page + 1)]:
-            if 0 <= target < len(pages):
-                navigate = discord.ui.Button(label=label, row=3)
-
-                async def change_page(page_event, target=target):
-                    await selected(page_event, target)
-                navigate.callback = change_page
-                controls.add_item(navigate)
-        if job['state'] == 'awaiting_owner' and page == len(pages) - 1 and await cog.bot.is_owner(event.user):
-            from gene.reviews import request_reference
-            allow = discord.ui.Button(label='Allow coding', style=discord.ButtonStyle.primary)
-
-            async def allow_coding(approval_event):
-                if not await authorized(cog, approval_event, event.user.id, owner=True):
-                    return
-                await defer_panel(approval_event)
-                await cog.api('POST', f"/requests/{job['id']}/review", {
-                    **actor(approval_event), 'phase': 'intake', 'reference': request_reference(job),
-                    'decision': 'approve'})
-                await reply(cog, approval_event, 'Coding allowed. Deployment still needs approval of the tested commit.')
-            allow.callback = allow_coding
-            controls.add_item(allow)
-            description += '\n\nNo coding has started. Allow coding to prepare a tested proposal.'
-        proposal = job.get('proposal')
-        if proposal:
-            description += f"\n\n{proposal.get('summary', '')[:800]}\n\nCommit: `{proposal['sha']}`"
-            url = proposal.get('url', '')
-            if url.startswith('https://github.com/HumanMint/gene/'):
-                controls.add_item(discord.ui.Button(label='View code changes', url=url))
-            if job['state'] == 'review' and await cog.bot.is_owner(event.user):
-                approve = discord.ui.Button(label='Review release approval', style=discord.ButtonStyle.primary)
-
-                async def review(approval_event):
-                    if not await authorized(cog, approval_event, event.user.id, owner=True):
-                        return
-                    await reply(cog, approval_event, embed=card('Approve this exact commit?',
-                        f"Request `{job['id']}`\n\n`{proposal['sha']}`\n\nApprove only after reviewing the code changes. "
-                        'Gene will back up state, check the release, and restore the previous code if health checks fail.'),
-                        view=ApprovalView(cog, event.user.id, job['id'], proposal['sha']))
-                approve.callback = review
-                controls.add_item(approve)
-        if job.get('result'):
-            description += '\n\n' + job['result'][:700]
-        if job['state'] in ('awaiting_owner', 'queued', 'review') and await cog.bot.is_owner(event.user):
-            reject = discord.ui.Button(label='Reject request', style=discord.ButtonStyle.danger)
-
-            async def reject_request(rejection):
-                if not await authorized(cog, rejection, event.user.id, owner=True):
-                    return
-                await defer_panel(rejection)
-                await cog.api('POST', f"/requests/{job['id']}/reject", actor(rejection))
-                await reply(cog, rejection, 'Request rejected.')
-            reject.callback = reject_request
-            controls.add_item(reject)
-        await reply(cog, event, embed=card(f"Request · {job['state']}", description), view=controls)
-    select.callback = selected
-    view.add_item(select)
-    await reply(cog, interaction, embed=card('Requests', 'Choose a request to see progress, errors, or its proposed release.'), view=view)
-
-
-class ApprovalView(ScopedView):
-    def __init__(self, cog, user_id, job_id, sha):
-        super().__init__(cog, user_id, owner=True)
-        self.job_id, self.sha = job_id, sha
-
-    @discord.ui.button(label='Approve this commit', style=discord.ButtonStyle.success)
-    async def approve(self, interaction, button):
-        await defer_panel(interaction)
-        await self.cog.api('POST', f'/requests/{self.job_id}/approve', {**actor(interaction), 'sha': self.sha})
-        button.disabled = True
-        await reply(self.cog, interaction, 'Approved this commit. Follow the release from **Requests**.', view=self)
-
-
-async def show_models(cog, interaction, *, refresh=False, page=0):
-    await defer_panel(interaction)
-    state = await cog.api('POST', '/models/refresh' if refresh else '/models', actor(interaction))
-    text = f"Selected: **{state['selected']}**\nReasoning: **{state['effort']}**"
-    if state['refresh_pending']:
-        text += '\n\nCatalog refresh queued. Use **Reload list** after the worker finishes its current job.'
-    if state['error']:
-        text += '\n\n' + state['error']
-    if not state['selected_available']:
-        text += '\n\nThe selected model is unavailable. Choose a model to resume coding.'
-    await reply(cog, interaction, embed=card('Worker model', text), view=ModelsView(cog, interaction.user.id, state, page))
-
-
-class ModelsView(ScopedView):
-    def __init__(self, cog, user_id, state, page=0):
-        super().__init__(cog, user_id, owner=True)
-        self.page = page
-        models = state['models'][page * 25:(page + 1) * 25]
-        if models:
-            choose = discord.ui.Select(placeholder='Choose a worker model', row=0, options=[
-                discord.SelectOption(label=m['name'][:100], value=m['id'], default=m['id'] == state['selected']) for m in models])
-
-            async def selected(event):
-                await defer_panel(event)
-                await cog.api('POST', '/models/select', {**actor(event), 'model_id': choose.values[0], 'effort': ''})
-                await reply(cog, event, 'Model updated for new jobs. Reopen **Models** to choose its reasoning effort.')
-            choose.callback = selected
-            self.add_item(choose)
-        current = next((m for m in state['models'] if m['id'] == state['selected']), None)
-        if current:
-            effort = discord.ui.Select(placeholder='Choose reasoning effort', row=1, options=[
-                discord.SelectOption(label='Model default', value='default'),
-                *[discord.SelectOption(label=e, value=e) for e in current['efforts']]])
-
-            async def set_effort(event):
-                await defer_panel(event)
-                latest = await cog.api('POST', '/models', actor(event))
-                if latest['selected'] != state['selected']:
-                    await reply(cog, event, 'The selected model changed. Reopen **Models** before changing its effort.')
-                    return
-                await cog.api('POST', '/models/select', {**actor(event), 'model_id': state['selected'],
-                    'effort': '' if effort.values[0] == 'default' else effort.values[0]})
-                await reply(cog, event, 'Reasoning effort updated for new jobs.')
-            effort.callback = set_effort
-            self.add_item(effort)
-        for label, target in [('Previous', page - 1), ('Next', page + 1)]:
-            if 0 <= target and target * 25 < len(state['models']):
-                button = discord.ui.Button(label=label, row=3)
-
-                async def navigate(event, target=target):
-                    await show_models(cog, event, page=target)
-                button.callback = navigate
-                self.add_item(button)
-
-    @discord.ui.button(label='Refresh available models', row=2)
-    async def refresh(self, interaction, button):
-        await show_models(self.cog, interaction, refresh=True, page=self.page)
-
-    @discord.ui.button(label='Reload list', row=2)
-    async def reload(self, interaction, button):
-        await show_models(self.cog, interaction, page=self.page)
-
-
-class SettingsView(ScopedView):
-    def __init__(self, cog, user_id):
-        super().__init__(cog, user_id, owner=True)
-
-    @discord.ui.button(label='Models', row=0)
-    async def models(self, interaction, button):
-        await show_models(self.cog, interaction)
-
-    @discord.ui.button(label='Saved context', row=0)
-    async def memories(self, interaction, button):
-        await defer_panel(interaction)
-        rows = await self.cog.api('POST', '/memory/list', actor(interaction))
-        text = '\n\n'.join(row['body'] for row in rows) or 'No saved facts. Gene does not collect ordinary chat.'
-        await reply(self.cog, interaction, embed=card('Approved server context', text), view=ContextView(self.cog, interaction.user.id, rows))
-
-    @discord.ui.button(label='Usage', row=0)
-    async def usage(self, interaction, button):
-        await defer_panel(interaction)
-        rows = await self.cog.api('POST', '/usage', actor(interaction))
-        text = '\n\n'.join(f"**{r['model']}** · {r['attempts']} attempts\nInput: {r['input_tokens']} · "
-                            f"output: {r['output_tokens']} · cached input: {r['cached_input_tokens']}" for r in rows)
-        await reply(self.cog, interaction, embed=card('Worker usage', text or 'No recorded usage yet.'))
-
-    @discord.ui.button(label='Pause development', row=1)
-    async def pause(self, interaction, button):
-        await self.set_paused(interaction, True)
-
-    @discord.ui.button(label='Resume development', row=1)
-    async def resume(self, interaction, button):
-        await self.set_paused(interaction, False)
-
-    async def set_paused(self, interaction, paused):
-        await defer_panel(interaction)
-        await self.cog.api('POST', '/pause', {**actor(interaction), 'paused': paused})
-        await reply(self.cog, interaction, 'New development paused. Running work can finish.' if paused else 'Development resumed.')
-
-
-class ContextView(ScopedView):
-    def __init__(self, cog, user_id, rows):
-        super().__init__(cog, user_id, owner=True)
-        if rows:
-            select = discord.ui.Select(placeholder='Forget a saved fact', row=1, options=[
-                discord.SelectOption(label=row['body'][:100], value=row['id']) for row in rows[:25]])
-
-            async def forget(event):
-                await defer_panel(event)
-                await cog.api('POST', '/memory/' + select.values[0] + '/forget', actor(event))
-                await reply(cog, event, 'Forgot that fact. Already running jobs keep their original input.')
-            select.callback = forget
-            self.add_item(select)
-
-    @discord.ui.button(label='Add a fact', style=discord.ButtonStyle.primary)
-    async def remember(self, interaction, button):
-        await interaction.response.send_modal(InputModal(self.cog, interaction, 'memory'))
-
-
 class HomeView(ScopedView):
     def __init__(self, cog, user_id=None):
         super().__init__(cog, user_id, timeout=None if user_id is None else 600, navigation=False)
@@ -449,25 +218,13 @@ class HomeView(ScopedView):
         await reply(self.cog, interaction, embed=card('Music', 'Join a voice channel, then add a song name or YouTube link. '
             'The usual voice and DJ permissions apply.'), view=MusicView(self.cog, interaction.user.id))
 
-    @discord.ui.button(label='Request a feature or fix', style=discord.ButtonStyle.primary, custom_id='gene:home:request', row=0)
-    async def request(self, interaction, button):
-        await interaction.response.send_modal(InputModal(self.cog, interaction, 'request'))
-
-    @discord.ui.button(label='Requests', custom_id='gene:home:requests', row=1)
-    async def requests(self, interaction, button):
-        await show_requests(self.cog, interaction)
+    @discord.ui.button(label='Ask Fri', custom_id='gene:home:fri', row=0)
+    async def fri(self, interaction, button):
+        await reply(self.cog, interaction, 'Open **/fri** in the workshop to chat, request a feature or fix, and follow development.')
 
     @discord.ui.button(label='Status', custom_id='gene:home:status', row=1)
     async def status(self, interaction, button):
         await defer_panel(interaction)
         state = await self.cog.api('GET', '/status')
-        text = ('Development paused.' if state['paused'] else 'Development active.')
-        text += f"\nWorker: **{state['model']}**\nRelease: `{state['active_sha']}`"
-        text += '\n\n' + (', '.join(f'{n} {s}' for s, n in state['jobs'].items()) or 'No requests yet.')
+        text = f"Release: `{state['active_sha']}`\nMusic and server tools are handled by Gene. Open /fri for development."
         await reply(self.cog, interaction, embed=card('Gene status', text))
-
-    @discord.ui.button(label='Owner settings', custom_id='gene:home:settings', row=1)
-    async def settings(self, interaction, button):
-        if await authorized(self.cog, interaction, owner=True):
-            await reply(self.cog, interaction, embed=card('Owner settings', 'Choose a setting below.'),
-                        view=SettingsView(self.cog, interaction.user.id))

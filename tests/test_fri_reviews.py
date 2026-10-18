@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock
 
 import discord
 
-from cogs.gene.review import ReviewButton, deliver_review, notify_owner, review_message
+from gene.fri_reviews import ReviewButton, deliver_review, notify_owner, review_message
 from gene.reviews import REVIEW_ID, owner_dm_component
 
 
@@ -17,11 +17,12 @@ def notice():
 
 def interaction():
     cog = SimpleNamespace(owner_id=10, guild_id=123, api=AsyncMock())
-    bot = SimpleNamespace(user=SimpleNamespace(id=99), get_cog=Mock(return_value=cog))
+    bot = cog
+    bot.user = SimpleNamespace(id=99)
     event = SimpleNamespace(guild_id=None, type=discord.InteractionType.component,
         user=SimpleNamespace(id=10), client=bot,
         message=SimpleNamespace(author=SimpleNamespace(id=99)),
-        data={'custom_id': 'gene:review:i:a:012345abcdef:' + 'a' * 64},
+        data={'custom_id': 'fri:review:i:a:012345abcdef:' + 'a' * 64},
         response=SimpleNamespace(defer=AsyncMock()), edit_original_response=AsyncMock(),
         followup=SimpleNamespace(send=AsyncMock()))
     return cog, event

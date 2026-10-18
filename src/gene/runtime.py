@@ -7,8 +7,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .reviews import owner_dm_component
-
 
 def allowed_guild(guild_id: int | None) -> bool:
     configured = os.environ.get('GENE_GUILD_ID', '')
@@ -46,9 +44,6 @@ def install_private_runtime():
             return await super().change_presence(**kwargs)
 
         def dispatch(self, event, /, *args, **kwargs):
-            if (event == 'interaction' and args and owner_dm_component(
-                    args[0], getattr(self.user, 'id', None), os.getenv('GENE_OWNER_ID'))):
-                return super().dispatch(event, *args, **kwargs)
             private_events = ('message', 'message_edit', 'message_delete', 'bulk_message_delete',
                               'raw_message_edit', 'raw_message_delete', 'raw_bulk_message_delete',
                               'reaction_add', 'reaction_remove', 'reaction_clear',

@@ -5,10 +5,8 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from cogs.gene.panel import (
-    ApprovalView,
     HomeView,
     InputModal,
-    ModelsView,
     MusicView,
     PanelContext,
     ScopedView,
@@ -17,6 +15,7 @@ from cogs.gene.panel import (
     sessions,
     show_queue,
 )
+from gene.fri_panel import ApprovalView, ModelsView
 
 
 def environment(*, ephemeral=False, message_id=5, interaction_id=789):
@@ -27,12 +26,12 @@ def environment(*, ephemeral=False, message_id=5, interaction_id=789):
     response.defer.side_effect = defer
     bot = SimpleNamespace(is_owner=AsyncMock(return_value=True), invoke=AsyncMock(),
                           get_context=AsyncMock(), get_command=Mock())
-    cog = SimpleNamespace(guild_id=123, bot=bot, api=AsyncMock())
+    cog = SimpleNamespace(guild_id=123, workshop_id=456, bot=bot, api=AsyncMock())
     user = SimpleNamespace(id=10)
     message = SimpleNamespace(id=message_id, flags=SimpleNamespace(ephemeral=ephemeral),
                               author=SimpleNamespace(id=99), content='original', attachments=[], embeds=[])
     result = SimpleNamespace(id=message_id if ephemeral else 1000 + interaction_id)
-    interaction = SimpleNamespace(guild_id=123, channel_id=456, id=interaction_id, user=user,
+    interaction = SimpleNamespace(guild_id=123, channel_id=456, channel=SimpleNamespace(id=456), id=interaction_id, user=user,
                                   message=message, response=response, edit_original_response=AsyncMock(),
                                   delete_original_response=AsyncMock(),
                                   followup=SimpleNamespace(send=AsyncMock()))
@@ -45,7 +44,7 @@ def test_persistent_home_panel_and_all_callbacks_respect_server_boundary():
         cog, interaction = environment()
         panel = HomeView(cog)
         assert panel.is_persistent()
-        assert {b.label for b in panel.children} >= {'Music', 'Requests', 'Request a feature or fix', 'Owner settings'}
+        assert {b.label for b in panel.children} >= {'Music', 'Ask Fri', 'Status'}
         interaction.guild_id = 999
         assert not await panel.interaction_check(interaction)
         interaction.response.send_message.assert_not_awaited()

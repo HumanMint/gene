@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .privacy import clean
-from .reviews import pending_review, request_reference
+from .reviews import pending_notice, pending_review, request_reference
 
 SHA = re.compile(r'^[a-f0-9]{40}$')
 
@@ -29,8 +29,10 @@ class Store:
                 INSERT OR IGNORE INTO settings VALUES ('paused', 'true');
                 INSERT OR IGNORE INTO settings VALUES ('active_sha', '');
                 INSERT OR IGNORE INTO settings VALUES ('previous_sha', '');
-                INSERT OR IGNORE INTO settings VALUES ('code_model', 'gpt-6-astra');
-                INSERT OR IGNORE INTO settings VALUES ('code_effort', '');
+                INSERT OR IGNORE INTO settings VALUES ('code_model', 'gpt-6.1-sol');
+                INSERT OR IGNORE INTO settings VALUES ('code_effort', 'high');
+                INSERT OR IGNORE INTO settings VALUES ('chat_model', 'gpt-6.1-sol');
+                INSERT OR IGNORE INTO settings VALUES ('chat_effort', 'high');
                 INSERT OR IGNORE INTO settings VALUES ('models_requested_at', '1');
                 INSERT OR IGNORE INTO settings VALUES ('models_refreshed_at', '0');
                 INSERT OR IGNORE INTO settings VALUES ('models_error', '');
@@ -69,9 +71,22 @@ class Store:
                     delivered INTEGER NOT NULL DEFAULT 0, lease TEXT, lease_until REAL NOT NULL DEFAULT 0,
                     retry_at REAL NOT NULL DEFAULT 0
                 );
+                CREATE TABLE IF NOT EXISTS chat_usage (
+                    attempt_id TEXT PRIMARY KEY, model TEXT NOT NULL, effort TEXT NOT NULL,
+                    status TEXT NOT NULL, at REAL NOT NULL, input_tokens INTEGER,
+                    cached_input_tokens INTEGER, output_tokens INTEGER, reasoning_output_tokens INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS chat_models (id TEXT PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS chat_revisions (user_id TEXT PRIMARY KEY, revision INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS chat_turns (
+                    id INTEGER PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL, input TEXT NOT NULL, reply TEXT NOT NULL,
+                    model TEXT NOT NULL, effort TEXT NOT NULL, at REAL NOT NULL,
+                    input_tokens INTEGER, output_tokens INTEGER
+                );
             ''')
             columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
-            for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref'):
+            for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref', 'progress'):
                 if name not in columns:
                     db.execute(f'ALTER TABLE jobs ADD COLUMN {name} TEXT')
             # Existing queued requests have never received intake approval. Fail closed
@@ -110,12 +125,16 @@ class Store:
 
     def status(self):
         with self.connection() as db:
+            # The controller health check runs even when nobody chats with Fri.
+            db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
             return {
                 'paused': self._setting(db, 'paused') == 'true',
                 'active_sha': self._setting(db, 'active_sha'),
                 'previous_sha': self._setting(db, 'previous_sha'),
                 'model': self._setting(db, 'code_model'),
                 'effort': self._setting(db, 'code_effort') or 'model default',
+                'chat_model': self._setting(db, 'chat_model'),
+                'chat_effort': self._setting(db, 'chat_effort'),
                 'jobs': {r['state']: r['n'] for r in db.execute(
                     'SELECT state, count(*) AS n FROM jobs GROUP BY state')},
             }
@@ -184,11 +203,12 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             now = time.time()
             active = self._setting(db, 'active_sha')
-            rows = db.execute('SELECT * FROM jobs WHERE state IN ("awaiting_owner","review") '
-                              'ORDER BY updated').fetchall()
+            rows = db.execute('SELECT * FROM jobs WHERE state IN ("awaiting_owner","review") OR (updated>? '
+                              'AND (intake_approved_ref IS NOT NULL OR kind="rollback")) '
+                              'ORDER BY updated', (now - 7 * 86400,)).fetchall()
             for row in rows:
                 job = self._job(row)
-                current = pending_review(job, active)
+                current = pending_notice(job, active)
                 if not current:
                     continue
                 phase, reference = current
@@ -275,12 +295,15 @@ class Store:
             raise Conflict('The job lease or state has changed')
         return row
 
-    def heartbeat(self, job_id, lease):
+    def heartbeat(self, job_id, lease, progress=''):
         with self.connection() as db:
             self._leased(db, job_id, lease)
             db.execute('UPDATE jobs SET heartbeat=? WHERE id=?', (time.time(), job_id))
+            if progress:
+                db.execute('UPDATE jobs SET progress=?,updated=? WHERE id=?',
+                           (progress, time.time(), job_id))
 
-    def finish_build(self, job_id, lease, proposal: dict | None, error: str = ''):
+    def finish_build(self, job_id, lease, proposal: dict | None, error: str = '', outcome='failed'):
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self._leased(db, job_id, lease)
@@ -292,7 +315,9 @@ class Store:
                     raise ValueError('The proposal contains no change')
                 if not proposal.get('tests_passed') or not proposal.get('branch', '').startswith('codex/'):
                     raise ValueError('A tested, published feature branch is required')
-            state = 'review' if proposal else 'failed'
+            if outcome not in ('failed', 'needs_attention'):
+                raise ValueError('Invalid build outcome')
+            state = 'review' if proposal else outcome
             db.execute('UPDATE jobs SET state=?,proposal=?,result=?,lease=NULL,updated=? WHERE id=?',
                        (state, json.dumps(proposal) if proposal else None, clean(error), time.time(), job_id))
             self._audit(db, 'worker', state, job_id)
@@ -320,13 +345,15 @@ class Store:
             db.execute('UPDATE jobs SET state="rejected",updated=? WHERE id=?', (time.time(), job_id))
             self._audit(db, actor, 'reject', job_id)
 
-    def rollback(self, guild_id, actor):
+    def rollback(self, guild_id, actor, expected_sha=None):
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             previous = self._setting(db, 'previous_sha')
             current = self._setting(db, 'active_sha')
             if not previous:
                 raise Conflict('No previous healthy release is available')
+            if expected_sha is not None and expected_sha != previous:
+                raise Conflict('The previous release changed. Reopen rollback before approving it')
             job_id = uuid.uuid4().hex[:12]
             proposal = {'sha': previous, 'base_sha': current, 'summary': 'Owner-requested rollback'}
             now = time.time()
@@ -398,6 +425,26 @@ class Store:
                 'sum(input_tokens IS NULL OR output_tokens IS NULL) AS unknown_attempts '
                 'FROM usage GROUP BY model')]
 
+    def add_chat_usage(self, attempt_id, model, effort, status, counters):
+        keys = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')
+        for key in keys:
+            value = counters.get(key)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError('Usage counters must be nonnegative integers or unknown')
+        with self.connection() as db:
+            # Contains no user IDs or conversation text; clearing history preserves totals.
+            db.execute('INSERT OR IGNORE INTO chat_usage VALUES (?,?,?,?,?,?,?,?,?)',
+                       (attempt_id, model, effort, status, time.time(), *(counters.get(k) for k in keys)))
+
+    def chat_usage(self):
+        with self.connection() as db:
+            return [dict(r) for r in db.execute('SELECT model, effort, count(*) AS attempts, '
+                'sum(input_tokens) AS input_tokens, sum(cached_input_tokens) AS cached_input_tokens, '
+                'sum(output_tokens) AS output_tokens, sum(reasoning_output_tokens) AS reasoning_output_tokens, '
+                'sum(status != "completed") AS failed_attempts, '
+                'sum(input_tokens IS NULL OR output_tokens IS NULL) AS unknown_attempts '
+                'FROM chat_usage GROUP BY model, effort')]
+
     def memories(self, guild_id):
         with self.connection() as db:
             return [dict(r) for r in db.execute('SELECT * FROM memories WHERE guild_id=? ORDER BY created',
@@ -417,6 +464,7 @@ class Store:
             self._audit(db, actor, 'forget', memory_id)
 
     def erase_user(self, user_id):
+        self.clear_chats(user_id)
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             rows = db.execute('SELECT id,proposal FROM jobs WHERE user_id=?', (user_id,)).fetchall()
@@ -433,6 +481,64 @@ class Store:
             db.execute('UPDATE audit SET actor="deleted" WHERE actor=?', (user_id,))
             db.execute('UPDATE jobs SET approved_by="deleted" WHERE approved_by=?', (user_id,))
             db.execute('UPDATE jobs SET intake_approved_by="deleted" WHERE intake_approved_by=?', (user_id,))
+
+    def chat_context(self, guild_id, channel_id, user_id):
+        with self.connection() as db:
+            db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
+            revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
+            turns = [dict(row) for row in db.execute(
+                'SELECT input,reply FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
+                'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
+            facts = [row[0] for row in db.execute('SELECT body FROM memories WHERE guild_id=? '
+                                                  'ORDER BY created DESC LIMIT 20', (guild_id,))]
+            return {'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
+                    'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
+
+    def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
+                  input_tokens=None, output_tokens=None):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
+            if revision != (current[0] if current else 0):
+                raise Conflict('This conversation was cleared while Fri was replying. Start again.')
+            db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
+                       'input_tokens,output_tokens) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                       (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
+                        time.time(), input_tokens, output_tokens))
+            db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
+                       'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
+                       'AND user_id=? ORDER BY id DESC LIMIT 6)',
+                       (guild_id, channel_id, user_id, guild_id, channel_id, user_id))
+
+    def clear_chats(self, user_id):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
+            db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
+                       'DO UPDATE SET revision=revision+1', (user_id,))
+
+    def chat_models(self):
+        with self.connection() as db:
+            return {'selected': self._setting(db, 'chat_model'),
+                    'effort': self._setting(db, 'chat_effort'),
+                    'models': [row[0] for row in db.execute('SELECT id FROM chat_models ORDER BY id')]}
+
+    def update_chat_models(self, models):
+        if not models or len(models) > 500 or any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', m) for m in models):
+            raise ValueError('Invalid subscription model catalog; keeping the previous list')
+        with self.connection() as db:
+            db.execute('DELETE FROM chat_models')
+            db.executemany('INSERT INTO chat_models VALUES (?)', [(m,) for m in sorted(set(models))])
+
+    def select_chat_model(self, model, effort, actor):
+        if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
+            raise ValueError('Choose a supported reasoning effort')
+        with self.connection() as db:
+            if not db.execute('SELECT 1 FROM chat_models WHERE id=?', (model,)).fetchone():
+                raise Conflict('Refresh the subscription model list and choose an available model')
+            db.execute('UPDATE settings SET value=? WHERE key="chat_model"', (model,))
+            db.execute('UPDATE settings SET value=? WHERE key="chat_effort"', (effort,))
+            self._audit(db, actor, 'chat_model_selected', model, effort)
 
     def backup(self, destination: Path):
         destination.parent.mkdir(parents=True, exist_ok=True)

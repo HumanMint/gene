@@ -52,7 +52,7 @@ def test_other_server_and_dm_events_never_reach_cogs(monkeypatch):
         red_main.Red, red_bot.RedTree = original_red, original_tree
 
 
-def test_runtime_admits_only_owner_review_buttons_from_dms(monkeypatch):
+def test_gene_runtime_rejects_all_dm_components_after_fri_migration(monkeypatch):
     import discord
     import redbot.__main__ as red_main
     import redbot.core.bot as red_bot
@@ -69,7 +69,7 @@ def test_runtime_admits_only_owner_review_buttons_from_dms(monkeypatch):
             data={'custom_id': 'gene:review:i:a:012345abcdef:' + 'a' * 64})
         with patch.object(red_bot.Red, 'dispatch') as dispatch:
             instance.dispatch('interaction', event)
-            dispatch.assert_called_once_with('interaction', event)
+            dispatch.assert_not_called()
             dispatch.reset_mock()
             event.user.id = 11
             instance.dispatch('interaction', event)

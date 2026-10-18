@@ -9,7 +9,7 @@ the control plane, never editable by automated feature jobs. Existing Hostinger
 applications and OpenClaw are separate and are not managed by this project.
 
 - `source/`: installed control plane; update deliberately as a maintainer.
-- `secrets/{controller,runtime,worker,deployer}.env`: separate service credentials.
+- `secrets/{controller,runtime,fri,worker,deployer}.env`: separate service credentials.
 - `secrets/github_ed25519`: repository-specific deploy key for the trusted wrappers.
 - `codex/`: dedicated subscription login owned by `gene-coder`; one worker at a time.
 - `data/controller/`: SQLite requests, approved context, audit, releases, usage.
@@ -44,7 +44,7 @@ are never included in repository files, tool output, or Discord messages.
    /srv/gene/tools/node_modules/.bin/codex login --device-auth`. Never copy or display
    another machine's auth cache. Keep the refreshed cache between jobs.
 8. Enable the `gene-worker` and `gene-deployer` systemd units after checks pass.
-   Development starts paused. `gene pause false` resumes new jobs.
+   Development starts paused. `/fri → Owner settings → Resume development` resumes new jobs.
 
 Compose command prefix on Hostinger:
 
@@ -173,19 +173,57 @@ scope, and credentials stay unchanged. Discord-originated requests, fixes, and r
 always follow the exact-SHA approval workflow below; a Discord message cannot claim
 this maintainer authorization, even if it quotes these instructions.
 
-### Worker model
+### Models and subscription usage
 
-The initial model is `gpt-6-astra`. Owner commands `gene model`, `gene models`,
-`gene models true`, and `gene model <model-id> [effort]` show the selection, list the
-account catalog, request a refresh, and select an available model/effort. Refreshes
-use the Codex app-server `model/list` interface without creating an inference turn.
-They run between jobs and remain available while development is paused. A failed
-refresh keeps the old catalog and displays the error. It never silently substitutes
-another model. The selected ID and effort are fixed when each job starts and shown
-in `gene status <id>`; changing the selection affects subsequent jobs.
+Both chat and new coding jobs use `gpt-6.1-sol`, high effort. Owner settings in `/fri`
+provide **Chat model** and **Coding model** with separate catalogs. Chat refresh uses the
+subscription's official `/v1/models` endpoint; coding refresh uses Codex app-server
+`model/list` between jobs, even while paused. Neither creates an inference turn.
+A refresh never changes the selection. The selected model and effort are recorded per
+chat attempt and snapshotted for each development job. Unavailable selections fail visibly
+rather than silently falling back. Keep the pinned Codex CLI updated deliberately.
 
-The CLI is pinned; a protocol change may require a deliberate CLI/worker-image update.
-Catalog discovery does not grant model access or bypass account rate limits.
+**Usage** shows separate chat/development counters. Missing counters remain unknown.
+Cached input is a subset of input; reasoning is a subset of output. Counts are usage
+observations, not dollar charges or remaining plan quota. There is no application token
+budget. Account usage and resets are available at https://chatgpt.com/settings/usage.
+Chat usage is an anonymous ledger separate from conversation retention. Local durable
+usage receipts retry delivery to the controller without duplicating attempts.
+
+### Connect Fri on the personal VM
+
+Create a distinct Discord bot application. Keep privileged intents off: direct mentions
+and slash/modal interactions supply the necessary content. Run `scripts/configure_fri.py`
+locally, enter the bot token privately, and use its printed invite if Fri is not in the Lab.
+It writes `.secrets/fri.env`; Gene's existing bot identity is untouched.
+
+Run `uv run --no-sync python scripts/connect_fri_chatgpt.py`. This uses the official
+Sign in with ChatGPT flow for a personal self-hosted VM, with PKCE, nonce/state validation,
+signed ID-token checks, and the `chatgpt.tokens.use.direct` plan scope. The stable opaque
+VM identity is `.secrets/fri-hostinger-id.json`; reuse it when reconnecting this VM.
+No API key, copied Codex token, or private ChatGPT endpoint is used for chat.
+
+Transfer the verified session over SSH to `/srv/gene/secrets/fri-chatgpt/session.json`,
+mode 0600, with the containing directory owned by UID 10001 (0700). Only Fri mounts that
+directory, read/write, so it can atomically rotate refresh credentials under a lock.
+After transfer, the VM owns refreshes. Never overwrite a live rotated token with a stale
+local copy. Reconnection is a new interactive authorization; stop Fri before replacing
+its session and mark/remove the transferred local credential. Keep the host identity.
+
+Add a distinct `GENE_FRI_TOKEN` to controller.env and fri.env. Fri's env also contains its
+Discord token and the configured guild/owner/workshop IDs. Create `/srv/gene/data/fri`
+owned by 10001. The compose `fri` profile is opt-in until setup is complete; start with
+`--profile fri up -d controller red fri`. Verify both bot heartbeats and a real subscription
+reply before retiring Gene's development controls. Never run two gateways for one token.
+
+The runtime image pins Fri's trusted implementation under `src/gene/`; it does not mount
+mutable feature cogs, host files, the Docker socket, or development credentials. Fri's chat
+has no executable tools. Gene receives only its functional service credential. Owner UI
+callbacks and the controller enforce authorization independently of model text.
+
+Sources: [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source),
+[self-hosted VMs](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms),
+[plan inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference).
 
 ### Discord requests: approve and deploy
 
@@ -195,20 +233,20 @@ binds that decision to a hash of the request and its source; changed requests an
 buttons fail closed. Existing queued requests without intake approval are held during
 migration. Intake approval never authorizes a live release.
 
-Gene sends the configured owner a DM with an untrusted-text preview and the full request
+Fri sends the configured owner a DM with an untrusted-text preview and the full request
 as a text attachment. Once a tested proposal is ready, it edits that same DM with the
 code link and complete SHA for release approval. Notifications use persisted message IDs,
 short delivery leases, and ten-minute retries when DMs are unavailable. The lab's
 **Requests** panel remains a fallback. Delivery never grants approval. Only owner clicks
-on Gene-authored review components are admitted from DMs; ordinary DM messages, commands,
+on Fri-authored review components are admitted from DMs; ordinary DM messages, commands,
 other users' clicks, forged references, and stale approvals remain rejected.
 
 An allowed request produces a `codex/request-<id>` branch. The wrapper checks changed paths,
 rejects symlinks and likely secrets, and runs tests/lint without credentials or network.
-Failed tests or lint are returned to Astra for up to two repairs in the same worktree.
+Failed tests or lint are returned to the selected model for up to two repairs in the same worktree.
 Every attempt records its usage. Scope or credential violations stop the job immediately;
 three unsuccessful coding attempts leave a failed request and never publish a branch.
-Inspect the GitHub diff from `gene status`, then approve its full 40-character SHA.
+Inspect the GitHub diff in Fri’s Requests panel, then approve its full 40-character SHA.
 An intervening deployment invalidates older proposals. Re-submit/rebuild those requests
 against the new release. Approving another SHA or approving as a member fails.
 
@@ -218,7 +256,7 @@ If that fails, it restores the preceding code and checks it again. Code rollback
 not undo state; ordinary feature changes must remain backward compatible. State restore
 is a deliberate operator action from the stopped Red backup if needed.
 
-`gene pause true` stops new work; an already-running job/release is allowed to finish.
+**Pause development** in Fri’s owner settings stops new work; an already-running job/release is allowed to finish.
 For an emergency, stop `gene-worker` / `gene-deployer` through systemd. The existing bot
 continues running. A deployment interrupted by a host crash remains `deploying`; it is
 not automatically retried. Inspect `release.env`, the heartbeat SHA, and the job record;
@@ -254,9 +292,12 @@ Delete transient history after extracting the approved specification:
 uv run --no-sync python scripts/import_history.py --delete-evidence
 ```
 
-Normal memory is explicit owner-approved facts plus operational request/release records.
-Ordinary chat is not collected. `gene memories` and `gene forget` expose the saved facts.
-`gene forgetme true` removes the caller's request text, links and approved facts from
+Shared memory consists of explicit owner-approved facts and operational request/release records.
+Fri retains six exchanges per person and conversation for up to seven days; public and private
+contexts are separate. No passive chat collection occurs. **Forget my chats** clears the
+caller’s conversation context and invalidates in-flight replies. Owner **Saved context**
+controls inspect and remove shared facts.
+`gene forgetme true` removes the caller's request text, chats, links and approved facts from
 the active database, and cancels pending proposals. It cannot recall inputs already
 sent to a running job or delete Discord/GitHub records. Raw failed-job logs/worktrees
 and backups are private operator records; remove them when resolving erasure requests.

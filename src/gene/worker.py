@@ -25,7 +25,9 @@ def run_sandbox(root: Path, name: str, image: str, command: list[str], *,
     args = ['docker', 'run', '--rm', '--name', name, '--init', '--cap-drop=ALL',
             '--security-opt=no-new-privileges', '--pids-limit=256', '--memory=2g', '--cpus=1.5',
             '--user', uid + ':' + uid, '--read-only', '--tmpfs', '/tmp:rw,nosuid,size=512m',
-            '-e', 'HOME=/tmp', '-e', 'PYTHONDONTWRITEBYTECODE=1', '-e', 'PYTHONPATH=/workspace/src:/workspace',
+            '-e', 'HOME=/tmp', '-e', 'XDG_CONFIG_HOME=/tmp/config',
+            '-e', 'PYTEST_DISABLE_PLUGIN_AUTOLOAD=1', '-e', 'PYTHONDONTWRITEBYTECODE=1',
+            '-e', 'PYTHONPATH=/workspace/src:/workspace',
             '--workdir', '/workspace', '--mount',
             f'type=bind,src={root},dst=/workspace' + ('' if auth else ',readonly')]
     if auth:

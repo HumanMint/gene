@@ -48,9 +48,10 @@ def validate_checkout(root: Path):
         if path.exists() and (not path.is_file() or path.stat().st_size > 1_000_000):
             raise ValueError(f'Unsupported or oversized feature file: {name}')
         if path.exists():
-            from .privacy import redact
+            from .privacy import redact, source_has_credentials
             text = path.read_text()
-            if redact(text) != text:
+            has_credentials = source_has_credentials(text) if path.suffix == '.py' else redact(text) != text
+            if has_credentials:
                 raise ValueError(f'Potential credentials found in candidate file: {name}')
     return paths
 

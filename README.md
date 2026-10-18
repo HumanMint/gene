@@ -52,17 +52,21 @@ reviewing the resulting diff.
 - A resumable, redacted `#bot-commands` importer that produces evidence for review.
 - Net meme voting with unique voters, self-vote exclusion, removal handling, and
   persistent highlight IDs.
-- A Red-compatible Lavalink node on the Mac mini, reachable only from the VPS over
-  Tailscale. A separate source plugin delegates public YouTube extraction to a pinned
-  `yt-dlp` resolver on loopback. It downloads a complete audio file into a bounded private
-  cache before playback. No browser cookies or personal YouTube login are used.
+- A Red-compatible Lavalink node on Hostinger. The Mac only downloads public YouTube
+  audio on demand through its home connection and hands it over through a private
+  Tailscale relay. It deletes temporary files after successful or interrupted transfers.
+- Complete files and playback stay on Hostinger. Its persistent audio cache keeps tracks
+  for seven days since last playback, evicts least recently used idle tracks at its byte
+  cap, protects active playback, and reserves free host space. Red's metadata cache is
+  unchanged. No personal cookies or YouTube login are used.
 
 Red is an upstream package, not a fork. The Discord interface lives in `cogs/gene/panel.py`
 and invokes Red's normal command pipeline for playback controls. Its queue screen reads
 Red's player state and supplies buttons in place of reaction controls. The external source lives in `audio-plugin/`
 and `src/gene/audio_resolver.py`; neither changes Red's installed code.
 
-Music availability depends on the Mac and source services. A successful search is
+Uncached tracks and new searches depend on the Mac and source services. Cached tracks
+can play by saved link while the Mac is offline. A successful search is
 not proof of voice playback; queue and sustained playback must be checked in the lab.
 History-derived settings are not applied until reviewed. Fri, general AI chat,
 Spotify integration, and infrastructure provisioning are later work.

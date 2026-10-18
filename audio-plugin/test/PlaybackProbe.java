@@ -23,6 +23,7 @@ public class PlaybackProbe {
       AudioTrack track = loaded.get(30, TimeUnit.SECONDS);
       System.out.println("LOADED " + track.getIdentifier());
       boolean realtime = args.length > 2 && args[2].equals("realtime");
+      boolean full = realtime || (args.length > 2 && args[2].equals("full"));
       manager.setFrameBufferDuration(1000);
       AudioPlayer player = manager.createPlayer();
       AtomicReference<FriendlyException> error = new AtomicReference<>();
@@ -36,7 +37,7 @@ public class PlaybackProbe {
       long deadline = started + TimeUnit.SECONDS.toNanos(realtime ? 300 : 90);
       long frames = 0, bytes = 0, nonzero = 0;
       long underruns = 0, gap = 0, maxGap = 0, tick = started;
-      long target = realtime ? Long.MAX_VALUE : 1500;
+      long target = full ? Long.MAX_VALUE : 1500;
       while (frames < target && System.nanoTime() < deadline) {
         if (realtime) {
           long wait = tick - System.nanoTime();
@@ -63,11 +64,11 @@ public class PlaybackProbe {
       if (realtime) {
         System.out.printf("REALTIME underruns=%d max_gap_ms=%d elapsed_ms=%d ended=%s%n",
             underruns, maxGap * 20, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), ended.get());
-        if (ended.get() != AudioTrackEndReason.FINISHED || frames * 20 < track.getDuration() - 1000)
-          throw new Exception("Track did not finish completely");
         if (underruns > 5) throw new Exception("Playback ran out of buffered audio");
       }
-      if (!realtime && track.getDuration() > 65000) {
+      if (full && (ended.get() != AudioTrackEndReason.FINISHED || frames * 20 < track.getDuration() - 1000))
+        throw new Exception("Track did not finish completely");
+      if (!full && track.getDuration() > 65000) {
         track.setPosition(60000);
         long seekDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
         boolean sought = false;

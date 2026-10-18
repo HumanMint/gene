@@ -57,62 +57,98 @@ Add `ps`, `up -d`, `logs --tail 60 red`, or `stop red` as needed. Logs can conta
 request details or source-service errors; inspect privately and never paste secrets.
 The controller listens only on host loopback port 8787 and its private Docker network.
 
-## Audio on the Mac
+## Audio on Hostinger; downloads through the Mac
 
-Java 21 is installed independently. Stage a candidate using
-`uv run --no-sync python scripts/install_audio.py --stage .audio/staged`.
-For authorized maintainer work, install with
-`uv run --no-sync python scripts/install_audio.py --release-sha <full-sha>`.
-The installer requires a clean checkout at that exact commit; this pins the release
-and does not request a second owner approval. The older `--approved-sha` spelling
-remains an alias. This local maintainer tool is unavailable to Discord jobs. It pins Red's
-`3.7.13+red.5` Lavalink jar by SHA-256 and builds a separate Gene source plugin against
-its libraries. Lavalink binds loopback port 2333; a separate TCP relay
-binds the Mac's Tailscale address and accepts only the configured VPS source IP.
-Lavalink additionally requires its generated password. No public interface is opened.
+Hostinger runs the pinned Red-compatible Lavalink `3.7.13+red.5` and the separate Gene
+source plugin. Red remains an upstream package; its commands, player, queue, and
+metadata cache are unchanged. Red's `audioset cache` manages metadata, not downloaded
+music files ([upstream documentation](https://docs.discord.red/en/stable/cog_guides/audio.html#owner-only-audioset-commands)).
+The downloaded-file cache below therefore belongs to the external audio service.
 
-The YouTube source calls a token-protected resolver on `127.0.0.1:2334`. It uses
-`yt-dlp[default]==2026.8.19`, accepts only YouTube searches/video/playlist links, and
-resolves streams only to HTTPS Googlevideo hosts. Search returns five results;
-playlists are limited to 100 entries. Ordinary public tracks are supported; live,
-private and login-required media are not. Generic HTTP/local sources remain disabled.
-No temporary stream URLs or cache paths are encoded into saved playlists. Before playback,
-the resolver downloads the whole audio file, then the adapter uses Lavaplayer's local
-decoder and seeking support. Red still owns the player, queue, permissions and controls.
-This removes YouTube fetch delays during a song; it does not remove Discord voice-network
-latency or packet loss. The first play can take a few seconds to prepare.
+A direct Hostinger test with `yt-dlp[default]==2026.8.19` and Node 24 tried complete
+public audio downloads for Rainbow Road and Far Away. Both required YouTube sign-in /
+bot verification. The configured source uses the home connection; it does not repeat
+these failed VPS attempts for every request or use personal cookies.
 
-The private `media/` cache is inside the installed audio release: 256 MiB total,
-64 MiB per track, and public tracks up to 30 minutes. Recently accessed files are retained
-for one hour; expired files are cleaned on the next request. Interrupted transfers count
-toward the budget and are never published as playable files. One bounded retry refreshes
-a failed transfer. Cached paths are accepted only inside this configured directory;
-generic local and HTTP loading remain disabled. Remove retired releases' media directories
-when their services have stopped to reclaim their caches.
+The private path is:
 
-LaunchAgents are `local.dan.gene.audio`, `local.dan.gene.audio.resolver`, and
-`local.dan.gene.audio.proxy`; files and
-logs live in ignored `.audio/`. Existing Cobalt ports, agents, and cookies are untouched.
-The Java audio LaunchAgent must use `ProcessType=Interactive`. On this Mac, the same
-native UDP sender emitted only 7.8 packets/sec under launchd's `Standard` scheduling,
-with gaps up to 170 ms; `Interactive` scheduling restored 50 packets/sec. A local
-decode check alone does not exercise this service scheduling problem. Keep the normal
-20 ms packet cadence and verify the running service, not just a foreground probe.
-The runtime sets Red's external-node settings directly without posting passwords in chat.
-YouTube may still fail due to source changes or IP checks. Do not claim playback works
-until it actually plays in a Discord voice channel. Mac offline means music is offline;
-the bot, controller, memory, and development queue remain independent.
-Released audio code and its locked Python environment live in `.audio/releases/<sha>`;
-editing the checkout does not change a running resolver. Previous LaunchAgent definitions
-are saved there as `*.previous.plist` for operator rollback. Restore them, boot out the
-new agents, and bootstrap the previous definitions if a release fails validation.
+1. Red on Hostinger asks its private Lavalink node to play a YouTube ID.
+2. Hostinger checks `/srv/gene/data/audio/media` for a complete cached file.
+3. On a miss, the Mac downloads audio without transcoding, encoding, or voice playback.
+4. The Mac transfers the complete file over Tailscale. Hostinger verifies the byte count
+   and SHA-256, then atomically publishes the file. Partial or mismatched transfers cannot play.
+5. The Mac deletes its temporary transfer directory after a completed or interrupted send.
+   Failed downloads are also removed; process-crash debris is removed when the relay restarts.
+6. Lavalink on Hostinger reads the local cached file and sends Discord voice packets.
 
-The native `audio-plugin/test/PlaybackProbe.java` exercises real decoding and seeking
-through the same adapter and Lavaplayer libraries. Do not treat `/loadtracks` or a
-search result as proof of playback. Native playback checks and human Discord listening
-complement the offline API/permission tests and Java compilation in CI.
-Pass `realtime` as the third probe argument to consume the complete track at normal speed
-and count buffer underruns; set `GENE_AUDIO_CACHE` to that release's `media/` directory.
+Only the download relay remains on the Mac. It runs at background priority and is idle
+between requests. There is no Mac Java audio process, continuous audio stream, or voice
+connection. Existing Cobalt agents, ports, and cookies remain independent.
+
+### Cache policy
+
+The persistent Hostinger cache survives audio and bot releases. A play refreshes the
+track's seven-day lifetime. Hourly cleanup and request-time cleanup remove expired idle
+tracks. At capacity, the least recently played unleased tracks are evicted first. Playback
+leases persist across resolver restarts and are released by the source plugin; orphaned
+leases expire after two hours. No unrelated files or Red metadata are managed here.
+
+`GENE_AUDIO_CACHE_BYTES` is set at installation to 10% of then-free space on the cache
+filesystem (approximately 6.5 GiB on the current VPS), not a preallocated reservation.
+`GENE_AUDIO_RESERVE_BYTES=2147483648` preserves at least 2 GiB of free space. Admissions
+include incomplete downloads and metadata; low space fails closed rather than filling
+the disk. Per-track limits remain 64 MiB and 30 minutes. Downloads are serialized and
+identical cache misses coalesce. Limits and the seven-day TTL are explicit in the private
+`/srv/gene/secrets/audio-resolver.env` file.
+
+Cached display metadata contains only the video ID, title, artist, duration, and canonical
+YouTube link. A cached link can play with the Mac offline. New searches still require the
+home connection; Red may also answer previously cached metadata lookups itself.
+
+### Install and verify
+
+Build `ops/Dockerfile.audio` targets `node` and `resolver` as `gene-audio:<full-sha>` and
+`gene-audio-resolver:<full-sha>`. Audio has its own maintainer-controlled Compose project:
+
+```sh
+docker compose --env-file /srv/gene/audio-release.env \
+  -f /srv/gene/source/ops/audio-compose.yml up -d
+```
+
+`GENE_AUDIO_SHA` pins that project independently of feature releases. Its node joins the
+existing private `gene_default` network as `gene-audio`; no host/public port is published.
+The resolver shares the node's network namespace and binds `127.0.0.1:2334`. Both containers
+share only the dedicated media volume (read-only for Java). The node's password and
+resolver token are separate; the Mac relay has another token.
+
+Stage the home relay using:
+
+```sh
+uv run --no-sync python scripts/install_download_relay.py --stage .audio/relay-stage
+```
+
+The ignored `.env.local` supplies `GENE_RELAY_TOKEN`, `GENE_RELAY_BIND` (Mac Tailscale IP),
+`GENE_RELAY_PEER` (VPS Tailscale IP), and optional `GENE_RELAY_PORT` (2335 by default).
+Install a clean committed release with `--release-sha <full-sha>`. Its immutable source
+and environment live in `.audio/relay-releases/<sha>`, served by
+`local.dan.gene.download-relay`. The relay binds only the configured Tailscale address,
+rejects other source IPs, requires its token, and disables forwarded-IP trust.
+`scripts/install_audio.py` now routes to this download-only installer.
+
+Before switching Red, test the candidate's complete download, cache reuse with the Mac
+unavailable, native decoding/seek, and sender timing. Stop the old Mac
+`local.dan.gene.audio`, `.audio.resolver`, and `.audio.proxy` agents only after Hostinger
+is healthy. Archive their plists outside `~/Library/LaunchAgents` so they cannot respawn
+at login. Delete only their `media/` caches after they stop. Keep their immutable binaries
+and archived plists for rollback; rollback can redownload missing songs.
+
+Back up the old runtime/audio configuration before changing `GENE_AUDIO_HOST` to
+`gene-audio`. Preserve the previous bot/controller image and source. A failed switch must
+restore both the runtime's node address and the old Mac agents. A failed future audio
+release restores its previous pinned audio image and relay definition. Never claim
+Discord voice playback is verified merely because a search or health endpoint succeeds.
+The native `audio-plugin/test/PlaybackProbe.java` and `UdpTimingProbe.java` are included
+in the audio image for decoding, seeking, and timed sender checks without a compiler.
 
 ## Releases and recovery
 

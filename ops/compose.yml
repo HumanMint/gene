@@ -1,7 +1,7 @@
 name: gene
 services:
   controller:
-    image: gene-runtime:bootstrap
+    image: ${GENE_RUNTIME_IMAGE:-gene-runtime:bootstrap}
     command: ["gene-controller"]
     env_file: /srv/gene/secrets/controller.env
     environment:
@@ -24,7 +24,7 @@ services:
       timeout: 5s
       retries: 3
   red:
-    image: gene-runtime:bootstrap
+    image: ${GENE_RUNTIME_IMAGE:-gene-runtime:bootstrap}
     command: ["python", "-m", "gene.runtime"]
     env_file: /srv/gene/secrets/runtime.env
     environment:

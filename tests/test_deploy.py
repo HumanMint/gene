@@ -33,3 +33,15 @@ def test_release_health_and_automatic_code_recovery(tmp_path, monkeypatch, candi
     assert (tmp_path / 'backups/job/controller.sqlite3').is_file()
     assert (tmp_path / 'backups/job/red.tar.gz').is_file()
     assert (red / 'settings.json').read_text() == '{"persisted": true}'
+
+
+def test_feature_activation_and_rollback_preserve_the_trusted_runtime_image(tmp_path):
+    config = tmp_path / 'release.env'
+    config.write_text('GENE_RELEASE_SHA=' + 'a' * 40 + '\nGENE_RUNTIME_IMAGE=gene-runtime:review-v1\n')
+    deployer = Deployer.__new__(Deployer)
+    deployer.root = tmp_path
+    deployer.compose = Mock()
+    deployer.activate('b' * 40)
+    assert 'GENE_RUNTIME_IMAGE=gene-runtime:review-v1\n' in config.read_text()
+    deployer.activate('a' * 40)
+    assert 'GENE_RUNTIME_IMAGE=gene-runtime:review-v1\n' in config.read_text()

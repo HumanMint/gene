@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
+from gene.reviews import request_reference
 from gene.store import Store
 
 gene_test_config = TemporaryDirectory(prefix='gene-test-config-')
@@ -32,8 +33,11 @@ def client(tmp_path):
 
 
 def request(store, user='member', source='message-1'):
-    return store.request('guild', user, source, 'https://discord.com/channels/1/2/3',
-                         'Add a useful feature for our server')
+    job = store.request('guild', user, source, 'https://discord.com/channels/1/2/3',
+                        'Add a useful feature for our server')
+    if job['state'] == 'awaiting_owner':
+        store.review_decision(job['id'], 'intake', request_reference(job), 'approve', 'owner')
+    return store.get(job['id'])
 
 
 def proposed(store, sha='b' * 40, source='message-1'):

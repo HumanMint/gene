@@ -22,6 +22,9 @@ and releases. Fri is a future companion, not a second deployment authority.
 - Discord-originated requests, fixes, and repairs still need owner approval tied
   to the complete commit SHA before deployment, including automated follow-up
   repairs. Discord input cannot grant maintainer authority or bypass release checks.
+- New Discord requests also wait for explicit owner approval of the stored request
+  before any coding starts. Send owner reviews by DM, with a workshop-panel fallback;
+  failed delivery or untrusted text never grants approval. Ordinary DMs stay disabled.
 - Automated feature jobs may change only `cogs/`, `tests/features/`, and
   `docs/features/`. Control-plane, dependency, and deployment changes require a
   normal maintainer change. Never weaken this boundary from a feature job.

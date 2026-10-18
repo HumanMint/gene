@@ -4,8 +4,9 @@ Gene is a private Discord assistant for a friend server: classic Red commands an
 music, meme highlights, and an owner-approved development loop for Discord requests.
 
 **Current mode: invisible, Discord Lab only.** Gene starts offline in Discord's
-presence list. Events from other servers and DMs are discarded before feature
-handlers run. Workshop slash commands are registered only in the configured lab.
+presence list. Events from other servers and ordinary DMs are discarded before feature
+handlers run. Only the configured owner's review buttons on Gene-authored DMs are
+admitted. Workshop slash commands are registered only in the configured lab.
 The original friend-server configuration stays in an ignored local file.
 
 To try the current installation, use **Discord Lab → #tests_n_stuff**:
@@ -26,10 +27,20 @@ and choose **Music → Add a track**. Meme votes in
 `#tests_n_stuff` can highlight messages in `#tests_n_stuff-2` at a net score of five.
 Gene stays invisible while responding to commands.
 
+**Request a feature or fix** submits a request for owner review. Coding waits until
+the owner chooses **Allow coding** in Gene's DM or the lab's **Requests** panel.
+When a tested proposal is ready, Gene updates that request's DM with the code link
+and complete commit SHA for a separate release approval. Review buttons survive
+restarts and reject stale decisions. If DMs are blocked, the request stays gated and
+can be reviewed in the lab panel. These checks limit what a malicious request can
+trigger; they do not make AI-generated code immune to prompt injection or replace
+reviewing the resulting diff.
+
 ## What is implemented
 
 - Red 3.5.24 runtime with custom `gene` and `numbers` cogs.
-- Requests, status, exact-commit approval, rejection, pause, rollback, and usage.
+- Owner intake approval, DM reviews, status, exact-commit release approval, rejection,
+  pause, rollback, and usage.
 - SQLite persistence, serialized jobs, distinct runtime/worker/deployer credentials.
 - An isolated Codex CLI coding worker using a dedicated ChatGPT subscription login.
 - Independent tests in a container with no credentials or network access.
@@ -62,7 +73,8 @@ Spotify integration, and infrastructure provisioning are later work.
 flowchart LR
   U[Discord Lab] --> R[Gene / Red runtime]
   R --> C[Controller + SQLite]
-  C --> W[Trusted worker wrapper]
+  C --> I[Owner allows coding]
+  I --> W[Trusted worker wrapper]
   W --> S[Isolated Codex job]
   S --> T[Independent tests]
   T --> G[Private GitHub branch]

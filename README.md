@@ -1,7 +1,7 @@
 # Gene
 
 Gene is a private Discord assistant for a friend server: classic Red commands and
-music, meme highlights, and an owner-approved feature development loop.
+music, meme highlights, and an owner-approved development loop for Discord requests.
 
 **Current mode: invisible, Discord Lab only.** Gene starts offline in Discord's
 presence list. Events from other servers and DMs are discarded before feature
@@ -35,7 +35,7 @@ Gene stays invisible while responding to commands.
 - Independent tests in a container with no credentials or network access.
 - Automatic repairs from failed test/lint feedback, with usage recorded per attempt.
 - Feature branches in this private repository; no automatic merge to `main`.
-- Immutable, owner-approved cog releases, pre-release backups, health checks, and
+- Immutable cog releases, exact-commit approval for Discord requests, backups, health checks, and
   automatic code rollback when a release fails to reconnect.
 - Explicit, inspectable server facts. No passive chat memory.
 - A resumable, redacted `#bot-commands` importer that produces evidence for review.
@@ -77,6 +77,12 @@ publish its own release or change the trusted controller/deployer. Control-plane
 and dependency changes go through a maintainer update. Candidate containers do not
 receive GitHub, Discord, controller, host SSH, or deployment credentials. The coding
 container receives its dedicated Codex authentication cache; tests receive none.
+
+Changes and fixes the owner requests directly in this Codex chat can be tested,
+committed, pushed, and deployed without another approval. They remain recorded by
+exact commit with backups, health checks, and rollback protection. Discord-originated
+requests, fixes, and repairs still require owner approval of the full commit SHA.
+This maintainer policy does not add an approval bypass to Discord or the controller.
 
 ## Local development
 

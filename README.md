@@ -8,6 +8,19 @@ presence list. Events from other servers and DMs are discarded before feature
 handlers run. Workshop slash commands are registered only in the configured lab.
 The original friend-server configuration stays in an ignored local file.
 
+To try the current installation, use **Discord Lab → #tests_n_stuff**:
+
+```text
+!gene status
+!gene model
+!help gene
+```
+
+Slash commands under `/gene` work there too. To try music, join a lab voice channel
+and use `!play <song name or URL>`, then `!queue` and `!stop`. Meme votes in
+`#tests_n_stuff` can highlight messages in `#tests_n_stuff-2` at a net score of five.
+Gene stays invisible while responding to commands.
+
 ## What is implemented
 
 - Red 3.5.24 runtime with custom `gene` and `numbers` cogs.
@@ -15,6 +28,7 @@ The original friend-server configuration stays in an ignored local file.
 - SQLite persistence, serialized jobs, distinct runtime/worker/deployer credentials.
 - An isolated Codex CLI coding worker using a dedicated ChatGPT subscription login.
 - Independent tests in a container with no credentials or network access.
+- Automatic repairs from failed test/lint feedback, with usage recorded per attempt.
 - Feature branches in this private repository; no automatic merge to `main`.
 - Immutable, owner-approved cog releases, pre-release backups, health checks, and
   automatic code rollback when a release fails to reconnect.

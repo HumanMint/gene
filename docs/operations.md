@@ -146,6 +146,16 @@ Keep at most 7 days of backups and failed-job diagnostics once the lab has stabi
 
 ## Lab acceptance checklist
 
+Bootstrap verification on 2026-10-18: GitHub CLI authentication, private repository,
+Hostinger services, invisible Discord connection, and lab-only slash registration
+are verified. The core suite has 70 passing checks. A real GPT-6 Astra request
+(`152a3c1aea3f`) repaired its failing test, passed 85 candidate checks and lint in the
+isolated container, and published [the first draft proposal](https://github.com/HumanMint/gene/pull/1).
+GitHub Actions also passed. The proposal is awaiting owner approval; the bootstrap
+release remains active. Rollback paths have isolated test coverage, but the first
+owner-approved live feature release and sustained Discord voice playback remain
+human acceptance steps. Lavalink connectivity and YouTube search are verified.
+
 - Invisible initial connection; no responses or command registration in other servers.
 - Requests, member rejection for owner controls, stale SHA rejection, pause/resume.
 - One real Codex job publishes a tested private branch and records actual usage.

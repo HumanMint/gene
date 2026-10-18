@@ -115,6 +115,13 @@ class Gene(commands.Cog):
             text += ', '.join(f'{count} {name}' for name, count in state['jobs'].items()) or 'No requests yet.'
         await self.say(ctx, text)
 
+    @gene.command(name='version')
+    async def version(self, ctx):
+        """Show the running release and selected worker model."""
+        state = await self.api('GET', '/status')
+        await self.say(ctx, f"Release: `{state['active_sha'] or 'not initialized'}`\n"
+                            f"Worker: `{state['model']}`")
+
     @gene.command(name='approve')
     @commands.is_owner()
     async def approve(self, ctx, request_id: str, commit_sha: str):

@@ -56,6 +56,16 @@ class UsageReport(Lease):
     counters: dict
 
 
+class ModelSelection(Actor):
+    model_id: str = Field(min_length=1, max_length=100)
+    effort: str = Field(default='', max_length=20)
+
+
+class ModelCatalog(BaseModel):
+    models: list[dict] = Field(default_factory=list)
+    error: str = Field(default='', max_length=500)
+
+
 def create_app(settings: Settings | None = None):
     settings = settings or Settings.from_env()
     store = Store(settings.db)
@@ -177,6 +187,32 @@ def create_app(settings: Settings | None = None):
     @app.post('/worker/claim', dependencies=[auth('worker')])
     def claim():
         return store.claim()
+
+    @app.post('/models', dependencies=[auth('runtime')])
+    def model_list(body: Actor):
+        actor(body, owner=True)
+        return store.model_state()
+
+    @app.post('/models/refresh', dependencies=[auth('runtime')])
+    def model_refresh(body: Actor):
+        actor(body, owner=True)
+        store.request_model_refresh(body.user_id)
+        return store.model_state()
+
+    @app.post('/models/select', dependencies=[auth('runtime')])
+    def model_select(body: ModelSelection):
+        actor(body, owner=True)
+        store.select_model(body.model_id, body.effort, body.user_id)
+        return store.model_state()
+
+    @app.post('/worker/models/state', dependencies=[auth('worker')])
+    def worker_model_state():
+        return store.model_state()
+
+    @app.post('/worker/models/update', dependencies=[auth('worker')])
+    def worker_model_update(body: ModelCatalog):
+        store.update_models(body.models, body.error)
+        return store.model_state()
 
     @app.post('/worker/{job_id}/heartbeat', dependencies=[auth('worker')])
     def heartbeat(job_id: str, body: Lease):

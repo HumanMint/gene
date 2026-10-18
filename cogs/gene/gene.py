@@ -96,6 +96,8 @@ class Gene(commands.Cog):
         if request_id:
             job = await self.api('GET', '/requests/' + request_id)
             text = f"`{job['id']}` · **{job['state']}**\n{job['body']}"
+            if job.get('model'):
+                text += f"\nModel: `{job['model']}` · effort: `{job.get('effort')}`"
             if job['proposal']:
                 proposal = job['proposal']
                 text += f"\n{proposal.get('summary', '')}\nCommit: `{proposal['sha']}`"
@@ -107,6 +109,7 @@ class Gene(commands.Cog):
             state = await self.api('GET', '/status')
             text = ('Development paused.' if state['paused'] else 'Development active.')
             text += f"\nRelease: `{state['active_sha'] or 'not initialized'}`\n"
+            text += f"Worker: `{state['model']}` · effort: `{state['effort']}`\n"
             text += ', '.join(f'{count} {name}' for name, count in state['jobs'].items()) or 'No requests yet.'
         await self.say(ctx, text)
 
@@ -117,6 +120,37 @@ class Gene(commands.Cog):
         await self.api('POST', f'/requests/{request_id}/approve',
                        {**self.actor(ctx), 'sha': commit_sha})
         await self.say(ctx, f'Approved `{request_id}`. Deployment will check health and roll back on failure.')
+
+    @gene.command(name='models')
+    @commands.is_owner()
+    async def models(self, ctx, refresh: bool = False):
+        """List available worker models. Pass true to request a fresh account catalog."""
+        path = '/models/refresh' if refresh else '/models'
+        state = await self.api('POST', path, self.actor(ctx))
+        text = f"Selected: `{state['selected']}` ({state['effort']})."
+        if state['refresh_pending']:
+            text += '\nCatalog refresh queued; the worker will refresh between jobs, even while paused.'
+        if state['error']:
+            text += '\nLast refresh: ' + state['error']
+        if state['refreshed_at']:
+            text += f"\nCatalog last refreshed <t:{int(state['refreshed_at'])}:R>."
+        for model in state['models']:
+            text += f"\n`{model['id']}` · {model['name']} · efforts: {', '.join(model['efforts'])}"
+        if not state['selected_available']:
+            text += '\nThe selected model is not in the current catalog. Coding waits; there is no silent fallback.'
+        await self.say(ctx, text)
+
+    @gene.command(name='model')
+    @commands.is_owner()
+    async def model(self, ctx, model_id: str = '', effort: str = ''):
+        """Show or select the worker model and optional supported reasoning effort."""
+        if model_id:
+            state = await self.api('POST', '/models/select',
+                                  {**self.actor(ctx), 'model_id': model_id, 'effort': effort})
+        else:
+            state = await self.api('POST', '/models', self.actor(ctx))
+        await self.say(ctx, f"Worker model: `{state['selected']}` · `{state['effort']}`. "
+                           'Changes apply to new jobs; running jobs keep their recorded model.')
 
     @gene.command(name='reject')
     @commands.is_owner()

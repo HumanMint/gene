@@ -28,12 +28,21 @@ class Store:
                 INSERT OR IGNORE INTO settings VALUES ('paused', 'true');
                 INSERT OR IGNORE INTO settings VALUES ('active_sha', '');
                 INSERT OR IGNORE INTO settings VALUES ('previous_sha', '');
+                INSERT OR IGNORE INTO settings VALUES ('code_model', 'gpt-6-astra');
+                INSERT OR IGNORE INTO settings VALUES ('code_effort', '');
+                INSERT OR IGNORE INTO settings VALUES ('models_requested_at', '1');
+                INSERT OR IGNORE INTO settings VALUES ('models_refreshed_at', '0');
+                INSERT OR IGNORE INTO settings VALUES ('models_error', '');
+                CREATE TABLE IF NOT EXISTS models (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, efforts TEXT NOT NULL,
+                    default_effort TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
                     source_id TEXT NOT NULL UNIQUE, source_url TEXT NOT NULL, body TEXT NOT NULL,
                     state TEXT NOT NULL DEFAULT 'queued', created REAL NOT NULL, updated REAL NOT NULL,
                     lease TEXT, heartbeat REAL, proposal TEXT, result TEXT, approved_by TEXT,
-                    approved_sha TEXT, kind TEXT NOT NULL DEFAULT 'feature'
+                    approved_sha TEXT, kind TEXT NOT NULL DEFAULT 'feature', model TEXT, effort TEXT
                 );
                 CREATE TABLE IF NOT EXISTS usage (
                     attempt_id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id),
@@ -54,6 +63,10 @@ class Store:
                     state TEXT NOT NULL, at REAL NOT NULL
                 );
             ''')
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
+            for name in ('model', 'effort'):
+                if name not in columns:
+                    db.execute(f'ALTER TABLE jobs ADD COLUMN {name} TEXT')
         path.chmod(0o600)
 
     @contextmanager
@@ -90,6 +103,8 @@ class Store:
                 'paused': self._setting(db, 'paused') == 'true',
                 'active_sha': self._setting(db, 'active_sha'),
                 'previous_sha': self._setting(db, 'previous_sha'),
+                'model': self._setting(db, 'code_model'),
+                'effort': self._setting(db, 'code_effort') or 'model default',
                 'jobs': {r['state']: r['n'] for r in db.execute(
                     'SELECT state, count(*) AS n FROM jobs GROUP BY state')},
             }
@@ -156,12 +171,17 @@ class Store:
                 return None
             if not self._setting(db, 'active_sha'):
                 return None
+            model = self._setting(db, 'code_model')
+            catalog = db.execute('SELECT * FROM models WHERE id=?', (model,)).fetchone()
+            if catalog is None:
+                return None
+            effort = self._setting(db, 'code_effort') or catalog['default_effort']
             row = db.execute('SELECT * FROM jobs WHERE state="queued" ORDER BY created LIMIT 1').fetchone()
             if row is None:
                 return None
             lease = uuid.uuid4().hex
-            db.execute('UPDATE jobs SET state="building",lease=?,heartbeat=?,updated=? WHERE id=?',
-                       (lease, time.time(), time.time(), row['id']))
+            db.execute('UPDATE jobs SET state="building",lease=?,heartbeat=?,updated=?,model=?,effort=? WHERE id=?',
+                       (lease, time.time(), time.time(), model, effort, row['id']))
             self._audit(db, 'worker', 'claim', row['id'])
             job = self._job(db.execute('SELECT * FROM jobs WHERE id=?', (row['id'],)).fetchone())
             job['base_sha'] = self._setting(db, 'active_sha')
@@ -338,3 +358,51 @@ class Store:
         with self.connection() as db, sqlite3.connect(destination) as backup:
             db.backup(backup)
         destination.chmod(0o600)
+
+    def model_state(self):
+        with self.connection() as db:
+            models = [{**dict(r), 'efforts': json.loads(r['efforts'])} for r in db.execute('SELECT * FROM models')]
+            selected = self._setting(db, 'code_model')
+            return {'selected': selected, 'effort': self._setting(db, 'code_effort') or 'model default',
+                    'models': models, 'selected_available': any(m['id'] == selected for m in models),
+                    'refreshed_at': float(self._setting(db, 'models_refreshed_at')),
+                    'refresh_pending': float(self._setting(db, 'models_requested_at')) >
+                                       float(self._setting(db, 'models_refreshed_at')),
+                    'error': self._setting(db, 'models_error')}
+
+    def request_model_refresh(self, actor):
+        with self.connection() as db:
+            db.execute('UPDATE settings SET value=? WHERE key="models_requested_at"', (str(time.time()),))
+            self._audit(db, actor, 'models_refresh_requested')
+
+    def update_models(self, models, error=''):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if error:
+                db.execute('UPDATE settings SET value=? WHERE key="models_error"', (clean(error, 500),))
+                return
+            if not models:
+                raise ValueError('The model catalog is empty; keeping the previous list')
+            for model in models:
+                if not re.fullmatch(r'[A-Za-z0-9_.:/-]{1,100}', model.get('id', '')):
+                    raise ValueError('Invalid model ID in catalog')
+            db.execute('DELETE FROM models')
+            for model in models:
+                db.execute('INSERT INTO models VALUES (?,?,?,?)',
+                           (model['id'], clean(model['name'], 100), json.dumps(model['efforts']),
+                            model['default_effort']))
+            db.execute('UPDATE settings SET value=? WHERE key="models_refreshed_at"', (str(time.time()),))
+            db.execute('UPDATE settings SET value="" WHERE key="models_error"')
+            self._audit(db, 'worker', 'models_refreshed', detail=f'{len(models)} available models')
+
+    def select_model(self, model_id, effort, actor):
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            model = db.execute('SELECT * FROM models WHERE id=?', (model_id,)).fetchone()
+            if not model:
+                raise Conflict('Model is not in the available catalog. Refresh the list first')
+            if effort and effort not in json.loads(model['efforts']):
+                raise ValueError('That reasoning effort is not supported by this model')
+            db.execute('UPDATE settings SET value=? WHERE key="code_model"', (model_id,))
+            db.execute('UPDATE settings SET value=? WHERE key="code_effort"', (effort,))
+            self._audit(db, actor, 'model_selected', model_id, effort or 'model default')

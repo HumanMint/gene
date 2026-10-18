@@ -72,6 +72,9 @@ In the workshop, use `/gene request` or the configured prefix, for example:
 !gene status <request-id>
 !gene approve <request-id> <full-commit-sha>
 !gene usage
+!gene model
+!gene models true
+!gene model gpt-6-astra high
 !gene remember The lounge is the default music channel
 !gene memories
 !gene forget <memory-id>
@@ -83,7 +86,14 @@ In the workshop, use `/gene request` or the configured prefix, for example:
 `gene forgetme true` erases the caller's active request/context records and cancels
 pending proposals. Backups and already-produced code are separate records; see the runbook.
 
+The worker starts with **GPT-6 Astra** (`gpt-6-astra`) and its catalog default reasoning
+effort. `gene models true` refreshes the account's Codex catalog between jobs;
+`gene models` displays the models, supported efforts, and refresh time. `gene model`
+shows or changes the selection. Each job snapshots its model and effort, and usage
+is grouped by that model. New models never silently replace the chosen one; if the
+selection disappears, coding waits for an owner decision. The catalog is discovery,
+not a guarantee every inference request will be accepted by the provider.
+
 [Operations](docs/operations.md) covers startup, authentication, release recovery,
 history import, privacy, and lab validation. [Roadmap](docs/roadmap.md) describes the
 next iterations and the future Gene/Fri split.
-

@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 
 from .client import ControllerClient
+from .models import discover_models
 from .policy import git, validate_checkout
 from .privacy import clean
 from .usage import parse_usage
@@ -58,6 +59,7 @@ class Worker:
             raise ValueError('This private worker is restricted to HumanMint/gene')
         self.auth = Path(os.getenv('GENE_CODEX_HOME', '/srv/gene/codex'))
         self.image = os.getenv('GENE_WORKER_IMAGE', 'gene-worker:bootstrap')
+        self.last_catalog_attempt = 0.0
 
     def process(self, job):
         job_id, lease = job['id'], job['lease']
@@ -80,11 +82,13 @@ class Worker:
                 for filename in files:
                     (Path(parent) / filename).chmod(0o644)
         events = directory / 'events.jsonl'
-        model = os.getenv('GENE_CODEX_MODEL', '')
+        model = job['model']
         command = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--ephemeral',
                    '--dangerously-bypass-approvals-and-sandbox', '--json', '--color', 'never', '-']
         if model:
             command[-1:-1] = ['--model', model]
+        if job.get('effort'):
+            command[-1:-1] = ['-c', 'model_reasoning_effort=' + json.dumps(job['effort'])]
         prompt = (
             'You maintain the private Gene Discord project. Read AGENTS.md. Implement the request '
             'with meaningful tests. Only change cogs/, tests/features/, and docs/features/. Do not '
@@ -143,6 +147,25 @@ class Worker:
     def tick(self):
         if not (self.auth / 'auth.json').is_file():
             return False
+        state = self.api.post('/worker/models/state')
+        if state['refresh_pending'] and time.monotonic() - self.last_catalog_attempt > 60:
+            self.last_catalog_attempt = time.monotonic()
+            try:
+                # v0.160.1 persists a derived catalog here. Invalidate only this cache,
+                # not auth.json, so an explicit refresh reaches the provider's current list.
+                (self.auth / 'models_cache.json').unlink(missing_ok=True)
+                # A fresh process asks Codex's account-aware catalog. No inference turn is started.
+                command = ['docker', 'run', '--rm', '--name', 'gene-model-catalog', '-i',
+                           '--user', '10001:10001', '--cap-drop=ALL', '--security-opt=no-new-privileges',
+                           '--read-only', '--tmpfs', '/tmp', '-e', 'CODEX_HOME=/codex',
+                           '--mount', f'type=bind,src={self.auth},dst=/codex',
+                           self.image, 'codex', 'app-server', '--stdio']
+                models = discover_models(command)
+                self.api.post('/worker/models/update', {'models': models})
+            except Exception as exc:
+                self.api.post('/worker/models/update', {'error': type(exc).__name__ + ': catalog refresh failed'})
+            finally:
+                subprocess.run(['docker', 'rm', '-f', 'gene-model-catalog'], capture_output=True)
         job = self.api.post('/worker/claim')
         if not job:
             return False

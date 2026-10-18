@@ -74,6 +74,22 @@ the bot, controller, memory, and development queue remain independent.
 
 ## Releases and recovery
 
+### Worker model
+
+The initial model is `gpt-6-astra`. Owner commands `gene model`, `gene models`,
+`gene models true`, and `gene model <model-id> [effort]` show the selection, list the
+account catalog, request a refresh, and select an available model/effort. Refreshes
+use the Codex app-server `model/list` interface without creating an inference turn.
+They run between jobs and remain available while development is paused. A failed
+refresh keeps the old catalog and displays the error. It never silently substitutes
+another model. The selected ID and effort are fixed when each job starts and shown
+in `gene status <id>`; changing the selection affects subsequent jobs.
+
+The CLI is pinned; a protocol change may require a deliberate CLI/worker-image update.
+Catalog discovery does not grant model access or bypass account rate limits.
+
+### Approve and deploy
+
 Each request produces a `codex/request-<id>` branch. The wrapper checks changed paths,
 rejects symlinks and likely secrets, and runs tests/lint without credentials or network.
 Inspect the GitHub diff from `gene status`, then approve its full 40-character SHA.
@@ -142,4 +158,3 @@ Keep at most 7 days of backups and failed-job diagnostics once the lab has stabi
 - [Red-compatible Lavalink](https://github.com/Cog-Creators/Lavalink-Jars/releases/tag/3.7.13%2Bred.5)
 - [Codex trusted private automation](https://learn.chatgpt.com/docs/auth/ci-cd-auth)
 - [Codex noninteractive output and usage](https://learn.chatgpt.com/docs/non-interactive-mode)
-

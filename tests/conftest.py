@@ -12,6 +12,8 @@ from gene.store import Store
 def store(tmp_path):
     result = Store(tmp_path / 'gene.sqlite3')
     result.bootstrap('a' * 40)
+    result.update_models([{'id': 'gpt-6-astra', 'name': 'GPT-6 Astra',
+                           'efforts': ['medium', 'high'], 'default_effort': 'medium'}])
     result.set_paused(False, 'owner')
     return result
 
@@ -36,4 +38,3 @@ def proposed(store, sha='b' * 40, source='message-1'):
         'sha': sha, 'base_sha': job['base_sha'], 'branch': 'codex/test',
         'tests_passed': True, 'summary': 'A tested change'})
     return store.get(job['id'])
-

@@ -92,6 +92,9 @@ Catalog discovery does not grant model access or bypass account rate limits.
 
 Each request produces a `codex/request-<id>` branch. The wrapper checks changed paths,
 rejects symlinks and likely secrets, and runs tests/lint without credentials or network.
+Failed tests or lint are returned to Astra for up to two repairs in the same worktree.
+Every attempt records its usage. Scope or credential violations stop the job immediately;
+three unsuccessful coding attempts leave a failed request and never publish a branch.
 Inspect the GitHub diff from `gene status`, then approve its full 40-character SHA.
 An intervening deployment invalidates older proposals. Re-submit/rebuild those requests
 against the new release. Approving another SHA or approving as a member fails.

@@ -74,8 +74,19 @@ The YouTube source calls a token-protected resolver on `127.0.0.1:2334`. It uses
 resolves streams only to HTTPS Googlevideo hosts. Search returns five results;
 playlists are limited to 100 entries. Ordinary public tracks are supported; live,
 private and login-required media are not. Generic HTTP/local sources remain disabled.
-No temporary stream URLs are encoded into saved playlists. Each playback resolves a
-fresh URL, then uses Lavaplayer's normal decoder and seeking support.
+No temporary stream URLs or cache paths are encoded into saved playlists. Before playback,
+the resolver downloads the whole audio file, then the adapter uses Lavaplayer's local
+decoder and seeking support. Red still owns the player, queue, permissions and controls.
+This removes YouTube fetch delays during a song; it does not remove Discord voice-network
+latency or packet loss. The first play can take a few seconds to prepare.
+
+The private `media/` cache is inside the installed audio release: 256 MiB total,
+64 MiB per track, and public tracks up to 30 minutes. Recently accessed files are retained
+for one hour; expired files are cleaned on the next request. Interrupted transfers count
+toward the budget and are never published as playable files. One bounded retry refreshes
+a failed transfer. Cached paths are accepted only inside this configured directory;
+generic local and HTTP loading remain disabled. Remove retired releases' media directories
+when their services have stopped to reclaim their caches.
 
 LaunchAgents are `local.dan.gene.audio`, `local.dan.gene.audio.resolver`, and
 `local.dan.gene.audio.proxy`; files and
@@ -93,6 +104,8 @@ The native `audio-plugin/test/PlaybackProbe.java` exercises real decoding and se
 through the same adapter and Lavaplayer libraries. Do not treat `/loadtracks` or a
 search result as proof of playback. Native playback checks and human Discord listening
 complement the offline API/permission tests and Java compilation in CI.
+Pass `realtime` as the third probe argument to consume the complete track at normal speed
+and count buffer underruns; set `GENE_AUDIO_CACHE` to that release's `media/` directory.
 
 ## Releases and recovery
 

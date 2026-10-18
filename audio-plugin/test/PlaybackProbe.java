@@ -11,7 +11,7 @@ public class PlaybackProbe {
   public static void main(String[] args) throws Exception {
     DefaultAudioPlayerManager manager = new DefaultAudioPlayerManager();
     manager.getConfiguration().setOutputFormat(StandardAudioDataFormats.DISCORD_PCM_S16_LE);
-    manager.registerSourceManager(new gene.audio.GeneYoutubeSource(args[1], System.getenv("GENE_RESOLVER_TOKEN")));
+    manager.registerSourceManager(new gene.audio.GeneYoutubeSource(args[1], System.getenv("GENE_RESOLVER_TOKEN"), System.getenv("GENE_AUDIO_CACHE")));
     CompletableFuture<AudioTrack> loaded = new CompletableFuture<>();
     manager.loadItem(args[0], new AudioLoadResultHandler() {
       public void trackLoaded(AudioTrack track) { loaded.complete(track); }
@@ -22,24 +22,52 @@ public class PlaybackProbe {
     try {
       AudioTrack track = loaded.get(30, TimeUnit.SECONDS);
       System.out.println("LOADED " + track.getIdentifier());
+      boolean realtime = args.length > 2 && args[2].equals("realtime");
+      manager.setFrameBufferDuration(1000);
       AudioPlayer player = manager.createPlayer();
       AtomicReference<FriendlyException> error = new AtomicReference<>();
+      AtomicReference<AudioTrackEndReason> ended = new AtomicReference<>();
       player.addListener(new AudioEventAdapter() {
         @Override public void onTrackException(AudioPlayer p, AudioTrack t, FriendlyException e) { error.set(e); }
+        @Override public void onTrackEnd(AudioPlayer p, AudioTrack t, AudioTrackEndReason reason) { ended.set(reason); }
       });
       player.startTrack(track, false);
-      long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90);
+      long started = System.nanoTime();
+      long deadline = started + TimeUnit.SECONDS.toNanos(realtime ? 300 : 90);
       long frames = 0, bytes = 0, nonzero = 0;
-      while (frames < 1500 && System.nanoTime() < deadline) {
+      long underruns = 0, gap = 0, maxGap = 0, tick = started;
+      long target = realtime ? Long.MAX_VALUE : 1500;
+      while (frames < target && System.nanoTime() < deadline) {
+        if (realtime) {
+          long wait = tick - System.nanoTime();
+          if (wait > 0) TimeUnit.NANOSECONDS.sleep(wait);
+          tick += TimeUnit.MILLISECONDS.toNanos(20);
+        }
         if (error.get() != null) throw error.get();
         AudioFrame frame = player.provide();
-        if (frame == null) { Thread.sleep(10); continue; }
+        if (frame == null) {
+          if (ended.get() != null) break;
+          if (frames > 0) { underruns++; gap++; maxGap = Math.max(maxGap, gap); }
+          if (!realtime) Thread.sleep(10);
+          continue;
+        }
         if (frame.isTerminator()) break;
+        if (frames == 0) System.out.println("STARTUP_MS " + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started));
+        gap = 0;
         byte[] data = frame.getData();
         frames++; bytes += data.length;
         for (byte b : data) if (b != 0) nonzero++;
+        if (realtime && frames % 1500 == 0)
+          System.out.printf("PROGRESS seconds=%d underruns=%d max_gap_ms=%d%n", frames / 50, underruns, maxGap * 20);
       }
-      if (track.getDuration() > 65000) {
+      if (realtime) {
+        System.out.printf("REALTIME underruns=%d max_gap_ms=%d elapsed_ms=%d ended=%s%n",
+            underruns, maxGap * 20, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started), ended.get());
+        if (ended.get() != AudioTrackEndReason.FINISHED || frames * 20 < track.getDuration() - 1000)
+          throw new Exception("Track did not finish completely");
+        if (underruns > 5) throw new Exception("Playback ran out of buffered audio");
+      }
+      if (!realtime && track.getDuration() > 65000) {
         track.setPosition(60000);
         long seekDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
         boolean sought = false;

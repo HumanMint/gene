@@ -17,7 +17,10 @@ To try the current installation, use **Discord Lab → #tests_n_stuff**:
 `/gene menu` opens the same panel. Buttons open private music controls, request
 forms, request progress and owner settings. Model and reasoning choices use dropdowns;
 release approval shows and submits the exact commit under review. The home panel's
-buttons survive restarts; personal menus expire after ten minutes and can be reopened.
+buttons survive restarts. Each member gets one private panel: navigation and command
+results edit it in place, reopening removes its predecessor, and **Close** dismisses it.
+Private panels delete themselves after ten minutes of inactivity. Older panels from
+before this change or a restart may need a manual dismissal if their tokens expired.
 Existing commands remain available. To try music, join a lab voice channel
 and choose **Music → Add a track**. Meme votes in
 `#tests_n_stuff` can highlight messages in `#tests_n_stuff-2` at a net score of five.
@@ -40,10 +43,12 @@ Gene stays invisible while responding to commands.
   persistent highlight IDs.
 - A Red-compatible Lavalink node on the Mac mini, reachable only from the VPS over
   Tailscale. A separate source plugin delegates public YouTube extraction to a pinned
-  `yt-dlp` resolver on loopback. No browser cookies or personal YouTube login are used.
+  `yt-dlp` resolver on loopback. It downloads a complete audio file into a bounded private
+  cache before playback. No browser cookies or personal YouTube login are used.
 
 Red is an upstream package, not a fork. The Discord interface lives in `cogs/gene/panel.py`
-and invokes Red's normal command pipeline. The external source lives in `audio-plugin/`
+and invokes Red's normal command pipeline for playback controls. Its queue screen reads
+Red's player state and supplies buttons in place of reaction controls. The external source lives in `audio-plugin/`
 and `src/gene/audio_resolver.py`; neither changes Red's installed code.
 
 Music availability depends on the Mac and source services. A successful search is

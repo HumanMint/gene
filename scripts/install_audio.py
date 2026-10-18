@@ -54,7 +54,7 @@ def prepare(folder, env):
     configuration['lavalink']['server']['sources'].update(youtube=False, local=False, http=False)
     configuration['lavalink']['plugins'] = []
     configuration['plugins']['youtube']['enabled'] = False
-    configuration['plugins']['geneYoutube'] = {'url': 'http://127.0.0.1:2334', 'token': token}
+    configuration['plugins']['geneYoutube'] = {'url': 'http://127.0.0.1:2334', 'token': token, 'cache': str(folder / 'media')}
     private_write(folder / 'application.yml', yaml.safe_dump(configuration))
     shutil.copyfile(ROOT / 'src/gene/audio_resolver.py', folder / 'audio_resolver.py')
     shutil.copyfile(ROOT / 'scripts/run_audio_resolver.py', folder / 'run_audio_resolver.py')

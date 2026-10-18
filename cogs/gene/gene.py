@@ -38,7 +38,9 @@ class Gene(commands.Cog):
     @tasks.loop(seconds=10)
     async def health(self):
         if self.bot.is_ready():
-            state = {'at': time.time(), 'guild_connected': self.bot.get_guild(self.guild_id) is not None,
+            guild = self.bot.get_guild(self.guild_id)
+            state = {'at': time.time(), 'guild_connected': guild is not None and not guild.unavailable,
+                     'guild_id': self.guild_id, 'presence': str(self.bot._connection._status),
                      'sha': os.getenv('GENE_RELEASE_SHA', 'development')}
             self.health_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.health_path.with_suffix('.tmp')

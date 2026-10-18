@@ -34,10 +34,11 @@ def main():
         if not me.get('bot'):
             raise ValueError('This is not a bot account')
         print(f"Connected to {me['username']} (bot id {me['id']}).")
+        application = api('/oauth2/applications/@me')
         guilds = api('/users/@me/guilds')
         if not guilds:
             print('Invite this bot to the server first:')
-            print(f"https://discord.com/oauth2/authorize?client_id={me['id']}"
+            print(f"https://discord.com/oauth2/authorize?client_id={application['id']}"
                   '&scope=bot%20applications.commands&permissions=36785472')
             return
         for index, guild in enumerate(guilds, 1):
@@ -105,4 +106,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

@@ -75,6 +75,9 @@ def install_private_runtime():
                 await audio.set_raw('status', value=False)
                 await audio.set_raw('global_db_enabled', value=False)
             await super().setup_hook()
+            missing = [name for name in self._cli_flags.load_cogs if name not in self.extensions]
+            if missing:
+                raise RuntimeError('Required Gene cogs did not load: ' + ', '.join(missing))
             cog = self.get_cog('Gene')
             if cog:
                 guild = discord.Object(id=int(os.environ['GENE_GUILD_ID']))
@@ -108,4 +111,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

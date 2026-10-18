@@ -1,4 +1,6 @@
+import os
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,6 +8,9 @@ from fastapi.testclient import TestClient
 from gene.api import create_app
 from gene.config import Settings
 from gene.store import Store
+
+gene_test_config = TemporaryDirectory(prefix='gene-test-config-')
+os.environ['XDG_CONFIG_HOME'] = gene_test_config.name
 
 
 @pytest.fixture

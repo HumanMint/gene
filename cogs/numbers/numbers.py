@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import os
+import time
 from collections import defaultdict
 
 import discord
@@ -48,13 +50,29 @@ class Numbers(commands.Cog):
         target = self.bot.get_channel(self.target_id)
         async with self.config.messages() as entries:
             record = entries.get(str(message_id))
-        if record and record.get('highlight_id') and target:
+        if record and target:
+            highlight = await self.find_highlight(target, record, message_id)
             try:
-                await target.get_partial_message(record['highlight_id']).delete()
+                if highlight:
+                    await highlight.delete()
             except discord.NotFound:
                 pass
         async with self.config.messages() as entries:
             entries.pop(str(message_id), None)
+
+    async def find_highlight(self, target, record, message_id):
+        if record.get('highlight_id'):
+            try:
+                return await target.fetch_message(record['highlight_id'])
+            except discord.NotFound:
+                return None
+        if record.get('pending'):
+            since = datetime.datetime.fromtimestamp(record.get('since', 0), datetime.timezone.utc)
+            async for candidate in target.history(limit=None, after=since, oldest_first=True):
+                if (candidate.author.id == self.bot.user.id and candidate.embeds
+                        and candidate.embeds[0].footer.text == f'gene-source:{message_id}'):
+                    return candidate
+        return None
 
     async def refresh(self, channel_id, message_id):
         async with self.locks[message_id]:
@@ -83,19 +101,7 @@ class Numbers(commands.Cog):
                 return
             marker = f'gene-source:{message_id}'
             record = (await self.config.messages()).get(str(message_id), {})
-            highlight = None
-            if record.get('highlight_id'):
-                try:
-                    highlight = await target.fetch_message(record['highlight_id'])
-                except discord.NotFound:
-                    pass
-            elif record.get('pending'):
-                # Recover a crash after Discord accepted send but before the returned ID was saved.
-                async for candidate in target.history(limit=200):
-                    if (candidate.author.id == self.bot.user.id and candidate.embeds
-                            and candidate.embeds[0].footer.text == marker):
-                        highlight = candidate
-                        break
+            highlight = await self.find_highlight(target, record, message_id)
             embed = discord.Embed(description=message.content[:3500] or '(attachment)',
                                   color=0xFFCC00, url=message.jump_url)
             embed.set_author(name=message.author.display_name)
@@ -110,7 +116,8 @@ class Numbers(commands.Cog):
                 await highlight.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
             else:
                 async with self.config.messages() as entries:
-                    entries[str(message_id)] = {'channel_id': channel_id, 'pending': True}
+                    entries[str(message_id)] = {'channel_id': channel_id, 'pending': True,
+                                                'since': time.time() - 5}
                 highlight = await target.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
             async with self.config.messages() as entries:
                 entries[str(message_id)] = {'channel_id': channel_id, 'highlight_id': highlight.id}
@@ -150,4 +157,3 @@ class Numbers(commands.Cog):
             for message_id in payload.message_ids:
                 async with self.locks[message_id]:
                     await self.remove(message_id)
-

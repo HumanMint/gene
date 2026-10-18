@@ -11,13 +11,15 @@ The original friend-server configuration stays in an ignored local file.
 To try the current installation, use **Discord Lab → #tests_n_stuff**:
 
 ```text
-!gene status
-!gene model
-!help gene
+!gene
 ```
 
-Slash commands under `/gene` work there too. To try music, join a lab voice channel
-and use `!play <song name or URL>`, then `!queue` and `!stop`. Meme votes in
+`/gene menu` opens the same panel. Buttons open private music controls, request
+forms, request progress and owner settings. Model and reasoning choices use dropdowns;
+release approval shows and submits the exact commit under review. The home panel's
+buttons survive restarts; personal menus expire after ten minutes and can be reopened.
+Existing commands remain available. To try music, join a lab voice channel
+and choose **Music → Add a track**. Meme votes in
 `#tests_n_stuff` can highlight messages in `#tests_n_stuff-2` at a net score of five.
 Gene stays invisible while responding to commands.
 
@@ -37,7 +39,12 @@ Gene stays invisible while responding to commands.
 - Net meme voting with unique voters, self-vote exclusion, removal handling, and
   persistent highlight IDs.
 - A Red-compatible Lavalink node on the Mac mini, reachable only from the VPS over
-  Tailscale. No browser cookies are used.
+  Tailscale. A separate source plugin delegates public YouTube extraction to a pinned
+  `yt-dlp` resolver on loopback. No browser cookies or personal YouTube login are used.
+
+Red is an upstream package, not a fork. The Discord interface lives in `cogs/gene/panel.py`
+and invokes Red's normal command pipeline. The external source lives in `audio-plugin/`
+and `src/gene/audio_resolver.py`; neither changes Red's installed code.
 
 Music availability depends on the Mac and source services. A successful search is
 not proof of voice playback; queue and sustained playback must be checked in the lab.

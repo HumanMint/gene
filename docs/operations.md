@@ -59,18 +59,40 @@ The controller listens only on host loopback port 8787 and its private Docker ne
 
 ## Audio on the Mac
 
-Java 21 is installed independently. Run `uv run --no-sync python scripts/install_audio.py`.
-The installer pins Red's `3.7.13+red.5` Lavalink jar by SHA-256 and uses Red's matching
-YouTube plugin configuration. Lavalink binds loopback port 2333; a separate TCP relay
+Java 21 is installed independently. Stage a candidate using
+`uv run --no-sync python scripts/install_audio.py --stage .audio/staged`.
+After owner approval of the full commit, install with
+`uv run --no-sync python scripts/install_audio.py --approved-sha <full-sha>`.
+The installer requires a clean checkout at that exact commit. It pins Red's
+`3.7.13+red.5` Lavalink jar by SHA-256 and builds a separate Gene source plugin against
+its libraries. Lavalink binds loopback port 2333; a separate TCP relay
 binds the Mac's Tailscale address and accepts only the configured VPS source IP.
 Lavalink additionally requires its generated password. No public interface is opened.
 
-LaunchAgents are `local.dan.gene.audio` and `local.dan.gene.audio.proxy`; files and
+The YouTube source calls a token-protected resolver on `127.0.0.1:2334`. It uses
+`yt-dlp[default]==2026.8.19`, accepts only YouTube searches/video/playlist links, and
+resolves streams only to HTTPS Googlevideo hosts. Search returns five results;
+playlists are limited to 100 entries. Ordinary public tracks are supported; live,
+private and login-required media are not. Generic HTTP/local sources remain disabled.
+No temporary stream URLs are encoded into saved playlists. Each playback resolves a
+fresh URL, then uses Lavaplayer's normal decoder and seeking support.
+
+LaunchAgents are `local.dan.gene.audio`, `local.dan.gene.audio.resolver`, and
+`local.dan.gene.audio.proxy`; files and
 logs live in ignored `.audio/`. Existing Cobalt ports, agents, and cookies are untouched.
 The runtime sets Red's external-node settings directly without posting passwords in chat.
 YouTube may still fail due to source changes or IP checks. Do not claim playback works
 until it actually plays in a Discord voice channel. Mac offline means music is offline;
 the bot, controller, memory, and development queue remain independent.
+Approved audio code and its locked Python environment live in `.audio/releases/<sha>`;
+editing the checkout does not change a running resolver. Previous LaunchAgent definitions
+are saved there as `*.previous.plist` for operator rollback. Restore them, boot out the
+new agents, and bootstrap the previous definitions if a release fails validation.
+
+The native `audio-plugin/test/PlaybackProbe.java` exercises real decoding and seeking
+through the same adapter and Lavaplayer libraries. Do not treat `/loadtracks` or a
+search result as proof of playback. Native playback checks and human Discord listening
+complement the offline API/permission tests and Java compilation in CI.
 
 ## Releases and recovery
 

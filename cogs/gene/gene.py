@@ -10,6 +10,8 @@ import discord
 from discord.ext import tasks
 from redbot.core import commands
 
+from .panel import HomeView, card
+
 
 class Gene(commands.Cog):
     """Gene's private workshop. Calm, concise, and accountable."""
@@ -22,10 +24,13 @@ class Gene(commands.Cog):
         self.token = os.getenv('GENE_RUNTIME_TOKEN', '')
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15))
         self.health_path = Path(os.getenv('GENE_HEALTH_FILE', '/data/gene-health.json'))
+        self.panel = HomeView(self)
+        self.bot.add_view(self.panel)
         self.health.start()
 
     async def cog_unload(self):
         self.health.cancel()
+        self.panel.stop()
         await self.session.close()
 
     async def cog_check(self, ctx):
@@ -78,8 +83,17 @@ class Gene(commands.Cog):
     @commands.guild_only()
     async def gene(self, ctx):
         """Requests, status, context, and reviewed releases."""
-        await self.say(ctx, 'Gene online. Use `gene request` to propose a change, '
-                           '`gene status` to inspect progress, or `help gene` for controls.')
+        await self.open_panel(ctx)
+
+    async def open_panel(self, ctx):
+        await ctx.send(embed=card('Gene', 'Music, requests, and server tools. Choose an action below. '
+            'Your menus and settings are shown only to you.'), view=self.panel,
+            allowed_mentions=discord.AllowedMentions.none())
+
+    @gene.command(name='menu')
+    async def menu(self, ctx):
+        """Open Gene's buttons, menus, and forms."""
+        await self.open_panel(ctx)
 
     @gene.command(name='request')
     async def request(self, ctx, *, description: str):

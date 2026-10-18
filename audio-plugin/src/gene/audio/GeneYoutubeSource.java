@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sedmelluq.discord.lavaplayer.player.AudioPlayerManager;
 import com.sedmelluq.discord.lavaplayer.source.AudioSourceManager;
-import com.sedmelluq.discord.lavaplayer.source.http.HttpAudioSourceManager;
+import com.sedmelluq.discord.lavaplayer.source.local.LocalAudioSourceManager;
 import com.sedmelluq.discord.lavaplayer.tools.FriendlyException;
 import com.sedmelluq.discord.lavaplayer.track.*;
 import com.sedmelluq.discord.lavaplayer.track.playback.LocalAudioTrackExecutor;
@@ -13,26 +13,28 @@ import java.net.URI;
 import java.net.http.*;
 import java.time.Duration;
 import java.util.*;
-import org.apache.http.message.BasicHeader;
+import java.nio.file.*;
 
 public class GeneYoutubeSource implements AudioSourceManager {
     private final String endpoint;
     private final String token;
+    private final Path cacheRoot;
     private final ObjectMapper json = new ObjectMapper();
     private final HttpClient client = HttpClient.newBuilder().version(HttpClient.Version.HTTP_1_1)
         .connectTimeout(Duration.ofSeconds(5)).build();
 
-    public GeneYoutubeSource(String endpoint, String token) {
+    public GeneYoutubeSource(String endpoint, String token, String cacheRoot) {
         URI uri = URI.create(endpoint);
         if (!uri.getScheme().equals("http") || !uri.getHost().equals("127.0.0.1"))
             throw new IllegalArgumentException("The resolver must use loopback");
         this.endpoint = endpoint;
         this.token = token;
+        this.cacheRoot = Path.of(cacheRoot).toAbsolutePath().normalize();
     }
 
     private JsonNode request(String route, String identifier) throws Exception {
         HttpRequest request = HttpRequest.newBuilder(URI.create(endpoint + route))
-            .timeout(Duration.ofSeconds(55)).header("Authorization", "Bearer " + token)
+            .timeout(Duration.ofSeconds(90)).header("Authorization", "Bearer " + token)
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(Map.of("identifier", identifier))))
             .build();
@@ -80,26 +82,23 @@ public class GeneYoutubeSource implements AudioSourceManager {
         @Override protected AudioTrack makeShallowClone() { return new Track(trackInfo); }
         @Override public void process(LocalAudioTrackExecutor executor) throws Exception {
             JsonNode resolved = request("/resolve", trackInfo.identifier);
-            URI uri = URI.create(resolved.path("url").asText());
-            if (!"https".equals(uri.getScheme()) || uri.getHost() == null
-                    || !uri.getHost().endsWith(".googlevideo.com") || uri.getUserInfo() != null)
-                throw new IllegalArgumentException("Unsupported media host");
-            HttpAudioSourceManager http = new HttpAudioSourceManager();
+            Path path = Path.of(resolved.path("path").asText());
+            Path root = cacheRoot.toRealPath();
+            Path file = path.toRealPath();
+            if (Files.isSymbolicLink(path) || !file.getParent().equals(root)
+                    || !file.getFileName().toString().matches("[A-Za-z0-9_-]{11}\\.(webm|m4a|mp4|ogg|mp3)"))
+                throw new IllegalArgumentException("Unsupported audio cache path");
+            // Local loading is internal to this source; arbitrary local tracks stay disabled.
+            LocalAudioSourceManager local = new LocalAudioSourceManager();
             try {
-                List<org.apache.http.Header> headers = new ArrayList<>();
-                resolved.path("headers").fields().forEachRemaining(entry -> {
-                    if (Set.of("user-agent", "referer", "origin").contains(entry.getKey().toLowerCase(Locale.ROOT)))
-                        headers.add(new BasicHeader(entry.getKey(), entry.getValue().asText()));
-                });
-                http.configureBuilder(builder -> builder.setDefaultHeaders(headers));
-                AudioItem item = http.loadItem(null, new AudioReference(uri.toString(), trackInfo.title));
+                AudioItem item = local.loadItem(null, new AudioReference(file.toString(), trackInfo.title));
                 if (!(item instanceof InternalAudioTrack))
-                    throw new FriendlyException("The audio stream could not be decoded.", FriendlyException.Severity.COMMON, null);
+                    throw new FriendlyException("The prepared audio could not be decoded.", FriendlyException.Severity.COMMON, null);
                 processDelegate((InternalAudioTrack) item, executor);
             } catch (Exception e) {
-                throw new FriendlyException("YouTube audio could not be streamed. Try again or another public track.",
+                throw new FriendlyException("This track could not be played. Try again or another public track.",
                                             FriendlyException.Severity.COMMON, null);
-            } finally { http.shutdown(); }
+            } finally { local.shutdown(); }
         }
     }
 }

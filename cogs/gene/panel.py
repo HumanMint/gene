@@ -9,6 +9,8 @@ import os
 import discord
 from redbot.core import commands
 
+from .panel_session import PrivatePanels, defer_panel
+
 LOG = logging.getLogger('gene.panel')
 NO_MENTIONS = discord.AllowedMentions.none()
 
@@ -27,9 +29,24 @@ def card(title, description):
     return discord.Embed(title=title, description=description[:4000], color=0x5865F2)
 
 
-async def reply(interaction, text=None, **kwargs):
-    send = interaction.followup.send if interaction.response.is_done() else interaction.response.send_message
-    await send(content=text, ephemeral=True, allowed_mentions=NO_MENTIONS, **kwargs)
+def sessions(cog):
+    if not hasattr(cog, 'private_panels'):
+        cog.private_panels = PrivatePanels()
+    return cog.private_panels
+
+
+async def reply(cog, interaction, text=None, **kwargs):
+    panels = sessions(cog)
+    view = kwargs.pop('view', None) or panels.current_view(interaction) or ScopedView(cog, interaction.user.id)
+    return await panels.show(interaction, content=text, view=view, **kwargs)
+
+
+async def notice(interaction, text):
+    if interaction.response.is_done():
+        message = await interaction.followup.send(content=text, ephemeral=True, allowed_mentions=NO_MENTIONS, wait=True)
+        await message.delete(delay=10)
+    else:
+        await interaction.response.send_message(content=text, ephemeral=True, allowed_mentions=NO_MENTIONS, delete_after=10)
 
 
 async def authorized(cog, interaction, user_id=None, owner=False):
@@ -38,19 +55,25 @@ async def authorized(cog, interaction, user_id=None, owner=False):
     if interaction.guild_id != cog.guild_id:
         return False
     if user_id is not None and interaction.user.id != user_id:
-        await reply(interaction, 'This menu belongs to another person. Open your own Gene panel.')
+        await notice(interaction, 'This menu belongs to another person. Open your own Gene panel.')
         return False
     if owner and not await cog.bot.is_owner(interaction.user):
-        await reply(interaction, 'Only Gene’s owner can use these settings.')
+        await notice(interaction, 'Only Gene’s owner can use these settings.')
         return False
     return True
 
 
 class PanelContext(commands.Context):
     async def send(self, content=None, **kwargs):
-        kwargs.setdefault('ephemeral', True)
-        kwargs['allowed_mentions'] = NO_MENTIONS
-        return await super().send(content, **kwargs)
+        transform = kwargs.pop('filter', None)
+        if transform and content:
+            content = transform(str(content))
+        self.panel_sent = True
+        # Red's play confirmations and errors replace the panel's content too.
+        # Delayed deletes must not erase a later action that reuses this message.
+        return await reply(self.panel_cog, self.interaction, content,
+                           embed=kwargs.get('embed'), embeds=kwargs.get('embeds'),
+                           view=MusicView(self.panel_cog, self.author.id))
 
     async def react_quietly(self, reaction, *, message=None):
         # The invocation is an interaction, not a real user message to react to.
@@ -60,36 +83,63 @@ class PanelContext(commands.Context):
 
 
 async def music_command(cog, interaction, original_message, action, query=''):
-    if action not in {'play', 'pause', 'skip', 'stop', 'queue'}:
+    if action not in {'play', 'pause', 'skip', 'stop'}:
         raise ValueError('Unsupported music action')
     if not await authorized(cog, interaction):
         return
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    await defer_panel(interaction)
     message = copy.copy(original_message)
     message.author, message.id = interaction.user, interaction.id
     message.content = os.getenv('GENE_PREFIX', '!') + action + (' ' + query if query else '')
     message.attachments, message.embeds = [], []
     ctx = await cog.bot.get_context(message, cls=PanelContext)
     ctx.interaction = interaction
+    ctx.panel_cog, ctx.panel_sent = cog, False
     if ctx.command is None or ctx.command is not cog.bot.get_command(action):
-        await reply(interaction, 'Music is currently unavailable. Try again shortly.')
+        await reply(cog, interaction, 'Music is currently unavailable. Try again shortly.')
         return
     # Do not call command.callback / ctx.invoke: those bypass parts of Red's checks.
     await cog.bot.invoke(ctx)
+    if not ctx.panel_sent and not getattr(ctx, 'command_failed', False):
+        await reply(cog, interaction, 'Music updated.', view=MusicView(cog, interaction.user.id))
 
 
 class ScopedView(discord.ui.View):
-    def __init__(self, cog, user_id=None, *, owner=False, timeout=600):
+    def __init__(self, cog, user_id=None, *, owner=False, timeout=600, navigation=True):
         super().__init__(timeout=timeout)
         self.cog, self.user_id, self.owner = cog, user_id, owner
+        if user_id is not None:
+            if navigation:
+                home = discord.ui.Button(label='Home', row=4)
+
+                async def go_home(interaction):
+                    await reply(cog, interaction, embed=card('Gene', 'Choose music, requests, or settings.'),
+                                view=HomeView(cog, user_id))
+                home.callback = go_home
+                self.add_item(home)
+            close = discord.ui.Button(label='Close', row=4)
+
+            async def dismiss(interaction):
+                await defer_panel(interaction)
+                panels = sessions(cog)
+                entry = panels.entries.get(panels.key(interaction))
+                if entry and entry.view is self:
+                    entry.interaction = interaction
+                await panels.close(panels.key(interaction), self)
+            close.callback = dismiss
+            self.add_item(close)
 
     async def interaction_check(self, interaction):
         return await authorized(self.cog, interaction, self.user_id, self.owner)
 
+    async def on_timeout(self):
+        if self.user_id is not None:
+            await sessions(self.cog).close((self.cog.guild_id, self.user_id), self)
+
     async def on_error(self, interaction, error, item):
         LOG.warning('Panel action failed: %s', type(error).__name__)
         detail = str(error) if isinstance(error, commands.UserFeedbackCheckFailure) else 'That action did not complete. Try again shortly.'
-        await reply(interaction, detail[:1500])
+        await reply(self.cog, interaction, detail[:1500])
 
 
 class InputModal(discord.ui.Modal):
@@ -111,17 +161,17 @@ class InputModal(discord.ui.Modal):
         if self.kind == 'play':
             await music_command(self.cog, interaction, self.original, 'play', self.value.value)
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await defer_panel(interaction)
         payload = {**actor(interaction), 'body': self.value.value,
                    'source_url': source_url(interaction, self.original)}
         if self.kind == 'memory':
             await self.cog.api('POST', '/memory', payload)
-            await reply(interaction, 'Saved. Future development jobs can use this fact.')
+            await reply(self.cog, interaction, 'Saved. Future development jobs can use this fact.')
         else:
             channel = getattr(interaction.channel, 'parent_id', None) or interaction.channel_id
             payload.update(source_id=str(interaction.id), channel_id=str(channel))
             job = await self.cog.api('POST', '/requests', payload)
-            await reply(interaction, f"Request `{job['id']}` is queued. Use **Requests** to follow its progress.")
+            await reply(self.cog, interaction, f"Request `{job['id']}` is queued. Use **Requests** to follow its progress.")
 
     async def on_error(self, interaction, error):
         await ScopedView.on_error(self, interaction, error, None)
@@ -138,7 +188,7 @@ class MusicView(ScopedView):
 
     @discord.ui.button(label='Queue', row=0)
     async def queue(self, interaction, button):
-        await music_command(self.cog, interaction, interaction.message, 'queue')
+        await show_queue(self.cog, interaction)
 
     @discord.ui.button(label='Skip', row=1)
     async def skip(self, interaction, button):
@@ -149,18 +199,46 @@ class MusicView(ScopedView):
         await music_command(self.cog, interaction, interaction.message, 'stop')
 
 
+async def show_queue(cog, interaction, page=0):
+    """Present Red's existing queue without its text command's reaction-only UI."""
+    import lavalink
+
+    await defer_panel(interaction)
+    view = MusicView(cog, interaction.user.id)
+    try:
+        player = lavalink.get_player(interaction.guild_id)
+    except (lavalink.NodeNotFound, lavalink.PlayerNotFound):
+        await reply(cog, interaction, 'Nothing is playing yet. Add a track to get started.', view=view)
+        return
+    queue = list(player.queue)
+    page = min(max(0, page), max(0, (len(queue) - 1) // 10))
+    current = player.current
+    text = ('Now playing: **' + discord.utils.escape_markdown(current.title) + '**' if current else 'Nothing is playing.')
+    text += '\n\n' + ('\n'.join(f'{index + 1}. {discord.utils.escape_markdown(track.title)}'
+        for index, track in enumerate(queue[page * 10:(page + 1) * 10], start=page * 10)) or 'The queue is empty.')
+    for label, target in [('Previous page', page - 1), ('Next page', page + 1)]:
+        if 0 <= target and target * 10 < len(queue):
+            button = discord.ui.Button(label=label, row=3)
+
+            async def navigate(event, target=target):
+                await show_queue(cog, event, target)
+            button.callback = navigate
+            view.add_item(button)
+    await reply(cog, interaction, embed=card('Music queue', text), view=view)
+
+
 async def show_requests(cog, interaction):
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    await defer_panel(interaction)
     jobs = await cog.api('GET', '/requests')
     if not jobs:
-        await reply(interaction, 'No requests yet. Choose **Request a change** to start one.')
+        await reply(cog, interaction, 'No requests yet. Choose **Request a change** to start one.')
         return
     view = ScopedView(cog, interaction.user.id)
     select = discord.ui.Select(placeholder='Choose a request', options=[
         discord.SelectOption(label=f"{j['state']} · {j['body'][:65]}", value=j['id'], description=j['id']) for j in jobs])
 
     async def selected(event):
-        await event.response.defer(ephemeral=True, thinking=True)
+        await defer_panel(event)
         job = await cog.api('GET', '/requests/' + select.values[0])
         description = job['body'][:1500]
         if job.get('model'):
@@ -178,7 +256,7 @@ async def show_requests(cog, interaction):
                 async def review(approval_event):
                     if not await authorized(cog, approval_event, event.user.id, owner=True):
                         return
-                    await reply(approval_event, embed=card('Approve this exact commit?',
+                    await reply(cog, approval_event, embed=card('Approve this exact commit?',
                         f"Request `{job['id']}`\n\n`{proposal['sha']}`\n\nApprove only after reviewing the code changes. "
                         'Gene will back up state, check the release, and restore the previous code if health checks fail.'),
                         view=ApprovalView(cog, event.user.id, job['id'], proposal['sha']))
@@ -192,15 +270,15 @@ async def show_requests(cog, interaction):
             async def reject_request(rejection):
                 if not await authorized(cog, rejection, event.user.id, owner=True):
                     return
-                await rejection.response.defer(ephemeral=True, thinking=True)
+                await defer_panel(rejection)
                 await cog.api('POST', f"/requests/{job['id']}/reject", actor(rejection))
-                await reply(rejection, 'Request rejected.')
+                await reply(cog, rejection, 'Request rejected.')
             reject.callback = reject_request
             controls.add_item(reject)
-        await reply(event, embed=card(f"Request · {job['state']}", description), view=controls)
+        await reply(cog, event, embed=card(f"Request · {job['state']}", description), view=controls)
     select.callback = selected
     view.add_item(select)
-    await reply(interaction, embed=card('Requests', 'Choose a request to see progress, errors, or its proposed release.'), view=view)
+    await reply(cog, interaction, embed=card('Requests', 'Choose a request to see progress, errors, or its proposed release.'), view=view)
 
 
 class ApprovalView(ScopedView):
@@ -210,16 +288,14 @@ class ApprovalView(ScopedView):
 
     @discord.ui.button(label='Approve this commit', style=discord.ButtonStyle.success)
     async def approve(self, interaction, button):
-        await interaction.response.defer(ephemeral=True)
+        await defer_panel(interaction)
         await self.cog.api('POST', f'/requests/{self.job_id}/approve', {**actor(interaction), 'sha': self.sha})
         button.disabled = True
-        await interaction.edit_original_response(content='Approved this commit. Follow the release from **Requests**.',
-                                                 embed=None, view=self, allowed_mentions=NO_MENTIONS)
-        self.stop()
+        await reply(self.cog, interaction, 'Approved this commit. Follow the release from **Requests**.', view=self)
 
 
 async def show_models(cog, interaction, *, refresh=False, page=0):
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    await defer_panel(interaction)
     state = await cog.api('POST', '/models/refresh' if refresh else '/models', actor(interaction))
     text = f"Selected: **{state['selected']}**\nReasoning: **{state['effort']}**"
     if state['refresh_pending']:
@@ -228,7 +304,7 @@ async def show_models(cog, interaction, *, refresh=False, page=0):
         text += '\n\n' + state['error']
     if not state['selected_available']:
         text += '\n\nThe selected model is unavailable. Choose a model to resume coding.'
-    await reply(interaction, embed=card('Worker model', text), view=ModelsView(cog, interaction.user.id, state, page))
+    await reply(cog, interaction, embed=card('Worker model', text), view=ModelsView(cog, interaction.user.id, state, page))
 
 
 class ModelsView(ScopedView):
@@ -241,9 +317,9 @@ class ModelsView(ScopedView):
                 discord.SelectOption(label=m['name'][:100], value=m['id'], default=m['id'] == state['selected']) for m in models])
 
             async def selected(event):
-                await event.response.defer(ephemeral=True, thinking=True)
+                await defer_panel(event)
                 await cog.api('POST', '/models/select', {**actor(event), 'model_id': choose.values[0], 'effort': ''})
-                await reply(event, 'Model updated for new jobs. Reopen **Models** to choose its reasoning effort.')
+                await reply(cog, event, 'Model updated for new jobs. Reopen **Models** to choose its reasoning effort.')
             choose.callback = selected
             self.add_item(choose)
         current = next((m for m in state['models'] if m['id'] == state['selected']), None)
@@ -253,14 +329,14 @@ class ModelsView(ScopedView):
                 *[discord.SelectOption(label=e, value=e) for e in current['efforts']]])
 
             async def set_effort(event):
-                await event.response.defer(ephemeral=True, thinking=True)
+                await defer_panel(event)
                 latest = await cog.api('POST', '/models', actor(event))
                 if latest['selected'] != state['selected']:
-                    await reply(event, 'The selected model changed. Reopen **Models** before changing its effort.')
+                    await reply(cog, event, 'The selected model changed. Reopen **Models** before changing its effort.')
                     return
                 await cog.api('POST', '/models/select', {**actor(event), 'model_id': state['selected'],
                     'effort': '' if effort.values[0] == 'default' else effort.values[0]})
-                await reply(event, 'Reasoning effort updated for new jobs.')
+                await reply(cog, event, 'Reasoning effort updated for new jobs.')
             effort.callback = set_effort
             self.add_item(effort)
         for label, target in [('Previous', page - 1), ('Next', page + 1)]:
@@ -291,18 +367,18 @@ class SettingsView(ScopedView):
 
     @discord.ui.button(label='Saved context', row=0)
     async def memories(self, interaction, button):
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await defer_panel(interaction)
         rows = await self.cog.api('POST', '/memory/list', actor(interaction))
         text = '\n\n'.join(row['body'] for row in rows) or 'No saved facts. Gene does not collect ordinary chat.'
-        await reply(interaction, embed=card('Approved server context', text), view=ContextView(self.cog, interaction.user.id, rows))
+        await reply(self.cog, interaction, embed=card('Approved server context', text), view=ContextView(self.cog, interaction.user.id, rows))
 
     @discord.ui.button(label='Usage', row=0)
     async def usage(self, interaction, button):
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await defer_panel(interaction)
         rows = await self.cog.api('POST', '/usage', actor(interaction))
         text = '\n\n'.join(f"**{r['model']}** · {r['attempts']} attempts\nInput: {r['input_tokens']} · "
                             f"output: {r['output_tokens']} · cached input: {r['cached_input_tokens']}" for r in rows)
-        await reply(interaction, embed=card('Worker usage', text or 'No recorded usage yet.'))
+        await reply(self.cog, interaction, embed=card('Worker usage', text or 'No recorded usage yet.'))
 
     @discord.ui.button(label='Pause development', row=1)
     async def pause(self, interaction, button):
@@ -313,9 +389,9 @@ class SettingsView(ScopedView):
         await self.set_paused(interaction, False)
 
     async def set_paused(self, interaction, paused):
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await defer_panel(interaction)
         await self.cog.api('POST', '/pause', {**actor(interaction), 'paused': paused})
-        await reply(interaction, 'New development paused. Running work can finish.' if paused else 'Development resumed.')
+        await reply(self.cog, interaction, 'New development paused. Running work can finish.' if paused else 'Development resumed.')
 
 
 class ContextView(ScopedView):
@@ -326,9 +402,9 @@ class ContextView(ScopedView):
                 discord.SelectOption(label=row['body'][:100], value=row['id']) for row in rows[:25]])
 
             async def forget(event):
-                await event.response.defer(ephemeral=True, thinking=True)
+                await defer_panel(event)
                 await cog.api('POST', '/memory/' + select.values[0] + '/forget', actor(event))
-                await reply(event, 'Forgot that fact. Already running jobs keep their original input.')
+                await reply(cog, event, 'Forgot that fact. Already running jobs keep their original input.')
             select.callback = forget
             self.add_item(select)
 
@@ -338,12 +414,12 @@ class ContextView(ScopedView):
 
 
 class HomeView(ScopedView):
-    def __init__(self, cog):
-        super().__init__(cog, timeout=None)
+    def __init__(self, cog, user_id=None):
+        super().__init__(cog, user_id, timeout=None if user_id is None else 600, navigation=False)
 
     @discord.ui.button(label='Music', style=discord.ButtonStyle.primary, custom_id='gene:home:music', row=0)
     async def music(self, interaction, button):
-        await reply(interaction, embed=card('Music', 'Join a voice channel, then add a song name or YouTube link. '
+        await reply(self.cog, interaction, embed=card('Music', 'Join a voice channel, then add a song name or YouTube link. '
             'The usual voice and DJ permissions apply.'), view=MusicView(self.cog, interaction.user.id))
 
     @discord.ui.button(label='Request a change', style=discord.ButtonStyle.primary, custom_id='gene:home:request', row=0)
@@ -356,15 +432,15 @@ class HomeView(ScopedView):
 
     @discord.ui.button(label='Status', custom_id='gene:home:status', row=1)
     async def status(self, interaction, button):
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        await defer_panel(interaction)
         state = await self.cog.api('GET', '/status')
         text = ('Development paused.' if state['paused'] else 'Development active.')
         text += f"\nWorker: **{state['model']}**\nRelease: `{state['active_sha']}`"
         text += '\n\n' + (', '.join(f'{n} {s}' for s, n in state['jobs'].items()) or 'No requests yet.')
-        await reply(interaction, embed=card('Gene status', text))
+        await reply(self.cog, interaction, embed=card('Gene status', text))
 
     @discord.ui.button(label='Owner settings', custom_id='gene:home:settings', row=1)
     async def settings(self, interaction, button):
         if await authorized(self.cog, interaction, owner=True):
-            await reply(interaction, embed=card('Owner settings', 'Choose a setting below.'),
+            await reply(self.cog, interaction, embed=card('Owner settings', 'Choose a setting below.'),
                         view=SettingsView(self.cog, interaction.user.id))

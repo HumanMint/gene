@@ -10,7 +10,7 @@ import discord
 from discord.ext import tasks
 from redbot.core import commands
 
-from .panel import HomeView, card
+from .panel import HomeView, card, reply, sessions
 
 
 class Gene(commands.Cog):
@@ -31,6 +31,7 @@ class Gene(commands.Cog):
     async def cog_unload(self):
         self.health.cancel()
         self.panel.stop()
+        await sessions(self).close_all()
         await self.session.close()
 
     async def cog_check(self, ctx):
@@ -86,6 +87,10 @@ class Gene(commands.Cog):
         await self.open_panel(ctx)
 
     async def open_panel(self, ctx):
+        if ctx.interaction:
+            await reply(self, ctx.interaction, embed=card('Gene', 'Music, requests, and server tools. Choose an action below.'),
+                        view=HomeView(self, ctx.author.id))
+            return
         await ctx.send(embed=card('Gene', 'Music, requests, and server tools. Choose an action below. '
             'Your menus and settings are shown only to you.'), view=self.panel,
             allowed_mentions=discord.AllowedMentions.none())

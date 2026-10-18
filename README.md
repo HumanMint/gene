@@ -1,7 +1,7 @@
 # Gene
 
 Gene is a private Discord assistant for a friend server: classic Red commands and
-music, meme highlights, and an owner-approved feature development loop.
+music, meme highlights, and an owner-approved development loop for Discord requests.
 
 **Current mode: invisible, Discord Lab only.** Gene starts offline in Discord's
 presence list. Events from other servers and DMs are discarded before feature
@@ -17,7 +17,10 @@ To try the current installation, use **Discord Lab → #tests_n_stuff**:
 `/gene menu` opens the same panel. Buttons open private music controls, request
 forms, request progress and owner settings. Model and reasoning choices use dropdowns;
 release approval shows and submits the exact commit under review. The home panel's
-buttons survive restarts; personal menus expire after ten minutes and can be reopened.
+buttons survive restarts. Each member gets one private panel: navigation and command
+results edit it in place, reopening removes its predecessor, and **Close** dismisses it.
+Private panels delete themselves after ten minutes of inactivity. Older panels from
+before this change or a restart may need a manual dismissal if their tokens expired.
 Existing commands remain available. To try music, join a lab voice channel
 and choose **Music → Add a track**. Meme votes in
 `#tests_n_stuff` can highlight messages in `#tests_n_stuff-2` at a net score of five.
@@ -32,7 +35,7 @@ Gene stays invisible while responding to commands.
 - Independent tests in a container with no credentials or network access.
 - Automatic repairs from failed test/lint feedback, with usage recorded per attempt.
 - Feature branches in this private repository; no automatic merge to `main`.
-- Immutable, owner-approved cog releases, pre-release backups, health checks, and
+- Immutable cog releases, exact-commit approval for Discord requests, backups, health checks, and
   automatic code rollback when a release fails to reconnect.
 - Explicit, inspectable server facts. No passive chat memory.
 - A resumable, redacted `#bot-commands` importer that produces evidence for review.
@@ -40,10 +43,12 @@ Gene stays invisible while responding to commands.
   persistent highlight IDs.
 - A Red-compatible Lavalink node on the Mac mini, reachable only from the VPS over
   Tailscale. A separate source plugin delegates public YouTube extraction to a pinned
-  `yt-dlp` resolver on loopback. No browser cookies or personal YouTube login are used.
+  `yt-dlp` resolver on loopback. It downloads a complete audio file into a bounded private
+  cache before playback. No browser cookies or personal YouTube login are used.
 
 Red is an upstream package, not a fork. The Discord interface lives in `cogs/gene/panel.py`
-and invokes Red's normal command pipeline. The external source lives in `audio-plugin/`
+and invokes Red's normal command pipeline for playback controls. Its queue screen reads
+Red's player state and supplies buttons in place of reaction controls. The external source lives in `audio-plugin/`
 and `src/gene/audio_resolver.py`; neither changes Red's installed code.
 
 Music availability depends on the Mac and source services. A successful search is
@@ -72,6 +77,12 @@ publish its own release or change the trusted controller/deployer. Control-plane
 and dependency changes go through a maintainer update. Candidate containers do not
 receive GitHub, Discord, controller, host SSH, or deployment credentials. The coding
 container receives its dedicated Codex authentication cache; tests receive none.
+
+Changes and fixes the owner requests directly in this Codex chat can be tested,
+committed, pushed, and deployed without another approval. They remain recorded by
+exact commit with backups, health checks, and rollback protection. Discord-originated
+requests, fixes, and repairs still require owner approval of the full commit SHA.
+This maintainer policy does not add an approval bypass to Discord or the controller.
 
 ## Local development
 

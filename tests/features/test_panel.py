@@ -9,22 +9,34 @@ from cogs.gene.panel import (
     HomeView,
     InputModal,
     ModelsView,
+    MusicView,
+    PanelContext,
     ScopedView,
     music_command,
+    reply,
+    sessions,
+    show_queue,
 )
 
 
-def environment():
+def environment(*, ephemeral=False, message_id=5, interaction_id=789):
     response = SimpleNamespace(is_done=Mock(return_value=False), send_message=AsyncMock(),
                                defer=AsyncMock(), send_modal=AsyncMock())
+    async def defer(**kwargs):
+        response.is_done.return_value = True
+    response.defer.side_effect = defer
     bot = SimpleNamespace(is_owner=AsyncMock(return_value=True), invoke=AsyncMock(),
                           get_context=AsyncMock(), get_command=Mock())
     cog = SimpleNamespace(guild_id=123, bot=bot, api=AsyncMock())
     user = SimpleNamespace(id=10)
-    message = SimpleNamespace(id=5, author=SimpleNamespace(id=99), content='original', attachments=[], embeds=[])
-    interaction = SimpleNamespace(guild_id=123, channel_id=456, id=789, user=user,
+    message = SimpleNamespace(id=message_id, flags=SimpleNamespace(ephemeral=ephemeral),
+                              author=SimpleNamespace(id=99), content='original', attachments=[], embeds=[])
+    result = SimpleNamespace(id=message_id if ephemeral else 1000 + interaction_id)
+    interaction = SimpleNamespace(guild_id=123, channel_id=456, id=interaction_id, user=user,
                                   message=message, response=response, edit_original_response=AsyncMock(),
+                                  delete_original_response=AsyncMock(),
                                   followup=SimpleNamespace(send=AsyncMock()))
+    interaction.edit_original_response.return_value = result
     return cog, interaction
 
 
@@ -114,4 +126,93 @@ def test_old_effort_menu_cannot_silently_revert_a_new_model_selection():
         cog.api.return_value = {'selected': 'model-b'}
         await effort.callback(interaction)
         cog.api.assert_awaited_once_with('POST', '/models', {'guild_id': '123', 'user_id': '10'})
+    asyncio.run(scenario())
+
+
+def test_navigation_and_music_confirmations_reuse_one_private_message():
+    async def scenario():
+        cog, public = environment()
+        await HomeView(cog).music.callback(public)
+        entry = sessions(cog).entries[(123, 10)]
+        assert entry.message_id == 1789
+        public.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+        _, click = environment(ephemeral=True, message_id=1789, interaction_id=790)
+        ctx = SimpleNamespace(panel_cog=cog, interaction=click, author=click.user)
+        await PanelContext.send(ctx, 'Added a song.')
+        await PanelContext.send(ctx, 'Queue updated.', delete_after=10)
+        assert sessions(cog).entries[(123, 10)].message_id == 1789
+        assert isinstance(sessions(cog).entries[(123, 10)].view, MusicView)
+        click.response.defer.assert_awaited_once_with(ephemeral=True, thinking=False)
+        click.followup.send.assert_not_awaited()
+        click.response.send_message.assert_not_awaited()
+        click.delete_original_response.assert_not_awaited()
+        assert click.edit_original_response.call_args.kwargs['content'] == 'Queue updated.'
+        assert entry.view.is_finished()
+    asyncio.run(scenario())
+
+
+def test_reopening_panel_deletes_previous_and_old_timeout_cannot_delete_replacement():
+    async def scenario():
+        cog, first = environment()
+        old_view = MusicView(cog, 10)
+        await reply(cog, first, 'First', view=old_view)
+        _, second = environment(interaction_id=800)
+        new_view = MusicView(cog, 10)
+        await reply(cog, second, 'Second', view=new_view)
+        first.delete_original_response.assert_awaited_once()
+        assert old_view.is_finished()
+        await old_view.on_timeout()
+        second.delete_original_response.assert_not_awaited()
+        await new_view.on_timeout()
+        second.delete_original_response.assert_awaited_once()
+        assert not sessions(cog).entries
+    asyncio.run(scenario())
+
+
+def test_close_dismisses_only_the_callers_panel_and_late_results_do_not_reopen_it():
+    async def scenario():
+        cog, first = environment()
+        view = MusicView(cog, 10)
+        await reply(cog, first, 'First', view=view)
+        _, close = environment(ephemeral=True, message_id=1789, interaction_id=800)
+        await next(b for b in view.children if b.label == 'Close').callback(close)
+        close.delete_original_response.assert_awaited_once()
+        await reply(cog, first, 'Late result', view=MusicView(cog, 10))
+        assert first.edit_original_response.await_count == 1
+        assert not sessions(cog).entries
+    asyncio.run(scenario())
+
+
+def test_queue_uses_red_player_state_with_buttons_instead_of_ephemeral_reactions(monkeypatch):
+    async def scenario():
+        cog, event = environment(ephemeral=True)
+        def track(title):
+            return SimpleNamespace(title=title)
+        monkeypatch.setattr('lavalink.get_player', Mock(return_value=SimpleNamespace(
+            current=track('Current song'), queue=[track('Queued ' + str(i)) for i in range(14)])))
+        await show_queue(cog, event)
+        payload = event.edit_original_response.call_args.kwargs
+        assert 'Current song' in payload['embeds'][0].description
+        assert '10. Queued 9' in payload['embeds'][0].description
+        assert {b.label for b in payload['view'].children} >= {'Next page', 'Home', 'Close'}
+        cog.bot.invoke.assert_not_awaited()
+        event.followup.send.assert_not_awaited()
+    asyncio.run(scenario())
+
+
+def test_late_reply_preserves_newer_controls_and_other_members_panels():
+    async def scenario():
+        cog, old = environment(ephemeral=True, message_id=100)
+        await reply(cog, old, 'Starting', view=MusicView(cog, 10))
+        _, newer = environment(ephemeral=True, message_id=100, interaction_id=800)
+        current = HomeView(cog, 10)
+        await reply(cog, newer, 'Home', view=current)
+        await reply(cog, old, 'Slow old result')
+        assert not current.is_finished()
+        assert old.edit_original_response.await_count == 1
+        _, another = environment(interaction_id=810)
+        another.user.id = 20
+        await reply(cog, another, 'Other member', view=MusicView(cog, 20))
+        newer.delete_original_response.assert_not_awaited()
+        assert set(sessions(cog).entries) == {(123, 10), (123, 20)}
     asyncio.run(scenario())

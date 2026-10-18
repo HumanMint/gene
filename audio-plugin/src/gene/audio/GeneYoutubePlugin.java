@@ -10,15 +10,18 @@ import org.springframework.stereotype.Component;
 public class GeneYoutubePlugin implements AudioPlayerManagerConfiguration {
     private final String url;
     private final String token;
+    private final String cache;
 
     public GeneYoutubePlugin(@Value("${plugins.geneYoutube.url:http://127.0.0.1:2334}") String url,
-                             @Value("${plugins.geneYoutube.token}") String token) {
+                             @Value("${plugins.geneYoutube.token}") String token,
+                             @Value("${plugins.geneYoutube.cache}") String cache) {
         this.url = url;
         this.token = token;
+        this.cache = cache;
     }
 
     @Override public AudioPlayerManager configure(AudioPlayerManager manager) {
-        manager.registerSourceManager(new GeneYoutubeSource(url, token));
+        manager.registerSourceManager(new GeneYoutubeSource(url, token, cache));
         return manager;
     }
 }

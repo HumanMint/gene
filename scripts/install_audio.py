@@ -54,7 +54,7 @@ def prepare(folder, env):
     configuration['lavalink']['server']['sources'].update(youtube=False, local=False, http=False)
     configuration['lavalink']['plugins'] = []
     configuration['plugins']['youtube']['enabled'] = False
-    configuration['plugins']['geneYoutube'] = {'url': 'http://127.0.0.1:2334', 'token': token}
+    configuration['plugins']['geneYoutube'] = {'url': 'http://127.0.0.1:2334', 'token': token, 'cache': str(folder / 'media')}
     private_write(folder / 'application.yml', yaml.safe_dump(configuration))
     shutil.copyfile(ROOT / 'src/gene/audio_resolver.py', folder / 'audio_resolver.py')
     shutil.copyfile(ROOT / 'scripts/run_audio_resolver.py', folder / 'run_audio_resolver.py')
@@ -70,7 +70,8 @@ def prepare(folder, env):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--stage', type=Path, help='Prepare an isolated folder; do not change running services')
-    parser.add_argument('--approved-sha', help='The complete commit SHA explicitly approved by the owner')
+    parser.add_argument('--release-sha', '--approved-sha', dest='release_sha',
+                        help='Pin this authorized maintainer installation to the complete HEAD commit SHA')
     args = parser.parse_args()
     env_path = ROOT / '.env.local'
     env = dict(line.split('=', 1) for line in env_path.read_text().splitlines()
@@ -80,10 +81,10 @@ def main():
         print('Prepared audio candidate. Running services were not changed.')
         return
     sha = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip()
-    if not re.fullmatch('[a-f0-9]{40}', args.approved_sha or '') or args.approved_sha != sha:
-        raise SystemExit('Installation requires --approved-sha matching the complete owner-approved HEAD')
+    if not re.fullmatch('[a-f0-9]{40}', args.release_sha or '') or args.release_sha != sha:
+        raise SystemExit('Installation requires --release-sha matching the complete HEAD commit')
     if subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT, text=True).strip():
-        raise SystemExit('Commit all changes before installing an approved release')
+        raise SystemExit('Commit all changes before installing a maintainer release')
     folder = ROOT / '.audio/releases' / sha
     if folder.exists():
         raise SystemExit('This audio release already exists. Inspect or restore it; do not overwrite a running release.')
@@ -116,7 +117,7 @@ def main():
     env.update(GENE_AUDIO_HOST=address, GENE_AUDIO_PORT='2333')
     private_write(env_path, ''.join(f'{key}={value}\n' for key, value in env.items()))
     private_write(ROOT / '.audio/release.json', json.dumps({'sha': sha, 'folder': str(folder)}))
-    print('Installed the approved audio release. Red and Cobalt were not modified.')
+    print('Installed the maintainer audio release. Red and Cobalt were not modified.')
 
 
 if __name__ == '__main__':

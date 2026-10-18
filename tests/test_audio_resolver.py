@@ -3,7 +3,118 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
-from gene.audio_resolver import canonical_query, create_app, public_stream
+from gene.audio_resolver import MediaCache, canonical_query, create_app, public_stream
+
+
+@pytest.fixture(autouse=True)
+def isolated_media_cache(tmp_path, monkeypatch):
+    monkeypatch.setenv('GENE_AUDIO_CACHE', str(tmp_path / 'media'))
+
+
+def test_prepare_publishes_a_complete_local_file_and_reuses_it_without_extraction(tmp_path):
+    extractor = Mock(return_value={'id': 'aBcDeFgH123', 'url': 'https://rr1.googlevideo.com/audio',
+                                   'duration': 174, 'protocol': 'https'})
+    def download(result, folder, maximum):
+        path = folder / 'audio.webm'
+        path.write_bytes(b'complete audio')
+        return path
+    downloader = Mock(side_effect=download)
+    client = TestClient(create_app('x' * 40, extractor, cache_dir=tmp_path, downloader=downloader))
+    request = {'headers': {'Authorization': 'Bearer ' + 'x' * 40}, 'json': {'identifier': 'aBcDeFgH123'}}
+    first = client.post('/resolve', **request)
+    assert first.status_code == 200
+    assert first.json() == {'path': str(tmp_path / 'aBcDeFgH123.webm')}
+    assert client.post('/resolve', **request).json() == first.json()
+    extractor.assert_called_once()
+    downloader.assert_called_once()
+
+
+def test_partial_or_oversized_downloads_are_removed_and_can_be_retried(tmp_path):
+    cache = MediaCache(tmp_path, max_bytes=100, track_bytes=20)
+    def broken(folder, limit):
+        (folder / 'audio.webm.part').write_bytes(b'incomplete')
+        raise RuntimeError('failed transfer')
+    with pytest.raises(RuntimeError):
+        cache.get('aBcDeFgH123', broken)
+    assert not list(tmp_path.iterdir())
+    def too_big(folder, limit):
+        path = folder / 'audio.webm'
+        path.write_bytes(b'x' * 21)
+        return path
+    with pytest.raises(ValueError):
+        cache.get('aBcDeFgH123', too_big)
+    assert not list(tmp_path.iterdir())
+    def complete(folder, limit):
+        path = folder / 'audio.webm'
+        path.write_bytes(b'complete')
+        return path
+    assert cache.get('aBcDeFgH123', complete).read_bytes() == b'complete'
+
+
+def test_cache_deduplicates_concurrent_downloads_and_protects_recent_tracks(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from fastapi import HTTPException
+    cache = MediaCache(tmp_path, max_bytes=30, track_bytes=20)
+    def complete(folder, limit):
+        path = folder / 'audio.webm'
+        path.write_bytes(b'x' * 20)
+        return path
+    producer = Mock(side_effect=complete)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        paths = list(pool.map(lambda _: cache.get('aBcDeFgH123', producer), range(2)))
+    assert paths[0] == paths[1]
+    producer.assert_called_once()
+    with pytest.raises(HTTPException, match='cache is full'):
+        cache.get('bBcDeFgH123', producer)
+    assert paths[0].exists()
+
+
+def test_cache_expires_old_files_and_rejects_paths_outside_its_directory(tmp_path):
+    import os
+    import time
+    cache = MediaCache(tmp_path / 'cache', max_bytes=30, track_bytes=20, ttl=60)
+    stale = cache.folder / 'zBcDeFgH123.webm'
+    stale.write_bytes(b'x' * 20)
+    os.utime(stale, (time.time() - 61, time.time() - 61))
+    outside = tmp_path / 'outside.webm'
+    outside.write_bytes(b'audio')
+    with pytest.raises(ValueError):
+        cache.get('aBcDeFgH123', lambda folder, limit: outside)
+    assert not stale.exists()
+    assert outside.exists()
+
+
+def test_failed_transfer_retries_once_with_fresh_metadata_and_no_partial_file(tmp_path):
+    extractor = Mock(return_value={'id': 'aBcDeFgH123', 'url': 'https://rr1.googlevideo.com/audio',
+                                   'duration': 174, 'protocol': 'https'})
+    attempts = []
+    def download(result, folder, maximum):
+        assert not list(folder.iterdir())
+        attempts.append(1)
+        path = folder / 'audio.webm'
+        path.write_bytes(b'audio')
+        if len(attempts) == 1:
+            raise ConnectionError('temporary transfer failure')
+        return path
+    client = TestClient(create_app('x' * 40, extractor, cache_dir=tmp_path, downloader=download))
+    response = client.post('/resolve', headers={'Authorization': 'Bearer ' + 'x' * 40},
+                           json={'identifier': 'aBcDeFgH123'})
+    assert response.status_code == 200
+    assert extractor.call_count == 2
+    assert (tmp_path / 'aBcDeFgH123.webm').read_bytes() == b'audio'
+
+
+def test_recent_interrupted_downloads_count_toward_capacity(tmp_path):
+    from fastapi import HTTPException
+    cache = MediaCache(tmp_path, max_bytes=30, track_bytes=20)
+    partial = tmp_path / 'download-interrupted'
+    partial.mkdir()
+    (partial / 'audio.webm.part').write_bytes(b'x' * 20)
+    producer = Mock()
+    with pytest.raises(HTTPException, match='cache is full'):
+        cache.get('aBcDeFgH123', producer)
+    producer.assert_not_called()
 
 
 @pytest.mark.parametrize('query', ['http://127.0.0.1/admin', 'file:///etc/passwd',

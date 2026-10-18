@@ -23,8 +23,9 @@ def test_prepare_publishes_a_complete_local_file_and_reuses_it_without_extractio
     request = {'headers': {'Authorization': 'Bearer ' + 'x' * 40}, 'json': {'identifier': 'aBcDeFgH123'}}
     first = client.post('/resolve', **request)
     assert first.status_code == 200
-    assert first.json() == {'path': str(tmp_path / 'aBcDeFgH123.webm')}
-    assert client.post('/resolve', **request).json() == first.json()
+    assert first.json()['path'] == str(tmp_path / 'aBcDeFgH123.webm')
+    assert len(first.json()['lease']) == 32
+    assert client.post('/resolve', **request).json()['path'] == first.json()['path']
     extractor.assert_called_once()
     downloader.assert_called_once()
 

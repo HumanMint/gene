@@ -34,7 +34,7 @@ public class GeneYoutubeSource implements AudioSourceManager {
 
     private JsonNode request(String route, String identifier) throws Exception {
         HttpRequest request = HttpRequest.newBuilder(URI.create(endpoint + route))
-            .timeout(Duration.ofSeconds(90)).header("Authorization", "Bearer " + token)
+            .timeout(Duration.ofSeconds(route.equals("/release") ? 5 : route.equals("/resolve") ? 180 : 60)).header("Authorization", "Bearer " + token)
             .header("Content-Type", "application/json")
             .POST(HttpRequest.BodyPublishers.ofString(json.writeValueAsString(Map.of("identifier", identifier))))
             .build();
@@ -82,23 +82,30 @@ public class GeneYoutubeSource implements AudioSourceManager {
         @Override protected AudioTrack makeShallowClone() { return new Track(trackInfo); }
         @Override public void process(LocalAudioTrackExecutor executor) throws Exception {
             JsonNode resolved = request("/resolve", trackInfo.identifier);
-            Path path = Path.of(resolved.path("path").asText());
-            Path root = cacheRoot.toRealPath();
-            Path file = path.toRealPath();
-            if (Files.isSymbolicLink(path) || !file.getParent().equals(root)
-                    || !file.getFileName().toString().matches("[A-Za-z0-9_-]{11}\\.(webm|m4a|mp4|ogg|mp3)"))
-                throw new IllegalArgumentException("Unsupported audio cache path");
-            // Local loading is internal to this source; arbitrary local tracks stay disabled.
-            LocalAudioSourceManager local = new LocalAudioSourceManager();
+            String lease = resolved.path("lease").asText();
             try {
-                AudioItem item = local.loadItem(null, new AudioReference(file.toString(), trackInfo.title));
-                if (!(item instanceof InternalAudioTrack))
-                    throw new FriendlyException("The prepared audio could not be decoded.", FriendlyException.Severity.COMMON, null);
-                processDelegate((InternalAudioTrack) item, executor);
-            } catch (Exception e) {
-                throw new FriendlyException("This track could not be played. Try again or another public track.",
-                                            FriendlyException.Severity.COMMON, null);
-            } finally { local.shutdown(); }
+                Path path = Path.of(resolved.path("path").asText());
+                Path root = cacheRoot.toRealPath();
+                Path file = path.toRealPath();
+                if (Files.isSymbolicLink(path) || !file.getParent().equals(root)
+                        || !file.getFileName().toString().matches("[A-Za-z0-9_-]{11}\\.(webm|m4a|mp4|ogg|mp3)"))
+                    throw new IllegalArgumentException("Unsupported audio cache path");
+                // Local loading is internal to this source; arbitrary local tracks stay disabled.
+                LocalAudioSourceManager local = new LocalAudioSourceManager();
+                try {
+                    AudioItem item = local.loadItem(null, new AudioReference(file.toString(), trackInfo.title));
+                    if (!(item instanceof InternalAudioTrack))
+                        throw new FriendlyException("The prepared audio could not be decoded.", FriendlyException.Severity.COMMON, null);
+                    processDelegate((InternalAudioTrack) item, executor);
+                } catch (Exception e) {
+                    throw new FriendlyException("This track could not be played. Try again or another public track.",
+                                                FriendlyException.Severity.COMMON, null);
+                } finally { local.shutdown(); }
+            } finally {
+                if (!lease.isEmpty()) {
+                    try { request("/release", lease); } catch (Exception ignored) { }
+                }
+            }
         }
     }
 }

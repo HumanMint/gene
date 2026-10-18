@@ -21,3 +21,10 @@ jobs:
       - run: uv run --no-sync pytest -q
       - run: uv run --no-sync ruff check .
       - run: uv run --no-sync python scripts/build_audio_plugin.py
+      - run: docker build -f ops/Dockerfile.audio --target node -t gene-audio:check .
+      - run: >-
+          docker run --rm --network none --read-only --cap-drop ALL
+          --security-opt no-new-privileges:true --memory 256m --cpus 1
+          --tmpfs /tmp:rw,nosuid,nodev,exec,size=64m
+          --entrypoint java gene-audio:check -Xmx64m
+          -cp '/probe/classes:/probe/lib/*' UdpTimingProbe

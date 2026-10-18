@@ -1,0 +1,44 @@
+# Maintainer-owned audio deployment, independent of Discord feature releases.
+name: gene-audio
+services:
+  node:
+    image: gene-audio:${GENE_AUDIO_SHA:?Pin the maintainer audio release}
+    volumes:
+      - /srv/gene/secrets/audio.yml:/audio/application.yml:ro
+      - /srv/gene/data/audio/media:/media:ro
+    networks:
+      gene:
+        aliases: [gene-audio]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    # Lavalink extracts its pinned native audio libraries here and must load them.
+    tmpfs: ["/tmp:rw,nosuid,nodev,exec,size=64m", "/audio/logs:rw,nosuid,nodev,noexec,size=16m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 640m
+    cpus: 1
+  resolver:
+    image: gene-audio-resolver:${GENE_AUDIO_SHA:?Pin the maintainer audio release}
+    env_file: /srv/gene/secrets/audio-resolver.env
+    network_mode: service:node
+    depends_on: [node]
+    volumes:
+      - /srv/gene/data/audio/media:/media
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 192m
+    cpus: 0.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2334/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+networks:
+  gene:
+    external: true
+    name: gene_default

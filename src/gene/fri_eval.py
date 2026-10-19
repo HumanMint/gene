@@ -51,6 +51,16 @@ def control_cases():
                 'answer': 'The title is Sad Machine by Porter Robinson.',
                 'sources': ['https://porterrobinson.com/'], 'checked_at': '2026-10-19T20:00:00+00:00'}
     return [
+        {'name': 'gene_no_sound_followup', 'text': 'thanks. gene joined but i dont hear music',
+         'actions': controls, 'gene_receipts': [{'action': 'play', 'argument': 'Contact by Daft Punk',
+             'state': 'finished', 'result': {'done': True, 'output': 'Track Enqueued: Contact by Daft Punk'}}],
+         'expect': 'Read-only now_playing or queue check. No replay or invented blocked original request.'},
+        {'name': 'gene_no_sound_receipt', 'text': 'thanks. gene joined but i dont hear music',
+         'action_result': {'kind': 'gene_command', 'action': 'now_playing', 'output': 'Nothing is playing.'},
+         'gene_receipts': [{'action': 'play', 'state': 'finished', 'result': {'output': 'Track Enqueued: Contact'}}],
+         'expect': 'It queued earlier but nothing is playing now. No claim that the original request was blocked; no invented cause.'},
+        {'name': 'owner_routing_request', 'text': 'why is gene sending music errors to ff_beta? change it back to bot_commands',
+         'requester_is_owner': True, 'expect': 'Draft routing fix with Review request button here. No channel hopping or find-an-owner instruction.'},
         {'name': 'gene_capability_example', 'text': 'are you able to control gene? for example can I ask you to play Sad Machine?',
          'actions': controls, 'expect': 'Explain available controls; action=null. Do not execute this example.'},
         {'name': 'gene_explicit_play', 'text': 'fri play Sad Machine by Porter Robinson',
@@ -82,6 +92,7 @@ async def evaluate(chat, model, effort, voice_notes='', suite='voice'):
             'turns': case.get('turns', []), 'recent': case.get('recent', []),
             'actions': case.get('actions', {}), 'requests_enabled': suite == 'controls', 'voice_notes': voice_notes,
             'action_result': case.get('action_result'), 'web_research': case.get('web_research', []),
+            'gene_receipts': case.get('gene_receipts', []), 'requester_is_owner': case.get('requester_is_owner', False),
             'personal_memory': {'enabled': False, 'notes': []},
             'display_name': name, 'speaker': {'user_id': '101', 'display_name': name},
             'source': source(name=name)}

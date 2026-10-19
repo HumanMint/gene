@@ -105,11 +105,11 @@ def test_release_review_reuses_the_intake_dm_and_requires_exact_commit(store):
     assert store.claim_deploy()['approved_sha'] == 'b' * 40
 
 
-def test_stale_release_is_not_messaged_or_approvable(store):
+def test_stale_release_has_an_informational_notice_but_is_not_approvable(store):
     job = proposed(store)
     with store.connection() as db:
         db.execute('UPDATE settings SET value=? WHERE key="active_sha"', ('c' * 40,))
-    assert store.claim_review_notice() is None
+    assert store.claim_review_notice()['phase'] == 'stale'
     with pytest.raises(Conflict):
         store.review_decision(job['id'], 'release', 'b' * 40, 'approve', 'owner')
 

@@ -209,3 +209,22 @@ def test_slow_red_operation_keeps_its_lifecycle_and_no_second_claim_starts():
             await runner.close()
             await bot.close()
     asyncio.run(scenario())
+
+
+def test_dm_notification_routing_occurs_after_red_permission_checks():
+    async def scenario():
+        bot, runner, cog, claim, member, channel, calls, _ = await runtime()
+        claim['source'].update(guild_id=None, channel_id='999')
+        claim['conversation_id'] = 'private:999'
+        player = SimpleNamespace(store=Mock())
+        try:
+            with patch('lavalink.get_player', return_value=player):
+                await runner.execute(cog, claim)
+                player.store.assert_not_called()  # Not in voice; denied by Red.
+                member.voice = SimpleNamespace(channel=SimpleNamespace(id=8))
+                await runner.execute(cog, claim)
+                player.store.assert_called_once_with('notify_channel', channel.id)
+        finally:
+            await runner.close()
+            await bot.close()
+    asyncio.run(scenario())

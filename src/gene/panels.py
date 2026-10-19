@@ -39,7 +39,7 @@ class PrivatePanels:
         if entry and is_private(interaction) and interaction.message.id == entry.message_id:
             return entry.view
 
-    async def show(self, interaction, *, content=None, embed=None, embeds=None, view):
+    async def show(self, interaction, *, content=None, embed=None, embeds=None, attachments=None, view):
         await defer_panel(interaction)
         key = self.key(interaction)
         async with self.locks.setdefault(key, asyncio.Lock()):
@@ -55,6 +55,8 @@ class PrivatePanels:
                 return entry.message if entry else None
             payload = {'content': content, 'view': view, 'allowed_mentions': discord.AllowedMentions.none()}
             payload['embeds'] = embeds if embeds is not None else ([embed] if embed else [])
+            if attachments is not None:
+                payload['attachments'] = attachments
             message = await interaction.edit_original_response(**payload)
             previous = self.entries.get(key)
             self.entries[key] = Panel(interaction, message.id, view, message)

@@ -352,3 +352,19 @@ def test_request_panel_does_not_expose_previous_lab_requests(setup_agent):
     response = client.get('/requests', headers=headers('fri'))
     assert [item['id'] for item in response.json()] == [current['id']]
     assert client.get('/requests/'+private['id'], headers=headers('fri')).status_code == 403
+
+
+def test_investigation_escalates_to_sol_xhigh_and_attributes_report_to_fri():
+    async def scenario():
+        channel = SimpleNamespace(id=456, guild=SimpleNamespace(id=123), parent_id=None)
+        fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456, user=SimpleNamespace(id=99),
+                              api=AsyncMock(return_value={'active_sha': 'a'*40, 'paused': False}), get_channel=lambda _: channel)
+        agent = Agent(fri)
+        agent.gene_id = 88
+        agent.run = AsyncMock(return_value=({'summary': 'Evidence uncertain', 'proposed_request': 'Add diagnostics'}, {}, 'completed'))
+        await agent.investigate(456, {'id': '100', 'text': 'Track Stuck'})
+        assert agent.run.await_args.kwargs == {'model': 'gpt-6.1-sol', 'effort': 'xhigh'}
+        payload = fri.api.await_args.args[2]
+        assert payload['user_id'] == '99' and payload['source_id'] == 'gene-error:100'
+        assert 'xhigh' in payload['body'] and 'approved' not in payload
+    asyncio.run(scenario())

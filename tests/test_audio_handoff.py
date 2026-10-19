@@ -247,3 +247,19 @@ def test_free_space_reserve_and_partial_bytes_prevent_new_download(tmp_path, mon
 def test_home_connection_rejects_public_destinations_and_weak_credentials(tmp_path, url, token):
     with pytest.raises(ValueError):
         create_app(TOKEN, cache_dir=tmp_path, relay_url=url, relay_token=token)
+
+
+def test_preparation_downloads_once_and_keeps_a_short_handoff_pin(tmp_path):
+    calls = []
+    def handler(request):
+        calls.append(request.url.path)
+        return httpx.Response(200, content=b'complete audio', headers=packet())
+    client = host(tmp_path, handler)
+    body = {'identifier': ID}
+    assert client.post('/prepare', json=body).status_code == 401
+    assert client.post('/prepare', headers=HEADERS, json=body).json() == {'ready': True}
+    leases = json.loads((tmp_path/'.leases.json').read_text())
+    assert all(0 < lease['until']-time.time() <= 180 for lease in leases.values())
+    resolved = client.post('/resolve', headers=HEADERS, json=body).json()
+    assert Path(resolved['path']).read_bytes() == b'complete audio'
+    assert calls == ['/transfer']

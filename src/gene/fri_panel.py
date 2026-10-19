@@ -7,6 +7,7 @@ import logging
 import discord
 from redbot.core import commands
 
+from .fri_requests import DraftView as DraftView
 from .panels import PrivatePanels, defer_panel
 from .subscription import SubscriptionError
 
@@ -197,7 +198,9 @@ async def show_requests(cog, interaction):
             url = proposal.get('url', '')
             if url.startswith('https://github.com/HumanMint/gene/'):
                 controls.add_item(discord.ui.Button(label='View code changes', url=url))
-            if job['state'] == 'review' and await cog.bot.is_owner(event.user):
+            if job['state'] == 'review' and not job.get('proposal_current', True):
+                description += '\n\nA newer release is live. This saved proposal needs rebuilding before approval.'
+            if job['state'] == 'review' and job.get('proposal_current', True) and await cog.bot.is_owner(event.user):
                 approve = discord.ui.Button(label='Review release approval', style=discord.ButtonStyle.primary)
 
                 async def review(approval_event):
@@ -438,25 +441,6 @@ class HomeView(ScopedView):
         if await authorized(self.cog, interaction, owner=True):
             await reply(self.cog, interaction, embed=card('Owner settings', 'Choose a setting below.'),
                         view=SettingsView(self.cog, interaction.user.id))
-
-
-class DraftView(ScopedView):
-    def __init__(self, cog, user_id, draft, *, public=False):
-        super().__init__(cog, user_id)
-        self.draft = draft
-        if public:
-            # Public responses are not disposable private-panel sessions.
-            for child in list(self.children):
-                if child.label != 'Review and submit request':
-                    self.remove_item(child)
-
-    @discord.ui.button(label='Review and submit request', style=discord.ButtonStyle.primary)
-    async def submit(self, interaction, button):
-        await interaction.response.send_modal(InputModal(self.cog, interaction, 'request', self.draft))
-
-    @discord.ui.button(label='Continue chatting')
-    async def chat(self, interaction, button):
-        await interaction.response.send_modal(InputModal(self.cog, interaction, 'chat'))
 
 
 async def show_chat_models(cog, interaction, refresh=False, page=0):

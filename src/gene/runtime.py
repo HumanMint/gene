@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 # Import before Red loads a cog named gene and temporarily occupies that module name.
+from .runtime_audio import install_audio_preparation
 from .runtime_controls import ControlRunner
 
 
@@ -87,6 +88,7 @@ def install_private_runtime():
                 await audio.set_raw('secured_ws', value=False)
                 await audio.set_raw('status', value=False)
                 await audio.set_raw('global_db_enabled', value=False)
+            install_audio_preparation(self)
             await super().setup_hook()
             missing = [name for name in self._cli_flags.load_cogs if name not in self.extensions]
             if missing:

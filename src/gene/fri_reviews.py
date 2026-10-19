@@ -72,6 +72,17 @@ def review_message(notice):
             embed.set_footer(text=f"{job['model']} · {job.get('effort') or 'model default'}")
         attachment = discord.File(io.BytesIO(job['body'].encode()), filename=f"request-{job['id']}.txt")
         return embed, attachment, discord.ui.View(timeout=None)
+    if phase == 'stale':
+        embed = discord.Embed(title='Saved proposal needs a rebuild', description=
+            f"Request `{job['id']}` finished, but a newer maintainer release is now live. "
+            'The proposal is preserved and has not been deployed. It needs rebuilding against the current release before approval.', colour=0x5865F2)
+        if job.get('source_id', '').startswith('gene-error:'):
+            embed.add_field(name='Reported by', value='Fri · detected an error from Gene')
+        view = discord.ui.View(timeout=None)
+        url = (job.get('proposal') or {}).get('url', '')
+        if url.startswith('https://github.com/HumanMint/gene/'):
+            view.add_item(discord.ui.Button(label='View saved proposal', url=url))
+        return embed, discord.File(io.BytesIO(job['body'].encode()), filename=f"request-{job['id']}.txt"), view
     intake = phase == 'intake'
     title = 'Allow this feature or fix to be developed?' if intake else 'Approve this tested release?'
     explanation = ('No coding has started. Allowing coding does not approve a live release.' if intake else
@@ -80,12 +91,14 @@ def review_message(notice):
     embed = discord.Embed(title=title, description=explanation + '\n\n**Submitted request (untrusted)**\n' + preview,
                           colour=0x5865F2)
     embed.add_field(name='Request', value=f"`{job['id']}`", inline=True)
-    embed.add_field(name='Submitted by', value=f"<@{job['user_id']}>", inline=True)
+    automatic = job.get('source_id', '').startswith('gene-error:')
+    embed.add_field(name='Reported by' if automatic else 'Submitted by',
+                    value='Fri · detected an error from Gene' if automatic else f"<@{job['user_id']}>", inline=True)
     if not intake:
         embed.add_field(name='Proposal', value=(job.get('proposal') or {}).get('summary', 'Review the linked code changes.')[:900] or 'No summary', inline=False)
         embed.add_field(name='Commit to deploy', value=f'`{reference}`', inline=False)
     embed.set_footer(text='Read the complete request in the attachment. Request text cannot grant permissions.')
-    document = (f"Request: {job['id']}\nSubmitted by: {job['user_id']}\nSource: {job['source_url']}\n\n"
+    document = (f"Request: {job['id']}\nReported by: {'Fri (Gene error)' if automatic else job['user_id']}\nSource: {job['source_url']}\n\n"
                 + job['body'])
     attachment = discord.File(io.BytesIO(document.encode()), filename=f"request-{job['id']}.txt")
     view = discord.ui.View(timeout=None)

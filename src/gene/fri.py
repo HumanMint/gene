@@ -20,6 +20,7 @@ from .fri_chat import Chat, ChatResult
 from .fri_context import discord_source
 from .fri_memory import describe_memory, memory_intent
 from .fri_panel import DraftView, HomeView, authorized, card, reply, sessions
+from .fri_requests import request_dm_component
 from .fri_reviews import ReviewButton, notify_owner
 from .panels import defer_panel
 from .privacy import clean
@@ -93,7 +94,8 @@ class Fri(discord.Client):
                 interaction.message.author.id == getattr(self.user, 'id', None))
             if behavior:
                 allowed = True
-            if not allowed and not owner_dm_component(interaction, getattr(self.user, 'id', None), self.owner_id):
+            if (not allowed and not owner_dm_component(interaction, getattr(self.user, 'id', None), self.owner_id)
+                    and not request_dm_component(interaction, getattr(self.user, 'id', None))):
                 return
         super().dispatch(event, *args, **kwargs)
 
@@ -185,6 +187,12 @@ class Fri(discord.Client):
                 context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
                 context['source'] = source.evidence()
                 context['requests_enabled'] = guild_id == self.guild_id
+                context['requester_is_owner'] = user_id == self.owner_id
+                if actions and guild_id == self.guild_id:
+                    recent = await self.api('POST', '/controls/recent', scope)
+                    readable = await actions.channels(fresh=True)
+                    context['gene_receipts'] = [r for r in recent.get('receipts', []) if r['channel_id'] in readable]
+                    actions.sources.update(r['channel_id'] for r in context['gene_receipts'])
                 text = clean(text, 4000)
                 if actions:
                     actions.message, actions.model, actions.effort = text, context['model'], context['effort']
@@ -241,6 +249,8 @@ class Fri(discord.Client):
                         from .fri_web import cite_reply
                         result.reply = cite_reply(result.reply, receipt, include_sources=action_kind == 'web_sources')
                     return result
+                if context.get('gene_receipts') and not await actions.valid():
+                    raise commands.UserFeedbackCheckFailure('Access changed during that check. Ask again for a fresh reply.')
                 saved = await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                     'source': source.model_dump(),
                     'input': text, 'reply': result.reply, 'model': context['model'], 'effort': context['effort'],

@@ -142,14 +142,14 @@ class MediaCache:
                 return None
             return json.loads(path.read_text())
 
-    def pin(self, identifier):
+    def pin(self, identifier, ttl=7200):
         with self.lock:
             self._protected()
             if len(self.leases) >= 512:
                 raise HTTPException(503, 'Too many active audio leases')
             lease = secrets.token_hex(16)
             # Persist across resolver restarts. Bounded lifetime recovers orphaned leases.
-            self.leases[lease] = {'id': identifier, 'until': time.time() + 7200}
+            self.leases[lease] = {'id': identifier, 'until': time.time() + ttl}
             self._write_json(self.lease_file, self.leases)
             return lease
 

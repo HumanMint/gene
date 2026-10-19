@@ -28,7 +28,7 @@ def control_body(**changes):
 def controls_api(tmp_path):
     settings = Settings(tmp_path/'api.sqlite3', '123', '10',
         'runtime-'+'x'*32, 'worker-'+'x'*32, 'deploy-'+'x'*32, fri_token='fri-'+'x'*32,
-        workshop_channel_id='456', agent_channels='1,2', test_guild_id='777', test_channel_id='7')
+        workshop_channel_id='456', command_channel_id='2', agent_channels='1,2', test_guild_id='777', test_channel_id='7')
     client = TestClient(create_app(settings))
     client.post('/runtime/controls/poll', headers=headers('runtime'), json={'actions': list(COMMANDS)})
     return client, Controls(client.app.state.store)
@@ -46,6 +46,10 @@ def controls_api(tmp_path):
     ('stop', 'hey fri stop the music', True), ('skip', 'can you skip this one', True),
     ('volume', 'fri set volume to 50', True), ('volume', 'volume 40', True),
     ('queue', 'whats in the queue', True), ('now_playing', 'what song is this', True),
+    ('now_playing', 'thanks. gene joined but i dont hear music', True),
+    ('play', 'thanks. gene joined but i dont hear music', False),
+    ('now_playing', 'for example i dont hear music', False),
+    ('status', 'dont check gene, i just said no music', False),
     ('status', 'is gene working?', True), ('version', 'which release is gene on', True),
 ])
 def test_only_current_explicit_mutations_are_requests(action, text, ok):
@@ -83,7 +87,7 @@ def test_private_control_checks_source_and_lab_cannot_redirect_to_ff(controls_ap
                     {'source': {**body['source'], 'guild_id': None}}, {'action': 'eval'},
                     {'source': {**body['source'], 'id': '100000000000000001'}}):
         assert client.post('/controls', headers=headers('fri'), json={**body, **changes}).status_code >= 400
-    private = {**body, 'channel_id': '456', 'target_channel_id': '456', 'conversation_id': 'private:999',
+    private = {**body, 'channel_id': '456', 'target_channel_id': '2', 'conversation_id': 'private:999',
                'source': {**body['source'], 'guild_id': None, 'channel_id': '999'}}
     assert client.post('/controls', headers=headers('fri'), json=private).status_code == 200
 
@@ -156,3 +160,33 @@ def test_erasure_cancels_and_redacts_pending_commands(controls_api, privacy):
         assert row['state'] == 'cancelled' and row['payload'] == '{}' and row['result'] == '{}'
         assert row['user_id'] == 'deleted'
     assert controls.poll(['play']) is None
+
+
+def test_recent_receipts_are_scoped_expiring_erased_and_read_only(controls_api):
+    client, controls = controls_api
+    body = control_body()
+    identifier = controls.enqueue(body)['id']
+    claim = controls.poll(['play'])
+    controls.finish(identifier, claim['lease'], {'output': 'Track Enqueued: Sad Machine'})
+    scope = {k: body[k] for k in ('guild_id','user_id','channel_id','conversation_id')}
+    def read(**changes):
+        return client.post('/controls/recent', headers=headers('fri'), json={**scope, **changes}).json()['receipts']
+    rows = read()
+    assert len(rows) == 1 and rows[0]['result']['output'].startswith('Track Enqueued')
+    assert read(user_id='30') == [] and read(conversation_id='private:1') == []
+    assert controls.poll(['play']) is None
+    with controls.store.connection() as db:
+        db.execute('UPDATE gene_controls SET created=?', (time.time()-86401,))
+    assert read() == []
+    controls.store.clear_chats('20')
+    assert read() == []
+    for role in ('runtime', 'worker', 'deploy'):
+        assert client.post('/controls/recent', headers=headers(role), json=scope).status_code == 401
+
+
+def test_dm_target_cannot_fall_back_to_workshop_or_an_arbitrary_channel(controls_api):
+    client, _ = controls_api
+    body = control_body(channel_id='456', conversation_id='private:999')
+    body['source'].update(guild_id=None, channel_id='999')
+    for channel in ('456', '1', '', '999'):
+        assert client.post('/controls', headers=headers('fri'), json={**body, 'target_channel_id': channel}).status_code == 403

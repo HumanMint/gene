@@ -28,6 +28,8 @@ def pending_notice(job, active_sha):
     review = pending_review(job, active_sha)
     if review:
         return review
+    if job['state'] == 'review' and job.get('proposal') and job['proposal']['base_sha'] != active_sha:
+        return 'stale', hashlib.sha256((job['proposal']['sha']+active_sha).encode()).hexdigest()
     if job['state'] not in ('queued', 'building', 'approved', 'deploying', 'deployed',
                             'failed', 'needs_attention', 'rejected'):
         return None

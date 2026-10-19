@@ -177,6 +177,7 @@ class Fri(discord.Client):
                 if result.action:
                     if not actions or result.action['kind'] not in context['actions']:
                         raise commands.UserFeedbackCheckFailure('That action is not available here.')
+                    action_kind = result.action['kind']
                     try:
                         receipt = await actions.execute(result.action)
                     except (commands.UserFeedbackCheckFailure, discord.HTTPException):
@@ -187,8 +188,16 @@ class Fri(discord.Client):
                     current = await self.api('POST', '/chat/context', scope)
                     if current['revision'] != context['revision'] or not await actions.valid():
                         raise commands.UserFeedbackCheckFailure('Access or memory changed during that check. Ask again for a fresh reply.')
-                    # Retrieved messages and derived answers must not outlive source erasure in someone else's chat.
-                    # The learning worker alone may save validated, attributed disclosures.
+                    # Keep only a neutral breadcrumb so follow-ups know which evidence to fetch again.
+                    # Retrieved messages/answers never outlive source erasure in someone else's chat.
+                    checked_channel = receipt.get('channel_id', '')
+                    breadcrumb = f'Earlier check: {action_kind}'
+                    if checked_channel:
+                        breadcrumb += f' in channel {checked_channel}'
+                    breadcrumb += '. Fetch current evidence for follow-up details; no findings are retained here.'
+                    await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
+                        'input': text, 'reply': breadcrumb, 'model': context['model'],
+                        'effort': context['effort'], 'notes': []})
                     result.notes = []
                     result.draft = None
                     return result

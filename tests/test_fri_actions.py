@@ -204,7 +204,7 @@ def test_action_parser_accepts_only_offered_complete_requests(offered, reply, ki
 
 
 @pytest.mark.parametrize('outcome', ['completed', 'failed', 'second_action', 'erased'])
-def test_two_stage_reply_counts_both_calls_and_never_persists_retrieved_turn(monkeypatch, tmp_path, outcome):
+def test_two_stage_reply_counts_both_calls_and_keeps_only_safe_breadcrumb(monkeypatch, tmp_path, outcome):
     async def scenario():
         fri, agent, _, _ = harness(monkeypatch, tmp_path)
         agent.extra_context = AsyncMock(return_value={})
@@ -233,7 +233,13 @@ def test_two_stage_reply_counts_both_calls_and_never_persists_retrieved_turn(mon
         assert fri.chat.respond.await_count == 2
         assert fri.chat.respond.await_args.args[1]['actions'] == {}
         assert fri.chat.respond.await_args.args[1]['action_result']['scanned'] == 3
-        assert not any(path == '/chat/turn' for path, _ in calls)
+        turns = [body for path, body in calls if path == '/chat/turn']
+        if outcome == 'completed':
+            assert len(turns) == 1 and turns[0]['notes'] == []
+            assert 'read_recent in channel 1' in turns[0]['reply']
+            assert 'music' not in turns[0]['reply'] and 'trance' not in turns[0]['reply']
+        else:
+            assert not turns
         assert [body['counters']['input_tokens'] for path, body in calls if path == '/chat/usage/report'] == [10, 20]
         assert not list((tmp_path/'usage').glob('*.json'))
         await fri.close()

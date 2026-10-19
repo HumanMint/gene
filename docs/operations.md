@@ -386,8 +386,9 @@ search remains available separately; old Fri output is never startup personality
 These reads inspect text only, not meme images or attachments.
 
 Access and source privacy are checked again after inference. Lookup-derived replies
-are not persisted as chat turns or personal notes, so they cannot leave copies in
-another person's saved conversation after source erasure. Learning reports and
+are not persisted as chat turns or personal notes. Only a neutral action/channel receipt
+is kept alongside the request, so follow-ups can fetch fresh evidence without leaving
+copies of someone else's messages after source erasure. Learning reports and
 administrative details are only available through these actions to the owner privately.
 Questions about learning no longer go straight to the settings helper.
 

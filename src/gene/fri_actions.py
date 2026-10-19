@@ -6,6 +6,7 @@ import time
 import discord
 from redbot.core import commands
 
+from .fri_web import lookup, public_query
 from .privacy import clean
 
 
@@ -13,11 +14,13 @@ class Actions:
     def __init__(self, agent, user, channel, public):
         self.agent, self.fri = agent, agent.fri
         self.user, self.channel, self.public = user, channel, public
+        self.guild = agent.channel_guild(channel) if public else self.fri.guild_id
         self.owner = user == self.fri.owner_id and not public
         self.sources, self.revisions, self.overview = set(), {}, None
+        self.message, self.model, self.effort = '', '', ''
 
     async def channels(self, fresh=False):
-        member = await self.agent.member(self.user, fresh=fresh)
+        member = await self.agent.member(self.user, fresh=fresh, guild_id=self.guild)
         if not member or not self.agent.config['enabled']:
             return {}
         ids = [str(self.channel)] if self.public else list(dict.fromkeys(
@@ -27,7 +30,7 @@ class Actions:
             if not channel_id.isdigit():
                 continue
             channel = self.fri.get_channel(int(channel_id))
-            if (not channel or getattr(getattr(channel, 'guild', None), 'id', None) != self.fri.guild_id or
+            if (not channel or getattr(getattr(channel, 'guild', None), 'id', None) != self.guild or
                     not self.agent.allowed(channel) or getattr(channel, 'nsfw', False) or
                     (isinstance(channel, discord.Thread) and (channel.is_private() or getattr(channel.parent, 'nsfw', True)))):
                 continue
@@ -47,6 +50,9 @@ class Actions:
         if self.owner:
             actions['learning_overview'] = {'description': 'Read the latest learning reports and summaries. channel_id="".'}
             actions['run_learning'] = {'description': 'Run one learning pass only when explicitly requested, within the existing budget. channel_id="".'}
+        if self.agent.state.get('web_search_enabled'):
+            actions['web_search'] = {'description': 'Look up current public facts with live web access and sources. '
+                'query must be a short exact excerpt of the current message, with no private details. One lookup per reply.'}
         return actions
 
     def scoped_overview(self, overview, channels):
@@ -61,6 +67,12 @@ class Actions:
         kind = action.get('kind')
         if not channels:
             return {'blocked': 'No approved channels are currently readable.'}
+        if kind == 'web_search':
+            if not self.agent.state.get('web_search_enabled') or not public_query(action.get('query'), self.message):
+                return {'blocked': 'Provide a short public topic in the current message; private context cannot be sent to web search.'}
+            result, counters, status = await lookup(self.fri.chat, action['query'], self.model, self.effort)
+            await self.agent.record('web_search', self.model, self.effort, counters, status)
+            return result
         if kind in ('learning_overview', 'run_learning'):
             if not self.owner:
                 return {'blocked': 'Learning administration is available only to the verified owner in private.'}

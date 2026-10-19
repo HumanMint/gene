@@ -108,7 +108,7 @@ class ChatUsage(BaseModel):
     effort: str = Field(max_length=20)
     status: Literal['completed', 'failed', 'incomplete', 'interrupted', 'invalid_output']
     counters: dict
-    role: Literal['conversation', 'attention', 'summary', 'owner_settings', 'investigation', 'history'] = 'conversation'
+    role: Literal['conversation', 'attention', 'summary', 'owner_settings', 'investigation', 'history', 'web_search'] = 'conversation'
 
 
 class ChatCatalog(Actor):
@@ -141,9 +141,10 @@ def create_app(settings: Settings | None = None):
             raise HTTPException(403, 'Only Gene\'s configured owner can do this')
 
     def chat_scope(body):
-        actor(body)
-        if body.channel_id not in {settings.workshop_channel_id, *settings.agent_channels.split(',')} or not body.channel_id:
+        if not settings.chat_channel_allowed(body.guild_id, body.channel_id):
             raise HTTPException(403, 'Use Fri in a configured channel')
+        if body.guild_id != settings.guild_id and body.conversation_id != 'public:'+settings.test_channel_id:
+            raise HTTPException(403, 'Lab chat is limited to the configured public testing channel')
 
     from .fri_agent_api import register
     register(app, store, settings, auth, actor)

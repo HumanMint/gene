@@ -410,6 +410,41 @@ View Channel, Read Message History, and Send Messages permissions in those chann
 Members and Presence privileged intents remain off. Historical author membership
 is checked with bounded individual member lookups, not a full member import.
 
+For a second, chat-only testing room, set `FRI_TEST_GUILD_ID` and
+`FRI_TEST_CHANNEL_ID` in controller.env. Fri reads this scope from the controller.
+The current Lab room is `#tests_n_stuff`; no extra slash registration is needed.
+It uses the same mentions, name addressing, two-minute follow-ups, and conservative
+Luna attention as shared FF channels. Conversation turns and personal preferences
+use the actual Lab guild ID, and Lab cooldowns have a separate allowance. FF facts,
+reports, summaries, and history never enter Lab replies. Global voice preferences
+still apply so the room tests the real personality. Lab is excluded from automatic
+history learning, Gene error investigation, and feature/release requests. Owner
+settings remain in FF or owner DMs. Privacy opt-out is global for that user.
+The Fri health file includes Lab connection and view/send/history permission checks.
+
+Set `FRI_WEB_SEARCH_ENABLED=true` in controller.env to offer live public web lookup.
+It uses the same official subscription OAuth and the selected conversation model
+and effort, with `web_search` and `external_web_access: true`; no API key is needed.
+Fri chooses a lookup when current or uncertain public facts warrant it. A lookup
+receives only a short exact excerpt from the current message naming the public
+topic, plus the current UTC date. It receives no Discord history, owner reports,
+saved facts, personal notes, or credentials. If only prior/private context identifies
+the topic, Fri asks the member to name it. Private identifiers and local addresses
+are rejected. There is one lookup per reply, a 90-second deadline, and the stream
+stops after observing a fourth search/open operation. This bounds the local attempt,
+not a guaranteed provider billing limit; the subscription route has no supported
+`max_tool_calls` field. No tool runs at all for ordinary chat.
+
+Only a completed web call with provider citation annotations can produce a search
+receipt. Fri rewrites it in her voice and the harness appends verified source links.
+Failures are reported without inventing a searched answer; the receipt cannot
+request further actions or create a feature job. Webpages remain untrusted evidence.
+Live access allows fresh page retrieval, but search indexes, inaccessible sites, and
+page publication dates still affect freshness. Usage appears separately as
+`web_search`; the ordinary selection and reply calls remain `conversation` usage.
+See the official [live web access documentation](https://developers.openai.com/api/docs/guides/tools-web-search#live-internet-access)
+and [subscription route limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations#responses-api-requirements).
+
 The rollout uses memba-chat and public-chat for retrospective learning, the existing
 fri-chat for fresh conversation, ff_beta for the workshop, and bot-commands for
 Gene error observation. Old fri-chat history is explicitly excluded from startup

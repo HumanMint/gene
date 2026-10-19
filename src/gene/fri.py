@@ -158,7 +158,8 @@ class Fri(discord.Client):
         self.busy.add(user_id)
         try:
             if self.agent and self.agent.config['enabled']:
-                admission = await self.api('POST', '/agent/admit', {**self.agent.identity(user_id),
+                admission = await self.api('POST', '/agent/admit', {**self.agent.identity(user_id, guild_id),
+                    'channel_id': str(source_channel),
                     'space': 'dm' if visibility == 'private' else 'public'})
                 if not admission['allowed']:
                     minutes = max(1, int((admission['until']-time.time()+59)//60))
@@ -172,8 +173,13 @@ class Fri(discord.Client):
                 actions = Actions(self.agent, user_id, channel_id, visibility == 'public') if self.agent else None
                 context['actions'] = await actions.available() if actions else {}
                 context['display_name'] = clean(display_name, 80)
+                context['requests_enabled'] = guild_id == self.guild_id
                 text = clean(text, 4000)
+                if actions:
+                    actions.message, actions.model, actions.effort = text, context['model'], context['effort']
                 result = await self.chat_once(text, context)
+                if guild_id != self.guild_id:
+                    result.draft = None
                 if result.action:
                     if not actions or result.action['kind'] not in context['actions']:
                         raise commands.UserFeedbackCheckFailure('That action is not available here.')
@@ -200,6 +206,9 @@ class Fri(discord.Client):
                         'effort': context['effort'], 'notes': []})
                     result.notes = []
                     result.draft = None
+                    if action_kind == 'web_search':
+                        from .fri_web import cite_reply
+                        result.reply = cite_reply(result.reply, receipt)
                     return result
                 saved = await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                     'input': text, 'reply': result.reply, 'model': context['model'], 'effort': context['effort'],
@@ -263,9 +272,17 @@ class Fri(discord.Client):
     @tasks.loop(seconds=10)
     async def health(self):
         guild = self.get_guild(self.guild_id)
+        test = self.agent.state.get('test_scope', {}) if self.agent else {}
+        test_guild = self.get_guild(int(test['guild_id'])) if test.get('guild_id', '').isdigit() else None
+        test_channel = self.get_channel(int(test['channel_id'])) if test.get('channel_id', '').isdigit() else None
+        test_permissions = test_channel.permissions_for(test_guild.me) if (
+            test_channel and test_guild and test_guild.me and test_channel.guild.id == test_guild.id) else None
         private_json(self.data / 'fri-health.json', {'at': time.time(),
             'guild_connected': bool(self.is_ready() and guild and not guild.unavailable),
             'sha': os.getenv('GENE_RELEASE_SHA', 'development'), 'guild_id': self.guild_id,
+            'test_scope': {**test, 'connected': bool(self.is_ready() and test_guild and not test_guild.unavailable),
+                           'read_send_history': bool(test_permissions and test_permissions.view_channel and
+                                test_permissions.send_messages and test_permissions.read_message_history)},
             'presence': str(self._connection._status)})
 
     @health.before_loop

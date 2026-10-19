@@ -282,7 +282,7 @@ def test_history_search_cannot_quote_a_different_channel_publicly():
     async def scenario():
         permissions = SimpleNamespace(view_channel=True, read_message_history=True)
         destination = SimpleNamespace(id=456)
-        source = SimpleNamespace(id=789, permissions_for=lambda _: permissions, history=AsyncMock())
+        source = SimpleNamespace(id=789, guild=SimpleNamespace(id=123), permissions_for=lambda _: permissions, history=AsyncMock())
         fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456, api=AsyncMock())
         agent = Agent(fri)
         agent.state['channels'] = ['456', '789']
@@ -336,7 +336,7 @@ def test_owner_can_inspect_saved_behavior_notes_as_an_attachment():
         agent = Agent(fri)
         agent.state['config']['voice_notes'] = 'Keep replies brief.'
         fri.api.return_value = agent.state
-        message = SimpleNamespace(author=SimpleNamespace(id=10), reply=AsyncMock())
+        message = SimpleNamespace(guild=None, author=SimpleNamespace(id=10), reply=AsyncMock())
         assert await agent.owner_control(message, 'show settings')
         attachment = message.reply.await_args.kwargs['file']
         assert attachment.filename == 'fri-behavior-notes.json'

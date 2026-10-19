@@ -78,10 +78,20 @@ class Agent:
     def config(self):
         return self.state['config']
 
-    def identity(self, user):
-        return {'guild_id': str(self.fri.guild_id), 'user_id': str(user)}
+    def identity(self, user, guild=None):
+        return {'guild_id': str(guild or self.fri.guild_id), 'user_id': str(user)}
+
+    def channel_guild(self, channel):
+        scope = self.state.get('test_scope', {})
+        if str(channel) == scope.get('channel_id') and scope.get('guild_id'):
+            return int(scope['guild_id'])
+        return self.fri.guild_id
 
     def allowed(self, channel):
+        guild = getattr(getattr(channel, 'guild', None), 'id', self.fri.guild_id)
+        if guild != self.fri.guild_id:
+            scope = self.state.get('test_scope', {})
+            return str(guild) == scope.get('guild_id') and str(channel.id) == scope.get('channel_id')
         return str(getattr(channel, 'parent_id', None) or channel.id) in {
             str(self.fri.workshop_id), *self.state['channels']}
 
@@ -111,14 +121,16 @@ class Agent:
 
     async def profile(self, channel, user):
         return await self.fri.api('POST', '/agent/context', {
-            **self.identity(user), 'channel_id': str(channel)})
+            **self.identity(user, self.channel_guild(channel)), 'channel_id': str(channel)})
 
-    async def member(self, user, fresh=False):
+    async def member(self, user, fresh=False, guild_id=None):
+        guild_id = guild_id or self.fri.guild_id
         now = time.time()
-        cached = self.members.get(user)
+        key = (guild_id, user)
+        cached = self.members.get(key)
         if not fresh and cached and cached[0] > now:
             return cached[1]
-        guild = self.fri.get_guild(self.fri.guild_id)
+        guild = self.fri.get_guild(guild_id)
         if not guild:
             return None
         try:
@@ -127,7 +139,7 @@ class Agent:
             return None
         if len(self.members) > 200:
             self.members.clear()
-        self.members[user] = (now+120, member)
+        self.members[key] = (now+120, member)
         return member
 
     def messages(self, channel):
@@ -173,6 +185,8 @@ class Agent:
     async def owner_control(self, message, text):
         if message.author.id != self.fri.owner_id:
             return False
+        if message.guild and message.guild.id != self.fri.guild_id:
+            return False  # Lab is for conversation; administrative output stays in FF/owner DMs.
         lower = text.lower()
         if re.search(r'\b(refresh|update)\b.*\bmodels?\b', lower):
             catalog = await self.fri.chat.models()
@@ -242,13 +256,13 @@ class Agent:
         if dm:
             if message.author.bot or not self.config['support_dms'] or not await self.member(message.author.id):
                 return
-        elif message.guild.id != self.fri.guild_id or not self.allowed(message.channel):
+        elif not self.allowed(message.channel):
             return
         channel = message.channel.id
         parent = getattr(message.channel, 'parent_id', None) or channel
         raw = message.content
         if message.author.bot:
-            if message.author.id != self.gene_id:
+            if message.author.id != self.gene_id or message.guild.id != self.fri.guild_id:
                 return
             raw += '\n'+'\n'.join(str(e.to_dict()) for e in message.embeds)
             if not re.search(r'(?i)\b(error|exception|failed|unavailable)\b', raw):
@@ -298,7 +312,7 @@ class Agent:
     async def respond(self, message, text, dm=False):
         try:
             async with message.channel.typing():
-                result = await self.fri.talk(self.fri.guild_id, message.channel.id, message.author.id,
+                result = await self.fri.talk(self.fri.guild_id if dm else message.guild.id, message.channel.id, message.author.id,
                     text, 'private' if dm else 'public', message.author.display_name)
         except commands.UserFeedbackCheckFailure as exc:
             await message.reply(str(exc)[:1800], allowed_mentions=NO_MENTIONS)
@@ -309,7 +323,7 @@ class Agent:
         if result.draft:
             if dm:
                 result.reply += f'\nSubmit the feature/fix request in <#{self.fri.workshop_id}> so it reaches owner review.'
-            else:
+            elif message.guild.id == self.fri.guild_id:
                 view = DraftView(self.fri, message.author.id, result.draft, public=True)
         await message.reply(result.reply[:1950], view=view, mention_author=False,
                             allowed_mentions=NO_MENTIONS, suppress_embeds=True)
@@ -337,10 +351,11 @@ class Agent:
 
     async def search_history(self, message, text):
         """Explicit bounded archive lookup. Results never become startup memory."""
-        member = await self.member(message.author.id)
+        guild_id = message.guild.id if message.guild else self.fri.guild_id
+        member = await self.member(message.author.id, guild_id=guild_id)
         channels = getattr(message, 'channel_mentions', [])
         channel = channels[0] if channels else (message.channel if message.guild else self.fri.get_channel(self.dedicated))
-        if (not member or not channel or not self.allowed(channel) or getattr(channel, 'nsfw', False) or
+        if (not member or not channel or channel.guild.id != guild_id or not self.allowed(channel) or getattr(channel, 'nsfw', False) or
                 not channel.permissions_for(member).view_channel or not channel.permissions_for(member).read_message_history):
             await message.reply('Choose a configured channel you can read, such as #fri-chat.', allowed_mentions=NO_MENTIONS)
             return
@@ -349,7 +364,8 @@ class Agent:
             await message.reply('Ask in that channel or DM me for a lookup there, so its history stays with the right audience.',
                                 allowed_mentions=NO_MENTIONS)
             return
-        admission = await self.fri.api('POST', '/agent/admit', {**self.identity(message.author.id),
+        admission = await self.fri.api('POST', '/agent/admit', {**self.identity(message.author.id, guild_id),
+            'channel_id': str(getattr(channel, 'parent_id', None) or channel.id),
             'space': 'public' if message.guild else 'dm'})
         if not admission['allowed']:
             if admission.get('notice'):
@@ -487,6 +503,9 @@ class Agent:
                     await self.respond(message, message.content[:4000])
 
     async def investigate(self, channel, record):
+        source_channel = self.fri.get_channel(channel)
+        if not source_channel or source_channel.guild.id != self.fri.guild_id or not self.allowed(source_channel):
+            return
         status = await self.fri.api('GET', '/status')
         result, _, state = await self.run('investigation',
             'Read-only diagnosis of a Gene error. Summarize evidence and uncertainty, and draft a small repair request. '

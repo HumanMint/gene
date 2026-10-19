@@ -178,7 +178,7 @@ def test_learning_questions_are_not_settings_commands(monkeypatch, tmp_path, tex
     async def scenario():
         fri, agent, _, _ = harness(monkeypatch, tmp_path)
         fri.api = AsyncMock()
-        message = SimpleNamespace(author=SimpleNamespace(id=10), reply=AsyncMock())
+        message = SimpleNamespace(guild=None, author=SimpleNamespace(id=10), reply=AsyncMock())
         assert not await agent.owner_control(message, text)
         fri.api.assert_not_awaited()
         message.reply.assert_not_awaited()

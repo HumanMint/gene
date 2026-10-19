@@ -18,6 +18,7 @@ class Change(Identity):
 
 class Admission(Identity):
     space: str
+    channel_id: str = ''
 
 
 class Context(Identity):
@@ -60,15 +61,17 @@ def register(app, store, settings, auth, actor):
 
     @app.post('/agent/admit', dependencies=[auth('fri')])
     def admit(body: Admission):
-        actor(body)
-        return agent.admit(body.user_id, body.space)
+        if body.guild_id == settings.guild_id:
+            actor(body)
+        elif body.space != 'public' or not settings.chat_channel_allowed(body.guild_id, body.channel_id):
+            raise HTTPException(403, 'Lab chat is limited to the configured public testing channel')
+        return agent.admit(body.user_id, body.space, body.guild_id)
 
     @app.post('/agent/context', dependencies=[auth('fri')])
     def context(body: Context):
-        actor(body)
-        if body.channel_id not in {settings.workshop_channel_id, *settings.agent_channels.split(',')}:
+        if not settings.chat_channel_allowed(body.guild_id, body.channel_id):
             raise HTTPException(403, 'Channel is outside Fri scope')
-        return agent.context(body.channel_id, body.user_id)
+        return agent.context(body.channel_id, body.user_id, body.guild_id)
 
     @app.post('/agent/learning/claim', dependencies=[auth('fri')])
     def claim():

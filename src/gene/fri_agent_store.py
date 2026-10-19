@@ -66,6 +66,9 @@ class AgentStore:
                     'started': self.get(db, 'started', 0), 'next_learning': self.get(db, 'next_learning', 0),
                     'history_channels': self.settings.agent_history_channels.split(','),
                     'channels': self.settings.agent_channels.split(','),
+                    'test_scope': {'guild_id': self.settings.test_guild_id,
+                                   'channel_id': self.settings.test_channel_id},
+                    'web_search_enabled': self.settings.web_search_enabled,
                     'role_id': self.settings.agent_role_id,
                     'report_pending': bool(db.execute('SELECT 1 FROM agent_reports WHERE delivered=0').fetchone())}
 
@@ -106,9 +109,12 @@ class AgentStore:
             self.store._audit(db, actor, 'fri_behavior_changed', str(version+1), json.dumps(changes))
         return self.state()
 
-    def admit(self, user, space):
+    def admit(self, user, space, guild=None):
         if space not in ('dm', 'public'):
             raise ValueError('Invalid conversation space')
+        limit_key = space+'_turns'
+        if guild and guild != self.settings.guild_id:
+            space += ':'+guild
         now = time.time()
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -122,7 +128,7 @@ class AgentStore:
             if now-started > 1800 or (row and row['until']):
                 started, turns = now, 0
             until = 0
-            if turns >= config[space+'_turns']:
+            if turns >= config[limit_key]:
                 until = now + random.SystemRandom().randint(config['cooldown_min_minutes']*60,
                                                              config['cooldown_max_minutes']*60)
             db.execute('INSERT INTO agent_sessions VALUES (?,?,?,?,?) ON CONFLICT(user_id,space) '
@@ -278,13 +284,14 @@ class AgentStore:
                     'daily_reserved': budget.get('used', 0) if budget.get('day') == day else 0,
                     'daily_limit': config['history_daily_messages'], 'images_inspected': False}
 
-    def context(self, channel, user):
+    def context(self, channel, user, guild=None):
+        guild = guild or self.settings.guild_id
         with self.store.connection() as db:
             row = db.execute('SELECT body FROM agent_summaries WHERE channel_id=? AND at>?',
                              (channel, time.time()-2*86400)).fetchone()
-            profile = self.store._personal_context(db, self.settings.guild_id, 'public:'+channel, user)
+            profile = self.store._personal_context(db, guild, 'public:'+channel, user)
             rev = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
-            return {'summary': row[0] if row and profile['enabled'] else '',
+            return {'summary': row[0] if row and profile['enabled'] and guild == self.settings.guild_id else '',
                     'enabled': profile['enabled'], 'revision': rev[0] if rev else 0}
 
     def reports(self):

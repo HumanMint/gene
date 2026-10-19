@@ -46,7 +46,7 @@ def test_catalog_failure_retains_existing_choices(store):
 def test_only_owner_can_change_or_refresh_models(client):
     for route, extra in [('/models/select', {'model_id': 'gpt-6-astra'}), ('/models/refresh', {})]:
         assert client.post(route, json={**actor('member'), **extra},
-                           headers=headers('runtime')).status_code == 403
+                           headers=headers('fri')).status_code == 403
         assert client.post(route, json={**actor(), **extra},
                            headers=headers('worker')).status_code == 401
 

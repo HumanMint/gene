@@ -2,7 +2,6 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-import discord
 import pytest
 from redbot.core import commands
 
@@ -61,7 +60,7 @@ def test_version_is_registered_as_a_hybrid_subcommand():
 
 
 @pytest.mark.parametrize('guild_id, allowed', [(123, True), (456, False), (None, False)])
-def test_cog_check_restricts_version_to_configured_lab(guild_id, allowed):
+def test_cog_check_restricts_version_to_configured_server(guild_id, allowed):
     cog, ctx = environment()
     ctx.guild = SimpleNamespace(id=guild_id) if guild_id is not None else None
     assert asyncio.run(cog.cog_check(ctx)) is allowed
@@ -71,23 +70,5 @@ def test_cog_check_restricts_version_to_configured_lab(guild_id, allowed):
     'approve', 'models', 'model', 'reject', 'pause', 'rollback', 'usage',
     'remember', 'memories', 'forget',
 ])
-@pytest.mark.parametrize('is_owner', [False, True])
-def test_owner_controls_require_bot_owner(name, is_owner):
-    async def scenario():
-        command = Gene.gene.get_command(name).copy()
-        # Red stores is_owner in Requires, not discord.py's command.checks.
-        assert command.requires.privilege_level is commands.PrivilegeLevel.BOT_OWNER
-        # Simulate completed permission initialization without starting a bot.
-        command.requires.ready_event.set()
-        bot = SimpleNamespace(
-            is_owner=AsyncMock(return_value=is_owner),
-            verify_permissions_hooks=AsyncMock(return_value=True),
-        )
-        ctx = SimpleNamespace(bot=bot, author=object(), cog=None,
-                              guild=SimpleNamespace(id=123),
-                              bot_permissions=discord.Permissions.none())
-        assert await command.requires.verify(ctx) is is_owner
-        bot.is_owner.assert_awaited_once_with(ctx.author)
-        # Even an allowing permission hook must not override owner controls.
-        bot.verify_permissions_hooks.assert_not_awaited()
-    asyncio.run(scenario())
+def test_version_does_not_restore_controls_moved_to_fri(name):
+    assert Gene.gene.get_command(name) is None

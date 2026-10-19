@@ -599,7 +599,9 @@ Set `GENE_AUDIO_PREPARE_URL=http://gene-audio:2334` and `GENE_AUDIO_PREPARE_TOKE
 `runtime.env`. The latter is the resolver service credential, never a Discord token.
 The resolver must bind `0.0.0.0` inside its Docker network namespace; do not publish
 port 2334 on the host. Keep its token and namespace isolated. Build the resolver image
-from the same tested SHA. Roll back its image/environment alongside the bot runtime.
+from the same tested SHA and pin it with `GENE_AUDIO_RESOLVER_SHA` in `audio-release.env`.
+`GENE_AUDIO_SHA` continues to pin the unchanged audio node. Roll back the resolver
+image/environment alongside the bot runtime.
 
 Set `GENE_COMMAND_CHANNEL_ID` in controller configuration to the approved bot commands
 channel. Fri sends member-DM controls there, with member/channel access rechecked.

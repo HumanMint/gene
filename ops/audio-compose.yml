@@ -19,7 +19,7 @@ services:
     mem_limit: 640m
     cpus: 1
   resolver:
-    image: gene-audio-resolver:${GENE_AUDIO_SHA:?Pin the maintainer audio release}
+    image: gene-audio-resolver:${GENE_AUDIO_RESOLVER_SHA:-${GENE_AUDIO_SHA:?Pin the maintainer audio release}}
     env_file: /srv/gene/secrets/audio-resolver.env
     network_mode: service:node
     depends_on: [node]

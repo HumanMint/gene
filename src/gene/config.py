@@ -16,6 +16,7 @@ class Settings:
     workshop_channel_id: str = ''
     history_channel_id: str = ''
     fri_token: str = ''
+    runtime_guild_id: str = ''
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -29,6 +30,7 @@ class Settings:
             workshop_channel_id=os.environ.get('GENE_WORKSHOP_CHANNEL_ID', ''),
             history_channel_id=os.environ.get('GENE_HISTORY_CHANNEL_ID', ''),
             fri_token=os.environ.get('GENE_FRI_TOKEN', ''),
+            runtime_guild_id=os.environ.get('GENE_RUNTIME_GUILD_ID', ''),
         )
         tokens = [settings.runtime_token, settings.worker_token, settings.deploy_token, settings.fri_token]
         if any(len(token) < 32 for token in tokens) or len(set(tokens)) != 4:

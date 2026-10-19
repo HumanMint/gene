@@ -13,6 +13,11 @@ def allowed_guild(guild_id: int | None) -> bool:
     return bool(configured) and str(guild_id) == configured
 
 
+def configured_presence():
+    # Deployment configuration controls visibility; Discord commands cannot change it.
+    return 'online' if os.getenv('GENE_PRESENCE') == 'online' else 'invisible'
+
+
 def install_private_runtime():
     import discord
     import redbot.__main__ as red_main
@@ -35,12 +40,12 @@ def install_private_runtime():
     class PrivateRed(red_bot.Red):
         def __init__(self, *args, **kwargs):
             # Included in the first gateway IDENTIFY, avoiding a brief online flash.
-            kwargs['status'] = discord.Status.invisible
+            kwargs['status'] = discord.Status(configured_presence())
             kwargs['activity'] = None
             super().__init__(*args, **kwargs)
 
         async def change_presence(self, **kwargs):
-            kwargs.update(status=discord.Status.invisible, activity=None)
+            kwargs.update(status=discord.Status(configured_presence()), activity=None)
             return await super().change_presence(**kwargs)
 
         def dispatch(self, event, /, *args, **kwargs):

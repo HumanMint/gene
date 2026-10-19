@@ -14,7 +14,9 @@ from discord import app_commands
 from discord.ext import tasks
 from redbot.core import commands
 
-from .fri_chat import Chat
+from .fri_addressing import addressed_text
+from .fri_chat import Chat, ChatResult
+from .fri_memory import describe_memory, memory_intent
 from .fri_panel import DraftView, HomeView, authorized, card, reply, sessions
 from .fri_reviews import ReviewButton, notify_owner
 from .panels import defer_panel
@@ -39,6 +41,7 @@ class Fri(discord.Client):
     def __init__(self):
         intents = discord.Intents.none()
         intents.guilds = intents.guild_messages = intents.dm_messages = True
+        intents.message_content = True
         super().__init__(intents=intents, status=discord.Status.invisible,
                          allowed_mentions=NO_MENTIONS, max_messages=None)
         self.bot = self
@@ -63,9 +66,9 @@ class Fri(discord.Client):
         @self.tree.command(name='fri', description='Chat, request a feature or fix, and follow development.',
                            guild=discord.Object(id=self.guild_id))
         async def menu(interaction: discord.Interaction):
-            await reply(self, interaction, embed=card('Fri', 'Ideas, fixes, and occasional sarcasm. '
-                'Chat here privately, or @mention me in this workshop. I remember your last six exchanges '
-                'for up to seven days; private and public chats stay separate.'),
+            await reply(self, interaction, embed=card('Fri', 'Say “fri”, @mention me, or reply to one of my messages '
+                'in this workshop. This panel is here for private chat and settings. '
+                'I can keep small preferences you share; ask what I remember or tell me to forget you.'),
                 view=HomeView(self, interaction.user.id))
 
         await self.tree.sync(guild=discord.Object(id=self.guild_id))
@@ -101,17 +104,32 @@ class Fri(discord.Client):
                 await self.api('POST', '/chat/usage/report', json.loads(path.read_text()))
                 path.unlink()
 
-    async def talk(self, guild_id, channel_id, user_id, text, visibility):
+    async def talk(self, guild_id, channel_id, user_id, text, visibility, display_name=''):
+        scope = {'guild_id': str(guild_id), 'user_id': str(user_id), 'channel_id': str(self.workshop_id),
+                 'conversation_id': f'{visibility}:{channel_id}'}
+        # Privacy controls must work while inference is busy or the subscription is down.
+        intent = memory_intent(text)
+        if intent == 'show':
+            context = await self.api('POST', '/chat/context', scope)
+            profile = context['personal_memory']
+            profile['notes'] = [{**note, 'evidence': discord.utils.escape_markdown(note['evidence'])}
+                                for note in profile['notes']]
+            return ChatResult(reply=describe_memory(profile), status='completed')
+        if intent in ('disable', 'enable'):
+            await self.api('POST', '/chat/memory/control', {**scope, 'action': intent})
+            text = ('Done. I erased our saved chats and personal notes, and turned memory off. '
+                    'Say “remember me again” if you change your mind. Discord messages and backups are separate.'
+                    if intent == 'disable' else 'Memory’s back on. I’ll pick up small preferences as we talk.')
+            return ChatResult(reply=text, status='completed')
         if user_id in self.busy:
             raise commands.UserFeedbackCheckFailure('I’m still replying to you. Give me a moment.')
         if not 1 <= len(text) <= 4000:
             raise commands.UserFeedbackCheckFailure('Keep each message between 1 and 4000 characters.')
         self.busy.add(user_id)
-        scope = {'guild_id': str(guild_id), 'user_id': str(user_id), 'channel_id': str(self.workshop_id),
-                 'conversation_id': f'{visibility}:{channel_id}'}
         try:
             async with self.chat_slots:
                 context = await self.api('POST', '/chat/context', scope)
+                context['display_name'] = clean(display_name, 80)
                 text = clean(text, 4000)
                 result = await self.chat.respond(text, context)
                 attempt = uuid.uuid4().hex
@@ -124,9 +142,13 @@ class Fri(discord.Client):
                     LOG.warning('Usage is saved locally; controller delivery will retry')
                 if result.error:
                     raise commands.UserFeedbackCheckFailure(result.error)
-                await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
+                saved = await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                     'input': text, 'reply': result.reply, 'model': context['model'], 'effort': context['effort'],
+                    'notes': result.notes,
                     'input_tokens': result.counters.get('input_tokens'), 'output_tokens': result.counters.get('output_tokens')})
+                if saved.get('first_memory'):
+                    result.reply += ('\n\n-# I kept a small preference from this. Ask “what do you remember about me?” '
+                                     'or say “forget me” any time.')
                 return result
         finally:
             self.busy.discard(user_id)
@@ -135,24 +157,29 @@ class Fri(discord.Client):
         await defer_panel(interaction)
         await reply(self, interaction, 'Thinking…', view=HomeView(self, interaction.user.id))
         try:
-            result = await self.talk(interaction.guild_id, interaction.channel_id, interaction.user.id, text, 'private')
+            result = await self.talk(interaction.guild_id, interaction.channel_id, interaction.user.id, text, 'private',
+                                     interaction.user.display_name)
             view = DraftView(self, interaction.user.id, result.draft) if result.draft else HomeView(self, interaction.user.id)
             await reply(self, interaction, embed=card('Fri', result.reply), view=view)
         except commands.UserFeedbackCheckFailure as exc:
             await reply(self, interaction, str(exc), view=HomeView(self, interaction.user.id))
 
     async def on_message(self, message):
-        if (message.author.bot or not message.guild or message.guild.id != self.guild_id or
-                self.user.id not in {user.id for user in message.mentions}):
+        if (message.author.bot or getattr(message, 'webhook_id', None) or not message.guild or
+                message.guild.id != self.guild_id):
             return
         if (getattr(message.channel, 'parent_id', None) or message.channel.id) != self.workshop_id:
             return
-        text = message.content.replace(f'<@{self.user.id}>', '').replace(f'<@!{self.user.id}>', '').strip()
+        text = await addressed_text(message, self.user.id)
+        if text is None:
+            return
         try:
             async with message.channel.typing():
-                result = await self.talk(message.guild.id, message.channel.id, message.author.id, text, 'public')
+                result = await self.talk(message.guild.id, message.channel.id, message.author.id, text, 'public',
+                                         message.author.display_name)
             view = DraftView(self, message.author.id, result.draft, public=True) if result.draft else None
-            await message.reply(embed=card('Fri', result.reply), view=view, mention_author=False)
+            await message.reply(result.reply, view=view, mention_author=False, allowed_mentions=NO_MENTIONS,
+                                suppress_embeds=True)
         except commands.UserFeedbackCheckFailure as exc:
             await message.reply(str(exc)[:1800], mention_author=False)
 
@@ -173,7 +200,8 @@ class Fri(discord.Client):
         guild = self.get_guild(self.guild_id)
         private_json(self.data / 'fri-health.json', {'at': time.time(),
             'guild_connected': bool(self.is_ready() and guild and not guild.unavailable),
-            'sha': os.getenv('GENE_RELEASE_SHA', 'development'), 'presence': 'invisible'})
+            'sha': os.getenv('GENE_RELEASE_SHA', 'development'), 'guild_id': self.guild_id,
+            'presence': str(self._connection._status)})
 
     @health.before_loop
     async def before_health(self):

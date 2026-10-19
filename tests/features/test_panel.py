@@ -44,7 +44,8 @@ def test_persistent_home_panel_and_all_callbacks_respect_server_boundary():
         cog, interaction = environment()
         panel = HomeView(cog)
         assert panel.is_persistent()
-        assert {b.label for b in panel.children} >= {'Music', 'Ask Fri', 'Status'}
+        assert {b.label for b in panel.children} >= {'Music', 'Status'}
+        assert 'Ask Fri' not in {b.label for b in panel.children}
         interaction.guild_id = 999
         assert not await panel.interaction_check(interaction)
         interaction.response.send_message.assert_not_awaited()

@@ -425,7 +425,12 @@ class HomeView(ScopedView):
     async def forget_chats(self, interaction, button):
         await defer_panel(interaction)
         await self.cog.api('POST', '/chat/clear', actor(interaction))
-        await reply(self.cog, interaction, 'Your saved Fri conversation context was cleared. Discord posts and backups are separate records.')
+        await reply(self.cog, interaction, 'Recent chat context cleared. Personal notes stay in My memory; '
+                    'say “fri forget me” to clear those too and stop remembering. Discord posts and backups are separate.')
+
+    @discord.ui.button(label='My memory', custom_id='fri:home:memory', row=2)
+    async def my_memory(self, interaction, button):
+        await self.cog.chat_interaction(interaction, 'what do you remember about me?')
 
     @discord.ui.button(label='Owner settings', custom_id='fri:home:settings', row=1)
     async def settings(self, interaction, button):

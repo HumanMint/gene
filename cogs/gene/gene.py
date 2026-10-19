@@ -108,7 +108,7 @@ class Gene(commands.Cog):
     async def status(self, ctx):
         """Show the current functional bot release."""
         state = await self.api('GET', '/status')
-        await self.say(ctx, f"Gene release: `{state['active_sha']}`. Open /fri for development and requests.")
+        await self.say(ctx, f"Gene release: `{state['active_sha']}`. Music and server tools are ready.")
 
     @gene.command(name='forgetme')
     async def forgetme(self, ctx, confirm: bool = False):

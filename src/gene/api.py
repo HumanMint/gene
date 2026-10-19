@@ -95,6 +95,11 @@ class ChatTurn(ChatScope):
     effort: str = Field(max_length=20)
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    notes: list[dict] = Field(default_factory=list, max_length=3)
+
+
+class PersonalControl(ChatScope):
+    action: Literal['enable', 'disable']
 
 
 class ChatUsage(BaseModel):
@@ -240,8 +245,11 @@ def create_app(settings: Settings | None = None):
         return {'ok': True}
 
     @app.post('/privacy/erase', dependencies=[auth('runtime', 'fri')])
-    def erase(body: Actor):
-        actor(body)
+    def erase(body: Actor, authorization: str = Header(default='')):
+        runtime = hmac.compare_digest(authorization, 'Bearer ' + settings.runtime_token)
+        expected = (settings.runtime_guild_id or settings.guild_id) if runtime else settings.guild_id
+        if not expected or body.guild_id != expected:
+            raise HTTPException(403, 'This server is not configured for this bot')
         store.erase_user(body.user_id)
         return {'ok': True}
 
@@ -261,8 +269,15 @@ def create_app(settings: Settings | None = None):
         actor(body)
         if body.channel_id != settings.workshop_channel_id:
             raise HTTPException(403, 'Use Fri in the configured workshop')
-        store.save_chat(body.guild_id, body.conversation_id, body.user_id, body.revision, body.input,
-                        body.reply, body.model, body.effort, body.input_tokens, body.output_tokens)
+        return store.save_chat(body.guild_id, body.conversation_id, body.user_id, body.revision, body.input,
+                              body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes)
+
+    @app.post('/chat/memory/control', dependencies=[auth('fri')])
+    def personal_control(body: PersonalControl):
+        actor(body)
+        if body.channel_id != settings.workshop_channel_id:
+            raise HTTPException(403, 'Use Fri in the configured workshop')
+        store.personal_control(body.user_id, body.action)
         return {'ok': True}
 
     @app.post('/chat/usage/report', dependencies=[auth('fri')])

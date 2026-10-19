@@ -19,7 +19,7 @@ def configured(monkeypatch):
 def test_fri_dispatch_gates_other_servers_channels_and_dm_messages(monkeypatch):
     async def scenario():
         fri = configured(monkeypatch)
-        assert fri.intents.message_content is False
+        assert fri.intents.message_content is True
         assert fri._connection._status == 'invisible'
         fri._connection.user = SimpleNamespace(id=99)
         event = SimpleNamespace(guild_id=123, channel_id=456, channel=SimpleNamespace(id=456),
@@ -45,7 +45,9 @@ def test_fri_dispatch_gates_other_servers_channels_and_dm_messages(monkeypatch):
         message = SimpleNamespace(author=SimpleNamespace(bot=False), guild=None)
         await fri.on_message(message)
         message.guild = SimpleNamespace(id=123)
+        message.channel = SimpleNamespace(id=456)
         message.mentions = []
+        message.content = 'just chatting'
         await fri.on_message(message)
         fri.talk.assert_not_awaited()
         await fri.close()

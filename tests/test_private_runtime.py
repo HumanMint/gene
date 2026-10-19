@@ -20,6 +20,7 @@ def test_initial_identify_and_presence_updates_are_invisible(monkeypatch):
     import redbot.__main__ as red_main
     import redbot.core.bot as red_bot
     original_red, original_tree = red_main.Red, red_bot.RedTree
+    monkeypatch.delenv('GENE_PRESENCE', raising=False)
     try:
         main = install_private_runtime()
         with patch.object(red_bot.Red, '__init__', return_value=None) as init:
@@ -28,6 +29,26 @@ def test_initial_identify_and_presence_updates_are_invisible(monkeypatch):
         with patch.object(red_bot.Red, 'change_presence', new_callable=AsyncMock) as change:
             asyncio.run(instance.change_presence(status=discord.Status.online))
             assert change.call_args.kwargs['status'] == discord.Status.invisible
+    finally:
+        red_main.Red, red_bot.RedTree = original_red, original_tree
+
+
+def test_online_presence_is_controlled_by_deployment_not_discord(monkeypatch):
+    import asyncio
+
+    import discord
+    import redbot.__main__ as red_main
+    import redbot.core.bot as red_bot
+    monkeypatch.setenv('GENE_PRESENCE', 'online')
+    original_red, original_tree = red_main.Red, red_bot.RedTree
+    try:
+        main = install_private_runtime()
+        with patch.object(red_bot.Red, '__init__', return_value=None) as init:
+            instance = main.Red()
+            assert init.call_args.kwargs['status'] == discord.Status.online
+        with patch.object(red_bot.Red, 'change_presence', new_callable=AsyncMock) as change:
+            asyncio.run(instance.change_presence(status=discord.Status.invisible))
+            assert change.call_args.kwargs['status'] == discord.Status.online
     finally:
         red_main.Red, red_bot.RedTree = original_red, original_tree
 

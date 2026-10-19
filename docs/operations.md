@@ -164,7 +164,8 @@ release SHA, and retain the GitHub diff for review. Do not automatically merge t
 Before switching a release, pause the worker/deployer, confirm no job is building or
 deploying, and back up the controller, stopped Red state, previous source, and release
 configuration. Install immutable cogs and check a fresh heartbeat for the expected SHA,
-Discord Lab connection, and invisible presence. Restore the previous release on failure;
+the configured guild connection and presence: Gene online in FF, Fri invisible in the Lab.
+Restore the previous release and environment on failure;
 resume the worker/deployer only after the new or restored release is healthy. Record
 the deployment as chat-authorized maintainer work, without fabricating a Discord approval.
 
@@ -192,8 +193,8 @@ usage receipts retry delivery to the controller without duplicating attempts.
 
 ### Connect Fri on the personal VM
 
-Create a distinct Discord bot application. Keep privileged intents off: direct mentions
-and slash/modal interactions supply the necessary content. Run `scripts/configure_fri.py`
+Create a distinct Discord bot application. Enable Message Content Intent so Fri can recognize
+her name in normal messages; leave Members and Presence intents off. Run `scripts/configure_fri.py`
 locally, enter the bot token privately, and use its printed invite if Fri is not in the Lab.
 It writes `.secrets/fri.env`; Gene's existing bot identity is untouched.
 
@@ -220,6 +221,19 @@ The runtime image pins Fri's trusted implementation under `src/gene/`; it does n
 mutable feature cogs, host files, the Docker socket, or development credentials. Fri's chat
 has no executable tools. Gene receives only its functional service credential. Owner UI
 callbacks and the controller enforce authorization independently of model text.
+
+### Gene in FF, Fri in the Lab
+
+Only Gene's `runtime.env` uses the reviewed FF guild, workshop, highlight, and meme-source IDs
+from the private `.env.production` configuration. Set `GENE_PRESENCE=online` and
+`GENE_SHOW_FRI=false` there. Fri's `fri.env` and the controller's `GENE_GUILD_ID` and workshop
+remain the Lab IDs; Fri always identifies as invisible. In `controller.env`, set
+`GENE_RUNTIME_GUILD_ID` to FF so Gene's privacy endpoint accepts its users without extending
+Fri's request/chat/approval authority outside the Lab. Worker and deployer credentials stay distinct.
+Gene's saved Red settings remain per guild. Confirm FF text and voice permissions, fresh
+heartbeats with the exact guild/presence/SHA, and guild-only command registrations after switching.
+Remove the stale Lab Gene command after successful promotion, retaining its JSON for rollback.
+Do not announce Fri or publish her commands in FF while she is under development.
 
 Sources: [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source),
 [self-hosted VMs](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms),
@@ -293,11 +307,17 @@ uv run --no-sync python scripts/import_history.py --delete-evidence
 ```
 
 Shared memory consists of explicit owner-approved facts and operational request/release records.
-Fri retains six exchanges per person and conversation for up to seven days; public and private
-contexts are separate. No passive chat collection occurs. **Forget my chats** clears the
-caller’s conversation context and invalidates in-flight replies. Owner **Saved context**
-controls inspect and remove shared facts.
-`gene forgetme true` removes the caller's request text, chats, links and approved facts from
+Fri retains six exchanges per person and conversation for seven days, plus up to five short
+personal notes for 90 days. The notes are exact, validated self-disclosures for nickname, games,
+music, hobbies, or conversation style; each category replaces its previous note. Public/private
+conversations, channels, users, and guilds stay separate. No ambient chat is collected.
+“fri what do you remember about me?” inspects the current conversation's notes. “fri forget me”
+erases all that user's Fri notes and chat turns and disables retention; “fri remember me again”
+re-enables it. These controls run without inference and invalidate in-flight replies so deleted
+data cannot be written back. **Forget my chats** clears recent turns while retaining personal notes.
+Anonymous usage counts survive erasure. Personal notes are never shared with the development worker.
+Owner **Saved context** controls remain the only way to add shared facts.
+`gene forgetme true` removes the caller's request text, chats, personal notes, links and approved facts from
 the active database, and cancels pending proposals. It cannot recall inputs already
 sent to a running job or delete Discord/GitHub records. Raw failed-job logs/worktrees
 and backups are private operator records; remove them when resolving erasure requests.

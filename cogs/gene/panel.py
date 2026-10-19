@@ -212,6 +212,8 @@ async def show_queue(cog, interaction, page=0):
 class HomeView(ScopedView):
     def __init__(self, cog, user_id=None):
         super().__init__(cog, user_id, timeout=None if user_id is None else 600, navigation=False)
+        if os.getenv('GENE_SHOW_FRI', 'false') != 'true':
+            self.remove_item(self.fri)
 
     @discord.ui.button(label='Music', style=discord.ButtonStyle.primary, custom_id='gene:home:music', row=0)
     async def music(self, interaction, button):
@@ -226,5 +228,5 @@ class HomeView(ScopedView):
     async def status(self, interaction, button):
         await defer_panel(interaction)
         state = await self.cog.api('GET', '/status')
-        text = f"Release: `{state['active_sha']}`\nMusic and server tools are handled by Gene. Open /fri for development."
+        text = f"Release: `{state['active_sha']}`\nMusic and server tools are ready."
         await reply(self.cog, interaction, embed=card('Gene status', text))

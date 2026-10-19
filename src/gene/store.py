@@ -8,6 +8,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from .fri_memory import MAX_NOTES, TTL, personal_note
 from .privacy import clean
 from .reviews import pending_notice, pending_review, request_reference
 
@@ -78,6 +79,14 @@ class Store:
                 );
                 CREATE TABLE IF NOT EXISTS chat_models (id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS chat_revisions (user_id TEXT PRIMARY KEY, revision INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS personal_preferences (
+                    user_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS personal_notes (
+                    id INTEGER PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL, category TEXT NOT NULL, evidence TEXT NOT NULL, at REAL NOT NULL,
+                    UNIQUE(guild_id,channel_id,user_id,category)
+                );
                 CREATE TABLE IF NOT EXISTS chat_turns (
                     id INTEGER PRIMARY KEY, guild_id TEXT NOT NULL, channel_id TEXT NOT NULL,
                     user_id TEXT NOT NULL, input TEXT NOT NULL, reply TEXT NOT NULL,
@@ -127,6 +136,7 @@ class Store:
         with self.connection() as db:
             # The controller health check runs even when nobody chats with Fri.
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
+            db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
             return {
                 'paused': self._setting(db, 'paused') == 'true',
                 'active_sha': self._setting(db, 'active_sha'),
@@ -464,7 +474,7 @@ class Store:
             self._audit(db, actor, 'forget', memory_id)
 
     def erase_user(self, user_id):
-        self.clear_chats(user_id)
+        self.personal_control(user_id, 'disable')
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             rows = db.execute('SELECT id,proposal FROM jobs WHERE user_id=?', (user_id,)).fetchall()
@@ -485,6 +495,7 @@ class Store:
     def chat_context(self, guild_id, channel_id, user_id):
         with self.connection() as db:
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
+            profile = self._personal_context(db, guild_id, channel_id, user_id)
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             turns = [dict(row) for row in db.execute(
                 'SELECT input,reply FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
@@ -492,15 +503,32 @@ class Store:
             facts = [row[0] for row in db.execute('SELECT body FROM memories WHERE guild_id=? '
                                                   'ORDER BY created DESC LIMIT 20', (guild_id,))]
             return {'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
+                    'personal_memory': profile,
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
 
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
-                  input_tokens=None, output_tokens=None):
+                  input_tokens=None, output_tokens=None, notes=()):
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             if revision != (current[0] if current else 0):
                 raise Conflict('This conversation was cleared while Fri was replying. Start again.')
+            profile = self._personal_context(db, guild_id, channel_id, user_id)
+            if not profile['enabled']:
+                return {'ok': True, 'first_memory': False}
+            saved = 0
+            for candidate in list(notes)[:3]:
+                note = personal_note(candidate, text)
+                if note:
+                    db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at) '
+                               'VALUES (?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category) '
+                               'DO UPDATE SET evidence=excluded.evidence,at=excluded.at',
+                               (guild_id, channel_id, user_id, *note, time.time()))
+                    saved += 1
+            db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
+                       'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? '
+                       'AND user_id=? ORDER BY at DESC LIMIT ?)',
+                       (guild_id, channel_id, user_id, guild_id, channel_id, user_id, MAX_NOTES))
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
                        'input_tokens,output_tokens) VALUES (?,?,?,?,?,?,?,?,?,?)',
                        (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
@@ -509,6 +537,30 @@ class Store:
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',
                        (guild_id, channel_id, user_id, guild_id, channel_id, user_id))
+            return {'ok': True, 'first_memory': bool(saved and not profile['notes'])}
+
+    @staticmethod
+    def _personal_context(db, guild_id, channel_id, user_id):
+        db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
+        row = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
+        return {'enabled': bool(row[0]) if row else True,
+                'notes': [dict(r) for r in db.execute('SELECT category,evidence FROM personal_notes '
+                    'WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY at DESC LIMIT ?',
+                    (guild_id, channel_id, user_id, MAX_NOTES))]}
+
+    def personal_control(self, user_id, action):
+        if action not in ('disable', 'enable'):
+            raise ValueError('Invalid memory control')
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute('INSERT INTO personal_preferences VALUES (?,?) ON CONFLICT(user_id) '
+                       'DO UPDATE SET enabled=excluded.enabled', (user_id, action == 'enable'))
+            if action == 'disable':
+                db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
+                db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
+            # Invalidate even an in-flight reply that began before memory was toggled.
+            db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
+                       'DO UPDATE SET revision=revision+1', (user_id,))
 
     def clear_chats(self, user_id):
         with self.connection() as db:

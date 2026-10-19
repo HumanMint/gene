@@ -3,20 +3,31 @@
 Gene is a private Discord assistant for a friend server: classic Red commands and
 music, meme highlights, and an owner-approved development loop for Discord requests.
 
-**Current mode: invisible, Discord Lab only.** Gene handles music, meme highlights,
-and the established Red functions. Fri is a separate bot for chat and development requests.
-Both register commands only in the configured lab. Ordinary DMs stay disabled; only the
+**Current mode: Gene online in Fricking Fricks; Fri invisible in Discord Lab.**
+Gene handles music, meme highlights, and the established Red functions. Fri is a separate
+bot for conversation and development requests. Each registers commands only in its configured
+server. Ordinary DMs stay disabled; only the
 owner's approval buttons on Fri's own review DMs are accepted.
 
-In **Discord Lab → #tests_n_stuff**, open `/gene` for music and server tools or `/fri`
-for chat, requests, progress, and owner settings. Join a voice channel before adding music.
+In **Fricking Fricks**, open `/gene menu` for music and server tools. Join a voice channel
+before adding music. In **Discord Lab → #tests_n_stuff**, just say “fri”, @mention her,
+or reply to one of her messages. `/fri` remains available for private chat, reviews and settings.
 Each bot keeps one private panel per member, edits it in place, and provides Close.
 Panels expire after ten minutes; old panels from before a restart may need dismissal.
 
-Fri responds to explicit @mentions in the workshop and its threads, or privately through
-**Chat with Fri**. She keeps the last six exchanges per person and conversation for up to
-seven days. Public and private context are separate. **Forget my chats** clears this context;
-shared server facts are added only through the owner's **Saved context** controls.
+Fri speaks in normal messages, with a relaxed, dry sense of humor. She responds only when
+addressed in the workshop or its threads; she does not archive ambient chat. Her Message Content
+intent lets her recognize her name. **Chat with Fri** in the panel remains private.
+
+She keeps six exchanges for seven days and gradually saves up to five small personal notes per
+person and conversation: nickname, games, music, hobbies, and preferred conversational style.
+Notes quote explicit self-disclosures, expire after 90 days, and replace older notes in the same
+category. Other people, channels, and private/public conversations have separate context.
+Ask **“fri what do you remember about me?”** to inspect them, **“fri forget me”** to clear all
+your Fri chats and personal notes and disable memory, or **“fri remember me again”** to opt back in.
+Forget works even while a reply is running. **Forget my chats** clears just recent conversation
+context. Personal notes never become coding-worker input or permissions; shared server facts
+still require the owner's **Saved context** controls.
 
 Fri can clarify an idea and offer a request draft. **Review and submit request** opens an
 editable form. Submitting stores it as **awaiting owner review**, without starting code.
@@ -68,8 +79,8 @@ infrastructure provisioning remain future work.
 
 ```mermaid
 flowchart LR
-  U[Discord Lab] --> R[Gene / Red runtime]
-  U --> F[Fri chat + request UI]
+  U[Fricking Fricks] --> R[Gene / Red runtime]
+  L[Discord Lab] --> F[Fri conversation + request review]
   F --> C[Controller + SQLite]
   F --> O[ChatGPT subscription: tool-free chat]
   R --> C
@@ -81,8 +92,8 @@ flowchart LR
   G --> A[Owner approves exact commit]
   A --> D[Single deploy coordinator]
   D --> R
-  R --> L[Hostinger Lavalink + audio cache]
-  L --> M[Mac home download relay over Tailscale]
+  R --> A1[Hostinger Lavalink + audio cache]
+  A1 --> M[Mac home download relay over Tailscale]
 ```
 
 The coding job can change `cogs/`, `tests/features/`, and `docs/features/`. It cannot
@@ -100,7 +111,7 @@ This maintainer policy does not add an approval bypass to Discord or the control
 ## Local development
 
 ```bash
-uv sync --extra red
+uv sync --all-extras
 uv run --no-sync pytest -q
 uv run --no-sync ruff check .
 python3 scripts/configure.py
@@ -121,7 +132,8 @@ Usage records show chat and development input, cached input, output, and unknown
 Cached input is part of input; reasoning is part of output. There is no app-imposed token
 budget. These counts are not remaining plan quota; account limits still apply.
 
-Create a separate Discord application named Fri with privileged intents off, then run:
+Create a separate Discord application named Fri. Enable **Message Content Intent**, leave
+Members and Presence intents off, then run:
 
 ```bash
 uv run --no-sync python scripts/configure_fri.py
@@ -133,7 +145,7 @@ official subscription sign-in and privately saves a VM-bound renewable session f
 transfer to Hostinger. See the operations guide before transferring or reconnecting it.
 Never paste either token in chat or commit credentials.
 
-`gene forgetme true` erases the caller's stored requests, chats, links and approved facts,
+`gene forgetme true` erases the caller's stored requests, chats, personal notes, links and approved facts,
 and cancels pending proposals. Discord/GitHub posts, code, and backups are separate records.
 
 [Operations](docs/operations.md) covers startup, authentication, release recovery,

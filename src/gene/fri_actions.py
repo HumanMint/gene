@@ -111,7 +111,7 @@ class Actions:
             if not profile['enabled']:
                 continue
             self.revisions[(scope, user)] = profile['revision']
-            records.append({'source': message.jump_url, 'name': clean(message.author.display_name, 60),
+            records.append({'source': message.jump_url, 'user_id': user, 'name': clean(message.author.display_name, 60),
                             'at': message.created_at.isoformat(), 'text': clean(message.content, 500)})
         return {'kind': kind, 'channel_id': channel_id, 'channel_name': clean(channel.name, 60),
                 'scanned': scanned, 'messages': list(reversed(records)), 'lookback_floor': after,

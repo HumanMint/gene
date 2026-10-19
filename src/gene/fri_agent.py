@@ -313,7 +313,7 @@ class Agent:
         try:
             async with message.channel.typing():
                 result = await self.fri.talk(self.fri.guild_id if dm else message.guild.id, message.channel.id, message.author.id,
-                    text, 'private' if dm else 'public', message.author.display_name)
+                    text, 'private' if dm else 'public', message.author.display_name, event=message)
         except commands.UserFeedbackCheckFailure as exc:
             await message.reply(str(exc)[:1800], allowed_mentions=NO_MENTIONS)
             return
@@ -386,7 +386,8 @@ class Agent:
         async for item in channel.history(limit=50, before=before, oldest_first=False):
             scanned += 1
             if quoted[1].casefold() in item.content.casefold() and len(matches) < 5:
-                matches.append({'source': item.jump_url, 'author': clean(item.author.display_name, 60),
+                matches.append({'source': item.jump_url, 'user_id': str(item.author.id),
+                                'author': clean(item.author.display_name, 60),
                                 'date': item.created_at.isoformat(), 'text': clean(item.content, 600)})
         if not matches:
             await message.reply(f'No match in the {scanned} messages I checked. That is a bounded slice, not the whole archive. '

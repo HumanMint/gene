@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 
@@ -14,6 +14,15 @@ def configured(monkeypatch):
                        'GENE_WORKSHOP_CHANNEL_ID': '456', 'GENE_FRI_TOKEN': 'private-test-value'}.items():
         monkeypatch.setenv(key, value)
     return Fri()
+
+
+def event(user=10, channel=456, guild=123, name='member', kind='message', content='yo'):
+    author = SimpleNamespace(id=user, display_name=name)
+    if kind == 'interaction':
+        return Mock(spec=discord.Interaction, id=100000000000000001, user=author,
+                    channel_id=channel, guild_id=guild)
+    return Mock(spec=discord.Message, id=100000000000000001, author=author, content=content,
+                channel=SimpleNamespace(id=channel), guild=SimpleNamespace(id=guild) if guild else None)
 
 
 def test_fri_dispatch_gates_other_servers_channels_and_dm_messages(monkeypatch):

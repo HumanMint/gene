@@ -26,6 +26,8 @@ def test_lab_chat_isolated_and_cannot_reach_owner_or_feature_routes(setup_agent)
     assert client.post('/chat/context', headers=auth, json=scope).json()['facts'] == []
     assert client.post('/chat/context', headers=auth, json=scope).json()['turns'] == []
     saved = client.post('/chat/turn', headers=auth, json={**scope, 'revision': 0,
+        'source': {'kind': 'discord_message', 'id': '100000000000000001', 'user_id': 'owner',
+                   'display_name': 'owner', 'channel_id': '789', 'guild_id': '999'},
         'input': 'Lab hello', 'reply': 'hello', 'model': 'model', 'effort': 'high'})
     assert saved.status_code == 200
     assert store.chat_context('999', 'public:789', 'owner')['turns'][0]['input'] == 'Lab hello'

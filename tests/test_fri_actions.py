@@ -17,7 +17,7 @@ from tests.test_api import actor, headers
 from tests.test_fri_agent import finish, record
 from tests.test_fri_agent import setup_agent as setup_agent
 from tests.test_fri_chat import CONTEXT, response_event
-from tests.test_fri_runtime import configured
+from tests.test_fri_runtime import configured, event
 
 
 def test_owner_learning_endpoints_reject_other_roles_and_forged_owners(setup_agent):
@@ -224,12 +224,12 @@ def test_two_stage_reply_counts_both_calls_and_keeps_only_safe_breadcrumb(monkey
                        action={'kind': 'read_recent', 'channel_id': '2'} if outcome == 'second_action' else None,
                        notes=[{'category': 'music', 'evidence': 'I love trance'}], counters={'input_tokens': 20})])
         if outcome == 'completed':
-            result = await fri.talk(123, 999, 10, 'look around', 'private')
+            result = await fri.talk(123, 999, 10, 'look around', 'private', event=event(channel=999, content='look around'))
             assert result.reply.startswith('mostly music') and result.notes == []
         else:
             from redbot.core import commands
             with pytest.raises(commands.UserFeedbackCheckFailure):
-                await fri.talk(123, 999, 10, 'look around', 'private')
+                await fri.talk(123, 999, 10, 'look around', 'private', event=event(channel=999, content='look around'))
         assert fri.chat.respond.await_count == 2
         assert fri.chat.respond.await_args.args[1]['actions'] == {}
         assert fri.chat.respond.await_args.args[1]['action_result']['scanned'] == 3

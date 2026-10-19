@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .fri_agent_store import initialize
+from .fri_context import ChatSource
 from .fri_memory import MAX_NOTES, TTL, personal_note
 from .privacy import clean
 from .reviews import pending_notice, pending_review, request_reference
@@ -100,6 +101,8 @@ class Store:
             for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref', 'progress'):
                 if name not in columns:
                     db.execute(f'ALTER TABLE jobs ADD COLUMN {name} TEXT')
+            if 'source' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
+                db.execute("ALTER TABLE chat_turns ADD COLUMN source TEXT NOT NULL DEFAULT ''")
             # Existing queued requests have never received intake approval. Fail closed
             # during migration; completed/running jobs and release approvals retain their history.
             db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
@@ -503,8 +506,13 @@ class Store:
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             turns = [dict(row) for row in db.execute(
-                'SELECT input,reply FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
+                'SELECT input,reply,source,at FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                 'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
+            for turn in turns:
+                source = turn.pop('source')
+                recorded = turn.pop('at')
+                turn['source'] = ChatSource.model_validate_json(source).evidence() if source else {
+                    'kind': 'legacy_unverified', 'recorded_at': recorded}
             facts = [row[0] for row in db.execute('SELECT body FROM memories WHERE guild_id=? '
                                                   'ORDER BY created DESC LIMIT 20', (guild_id,))]
             return {'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
@@ -512,7 +520,8 @@ class Store:
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
 
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
-                  input_tokens=None, output_tokens=None, notes=()):
+                  input_tokens=None, output_tokens=None, notes=(), source=None):
+        source = ChatSource.model_validate(source).check(guild_id, channel_id, user_id) if source else None
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
@@ -535,9 +544,9 @@ class Store:
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
                        (guild_id, channel_id, user_id, guild_id, channel_id, user_id, MAX_NOTES))
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
-                       'input_tokens,output_tokens) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                       'input_tokens,output_tokens,source) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                        (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
-                        time.time(), input_tokens, output_tokens))
+                        time.time(), input_tokens, output_tokens, source.model_dump_json() if source else ''))
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',

@@ -13,7 +13,7 @@ from gene.fri_chat import ChatResult
 from gene.fri_memory import memory_intent, personal_note
 from gene.store import Conflict, Store
 from tests.test_api import actor, headers
-from tests.test_fri_runtime import configured
+from tests.test_fri_runtime import configured, event
 
 
 @pytest.mark.parametrize('text,expected', [
@@ -95,7 +95,7 @@ def test_natural_privacy_controls_work_while_busy_without_inference(monkeypatch)
         fri.busy.add(10)
         fri.api = AsyncMock(return_value={'ok': True})
         fri.chat.respond = AsyncMock()
-        result = await fri.talk(123, 456, 10, 'Fri, forget me please', 'public')
+        result = await fri.talk(123, 456, 10, 'Fri, forget me please', 'public', event=event(content='Fri, forget me please'))
         # The parser accepts friendly trailing "please" too.
         assert 'erased' in result.reply
         assert fri.api.call_args.args[1] == '/chat/memory/control'

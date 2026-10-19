@@ -12,6 +12,7 @@ from gene.fri_web import cite_reply, lookup, public_query
 from tests.test_api import actor, headers
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
+from tests.test_fri_runtime import event
 
 
 def search_events(kind='completed', *, searched=True, cited=True):
@@ -135,7 +136,8 @@ def test_web_reply_preserves_sources_and_keeps_only_a_neutral_receipt(monkeypatc
             ChatResult(status='completed', reply='heres the current release', draft='unexpected draft')])
         receipt = {'kind': 'web_search', 'answer': 'public evidence', 'sources': ['https://python.org/downloads/']}
         with patch('gene.fri_actions.lookup', new=AsyncMock(return_value=(receipt, {'input_tokens': 20}, 'completed'))):
-            result = await fri.talk(123, 1, 20, 'fri Python release?', 'public')
+            result = await fri.talk(123, 1, 20, 'fri Python release?', 'public',
+                event=event(user=20, channel=1, content='fri Python release?'))
         assert receipt['sources'][0] in result.reply and result.draft is None
         context = fri.chat.respond.await_args.args[1]
         assert not context['actions'] and context['action_result'] == receipt

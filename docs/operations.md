@@ -397,6 +397,32 @@ answers. It uses a few contrasting tone examples rather than retaining a full st
 quiz in every prompt. Owner voice notes remain a separate, versioned preference;
 style examples never count as evidence of completed actions or bypass approval.
 
+Live chat requires an actual Discord `Message` or `Interaction` object at the
+harness boundary. The controller also requires matching author, channel and guild
+source metadata before saving a turn. Each new turn retains its event ID, display
+name at the time, and event timestamp; message sources include a Discord link.
+The current speaker's ID and current server display name are supplied explicitly.
+IDs distinguish members with identical nicknames; names provide natural addressing.
+Old records without source receipts are marked `legacy_unverified`, not silently
+promoted into verified quotations. Previous bot replies and style examples never
+prove a member said something. The voice should stay brief for casual check-ins
+and verify disputed attribution rather than arguing from uncertain memory.
+
+Never call `Fri.talk` with fabricated owner messages for a live smoke test. Run
+`docker exec gene-fri-1 python -m gene.fri_eval` for six isolated voice/attribution
+cases using fictional members. This evaluator calls `Chat.respond` directly with
+empty server facts, disabled personal memory and no actions. It has no conversation,
+note, settings, learning or Discord-message write path; only anonymous usage is
+saved under `evaluation`. Inspect the replies against the printed expectations.
+Keep evaluation output private. Production membership/permission checks are
+read-only; do not turn real users or channels into synthetic conversation fixtures.
+
+The October 2026 repair removed confirmed maintainer test rows and their observed
+contaminated replies from the active database, retaining a private pre-repair backup.
+Do not restore those rows into active chat context during rollback. Test scripts
+that previously injected owner conversations are retired; source receipts and the
+isolated evaluator are required for future validation.
+
 Fri now has a persistent Hostinger heartbeat and a Discord adapter. Gene's Red
 extensions and separate audio services are unchanged. Promote Fri and the
 controller's primary guild/workshop together to FF; preserve the prior Lab env

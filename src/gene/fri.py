@@ -17,6 +17,7 @@ from redbot.core import commands
 from .fri_actions import Actions
 from .fri_addressing import addressed_text
 from .fri_chat import Chat, ChatResult
+from .fri_context import discord_source
 from .fri_memory import describe_memory, memory_intent
 from .fri_panel import DraftView, HomeView, authorized, card, reply, sessions
 from .fri_reviews import ReviewButton, notify_owner
@@ -113,8 +114,12 @@ class Fri(discord.Client):
     async def flush_usage(self):
         async with self.usage_lock:
             for path in sorted((self.data / 'usage').glob('*.json')):
-                await self.api('POST', '/chat/usage/report', json.loads(path.read_text()))
-                path.unlink()
+                try:
+                    report = json.loads(path.read_text())
+                except FileNotFoundError:
+                    continue  # An isolated evaluation process may have delivered this receipt.
+                await self.api('POST', '/chat/usage/report', report)
+                path.unlink(missing_ok=True)
 
     async def chat_once(self, text, context):
         result = await self.chat.respond(text, context)
@@ -130,7 +135,8 @@ class Fri(discord.Client):
             raise commands.UserFeedbackCheckFailure(result.error or 'Fri could not complete that reply. Try again shortly.')
         return result
 
-    async def talk(self, guild_id, channel_id, user_id, text, visibility, display_name=''):
+    async def talk(self, guild_id, channel_id, user_id, text, visibility, display_name='', *, event=None):
+        source = discord_source(event, text, getattr(self.user, 'id', 0)).check(guild_id, f'{visibility}:{channel_id}', user_id)
         channel = self.get_channel(channel_id) if self.agent else None
         source_channel = (getattr(channel, 'parent_id', None) or channel_id) if visibility == 'public' and self.agent else self.workshop_id
         scope = {'guild_id': str(guild_id), 'user_id': str(user_id), 'channel_id': str(source_channel),
@@ -172,7 +178,9 @@ class Fri(discord.Client):
                     context.update(await self.agent.extra_context(channel_id, user_id, visibility == 'public'))
                 actions = Actions(self.agent, user_id, channel_id, visibility == 'public') if self.agent else None
                 context['actions'] = await actions.available() if actions else {}
-                context['display_name'] = clean(display_name, 80)
+                context['display_name'] = source.display_name
+                context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
+                context['source'] = source.evidence()
                 context['requests_enabled'] = guild_id == self.guild_id
                 text = clean(text, 4000)
                 if actions:
@@ -202,6 +210,7 @@ class Fri(discord.Client):
                         breadcrumb += f' in channel {checked_channel}'
                     breadcrumb += '. Fetch current evidence for follow-up details; no findings are retained here.'
                     await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
+                        'source': source.model_dump(),
                         'input': text, 'reply': breadcrumb, 'model': context['model'],
                         'effort': context['effort'], 'notes': []})
                     result.notes = []
@@ -211,6 +220,7 @@ class Fri(discord.Client):
                         result.reply = cite_reply(result.reply, receipt)
                     return result
                 saved = await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
+                    'source': source.model_dump(),
                     'input': text, 'reply': result.reply, 'model': context['model'], 'effort': context['effort'],
                     'notes': result.notes,
                     'input_tokens': result.counters.get('input_tokens'), 'output_tokens': result.counters.get('output_tokens')})
@@ -226,7 +236,7 @@ class Fri(discord.Client):
         await reply(self, interaction, 'Thinking…', view=HomeView(self, interaction.user.id))
         try:
             result = await self.talk(interaction.guild_id, interaction.channel_id, interaction.user.id, text, 'private',
-                                     interaction.user.display_name)
+                                     interaction.user.display_name, event=interaction)
             view = DraftView(self, interaction.user.id, result.draft) if result.draft else HomeView(self, interaction.user.id)
             await reply(self, interaction, embed=card('Fri', result.reply), view=view)
         except commands.UserFeedbackCheckFailure as exc:
@@ -250,7 +260,7 @@ class Fri(discord.Client):
         try:
             async with message.channel.typing():
                 result = await self.talk(message.guild.id, message.channel.id, message.author.id, text, 'public',
-                                         message.author.display_name)
+                                         message.author.display_name, event=message)
             view = DraftView(self, message.author.id, result.draft, public=True) if result.draft else None
             await message.reply(result.reply, view=view, mention_author=False, allowed_mentions=NO_MENTIONS,
                                 suppress_embeds=True)

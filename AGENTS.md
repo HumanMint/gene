@@ -36,6 +36,9 @@ and releases. Fri is the separate chat and request companion. The controller rem
   is a future explicit capability with its own review and limits.
 - Use meaningful tests for state, authorization, persistence, and failure recovery.
   Tests from a candidate are run without credentials or network access.
+- Never inject synthetic live-test dialogue into a real member's conversation.
+  Use `python -m gene.fri_eval` for isolated voice checks. Live conversation writes
+  require a matching Discord event; usage receipts are separate from chat history.
 - Gene's voice is concise, calm, and structured. Fri can be playful and lightly
   sarcastic. Neither should pretend a job or deployment has succeeded.
 

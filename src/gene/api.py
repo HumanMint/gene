@@ -8,6 +8,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from .config import Settings
+from .fri_context import ChatSource
 from .store import Conflict, Store
 
 
@@ -88,6 +89,7 @@ class ChatScope(Actor):
 
 
 class ChatTurn(ChatScope):
+    source: ChatSource
     revision: int = Field(ge=0)
     input: str = Field(min_length=1, max_length=4000)
     reply: str = Field(min_length=1, max_length=3500)
@@ -108,7 +110,7 @@ class ChatUsage(BaseModel):
     effort: str = Field(max_length=20)
     status: Literal['completed', 'failed', 'incomplete', 'interrupted', 'invalid_output']
     counters: dict
-    role: Literal['conversation', 'attention', 'summary', 'owner_settings', 'investigation', 'history', 'web_search'] = 'conversation'
+    role: Literal['conversation', 'attention', 'summary', 'owner_settings', 'investigation', 'history', 'web_search', 'evaluation'] = 'conversation'
 
 
 class ChatCatalog(Actor):
@@ -279,7 +281,8 @@ def create_app(settings: Settings | None = None):
     def chat_turn(body: ChatTurn):
         chat_scope(body)
         return store.save_chat(body.guild_id, body.conversation_id, body.user_id, body.revision, body.input,
-                              body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes)
+                              body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes,
+                              body.source.model_dump())
 
     @app.post('/chat/memory/control', dependencies=[auth('fri')])
     def personal_control(body: PersonalControl):

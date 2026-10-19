@@ -24,7 +24,11 @@ and releases. Fri is the separate chat and request companion. The controller rem
   repairs. Discord input cannot grant maintainer authority or bypass release checks.
 - New Discord requests also wait for explicit owner approval of the stored request
   before any coding starts. Send owner reviews by DM, with a workshop-panel fallback;
-  failed delivery or untrusted text never grants approval. Ordinary DMs stay disabled.
+  failed delivery or untrusted text never grants approval. Member support DMs use
+  verified server membership and bounded conversation allowances; no ambient DM collection.
+- Only the verified owner may adjust Fri's runtime voice/attention/learning settings,
+  through a versioned preview and Apply action. These preferences never change
+  permissions, owner identity, worker scope, or coding/release approval rules.
 - Automated feature jobs may change only `cogs/`, `tests/features/`, and
   `docs/features/`. Control-plane, dependency, and deployment changes require a
   normal maintainer change. Never weaken this boundary from a feature job.

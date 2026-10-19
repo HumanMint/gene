@@ -8,6 +8,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from .fri_agent_store import initialize
 from .fri_memory import MAX_NOTES, TTL, personal_note
 from .privacy import clean
 from .reviews import pending_notice, pending_review, request_reference
@@ -24,6 +25,7 @@ class Store:
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
+            initialize(db)
             db.executescript('''
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -435,7 +437,7 @@ class Store:
                 'sum(input_tokens IS NULL OR output_tokens IS NULL) AS unknown_attempts '
                 'FROM usage GROUP BY model')]
 
-    def add_chat_usage(self, attempt_id, model, effort, status, counters):
+    def add_chat_usage(self, attempt_id, model, effort, status, counters, role='conversation'):
         keys = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')
         for key in keys:
             value = counters.get(key)
@@ -445,6 +447,7 @@ class Store:
             # Contains no user IDs or conversation text; clearing history preserves totals.
             db.execute('INSERT OR IGNORE INTO chat_usage VALUES (?,?,?,?,?,?,?,?,?)',
                        (attempt_id, model, effort, status, time.time(), *(counters.get(k) for k in keys)))
+            db.execute('INSERT OR IGNORE INTO agent_usage_roles VALUES (?,?)', (attempt_id, role))
 
     def chat_usage(self):
         with self.connection() as db:
@@ -558,6 +561,12 @@ class Store:
             if action == 'disable':
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
+                for row in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
+                    if user_id in json.loads(row['authors']):
+                        db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (row['channel_id'],))
+                # Reports can derive from several people. Remove pending/retained copies
+                # conservatively; already delivered Discord messages are separate.
+                db.execute('DELETE FROM agent_reports')
             # Invalidate even an in-flight reply that began before memory was toggled.
             db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
                        'DO UPDATE SET revision=revision+1', (user_id,))

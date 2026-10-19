@@ -108,6 +108,7 @@ class ChatUsage(BaseModel):
     effort: str = Field(max_length=20)
     status: Literal['completed', 'failed', 'incomplete', 'interrupted', 'invalid_output']
     counters: dict
+    role: Literal['conversation', 'attention', 'summary', 'owner_settings', 'investigation', 'history'] = 'conversation'
 
 
 class ChatCatalog(Actor):
@@ -138,6 +139,14 @@ def create_app(settings: Settings | None = None):
             raise HTTPException(403, 'This server is not configured for Gene')
         if owner and (not settings.owner_id or body.user_id != settings.owner_id):
             raise HTTPException(403, 'Only Gene\'s configured owner can do this')
+
+    def chat_scope(body):
+        actor(body)
+        if body.channel_id not in {settings.workshop_channel_id, *settings.agent_channels.split(',')} or not body.channel_id:
+            raise HTTPException(403, 'Use Fri in a configured channel')
+
+    from .fri_agent_api import register
+    register(app, store, settings, auth, actor)
 
     @app.exception_handler(Conflict)
     async def conflict_handler(_, exc):
@@ -177,7 +186,7 @@ def create_app(settings: Settings | None = None):
     @app.post('/requests', dependencies=[auth('fri')])
     def request(body: Request):
         actor(body)
-        if not settings.workshop_channel_id or body.channel_id != settings.workshop_channel_id:
+        if body.channel_id not in {settings.workshop_channel_id, *settings.agent_channels.split(',')} or not body.channel_id:
             raise HTTPException(403, 'Use Gene\'s configured workshop channel')
         return public_job(store.request(body.guild_id, body.user_id, body.source_id,
                                         body.source_url, body.body))
@@ -259,30 +268,24 @@ def create_app(settings: Settings | None = None):
 
     @app.post('/chat/context', dependencies=[auth('fri')])
     def chat_context(body: ChatScope):
-        actor(body)
-        if body.channel_id != settings.workshop_channel_id:
-            raise HTTPException(403, 'Use Fri in the configured workshop')
+        chat_scope(body)
         return store.chat_context(body.guild_id, body.conversation_id, body.user_id)
 
     @app.post('/chat/turn', dependencies=[auth('fri')])
     def chat_turn(body: ChatTurn):
-        actor(body)
-        if body.channel_id != settings.workshop_channel_id:
-            raise HTTPException(403, 'Use Fri in the configured workshop')
+        chat_scope(body)
         return store.save_chat(body.guild_id, body.conversation_id, body.user_id, body.revision, body.input,
                               body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes)
 
     @app.post('/chat/memory/control', dependencies=[auth('fri')])
     def personal_control(body: PersonalControl):
-        actor(body)
-        if body.channel_id != settings.workshop_channel_id:
-            raise HTTPException(403, 'Use Fri in the configured workshop')
+        chat_scope(body)
         store.personal_control(body.user_id, body.action)
         return {'ok': True}
 
     @app.post('/chat/usage/report', dependencies=[auth('fri')])
     def chat_usage_report(body: ChatUsage):
-        store.add_chat_usage(body.attempt_id, body.model, body.effort, body.status, body.counters)
+        store.add_chat_usage(body.attempt_id, body.model, body.effort, body.status, body.counters, body.role)
         return {'ok': True}
 
     @app.post('/chat/usage', dependencies=[auth('fri')])

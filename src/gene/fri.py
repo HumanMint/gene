@@ -57,9 +57,13 @@ class Fri(discord.Client):
         self.usage_lock = asyncio.Lock()
         self.chat_slots = asyncio.Semaphore(2)
         self.session = None
+        self.agent = None
 
     async def setup_hook(self):
         self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
+        from .fri_agent import Agent
+        self.agent = Agent(self)
+        await self.agent.start()
         self.add_view(HomeView(self))
         self.add_dynamic_items(ReviewButton)
 
@@ -79,7 +83,14 @@ class Fri(discord.Client):
         if event == 'interaction' and args:
             interaction = args[0]
             channel = getattr(interaction.channel, 'parent_id', None) or interaction.channel_id
-            allowed = interaction.guild_id == self.guild_id and channel == self.workshop_id
+            allowed = interaction.guild_id == self.guild_id and (channel == self.workshop_id or
+                (self.agent and self.agent.allowed(interaction.channel)))
+            behavior = (interaction.user.id == self.owner_id and
+                str((interaction.data or {}).get('custom_id', '')).startswith('fri:behavior:') and
+                getattr(getattr(interaction, 'message', None), 'author', None) and
+                interaction.message.author.id == getattr(self.user, 'id', None))
+            if behavior:
+                allowed = True
             if not allowed and not owner_dm_component(interaction, getattr(self.user, 'id', None), self.owner_id):
                 return
         super().dispatch(event, *args, **kwargs)
@@ -105,7 +116,9 @@ class Fri(discord.Client):
                 path.unlink()
 
     async def talk(self, guild_id, channel_id, user_id, text, visibility, display_name=''):
-        scope = {'guild_id': str(guild_id), 'user_id': str(user_id), 'channel_id': str(self.workshop_id),
+        channel = self.get_channel(channel_id) if self.agent else None
+        source_channel = (getattr(channel, 'parent_id', None) or channel_id) if visibility == 'public' and self.agent else self.workshop_id
+        scope = {'guild_id': str(guild_id), 'user_id': str(user_id), 'channel_id': str(source_channel),
                  'conversation_id': f'{visibility}:{channel_id}'}
         # Privacy controls must work while inference is busy or the subscription is down.
         intent = memory_intent(text)
@@ -117,6 +130,8 @@ class Fri(discord.Client):
             return ChatResult(reply=describe_memory(profile), status='completed')
         if intent in ('disable', 'enable'):
             await self.api('POST', '/chat/memory/control', {**scope, 'action': intent})
+            if self.agent:
+                self.agent.forget(user_id)
             text = ('Done. I erased our saved chats and personal notes, and turned memory off. '
                     'Say “remember me again” if you change your mind. Discord messages and backups are separate.'
                     if intent == 'disable' else 'Memory’s back on. I’ll pick up small preferences as we talk.')
@@ -127,8 +142,18 @@ class Fri(discord.Client):
             raise commands.UserFeedbackCheckFailure('Keep each message between 1 and 4000 characters.')
         self.busy.add(user_id)
         try:
+            if self.agent and self.agent.config['enabled']:
+                admission = await self.api('POST', '/agent/admit', {**self.agent.identity(user_id),
+                    'space': 'dm' if visibility == 'private' else 'public'})
+                if not admission['allowed']:
+                    minutes = max(1, int((admission['until']-time.time()+59)//60))
+                    notice = (f'brb, virtual cigarette break. back in about {minutes} min. '
+                              'daniel’s token stash needs a breather.') if admission.get('notice') else ''
+                    return ChatResult(reply=notice, status='cooldown')
             async with self.chat_slots:
                 context = await self.api('POST', '/chat/context', scope)
+                if self.agent:
+                    context.update(await self.agent.extra_context(channel_id, user_id, visibility == 'public'))
                 context['display_name'] = clean(display_name, 80)
                 text = clean(text, 4000)
                 result = await self.chat.respond(text, context)
@@ -165,6 +190,12 @@ class Fri(discord.Client):
             await reply(self, interaction, str(exc), view=HomeView(self, interaction.user.id))
 
     async def on_message(self, message):
+        if self.agent:
+            try:
+                await self.agent.handle(message)
+            except (commands.UserFeedbackCheckFailure, discord.HTTPException):
+                LOG.warning('Fri interaction could not complete')
+            return
         if (message.author.bot or getattr(message, 'webhook_id', None) or not message.guild or
                 message.guild.id != self.guild_id):
             return
@@ -208,6 +239,8 @@ class Fri(discord.Client):
         await self.wait_until_ready()
 
     async def close(self):
+        if self.agent:
+            self.agent.close()
         self.health.cancel()
         self.owner_reviews.cancel()
         await sessions(self).close_all()

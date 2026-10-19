@@ -52,7 +52,8 @@ async def authorized(cog, interaction, user_id=None, owner=False):
     # Component and modal callbacks have their own checks; they do not pass through
     # Red's command checks or the slash-command tree's interaction_check.
     channel = getattr(interaction.channel, 'parent_id', None) or interaction.channel_id
-    if interaction.guild_id != cog.guild_id or channel != cog.workshop_id:
+    in_scope = channel == cog.workshop_id or (getattr(cog, 'agent', None) and cog.agent.allowed(interaction.channel))
+    if interaction.guild_id != cog.guild_id or not in_scope:
         return False
     if user_id is not None and interaction.user.id != user_id:
         await notice(interaction, 'This menu belongs to another person. Open your own Fri panel.')

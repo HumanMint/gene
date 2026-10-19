@@ -164,7 +164,7 @@ release SHA, and retain the GitHub diff for review. Do not automatically merge t
 Before switching a release, pause the worker/deployer, confirm no job is building or
 deploying, and back up the controller, stopped Red state, previous source, and release
 configuration. Install immutable cogs and check a fresh heartbeat for the expected SHA,
-the configured guild connection and presence: Gene online in FF, Fri invisible in the Lab.
+the configured guild connection and presence: Gene online in FF, Fri invisible in FF.
 Restore the previous release and environment on failure;
 resume the worker/deployer only after the new or restored release is healthy. Record
 the deployment as chat-authorized maintainer work, without fabricating a Discord approval.
@@ -222,7 +222,7 @@ mutable feature cogs, host files, the Docker socket, or development credentials.
 has no executable tools. Gene receives only its functional service credential. Owner UI
 callbacks and the controller enforce authorization independently of model text.
 
-### Gene in FF, Fri in the Lab
+### Original split deployment (before Fri attention)
 
 Only Gene's `runtime.env` uses the reviewed FF guild, workshop, highlight, and meme-source IDs
 from the private `.env.production` configuration. Set `GENE_PRESENCE=online` and
@@ -250,10 +250,11 @@ migration. Intake approval never authorizes a live release.
 Fri sends the configured owner a DM with an untrusted-text preview and the full request
 as a text attachment. Once a tested proposal is ready, it edits that same DM with the
 code link and complete SHA for release approval. Notifications use persisted message IDs,
-short delivery leases, and ten-minute retries when DMs are unavailable. The lab's
+short delivery leases, and ten-minute retries when DMs are unavailable. The configured workshop's
 **Requests** panel remains a fallback. Delivery never grants approval. Only owner clicks
-on Fri-authored review components are admitted from DMs; ordinary DM messages, commands,
-other users' clicks, forged references, and stale approvals remain rejected.
+on Fri-authored review components can approve work from DMs. Verified members can have
+bounded support conversations there, but other users' clicks, forged references, and stale
+approvals remain rejected.
 
 An allowed request produces a `codex/request-<id>` branch. The wrapper checks changed paths,
 rejects symlinks and likely secrets, and runs tests/lint without credentials or network.
@@ -354,3 +355,84 @@ test coverage. Sustained listening in Discord remains a human acceptance step.
 - [Red-compatible Lavalink](https://github.com/Cog-Creators/Lavalink-Jars/releases/tag/3.7.13%2Bred.5)
 - [Codex trusted private automation](https://learn.chatgpt.com/docs/auth/ci-cd-auth)
 - [Codex noninteractive output and usage](https://learn.chatgpt.com/docs/non-interactive-mode)
+
+## Fri attention and gradual learning
+
+Fri now has a persistent Hostinger heartbeat and a Discord adapter. Gene's Red
+extensions and separate audio services are unchanged. Promote Fri and the
+controller's primary guild/workshop together to FF; preserve the prior Lab env
+and command registration for rollback. Fri remains invisible and no global
+commands are registered.
+
+Set `FRI_CHANNEL_IDS` in both controller.env and fri.env to the explicit allowed
+channels. Set `FRI_HISTORY_CHANNEL_IDS` and `FRI_LEARNING_ROLE_ID` in controller.env.
+Set `FRI_CHAT_CHANNEL_ID` and `GENE_BOT_ID` in fri.env. Give Fri only the necessary
+View Channel, Read Message History, and Send Messages permissions in those channels.
+Members and Presence privileged intents remain off. Historical author membership
+is checked with bounded individual member lookups, not a full member import.
+
+The rollout uses memba-chat and public-chat for retrospective learning, the existing
+fri-chat for fresh conversation, ff_beta for the workshop, and bot-commands for
+Gene error observation. Old fri-chat history is explicitly excluded from startup
+learning, even if accidentally added to the history list. No bot-authored messages
+enter background personal learning. Each pass examines at most 30 messages, seven
+days back, with a 360-message scan allowance per 24 hours from enablement. The
+first 24 hours use a 30-minute interval; later passes use six hours. These are
+owner-adjustable within validated bounds. An exhausted channel is not rescanned
+for a week; its cursor and the scan allowance survive restarts.
+
+Every history pass queues an owner DM reporting its channel, eligibility, date
+range, exact saved disclosures, model/effort, measured usage, and next eligible
+run. No eligible source means no model call. An undelivered report pauses further
+history learning. A crashed claim reserves its original allowance and produces
+an interruption report rather than replaying indefinitely. Reports are retained
+for seven days after delivery. Discord delivery can be repeated after a crash
+between sending and acknowledgement; the batch identifier makes this visible.
+
+Luna low decides whether new shared-channel activity warrants participation or
+investigation. Luna medium summarizes bounded source batches and suggests exact
+self-disclosed preferences. Sol High handles Fri's voice, owner setting proposals,
+archive answers, and read-only Gene error assessment. Background model/effort
+choices are visible and configurable. Usage is grouped by role, model and effort,
+including incomplete/failed attempts. API prices are not subscription quotas.
+
+Conversations receive recent context from their own channel only. An active
+exchange continues for two minutes without repeated invocation; short message
+bursts are grouped. Dedicated fri-chat receives natural conversation. DMs receive
+no public-channel buffer or summaries. Source text and summaries are always
+untrusted input. Background preferences require a valid source ID, role, exact
+first-person evidence, permitted category, and unchanged privacy revision. Older
+history cannot overwrite a more recent disclosure. Summaries expire after two
+days; personal notes use the established 90-day limit. Opt-out erases derived
+summaries and retained reports, clears the runtime buffer, and blocks in-flight
+memory resurrection. Already delivered Discord messages and backups are separate.
+
+An explicit request such as `fri search history in #fri-chat for "Minecraft"
+before 2025-01-01` checks at most 50 messages before that date and returns at most
+five matches with links. The requesting member must currently be able to view
+and read history in that configured channel. Old bot replies are source evidence
+only. Archive search does not store personal notes or change Fri's personality.
+This is a bounded slice, not a claim to search the entire server archive.
+
+Members get eight DM/private-panel turns or twenty public turns per 30-minute
+window before a randomized 10-20 minute conversation cooldown. Allowances are
+persistent and shared across channels within each space. One prepared notice is
+sent; repeated pings do not cause model calls. This is not a Discord moderation
+timeout and does not affect Gene. The owner is exempt, and privacy controls work
+without inference even while a member is on cooldown.
+
+The owner can DM Fri `show settings`, `show usage`, `refresh models`, or describe
+an adjustment, such as `change learning to once an hour` or `change your voice to
+be less sarcastic`. Natural-language changes produce a concrete JSON preview and
+an owner-only Apply button, expiring after ten minutes. The controller checks
+identity, allowed keys, bounds, catalog membership, and the settings revision.
+Changes are audited; stale previews fail instead of overwriting newer changes.
+Voice, attention and learning notes affect only their respective tasks. Channels,
+permissions, identity, release policy, and execution access are not editable here.
+No new code release is needed for these narrow runtime preferences.
+
+Only errors actually authored by Gene can trigger automatic read-only investigation.
+Luna must select the error first, then Sol assesses its bounded text and controller
+status. A proposed repair enters the existing stored-request owner review workflow.
+No coding begins until intake approval; no deployment or repair bypasses exact-SHA
+release approval. No shell or Docker credentials are exposed to Fri's model.

@@ -110,6 +110,13 @@ class Gene(commands.Cog):
         state = await self.api('GET', '/status')
         await self.say(ctx, f"Gene release: `{state['active_sha']}`. Music and server tools are ready.")
 
+    @gene.command(name='version')
+    async def version(self, ctx):
+        """Show the running release and selected worker model."""
+        state = await self.api('GET', '/status')
+        await self.say(ctx, f"Release: `{state['active_sha'] or 'not initialized'}`\n"
+                            f"Worker: `{state['model']}`")
+
     @gene.command(name='forgetme')
     async def forgetme(self, ctx, confirm: bool = False):
         """Erase your stored requests/context and cancel pending work. Pass true to confirm."""

@@ -37,6 +37,15 @@ class Result(Lease):
     uncertain: str = Field(default='', max_length=300)
 
 
+class Heartbeat(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    guild_id: str
+    sha: str = Field(pattern=r'^[a-f0-9]{40}$')
+    started: float = Field(ge=0, allow_inf_nan=False)
+    guild_connected: bool
+    controls_running: bool
+
+
 def register(app, store, settings, auth):
     controls = Controls(store)
 
@@ -48,6 +57,18 @@ def register(app, store, settings, auth):
     @app.get('/controls/catalog', dependencies=[auth('fri')])
     def catalog():
         return {'actions': controls.catalog(), 'dm_channel_id': settings.command_channel_id}
+
+    @app.post('/controls/health', dependencies=[auth('fri')])
+    def health(body: Scope):
+        scope(body)
+        return controls.health()
+
+    @app.post('/runtime/health', dependencies=[auth('runtime')])
+    def heartbeat(body: Heartbeat):
+        if body.guild_id != (settings.runtime_guild_id or settings.guild_id):
+            raise HTTPException(403, 'Wrong runtime server')
+        controls.heartbeat(body.model_dump())
+        return {'ok': True}
 
     @app.post('/controls/recent', dependencies=[auth('fri')])
     def recent(body: Scope):

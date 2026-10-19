@@ -85,12 +85,28 @@ def control_cases():
     ]
 
 
+def diagnosis_cases():
+    actions = {'gene_diagnose': {'description': 'Independent controller health, Luna triage, Sol xhigh diagnosis. channel_id="".'}}
+    return [
+        {'name': 'silent_gene', 'text': 'is gene working? i tried play and it is not replying',
+         'actions': actions, 'expect': 'gene_diagnose despite missing command catalog; no invented root cause.'},
+        {'name': 'silent_gene_followup', 'text': 'no reply', 'actions': actions,
+         'turns': [{'input': 'gene play isnt working', 'reply': 'did it error or just not reply?', 'source': source()}],
+         'expect': 'gene_diagnose; do not repeat an unconfirmed-status disclaimer.'},
+        {'name': 'restart_assessment', 'text': 'gene didnt reply', 'requester_is_owner': True,
+         'action_result': {'kind': 'gene_diagnose', 'health': {'responsive': True},
+             'assessment': 'Gene restarted after accepting the status request. It is polling again now. Cause unknown.',
+             'proposed_request': 'Investigate the runtime restart and lost command acknowledgement.'},
+         'expect': 'Briefly explain restart and uncertain cause; offer the repair preview here. No claim to have fixed it.'},
+    ]
+
+
 async def evaluate(chat, model, effort, voice_notes='', suite='voice'):
-    for case in control_cases() if suite == 'controls' else cases():
+    for case in {'controls': control_cases, 'diagnosis': diagnosis_cases, 'voice': cases}[suite]():
         name = case.get('display_name', 'Mint')
         context = {'model': model, 'effort': effort, 'facts': [],
             'turns': case.get('turns', []), 'recent': case.get('recent', []),
-            'actions': case.get('actions', {}), 'requests_enabled': suite == 'controls', 'voice_notes': voice_notes,
+            'actions': case.get('actions', {}), 'requests_enabled': suite != 'voice', 'voice_notes': voice_notes,
             'action_result': case.get('action_result'), 'web_research': case.get('web_research', []),
             'gene_receipts': case.get('gene_receipts', []), 'requester_is_owner': case.get('requester_is_owner', False),
             'personal_memory': {'enabled': False, 'notes': []},
@@ -128,5 +144,5 @@ async def main(suite='voice'):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--suite', choices=('voice', 'controls'), default='voice')
+    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis'), default='voice')
     asyncio.run(main(parser.parse_args().suite))

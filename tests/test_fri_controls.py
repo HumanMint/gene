@@ -98,9 +98,43 @@ def test_receipt_timeout_never_resubmits_or_cancels_the_gene_command(monkeypatch
         actions.message = 'fri play Sad Machine'
         actions.scope = {'guild_id': '123', 'user_id': '20', 'channel_id': '1', 'conversation_id': 'public:1'}
         fri.api = AsyncMock(side_effect=[{'revision': 0}, {'id': 'one-command'}])
+        actions.diagnose = AsyncMock(return_value={'kind': 'gene_diagnose', 'assessment': 'Unconfirmed command'})
         with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock(side_effect=TimeoutError)):
             result = await actions.execute({'kind': 'gene_command', 'action': 'play', 'argument': 'Sad Machine'})
         assert 'uncertain' in result
         assert [call.args[1] for call in fri.api.await_args_list] == ['/chat/context', '/controls']
+        actions.diagnose.assert_awaited_once()
+        assert result['diagnostic']['assessment'] == 'Unconfirmed command'
+        await fri.close()
+    asyncio.run(scenario())
+
+
+def test_uncertain_receipt_diagnosis_runs_once_outside_command_wait_deadline(monkeypatch, tmp_path):
+    async def scenario():
+        fri, agent, _, _ = harness(monkeypatch, tmp_path)
+        actions = Actions(agent, 20, 1, True)
+        actions.event = event(user=20, channel=1, content='fri play Sad Machine')
+        actions.event.webhook_id = None
+        actions.event.channel.fetch_message = AsyncMock(return_value=actions.event)
+        actions.message = actions.event.content
+        actions.scope = {'guild_id': '123', 'user_id': '20', 'channel_id': '1', 'conversation_id': 'public:1'}
+        fri.api = AsyncMock(side_effect=[{'revision': 0}, {'id': 'one'}, {'done': True, 'uncertain': 'Gene restarted'}])
+        class Deadline:
+            entered = False
+            async def __aenter__(self):
+                self.entered = True
+            async def __aexit__(self, *args):
+                self.entered = False
+        deadline = Deadline()
+        async def diagnose(*args):
+            assert not deadline.entered
+            return {'assessment': 'Cause unknown'}
+        actions.diagnose = AsyncMock(side_effect=diagnose)
+        with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock()), \
+             patch('gene.fri_actions.asyncio.timeout', return_value=deadline):
+            result = await actions.execute({'kind': 'gene_command', 'action': 'play', 'argument': 'Sad Machine'})
+        assert result['uncertain'] == 'Gene restarted'
+        actions.diagnose.assert_awaited_once()
+        assert sum(call.args[1] == '/controls' for call in fri.api.await_args_list) == 1
         await fri.close()
     asyncio.run(scenario())

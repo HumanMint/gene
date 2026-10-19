@@ -17,6 +17,7 @@ def initialize(db):
             result TEXT NOT NULL DEFAULT '{}'
         );
         CREATE TABLE IF NOT EXISTS gene_control_catalog (id INTEGER PRIMARY KEY, at REAL, actions TEXT);
+        CREATE TABLE IF NOT EXISTS gene_runtime_health (id INTEGER PRIMARY KEY, at REAL, body TEXT);
     ''')
 
 
@@ -28,6 +29,29 @@ class Controls:
         with self.store.connection() as db:
             row = db.execute('SELECT at,actions FROM gene_control_catalog WHERE id=1').fetchone()
             return json.loads(row['actions']) if row and row['at'] > time.time()-20 else []
+
+    def heartbeat(self, body):
+        if body['started'] > time.time()+5:
+            raise ValueError('Runtime start cannot be in the future')
+        with self.store.connection() as db:
+            db.execute('INSERT OR REPLACE INTO gene_runtime_health VALUES (1,?,?)',
+                       (time.time(), json.dumps(body)))
+
+    def health(self):
+        """Controller-side evidence, available even when Gene cannot execute commands."""
+        now = time.time()
+        with self.store.connection() as db:
+            row = db.execute('SELECT * FROM gene_runtime_health WHERE id=1').fetchone()
+            poll = db.execute('SELECT at FROM gene_control_catalog WHERE id=1').fetchone()
+        age = max(0, int(now-row['at'])) if row else None
+        poll_age = max(0, int(now-poll['at'])) if poll else None
+        report = json.loads(row['body']) if row else {}
+        responsive = (age is not None and age < 30 and report.get('guild_connected') is True
+                      and report.get('controls_running') is True and poll_age is not None and poll_age < 20)
+        return {'checked_at': now, 'heartbeat_age_seconds': age, 'command_poll_age_seconds': poll_age,
+                'responsive': responsive, 'runtime': report,
+                'limits': 'A fresh heartbeat and command poll do not prove a command completed or audio is audible. '
+                          'A stale poll may mean a command is busy. No shell, process logs, or restart access.'}
 
     def recent(self, user, guild, conversation):
         """Small dated receipts, scoped like the original command and erased with chats."""
@@ -112,10 +136,15 @@ class Controls:
                 raise ValueError('Action belongs to another conversation')
             return self._result(row)
 
-    @staticmethod
-    def _result(row):
+    def _result(self, row):
         if row['state'] in ('finished', 'expired'):
             return {'done': True, **json.loads(row['result'])}
+        if row['state'] in ('claimed', 'running'):
+            with self.store.connection() as db:
+                report = db.execute('SELECT body FROM gene_runtime_health WHERE id=1').fetchone()
+            if report and json.loads(report['body'])['started'] > row['created']:
+                return {'done': True, 'uncertain': 'Gene restarted after accepting this request; its outcome was not '
+                        'confirmed. Do not retry automatically or claim success.'}
         if row['created'] < time.time()-115:
             return {'done': True, 'uncertain': 'Gene has not confirmed the outcome. Do not retry automatically or claim success.'}
         return {'done': False}

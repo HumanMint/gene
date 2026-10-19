@@ -7,6 +7,7 @@ import time
 import discord
 from redbot.core import commands
 
+from .fri_agent_model import ATTENTION, DIAGNOSIS
 from .fri_web import lookup
 from .gene_controls import COMMANDS, arguments, requested
 from .privacy import clean
@@ -62,6 +63,9 @@ class Actions:
             actions['web_sources'] = {'description': 'Show sources from saved public research in this conversation. '
                 'query="" means latest; otherwise use an exact saved query. No new search.'}
         if self.guild == self.fri.guild_id and isinstance(self.event, discord.Message):
+            actions['gene_diagnose'] = {'description': 'Read independent Gene heartbeat/command receipts and '
+                'investigate a reported failure. Works when Gene commands are unavailable. channel_id="". '
+                'Luna triages; Sol xhigh diagnoses. No command, restart, coding, or deployment.'}
             catalog = await self.fri.api('GET', '/controls/catalog')
             offered = {key: COMMANDS[key][2] for key in catalog.get('actions', []) if key in COMMANDS}
             if offered:
@@ -88,6 +92,8 @@ class Actions:
             return {'kind': kind, **matches[0]} if matches else {'blocked': 'That search is no longer retained here. Ask for a fresh lookup.'}
         if kind == 'gene_command':
             return await self.control(action, channels)
+        if kind == 'gene_diagnose':
+            return await self.diagnose(channels)
         if kind == 'web_search':
             if not self.agent.state.get('web_search_enabled') or not public_query(action.get('query'), self.message):
                 return {'blocked': 'Provide a short public topic in the current message; private context cannot be sent to web search.'}
@@ -167,16 +173,65 @@ class Actions:
         submitted = await self.fri.api('POST', '/controls', {**self.scope, 'source': discord_source(self.event).model_dump(),
             'target_channel_id': target, 'request_text': clean(self.event.content, 4000),
             'action': verb, 'argument': argument, 'revision': self.revision})
+        result = None
         try:
             async with asyncio.timeout(120):
                 while True:
                     await asyncio.sleep(2)
                     result = await self.fri.api('POST', '/controls/'+submitted['id']+'/result', self.scope)
                     if result.get('done'):
-                        return {'kind': 'gene_command', 'action': verb, **result}
+                        break
         except TimeoutError:
             pass  # Stop waiting, not the underlying Red operation; never resubmit automatically.
-        return {'kind': 'gene_command', 'uncertain': 'Gene has not confirmed completion. Check the player before retrying.'}
+        if not result or not result.get('done'):
+            result = {'uncertain': 'Gene has not confirmed completion. Check the player before retrying.'}
+        if result.get('uncertain'):
+            # The command-wait deadline must not cancel diagnosis and cause a second model run.
+            result['diagnostic'] = await self.diagnose(channels)
+        return {'kind': 'gene_command', 'action': verb, **result}
+
+    async def diagnose(self, channels):
+        if self.guild != self.fri.guild_id or not isinstance(self.event, discord.Message):
+            return {'blocked': 'Gene diagnosis is available only in its server or verified member DMs.'}
+        channels = await self.channels(fresh=True)
+        if not channels:
+            return {'blocked': 'No approved channels are currently readable.'}
+        original = await self.event.channel.fetch_message(self.event.id)
+        if original.author.id != self.user or original.webhook_id or original.content != self.event.content:
+            return {'blocked': 'The source message changed; ask again for a fresh check.'}
+        current = await self.fri.api('POST', '/chat/context', self.scope)
+        if current['revision'] != self.revision:
+            return {'blocked': 'The conversation was cleared before diagnosis.'}
+        try:
+            health = await self.fri.api('POST', '/controls/health', self.scope)
+            recent = await self.fri.api('POST', '/controls/recent', self.scope)
+        except commands.UserFeedbackCheckFailure:
+            return {'uncertain': 'The independent health check is unavailable; no repair has started.'}
+        receipts = [r for r in recent.get('receipts', []) if r['channel_id'] in channels]
+        self.sources.update(r['channel_id'] for r in receipts)
+        evidence = {'source_id': str(self.event.id), 'report': self.message, 'health': health, 'receipts': receipts}
+        gate, _, state = await self.agent.run('attention',
+            'Triage a current member report about Gene. Choose investigate for a reported failure, no reply, '
+            'unconfirmed command, or unhealthy runtime that warrants diagnosis. Choose quiet for unrelated chat '
+            'or a normal status question with healthy evidence. Do not diagnose or approve repairs. '
+            'Use the supplied source_id.', evidence, ATTENTION)
+        result = {'kind': 'gene_diagnose', 'health': health, 'receipts': receipts, 'triage_status': state}
+        if state != 'completed' or gate.get('action') != 'investigate' or gate.get('source_id') != str(self.event.id):
+            return result
+        diagnosis, _, state = await self.agent.run('investigation',
+            'Read-only diagnosis of a reported Gene failure. Separate current heartbeat/poll evidence from dated '
+            'receipts and the member report. A fresh heartbeat is not proof of audible playback or command success. '
+            'A restart does not identify its cause; no process logs or shell are available. Never invent a root cause. '
+            'Give a brief evidence-based assessment and, when useful, a self-contained proposed repair request; '
+            'otherwise proposed_request="". No coding or repair has started. Feature jobs can edit only cogs/, '
+            'tests/features/, docs/features/. Flag infrastructure, dependencies and controller issues as maintainer '
+            'work. Only the owner can approve coding and the exact release. At most 2500 characters total.',
+            evidence, DIAGNOSIS, model='gpt-6.1-sol', effort='xhigh')
+        result.update(diagnosis_status=state, diagnosis_model='gpt-6.1-sol', diagnosis_effort='xhigh')
+        if state == 'completed':
+            result.update(assessment=clean(diagnosis.get('summary', ''), 1500),
+                          proposed_request=clean(diagnosis.get('proposed_request', ''), 4000))
+        return result
 
     async def valid(self):
         """Fail closed if access or source privacy changed while the model was answering."""

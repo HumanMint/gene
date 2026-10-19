@@ -608,6 +608,31 @@ channel. Fri sends member-DM controls there, with member/channel access rechecke
 Public controls stay in their original channel. For verified DM commands, a normal
 Red before-invoke hook updates an existing player's notification destination after
 permission checks pass. The development workshop is never an implicit DM fallback.
+Red registers additive before-invoke hooks. Register only this adapter's callback and
+remove it with `remove_before_invoke_hook` on close. Never call Red's `_before_invoke`
+dispatcher from a registered hook: that recursively schedules itself for every command
+and can exhaust the container's memory. The offline command tests use the installed
+Red dispatcher as well as its command/permission pipeline.
+
+### Silent Gene failures
+
+Gene publishes a bounded runtime heartbeat to `/runtime/health` using its runtime
+credential every ten seconds, independently of the command runner. The controller
+stores only the latest start time, release, guild connection and runner state, with a
+controller timestamp. Fri can read it through the scoped `/controls/health` endpoint
+even when Gene's command catalog has expired. Fresh heartbeats and polls do not prove
+audible playback; stale polls can also mean a command is busy. A new runtime start
+ends an interrupted command wait as uncertain without replaying it or changing a
+previously confirmed receipt.
+
+For a current failure report, Fri can choose `gene_diagnose`. Luna triages the report
+and the member's readable receipts, then Sol at xhigh diagnoses when warranted.
+Unconfirmed commands also take this path. It has no shell, logs, restart or deployment
+access and must not invent an outage cause. A proposed repair survives the action
+response as a real **Review request** preview; it still needs owner approval before
+coding and exact-SHA approval before release. Read-only diagnosis never creates a job.
+Run `python -m gene.fri_eval --suite diagnosis` for isolated model choices with
+fictional reports and inert evidence. It never writes member conversations or commands.
 
 Fri's request draft has a **Review request** button in the current chat, including DMs.
 The full preview offers **Submit & allow coding** only to the verified owner; other

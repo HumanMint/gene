@@ -351,6 +351,9 @@ class Fri(discord.Client):
         test_permissions = test_channel.permissions_for(test_guild.me) if (
             test_channel and test_guild and test_guild.me and test_channel.guild.id == test_guild.id) else None
         private_json(self.data / 'fri-health.json', {'at': time.time(),
+            'agent_heartbeat': {'running': self.agent.heartbeat.is_running(), 'failed': self.agent.heartbeat.failed(),
+                'started': self.agent.heartbeat_started, 'finished': self.agent.heartbeat_finished,
+                'status': self.agent.heartbeat_status} if self.agent else None,
             'guild_connected': bool(self.is_ready() and guild and not guild.unavailable),
             'sha': os.getenv('GENE_RELEASE_SHA', 'development'), 'guild_id': self.guild_id,
             'test_scope': {**test, 'connected': bool(self.is_ready() and test_guild and not test_guild.unavailable),

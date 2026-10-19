@@ -85,6 +85,8 @@ class Agent:
         self.slots = asyncio.Semaphore(1)
         self.report_lock = asyncio.Lock()
         self.control_busy = False
+        self.heartbeat_started = self.heartbeat_finished = 0
+        self.heartbeat_status = 'starting'
 
     @property
     def config(self):
@@ -218,6 +220,9 @@ class Agent:
             text = 'Current behavior settings:\n```json\n'+json.dumps(visible, indent=2)+'\n```\n'
             text += ('Tell me what to change and I’ll show an Apply preview. Voice, attention and learning notes are editable; '
                      'permissions and code-release rules are protected. Background history is FF ADMEN only in the configured channels.')
+            schedule = state.get('learning_schedule', {})
+            if schedule.get('window'):
+                text += f"\nTemporary learning: every {schedule['minutes']} minutes until <t:{int(schedule['window']['until'])}:f>."
             if any(self.config[k] for k in ('voice_notes', 'attention_notes', 'learning_notes')):
                 notes = {k: v for k, v in self.config.items() if k.endswith('_notes')}
                 with io.BytesIO(json.dumps(notes, indent=2).encode()) as buffer, closing(
@@ -421,21 +426,25 @@ class Agent:
         if not claim:
             return
         records, scanned, before, done, output, counters, error = [], 0, claim['before'], False, {}, {}, ''
-        oldest = newest = None
+        oldest = newest = newest_id = None
         try:
             channel = self.fri.get_channel(int(claim['channel_id']))
             if not channel or channel.id == self.dedicated or not self.allowed(channel) or getattr(channel, 'nsfw', False):
                 raise ValueError('Configured learning channel is unavailable')
+            recent = claim.get('mode') == 'recent'
+            upper = before or claim.get('until_id')
             messages = [m async for m in channel.history(limit=claim['limit'],
-                before=discord.Object(id=int(before)) if before else None,
-                after=dt.datetime.fromtimestamp(claim['after'], dt.timezone.utc), oldest_first=False)]
+                before=discord.Object(id=int(upper)) if upper else None,
+                after=discord.Object(id=int(claim['after_id'])) if recent else
+                      dt.datetime.fromtimestamp(claim['after'], dt.timezone.utc), oldest_first=recent)]
             scanned = len(messages)
             if messages:
                 oldest = min(m.created_at.timestamp() for m in messages)
                 newest = max(m.created_at.timestamp() for m in messages)
+                newest_id = str(max(m.id for m in messages))
             before = str(min(m.id for m in messages)) if messages else before
             done = scanned < claim['limit']
-            for message in reversed(messages):
+            for message in sorted(messages, key=lambda m: m.id):
                 if message.author.bot or message.webhook_id or not message.content.strip():
                     continue
                 member = await self.member(message.author.id)
@@ -464,7 +473,8 @@ class Agent:
             error = type(exc).__name__+': learning pass could not complete'
         receipt = await self.fri.api('POST', '/agent/learning/'+claim['id']+'/finish', {
             'records': records, 'result': output, 'scanned': scanned, 'before': before,
-            'done': done, 'counters': counters, 'error': error, 'oldest': oldest, 'newest': newest})
+            'done': done, 'counters': counters, 'error': error, 'oldest': oldest, 'newest': newest,
+            'newest_id': newest_id})
         try:
             await self.send_reports()
         except (discord.HTTPException, commands.UserFeedbackCheckFailure):
@@ -539,14 +549,19 @@ class Agent:
 
     @tasks.loop(seconds=30)
     async def heartbeat(self):
+        self.heartbeat_started = time.time()
         try:
             self.state = await self.fri.api('GET', '/agent/state')
             await self.send_reports()
             if self.config['enabled']:
                 await self.learn()
                 await self.attend()
+            self.heartbeat_status = 'ok'
         except (commands.UserFeedbackCheckFailure, discord.HTTPException, TimeoutError, ValueError, KeyError):
+            self.heartbeat_status = 'deferred'
             LOG.warning('Fri heartbeat deferred; no authority or approval inferred')
+        finally:
+            self.heartbeat_finished = time.time()
 
     @heartbeat.before_loop
     async def before_heartbeat(self):

@@ -235,7 +235,10 @@ class AgentStore:
             self.put(db, 'channel_index', index+1)
             if manual:
                 self.put(db, 'manual_learning_after', now+300)
-            self.put(db, 'next_learning', now+60*schedule['minutes'])
+            next_learning = now+60*schedule['minutes']
+            if schedule['window']:
+                next_learning = min(next_learning, schedule['window']['until'])
+            self.put(db, 'next_learning', next_learning)
             return {**claim, 'used_today': budget['used'], 'daily_limit': c['history_daily_messages']}
 
     def finish(self, batch_id, records, result, scanned, before, done, counters, error='', oldest=None, newest=None, newest_id=None):

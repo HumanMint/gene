@@ -231,6 +231,21 @@ def test_owner_schedule_change_or_pause_takes_precedence_over_window(learning):
         scheduler.start_learning_window(30, 24, 5, 'maintainer:codex')
 
 
+def test_window_expiry_does_not_leave_a_long_temporary_deadline(learning):
+    clock, store, _, scheduler = learning
+    with store.connection() as db:
+        scheduler.put(db, 'started', clock[0]-2*86400)
+    scheduler.update({'learning_later_minutes': 60}, 1, '10')
+    scheduler.start_learning_window(360, 1, 2, 'maintainer:codex')
+    claim = scheduler.claim()
+    scheduler.finish(claim['id'], [], {}, 0, None, True, {})
+    scheduler.delivered(claim['id'])
+    clock[0] += 3600
+    assert scheduler.state()['learning_schedule'] == {'minutes': 60, 'window': None}
+    assert scheduler.claim()  # Expiry cannot leave a five-hour stale delay.
+    assert scheduler.state()['next_learning'] == clock[0]+3600
+
+
 def test_old_claim_refund_cannot_credit_another_budget_day(learning):
     _, store, _, scheduler = learning
     claim = scheduler.claim()

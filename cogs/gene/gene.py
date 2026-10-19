@@ -8,9 +8,11 @@ from pathlib import Path
 
 import aiohttp
 import discord
+import lavalink
 from discord.ext import tasks
 from redbot.core import commands
 
+from .audio_diagnostics import log_track_stuck
 from .panel import HomeView, card, reply, sessions
 
 LOG = logging.getLogger('gene')
@@ -32,7 +34,14 @@ class Gene(commands.Cog):
         self.bot.add_view(self.panel)
         self.health.start()
 
+    async def cog_load(self):
+        lavalink.register_event_listener(self.audio_event)
+
+    async def audio_event(self, player, event_type, extra):
+        log_track_stuck(player, event_type, extra, guild_id=self.guild_id)
+
     async def cog_unload(self):
+        lavalink.unregister_event_listener(self.audio_event)
         self.health.cancel()
         self.panel.stop()
         await sessions(self).close_all()

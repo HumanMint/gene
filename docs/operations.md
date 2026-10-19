@@ -521,8 +521,25 @@ learning, even if accidentally added to the history list. No bot-authored messag
 enter background personal learning. Each pass examines at most 30 messages, seven
 days back, with a 360-message scan allowance per 24 hours from enablement. The
 first 24 hours use a 30-minute interval; later passes use six hours. These are
-owner-adjustable within validated bounds. An exhausted channel is not rescanned
-for a week; its cursor and the scan allowance survive restarts.
+owner-adjustable within validated bounds. Channels rotate each pass. Once the
+initial backward scan finishes, a separate forward cursor checks new messages in
+chronological batches. Full batches advance only through the newest examined
+message, so later posts remain queued for another pass. Empty/short successful
+scans return unused reservations. Failed passes preserve their cursor and reserved
+allowance. Cursors and the scan allowance survive restarts. Legacy completed
+cursors resume from enablement, bounded by the seven-day retention floor.
+
+A trusted maintainer can set a versioned temporary learning window with
+`AgentStore.start_learning_window(minutes=30, hours=24, version=..., actor=...)`.
+This uses the current settings revision, records an audit event, and makes the next
+pass immediately eligible. It does not reset history, quotas, or enablement time.
+During the window, the remaining daily scan allowance is spread across scheduled
+passes (still at most 30 messages per pass). Expiry automatically restores the
+normal cadence; an owner interval change also supersedes the temporary window.
+The active window is visible in settings, learning overviews and reports. This is
+a local maintainer operation, not a new Discord or model-controlled endpoint.
+`fri-health.json` separately reports heartbeat task state and last tick timestamps;
+a Discord connection alone does not establish that the learning loop is running.
 
 Every history pass queues an owner DM reporting its channel, eligibility, date
 range, exact saved disclosures, model/effort, measured usage, and next eligible

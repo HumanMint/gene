@@ -55,13 +55,14 @@ def test_manual_pass_keeps_budget_cursor_report_gate_and_pause(setup_agent):
     assert agent.overview()['daily_reserved'] == 360
 
 
-def test_manual_pass_skips_finished_channel_without_replaying_archive(setup_agent):
+def test_manual_pass_checks_new_messages_after_finishing_archive(setup_agent):
     store, _, agent = setup_agent
     with store.connection() as db:
         agent.put(db, 'cursors', {'1': {'done_at': time.time(), 'before': '1'},
                                   '2': {'done_at': 0, 'before': '20'}})
     claim = agent.claim(manual=True)
-    assert claim['channel_id'] == '2' and claim['before'] == '20'
+    assert claim['channel_id'] == '1' and claim['before'] is None
+    assert claim['mode'] == 'recent' and int(claim['after_id']) > 1
 
 
 def test_overview_uses_delivered_reports_and_respects_erasure(setup_agent):

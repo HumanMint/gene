@@ -44,6 +44,7 @@ class Finish(BaseModel):
     error: str = Field(default='', max_length=200)
     oldest: float | None = Field(default=None, ge=0)
     newest: float | None = Field(default=None, ge=0)
+    newest_id: str | None = Field(default=None, pattern=r'^\d{1,25}$')
 
 
 def register(app, store, settings, auth, actor):

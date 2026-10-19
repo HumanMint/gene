@@ -1,6 +1,7 @@
 """Trusted, persistent attention controls. Model text never grants authority."""
 
 import json
+import math
 import random
 import re
 import time
@@ -23,6 +24,11 @@ RANGES = {'heartbeat_seconds': (60, 1800), 'learning_first_minutes': (15, 360),
           'history_batch': (5, 40), 'history_daily_messages': (30, 720),
           'dm_turns': (3, 30), 'public_turns': (5, 60),
           'cooldown_min_minutes': (10, 20), 'cooldown_max_minutes': (10, 20)}
+
+
+def snowflake_floor(timestamp):
+    """First possible Discord ID in this millisecond (an exclusive upper bound)."""
+    return str(max(0, int(timestamp*1000)-1420070400000) << 22)
 
 
 def initialize(db):
@@ -56,6 +62,33 @@ class AgentStore:
     def config(self, db):
         return {**DEFAULTS, **self.get(db, 'config', {})}
 
+    def learning_schedule(self, db, now):
+        config = self.config(db)
+        window = self.get(db, 'learning_window')
+        if window and window['until'] > now:
+            return {'minutes': window['minutes'], 'window': window}
+        first = now-self.get(db, 'started', now) < 86400
+        return {'minutes': config['learning_first_minutes' if first else 'learning_later_minutes'], 'window': None}
+
+    def start_learning_window(self, minutes, hours, version, actor):
+        """Trusted maintainer operation; no Discord endpoint or model action grants this authority."""
+        if type(minutes) is not int or not 15 <= minutes <= 360 or type(hours) is not int or not 1 <= hours <= 24:
+            raise ValueError('Use a 15–360 minute interval for 1–24 hours')
+        now = time.time()
+        with self.store.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if version != self.get(db, 'version', 0):
+                raise ValueError('Settings changed. Request a fresh preview.')
+            config = self.config(db)
+            if not config['enabled'] or not config['learning_enabled']:
+                raise ValueError('Enable learning before starting a temporary schedule')
+            window = {'minutes': minutes, 'started': now, 'until': now+hours*3600}
+            self.put(db, 'learning_window', window)
+            self.put(db, 'version', version+1)
+            self.put(db, 'next_learning', now)
+            self.store._audit(db, actor, 'fri_learning_window', str(version+1), json.dumps(window))
+        return self.state()
+
     def state(self):
         with self.store.connection() as db:
             db.execute('DELETE FROM agent_summaries WHERE at<?', (time.time()-2*86400,))
@@ -63,6 +96,7 @@ class AgentStore:
                        (time.time()-86400, time.time()))
             db.execute('DELETE FROM agent_reports WHERE delivered=1 AND at<?', (time.time()-7*86400,))
             return {'config': self.config(db), 'version': self.get(db, 'version', 0),
+                    'learning_schedule': self.learning_schedule(db, time.time()),
                     'started': self.get(db, 'started', 0), 'next_learning': self.get(db, 'next_learning', 0),
                     'history_channels': self.settings.agent_history_channels.split(','),
                     'channels': self.settings.agent_channels.split(','),
@@ -104,8 +138,9 @@ class AgentStore:
             if config['enabled'] and not self.get(db, 'started', 0):
                 self.put(db, 'started', time.time())
             if {'learning_first_minutes', 'learning_later_minutes'} & set(changes):
-                first = time.time()-self.get(db, 'started', time.time()) < 86400
-                self.put(db, 'next_learning', time.time()+60*config['learning_first_minutes' if first else 'learning_later_minutes'])
+                # A later explicit owner schedule change supersedes the temporary cadence.
+                self.put(db, 'learning_window', None)
+                self.put(db, 'next_learning', time.time()+60*self.learning_schedule(db, time.time())['minutes'])
             self.store._audit(db, actor, 'fri_behavior_changed', str(version+1), json.dumps(changes))
         return self.state()
 
@@ -165,37 +200,48 @@ class AgentStore:
             budget = self.get(db, 'budget', {'day': day, 'used': 0})
             if budget['day'] != day:
                 budget = {'day': day, 'used': 0}
-            limit = min(c['history_batch'], c['history_daily_messages']-budget['used'])
+            remaining = c['history_daily_messages']-budget['used']
+            limit = min(c['history_batch'], remaining)
             channels = [x for x in self.settings.agent_history_channels.split(',') if x]
             if limit <= 0 or not channels:
                 return blocked('The daily scan allowance is used up or no learning channels are configured.')
             cursors = self.get(db, 'cursors', {})
             index = self.get(db, 'channel_index', 0)
-            # Once caught up, a channel has no further retrospective work this week.
-            for offset in range(len(channels)):
-                channel = channels[(index+offset) % len(channels)]
-                cursor = cursors.get(channel, {})
-                if cursor.get('done_at', 0) <= now-7*86400:
-                    break
-            else:
-                return blocked('The configured recent-history slices have already been checked. No archive replay is needed.')
-            if cursor.get('done_at'):
-                cursor = {}
+            channel = channels[index % len(channels)]
+            cursor = dict(cursors.get(channel, {}))
+            schedule = self.learning_schedule(db, now)
+            if schedule['window'] and not manual:
+                reset = self.get(db, 'started', now)+(day+1)*86400
+                slots = max(1, math.ceil((reset-now)/(schedule['minutes']*60)))
+                limit = min(limit, max(1, math.ceil(remaining/slots)))
+            floor = now-c['history_days']*86400
+            until_id = snowflake_floor(now)
+            if 'after_id' not in cursor:
+                # Legacy backward cursors never stored the newest scanned ID. Resume
+                # from enablement, not their oldest message or their later completion.
+                boundary = max(floor, self.get(db, 'started', now)) if cursor else now
+                cursor['after_id'] = str(int(snowflake_floor(boundary))-1)
+            mode = 'recent' if cursor.get('done_at') else 'history'
             claim = {'id': uuid.uuid4().hex, 'at': now, 'channel_id': channel,
-                     'before': cursor.get('before'), 'limit': limit,
-                     'after': now-c['history_days']*86400, 'role_id': self.settings.agent_role_id,
+                     'mode': mode, 'cursor': cursor, 'budget_day': day,
+                     'before': cursor.get('before') if mode == 'history' else None,
+                     'after_id': max(cursor['after_id'], str(int(snowflake_floor(floor))-1), key=int) if mode == 'recent' else None,
+                     'until_id': until_id, 'limit': limit,
+                     'after': floor, 'role_id': self.settings.agent_role_id,
                      'model': c['summary_model'], 'effort': c['summary_effort']}
             budget['used'] += limit
             self.put(db, 'budget', budget)
             self.put(db, 'learning_claim', claim)
-            self.put(db, 'channel_index', index+offset+1)
+            self.put(db, 'channel_index', index+1)
             if manual:
                 self.put(db, 'manual_learning_after', now+300)
-            first = now-self.get(db, 'started', now) < 86400
-            self.put(db, 'next_learning', now+60*c['learning_first_minutes' if first else 'learning_later_minutes'])
+            next_learning = now+60*schedule['minutes']
+            if schedule['window']:
+                next_learning = min(next_learning, schedule['window']['until'])
+            self.put(db, 'next_learning', next_learning)
             return {**claim, 'used_today': budget['used'], 'daily_limit': c['history_daily_messages']}
 
-    def finish(self, batch_id, records, result, scanned, before, done, counters, error='', oldest=None, newest=None):
+    def finish(self, batch_id, records, result, scanned, before, done, counters, error='', oldest=None, newest=None, newest_id=None):
         now = time.time()
         if not isinstance(result.get('notes', []), list) or not isinstance(result.get('summary', ''), str):
             raise ValueError('Invalid summary output')
@@ -206,9 +252,19 @@ class AgentStore:
                 raise ValueError('Learning claim expired or already completed')
             if not 0 <= scanned <= claim['limit'] or len(records) > scanned:
                 raise ValueError('Invalid learning batch size')
+            # Only a short successful fetch establishes that this slice is drained.
+            done = scanned < claim['limit']
+            mode = claim.get('mode', 'history')
+            if mode == 'recent' and not error and scanned:
+                if (not newest_id or not before or not newest_id.isdigit() or not before.isdigit() or
+                        not int(claim['after_id']) < int(before) <= int(newest_id) < int(claim['until_id'])):
+                    raise ValueError('Invalid new-message cursor')
+            if error:
+                result = {}  # Failed inference cannot produce derived memory or advance a cursor.
             accepted = {}
             for r in records:
-                if r.get('role_id') != claim['role_id'] or not claim['after'] <= r['at'] <= now:
+                if (r.get('role_id') != claim['role_id'] or not claim['after'] <= r['at'] <= now or
+                        (mode == 'recent' and not int(claim['after_id']) < int(r['id']) < int(claim['until_id']))):
                     continue
                 revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (r['user_id'],)).fetchone()
                 profile = self.store._personal_context(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
@@ -236,21 +292,35 @@ class AgentStore:
                            'DO UPDATE SET body=excluded.body,authors=excluded.authors,at=excluded.at',
                            (claim['channel_id'], summary, json.dumps(sorted({r['user_id'] for r in accepted.values()})), now))
             cursors = self.get(db, 'cursors', {})
-            cursors[claim['channel_id']] = {'before': before, 'done_at': now if done else 0}
-            self.put(db, 'cursors', cursors)
+            if not error:
+                cursor = dict(claim.get('cursor', cursors.get(claim['channel_id'], {})))
+                if mode == 'recent':
+                    after_id = str(int(claim['until_id'])-1) if done else (newest_id or claim['after_id'])
+                    cursor['after_id'] = max(cursor['after_id'], after_id, key=int)
+                else:
+                    cursor.update(before=before, done_at=now if done else 0)
+                cursors[claim['channel_id']] = cursor
+                self.put(db, 'cursors', cursors)
+                budget = self.get(db, 'budget', {})
+                if claim.get('budget_day') == budget.get('day'):
+                    budget['used'] = max(0, budget['used']-(claim['limit']-scanned))
+                    self.put(db, 'budget', budget)
             self.put(db, 'learning_claim', None)
             dates = [r['at'] for r in records]
             if oldest is not None and newest is not None and claim['after'] <= oldest <= newest <= now:
                 dates = [oldest, newest]
             window = ('<t:'+str(int(min(dates)))+':f> to <t:'+str(int(max(dates)))+':f>') if dates else 'no eligible messages'
             report = (f"Learning pass {batch_id[:8]}\nChannel: <#{claim['channel_id']}>; FF ADMEN only\n"
+                      f"Mode: {'new messages' if mode == 'recent' else 'initial history scan'}\n"
                       f"Scanned {scanned}; eligible {len(accepted)}; saved exact preferences {len(kept)}\n"
                       f"Examined range: {window}\nLookback floor: <t:{int(claim['after'])}:f>\n"
                       f"Model: {claim['model']} / {claim['effort']}\n"
                       f"Tokens: input {counters.get('input_tokens', 'unknown')}, output {counters.get('output_tokens', 'unknown')}, "
                       f"reasoning {counters.get('reasoning_output_tokens', 'unknown')}\n"
                       f"Next eligible pass: <t:{int(self.get(db, 'next_learning', now))}:R>\n"
-                      f"Daily reserved scan allowance: {self.get(db, 'budget', {}).get('used', 0)}/{self.config(db)['history_daily_messages']}\n"
+                      + (f"Temporary cadence ends: <t:{int(self.learning_schedule(db, now)['window']['until'])}:f>\n"
+                         if self.learning_schedule(db, now)['window'] else '')
+                      + f"Daily reserved scan allowance: {self.get(db, 'budget', {}).get('used', 0)}/{self.config(db)['history_daily_messages']}\n"
                       + ('\nConversation summary: '+summary if summary else '')
                       + ('\nSaved disclosures:\n'+'\n'.join(kept) if kept else '')
                       + ('\nIssue: '+clean(error, 180) if error else '')
@@ -277,6 +347,7 @@ class AgentStore:
                 'SELECT channel_id,body,at FROM agent_summaries WHERE at>? ORDER BY at DESC LIMIT 5',
                 (now-2*86400,)) if r['channel_id'] in self.settings.agent_history_channels.split(',')]
             return {'reports': reports, 'summaries': summaries,
+                    'learning_schedule': self.learning_schedule(db, now),
                     'learning_enabled': config['enabled'] and config['learning_enabled'],
                     'history_channels': [x for x in self.settings.agent_history_channels.split(',') if x],
                     'role_id': self.settings.agent_role_id, 'history_days': config['history_days'],

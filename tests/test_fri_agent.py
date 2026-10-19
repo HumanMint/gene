@@ -88,7 +88,7 @@ def test_learning_claims_are_atomic_budgeted_and_reports_block_more_work(setup_a
     assert 'Scanned 0' in report['body'] and 'input 100, output 20, reasoning unknown' in report['body']
     agent.delivered(report['id'])
     second = agent.claim()
-    assert second['channel_id'] == '2' and second['used_today'] == 60
+    assert second['channel_id'] == '2' and second['used_today'] == 30  # Empty scans return unused slots.
     with store.connection() as db:
         agent.put(db, 'learning_claim', None)
         agent.put(db, 'next_learning', 0)

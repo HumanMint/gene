@@ -241,6 +241,18 @@ Sources: [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing
 
 ### Discord requests: approve and deploy
 
+Conversational request previews use message text, not embeds or downloadable files.
+Long requests have Back/Next pages; submission is enabled after every page has been
+shown. Cancel removes the controls without creating a request. The preview works
+even when the original chat reply suppressed link embeds, including owner DMs.
+In public channels, the detailed preview stays in the requester's private panel.
+
+Owner personality changes use a separate, versioned settings preview with Apply
+and Cancel. Fri can offer this from the current private conversation, including
+short answers to a tone clarification. The action edits only voice preferences;
+it does not create a feature job or alter authority. A changed settings version
+invalidates an older preview. Settings text is paged and readable without JSON.
+
 New Discord requests enter `awaiting_owner`. They cannot reach the coding worker until
 the owner reviews the complete stored request and selects **Allow coding**. The controller
 binds that decision to a hash of the request and its source; changed requests and stale

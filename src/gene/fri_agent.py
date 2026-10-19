@@ -23,6 +23,7 @@ from .fri_chat import VOICE
 from .fri_memory import memory_intent
 from .fri_panel import DraftView
 from .fri_usage import usage_requested
+from .previews import PagedPreview
 from .privacy import clean
 from .subscription import private_json
 
@@ -30,31 +31,41 @@ LOG = logging.getLogger('fri.agent')
 NO_MENTIONS = discord.AllowedMentions.none()
 
 
-class BehaviorPreview(discord.ui.View):
+class BehaviorPreview(PagedPreview):
     def __init__(self, agent, changes, version):
-        super().__init__(timeout=600)
         self.agent, self.changes, self.version = agent, changes, version
+        names = {'voice_notes': 'Voice and personality', 'attention_notes': 'Attention preferences',
+                 'learning_notes': 'Learning preferences'}
+        body = '\n\n'.join(f"{names.get(key, key.replace('_', ' ').capitalize())}:\n{value}"
+                           for key, value in changes.items())
+        super().__init__('Review Fri’s settings', body, 'Nothing saved yet. Apply changes these settings only.',
+                         'Apply settings', 'fri:behavior:', self.apply)
 
     async def interaction_check(self, interaction):
-        return (interaction.user.id == self.agent.fri.owner_id and
-                interaction.message.author.id == self.agent.fri.user.id)
+        fri = self.agent.fri
+        return (interaction.user.id == fri.owner_id and interaction.message.author.id == fri.user.id and
+                (interaction.guild_id is None or (interaction.guild_id == fri.guild_id and
+                                                  self.agent.allowed(interaction.channel))) and
+                bool(await self.agent.member(interaction.user.id, fresh=True)))
 
-    @discord.ui.button(label='Apply owner settings', custom_id='fri:behavior:apply', style=discord.ButtonStyle.green)
-    async def apply(self, interaction, button):
+    async def apply(self, interaction, button=None):
+        if not await self.interaction_check(interaction):
+            return
         await interaction.response.defer()
-        try:
-            state = await self.agent.fri.api('POST', '/agent/settings', {
-                **self.agent.identity(interaction.user.id), 'changes': self.changes, 'version': self.version})
-            self.agent.state = state
-            await interaction.edit_original_response(content=f"Saved behavior revision {state['version']}. Security and release rules remain enforced.", view=None)
-        except commands.UserFeedbackCheckFailure as exc:
-            await interaction.edit_original_response(content=str(exc)[:1800], view=None)
-        self.stop()
-
-    @discord.ui.button(label='Cancel', custom_id='fri:behavior:cancel')
-    async def cancel(self, interaction, button):
-        await interaction.response.edit_message(content='No settings changed.', view=None)
-        self.stop()
+        async with self.lock:
+            if self.finished or self.confirm_button.disabled:
+                return
+            try:
+                state = await self.agent.fri.api('POST', '/agent/settings', {
+                    **self.agent.identity(interaction.user.id), 'changes': self.changes, 'version': self.version})
+                self.agent.state = state
+                text = f"Saved settings revision {state['version']}."
+            except commands.UserFeedbackCheckFailure as exc:
+                text = str(exc)[:1800]
+            await interaction.edit_original_response(content=text, embed=None, attachments=[], view=None,
+                                                       allowed_mentions=NO_MENTIONS)
+            self.finished = True
+            self.stop()
 
 
 class Agent:
@@ -196,12 +207,12 @@ class Agent:
             await self.fri.api('POST', '/chat/models/update', {**self.identity(message.author.id), 'models': catalog})
             await message.reply('Available subscription models: '+', '.join(catalog)+'. Selected models were kept.', allowed_mentions=NO_MENTIONS)
             return True
-        subject = re.search(r'\b(settings?|heartbeat|personality|system prompt|learning|learn|tone|voice|cooldown|summary|summaries|model)\b', lower)
+        subject = re.search(r'\b(settings?|heartbeat|personality|system prompt|learning|learn|tone|voice|sarcasm|playful|cooldown|summary|summaries|model)\b', lower)
         inspect = re.search(r'\b(show|list|current)\b.*\b(settings?|configuration|models?|\w+ notes|system prompt)\b|\bhow (often|far)\b', lower)
-        change = re.search(r'\b(change|set|adjust|pause|stop|resume|enable|disable|make|use|be|sound|speak|respond)\b', lower)
+        change = re.search(r'\b(change|set|adjust|tune|tweak|pause|stop|resume|enable|disable|make|use|be|sound|speak|respond)\b', lower)
         if not subject or not (inspect or change):
             return False
-        self.state = await self.fri.api('GET', '/agent/state')
+        self.state = state = await self.fri.api('GET', '/agent/state')
         if inspect and not change:
             visible = {k: v for k, v in self.config.items() if not k.endswith('_notes')}
             text = 'Current behavior settings:\n```json\n'+json.dumps(visible, indent=2)+'\n```\n'
@@ -227,7 +238,7 @@ class Agent:
                 'For voice/personality/system prompt requests, edit voice_notes as style preferences only. '
                 'For heartbeat purpose, use attention_notes or learning_notes; intervals use numeric settings. '
                 'The owner must still click Apply. json_value is a JSON-encoded scalar. Do not claim the change is saved.',
-                {'request': text[:4000], 'current': self.config, 'ranges': RANGES}, SETTINGS,
+                {'request': text[:4000], 'current': dict(state['config']), 'ranges': RANGES}, SETTINGS,
                 model='gpt-6.1-sol', effort='high')
             changes = {r['key']: json.loads(r['json_value']) for r in result.get('changes', [])}
             if status != 'completed' or set(changes)-set(DEFAULTS):
@@ -236,12 +247,11 @@ class Agent:
                 return False  # Reply through Fri's voice and evidence path, not the settings helper.
             else:
                 # The controller validates limits and version again when Apply is clicked.
-                preview = json.dumps(changes, indent=2)
-                if len(preview) > 1500:
+                if len(json.dumps(changes)) > 6000:
                     await message.reply('That change is too large for one preview. Please change one behavior at a time.', allowed_mentions=NO_MENTIONS)
                 else:
-                    await message.reply('Proposed owner settings:\n```json\n'+preview+'\n```\nApply this change?',
-                        view=BehaviorPreview(self, changes, self.state['version']), allowed_mentions=NO_MENTIONS)
+                    view = BehaviorPreview(self, changes, state['version'])
+                    await message.reply(view.content, view=view, allowed_mentions=NO_MENTIONS, suppress_embeds=True)
         except (ValueError, KeyError, TypeError):
             await message.reply('I couldn’t parse that settings preview. Nothing was saved.', allowed_mentions=NO_MENTIONS)
         finally:
@@ -321,10 +331,12 @@ class Agent:
         if not result.reply:
             return
         view = None
-        if result.draft:
+        if result.settings_preview:
+            view = BehaviorPreview(self, **result.settings_preview)
+        elif result.draft:
             if dm or message.guild.id == self.fri.guild_id:
                 view = DraftView(self.fri, message.author.id, result.draft, public=True)
-        await message.reply(result.reply[:1950], view=view, mention_author=False,
+        await message.reply(view.content if result.settings_preview else result.reply[:1950], view=view, mention_author=False,
                             allowed_mentions=NO_MENTIONS, suppress_embeds=True)
         if result.status == 'completed':
             self.active[(message.channel.id, message.author.id)] = time.time()+120

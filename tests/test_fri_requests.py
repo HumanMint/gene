@@ -7,6 +7,7 @@ import pytest
 from redbot.core import commands
 
 from gene.fri_requests import DraftView, request_dm_component
+from gene.previews import pages
 from gene.reviews import request_reference
 
 
@@ -86,4 +87,64 @@ def test_preview_mismatch_never_approves_returned_job():
         with pytest.raises(commands.UserFeedbackCheckFailure):
             await draft.submit(event)
         assert cog.api.await_count == 1
+    asyncio.run(scenario())
+
+
+def test_suppressed_reply_becomes_readable_inline_without_downloading_request():
+    async def scenario():
+        cog, event = setup()
+        event.message.flags = discord.MessageFlags(suppress_embeds=True)
+        body = 'Fix music replies in the bot commands channel.'
+        await DraftView(cog, 10, body).preview(event)
+        payload = event.response.edit_message.await_args.kwargs
+        assert body in payload['content']
+        assert payload['embed'] is None and payload['attachments'] == []
+        assert payload['allowed_mentions'].everyone is False
+        assert len(payload['content'].encode('utf-16-le'))//2 <= 2000
+        cog.api.assert_not_awaited()
+    asyncio.run(scenario())
+
+
+def test_long_request_cannot_submit_before_all_pages_or_after_cancel():
+    async def scenario():
+        cog, event = setup()
+        body = ('Some details about the requested feature.\n'*90) + 'FINAL REQUIREMENT'
+        view = DraftView(cog, 10, body, reviewed=True)
+        assert view.confirm_button.disabled
+        await view.submit(event)
+        cog.api.assert_not_awaited()
+        for _ in range(len(view.pages)-1):
+            await view.next(event)
+            assert len(view.content.encode('utf-16-le'))//2 <= 2000
+        assert 'FINAL REQUIREMENT' in view.content and not view.confirm_button.disabled
+        await view.back(event)
+        assert not view.confirm_button.disabled
+        await view.cancel(event)
+        await view.submit(event)
+        cog.api.assert_not_awaited()
+        assert event.response.edit_message.await_args.kwargs['view'] is None
+        assert ''.join(view.pages) == discord.utils.escape_markdown(discord.utils.escape_mentions(body))
+        for action in ('back', 'next', 'submit', 'cancel'):
+            event.data['custom_id'] = f'fri:request:{view.source_id}:{action}'
+            assert request_dm_component(event, 99)
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('body', ['🎮'*4000, '\\*' * 2000, '@everyone ' * 400])
+def test_preview_handles_discord_unicode_limits_and_untrusted_formatting(body):
+    for page in pages(body):
+        assert len(page.encode('utf-16-le'))//2 < 1500
+        assert '@everyone' not in page
+
+
+def test_failed_page_delivery_does_not_enable_approval():
+    async def scenario():
+        cog, event = setup()
+        view = DraftView(cog, 10, 'A'*701, reviewed=True)
+        event.response.edit_message.side_effect = TimeoutError
+        with pytest.raises(TimeoutError):
+            await view.next(event)
+        assert view.page == 0 and view.confirm_button.disabled
+        await view.submit(event)
+        cog.api.assert_not_awaited()
     asyncio.run(scenario())

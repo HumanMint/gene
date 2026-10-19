@@ -24,6 +24,7 @@ class Actions:
         self.message, self.model, self.effort = '', '', ''
         self.event, self.scope, self.revision = None, {}, 0
         self.web_research = []
+        self.settings_version = None
 
     async def channels(self, fresh=False):
         member = await self.agent.member(self.user, fresh=fresh, guild_id=self.guild)
@@ -54,6 +55,10 @@ class Actions:
                     'default_channel_id': next(iter(channels)), 'limit': 20, 'max_age_days': 7,
                     'description': 'Read one small recent text batch when asked. No images or saved personal notes.'}}
         if self.owner:
+            self.settings_version = self.agent.state['version']
+            actions['preview_voice'] = {'description': 'Prepare an owner-only voice/personality settings preview. '
+                'No coding request; nothing is saved until Apply. voice_notes is the complete replacement style preference.',
+                'current_voice_notes': self.agent.config['voice_notes'], 'max_characters': 1500}
             actions['learning_overview'] = {'description': 'Read the latest learning reports and summaries. channel_id="".'}
             actions['run_learning'] = {'description': 'Run one learning pass only when explicitly requested, within the existing budget. channel_id="".'}
         if self.agent.state.get('web_search_enabled'):
@@ -87,6 +92,18 @@ class Actions:
         kind = action.get('kind')
         if not channels:
             return {'blocked': 'No approved channels are currently readable.'}
+        if kind == 'preview_voice':
+            if not self.owner or self.settings_version is None:
+                return {'blocked': 'Voice settings are available only to the verified owner in private.'}
+            notes = action.get('voice_notes')
+            if not isinstance(notes, str) or not notes.strip() or len(notes) > 1500 or clean(notes, 1500) != notes:
+                return {'blocked': 'Keep voice preferences within 1500 characters without secrets.'}
+            state = await self.fri.api('GET', '/agent/state')
+            if state['version'] != self.settings_version:
+                self.agent.state = state
+                return {'blocked': 'Settings changed while preparing this preview. Ask again for a fresh preview.'}
+            return {'kind': kind, 'settings_preview': {'changes': {'voice_notes': notes},
+                    'version': state['version']}}
         if kind == 'web_sources':
             matches = [r for r in self.web_research if not action.get('query') or r['query'] == action['query']]
             return {'kind': kind, **matches[0]} if matches else {'blocked': 'That search is no longer retained here. Ask for a fresh lookup.'}

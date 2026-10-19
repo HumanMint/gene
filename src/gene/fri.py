@@ -217,6 +217,17 @@ class Fri(discord.Client):
                         receipt = await actions.execute(result.action)
                     except (commands.UserFeedbackCheckFailure, discord.HTTPException):
                         receipt = {'uncertain': 'Completion was not confirmed. Do not claim success or retry automatically.'}
+                    if action_kind == 'preview_voice':
+                        current = await self.api('POST', '/chat/context', scope)
+                        if current['revision'] != context['revision'] or not await actions.valid():
+                            raise commands.UserFeedbackCheckFailure('Access or memory changed. Ask again for a fresh preview.')
+                        preview = receipt.get('settings_preview')
+                        text_reply = ('Voice settings preview prepared. Nothing is saved until you click Apply.' if preview
+                                      else receipt.get('blocked') or receipt.get('uncertain'))
+                        await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
+                            'source': source.model_dump(), 'input': text, 'reply': text_reply,
+                            'model': context['model'], 'effort': context['effort'], 'notes': []})
+                        return ChatResult(reply=text_reply, status='completed', settings_preview=preview)
                     research = None
                     if action_kind == 'web_search' and all(receipt.get(k) for k in ('query', 'answer', 'sources', 'checked_at')):
                         research = {k: receipt[k] for k in ('query', 'answer', 'sources', 'checked_at')}
@@ -285,7 +296,12 @@ class Fri(discord.Client):
             result = await self.talk(interaction.guild_id, interaction.channel_id, interaction.user.id, text, 'private',
                                      interaction.user.display_name, event=interaction)
             view = DraftView(self, interaction.user.id, result.draft) if result.draft else HomeView(self, interaction.user.id)
-            await reply(self, interaction, embed=card('Fri', result.reply), view=view)
+            if result.settings_preview:
+                from .fri_agent import BehaviorPreview
+                view = BehaviorPreview(self.agent, **result.settings_preview)
+                await reply(self, interaction, view.content, attachments=[], view=view)
+            else:
+                await reply(self, interaction, embed=card('Fri', result.reply), view=view)
         except commands.UserFeedbackCheckFailure as exc:
             await reply(self, interaction, str(exc), view=HomeView(self, interaction.user.id))
 

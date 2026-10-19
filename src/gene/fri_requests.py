@@ -1,17 +1,17 @@
 """Request previews in the current chat, with explicit owner intake approval."""
 
 import asyncio
-import io
 import re
 import uuid
 
 import discord
 from redbot.core import commands
 
+from .previews import PagedPreview
 from .reviews import request_reference
 
 NO_MENTIONS = discord.AllowedMentions.none()
-REQUEST_COMPONENT = re.compile(r'^fri:request:(preview|submit):[a-f0-9]{32}$')
+REQUEST_COMPONENT = re.compile(r'^fri:request:(?:(?:preview|submit):[a-f0-9]{32}|[a-f0-9]{32}:(?:back|next|submit|cancel))$')
 
 
 def request_dm_component(interaction, bot_id):
@@ -22,21 +22,26 @@ def request_dm_component(interaction, bot_id):
         REQUEST_COMPONENT.fullmatch(str((interaction.data or {}).get('custom_id', ''))))
 
 
-class DraftView(discord.ui.View):
+class DraftView(PagedPreview):
     def __init__(self, cog, user_id, draft, *, public=False, reviewed=False, source_id=None):
-        super().__init__(timeout=600)
         self.cog, self.user_id, self.draft = cog, user_id, draft
         self.source_id = source_id or uuid.uuid4().hex
-        self.lock = asyncio.Lock()
         self.owner = user_id == cog.owner_id
         self.reviewed = reviewed
         self.preview_interaction = None
-        action = 'submit' if reviewed else 'preview'
-        label = ('Submit & allow coding' if self.owner else 'Submit for owner review') if reviewed else 'Review request'
-        button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary,
-                                   custom_id=f'fri:request:{action}:{self.source_id}')
-        button.callback = self.submit if reviewed else self.preview
-        self.add_item(button)
+        if reviewed:
+            super().__init__('Review your request', draft,
+                'Submit allows coding; deployment needs a separate review.' if self.owner else
+                'Submit sends this to the owner. Coding waits for approval.',
+                'Submit & allow coding' if self.owner else 'Submit for owner review',
+                f'fri:request:{self.source_id}:', self.submit)
+        else:
+            discord.ui.View.__init__(self, timeout=600)
+            self.lock, self.finished = asyncio.Lock(), False
+            button = discord.ui.Button(label='Review request', style=discord.ButtonStyle.primary,
+                                       custom_id=f'fri:request:preview:{self.source_id}')
+            button.callback = self.preview
+            self.add_item(button)
 
     async def interaction_check(self, interaction):
         if interaction.user.id != self.user_id:
@@ -53,30 +58,22 @@ class DraftView(discord.ui.View):
     async def preview(self, interaction):
         if not await self.interaction_check(interaction):
             return
-        preview = discord.utils.escape_markdown(discord.utils.escape_mentions(self.draft))
-        text = ('Submit & allow coding saves this exact request and authorizes development. '
-                'You’ll review the tested commit before deployment.' if self.owner else
-                'Submit this request for owner review. Coding waits for approval.')
-        embed = discord.Embed(title='Review your request', description=text+'\n\n'+preview[:2800], colour=0x5865F2)
-        embed.set_footer(text='Full request attached. Ask Fri to revise it if anything needs changing.')
         view = DraftView(self.cog, self.user_id, self.draft, reviewed=True, source_id=self.source_id)
         view.preview_interaction = interaction
-        attachment = discord.File(io.BytesIO(self.draft.encode()), filename='request.txt')
-        try:
-            if interaction.guild_id is None or getattr(getattr(interaction.message, 'flags', None), 'ephemeral', False):
-                await interaction.response.edit_message(content=None, embed=embed, attachments=[attachment], view=view,
-                                                         allowed_mentions=NO_MENTIONS)
-            else:
-                from .fri_panel import sessions
-                await sessions(self.cog).show(interaction, embed=embed, attachments=[attachment], view=view)
-        finally:
-            attachment.close()
+        if interaction.guild_id is None or getattr(getattr(interaction.message, 'flags', None), 'ephemeral', False):
+            await interaction.response.edit_message(content=view.content, embed=None, attachments=[], view=view,
+                                                     allowed_mentions=NO_MENTIONS)
+        else:
+            from .fri_panel import sessions
+            await sessions(self.cog).show(interaction, content=view.content, attachments=[], view=view)
 
     async def submit(self, interaction):
         if not self.reviewed or not await self.interaction_check(interaction):
             return
         await interaction.response.defer()
         async with self.lock:
+            if self.finished or self.confirm_button.disabled:
+                return
             channel = (getattr(interaction.channel, 'parent_id', None) or interaction.channel_id) if interaction.guild_id else self.cog.workshop_id
             identity = {'guild_id': str(self.cog.guild_id), 'user_id': str(self.user_id)}
             job = await self.cog.api('POST', '/requests', {**identity,
@@ -95,6 +92,7 @@ class DraftView(discord.ui.View):
                 text = f"Request `{job['id']}` saved. I’ve queued the owner review; coding waits for approval."
             await interaction.edit_original_response(content=text, embed=None, attachments=[], view=None,
                                                        allowed_mentions=NO_MENTIONS)
+            self.finished = True
             self.stop()
 
     async def on_timeout(self):

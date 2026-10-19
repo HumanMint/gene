@@ -194,9 +194,11 @@ def test_internal_model_has_no_tools_or_credentials_in_data_and_records_failure(
 
 def test_behavior_preview_rejects_nonowner_and_spoofed_message():
     async def scenario():
-        agent = SimpleNamespace(fri=SimpleNamespace(owner_id=10, user=SimpleNamespace(id=99)))
+        agent = SimpleNamespace(fri=SimpleNamespace(owner_id=10, user=SimpleNamespace(id=99)),
+                                member=AsyncMock(return_value=object()))
         view = BehaviorPreview(agent, {'voice_notes': 'brief'}, 1)
-        event = SimpleNamespace(user=SimpleNamespace(id=11), message=SimpleNamespace(author=SimpleNamespace(id=99)))
+        event = SimpleNamespace(user=SimpleNamespace(id=11), guild_id=None,
+                                message=SimpleNamespace(author=SimpleNamespace(id=99)))
         assert not await view.interaction_check(event)
         event.user.id = 10
         assert await view.interaction_check(event)

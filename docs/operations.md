@@ -311,7 +311,9 @@ Shared memory consists of explicit owner-approved facts and operational request/
 Fri retains six exchanges per person and conversation for seven days, plus up to five short
 personal notes for 90 days. The notes are exact, validated self-disclosures for nickname, games,
 music, hobbies, or conversation style; each category replaces its previous note. Public/private
-conversations, channels, users, and guilds stay separate. No ambient chat is collected.
+conversations, channels, users, and guilds stay separate. The attention adapter additionally
+keeps a 15-minute, 30-message RAM buffer per configured channel and bounded recent-history
+summaries as described below; it does not import an unrestricted server archive.
 “fri what do you remember about me?” inspects the current conversation's notes. “fri forget me”
 erases all that user's Fri notes and chat turns and disables retention; “fri remember me again”
 re-enables it. These controls run without inference and invalidate in-flight replies so deleted
@@ -411,7 +413,8 @@ An explicit request such as `fri search history in #fri-chat for "Minecraft"
 before 2025-01-01` checks at most 50 messages before that date and returns at most
 five matches with links. The requesting member must currently be able to view
 and read history in that configured channel. Old bot replies are source evidence
-only. Archive search does not store personal notes or change Fri's personality.
+only. Public results stay in their source channel; cross-channel lookups require a
+private DM. Archive search does not store personal notes or change Fri's personality.
 This is a bounded slice, not a claim to search the entire server archive.
 
 Members get eight DM/private-panel turns or twenty public turns per 30-minute

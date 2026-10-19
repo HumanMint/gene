@@ -129,7 +129,27 @@ class Agent:
 
     def messages(self, channel):
         now = time.time()
-        return [r for r in self.recent[channel] if r['at'] > now-900]
+        self.recent[channel] = deque((r for r in self.recent[channel] if r['at'] > now-900), maxlen=30)
+        return list(self.recent[channel])
+
+    async def context_messages(self, channel):
+        rows = self.messages(channel)
+        source = self.fri.get_channel(channel)
+        parent = getattr(source, 'parent_id', None) or channel
+        profiles, accepted = {}, []
+        for row in rows:
+            if row['gene_error']:
+                accepted.append(row)
+                continue
+            user = row['user_id']
+            if user not in profiles:
+                profiles[user] = await self.profile(parent, user)
+            profile = profiles[user]
+            if profile['enabled'] and profile['revision'] == row.get('revision', 0):
+                accepted.append(row)
+            else:
+                self.forget(int(user))
+        return accepted
 
     def forget(self, user):
         for key, rows in self.recent.items():
@@ -144,7 +164,7 @@ class Agent:
             parent = self.fri.get_channel(channel)
             scope = getattr(parent, 'parent_id', None) or channel
             profile = await self.profile(scope, user)
-            data.update(recent=self.messages(channel), summary=profile['summary'])
+            data.update(recent=await self.context_messages(channel), summary=profile['summary'])
         return data
 
     async def owner_control(self, message, text):
@@ -247,7 +267,8 @@ class Agent:
             profile = await self.profile(parent, message.author.id)
             if profile['enabled'] and not privacy:
                 self.recent[channel].append({'id': str(message.id), 'user_id': str(message.author.id),
-                    'name': clean(message.author.display_name, 60), 'text': text[:500], 'at': time.time(), 'gene_error': False})
+                    'name': clean(message.author.display_name, 60), 'text': text[:500], 'at': time.time(),
+                    'revision': profile.get('revision', 0), 'gene_error': False})
         elif message.author.bot:
             self.recent[channel].append({'id': str(message.id), 'user_id': str(message.author.id),
                 'name': 'Gene', 'text': text[:1800], 'at': time.time(), 'gene_error': True})
@@ -410,7 +431,7 @@ class Agent:
     async def attend(self):
         now = time.time()
         for channel_id in list(self.recent):
-            records = self.messages(channel_id)
+            records = await self.context_messages(channel_id)
             fresh = [r for r in records if int(r['id']) > self.seen.get(channel_id, 0)]
             if not fresh or now-self.last_attention.get(channel_id, 0) < self.config['heartbeat_seconds']:
                 continue
@@ -442,7 +463,7 @@ class Agent:
                     await self.investigate(channel_id, selected)
             elif result.get('action') == 'reply' and self.config['proactive'] and not selected['gene_error']:
                 # Newer messages may have resolved the question while Luna was running.
-                current = self.messages(channel_id)
+                current = await self.context_messages(channel_id)
                 if not current or current[-1]['id'] != records[-1]['id']:
                     continue
                 message = await channel.fetch_message(int(selected['id']))

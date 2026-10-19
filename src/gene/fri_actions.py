@@ -7,9 +7,10 @@ import time
 import discord
 from redbot.core import commands
 
-from .fri_web import lookup, public_query
+from .fri_web import lookup
 from .gene_controls import COMMANDS, arguments, requested
 from .privacy import clean
+from .web_policy import public_query
 
 
 class Actions:

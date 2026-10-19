@@ -533,7 +533,7 @@ class Store:
         source = ChatSource.model_validate(source).check(guild_id, channel_id, user_id) if source else None
         if web_receipt:
             from .fri_research import ResearchReceipt
-            from .fri_web import public_query
+            from .web_policy import public_query
             web_receipt = ResearchReceipt.model_validate(web_receipt).model_dump()
             if not public_query(web_receipt['query'], text):
                 raise ValueError('Research query must come from the current message')

@@ -8,7 +8,8 @@ import pytest
 
 from gene.fri_actions import Actions
 from gene.fri_chat import Chat, ChatResult
-from gene.fri_web import cite_reply, lookup, public_query
+from gene.fri_web import cite_reply, lookup
+from gene.web_policy import public_query
 from tests.test_api import actor, headers
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event

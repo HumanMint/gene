@@ -97,3 +97,26 @@ def test_source_followup_uses_saved_receipt_and_never_runs_another_search(monkey
             search.assert_not_awaited()
         await fri.close()
     asyncio.run(scenario())
+
+
+def test_database_research_validation_has_no_model_or_auth_dependencies(tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    code = '''
+import sys
+from pathlib import Path
+for module in ('jwt', 'gene.subscription', 'gene.fri_chat', 'gene.fri_web'):
+    sys.modules[module] = None
+from gene.store import Store
+store = Store(Path(sys.argv[1]))
+receipt = {'query':'Python release', 'answer':'Public facts', 'sources':['https://www.python.org/'],
+           'checked_at':'2026-10-19T20:00:00+00:00'}
+store.save_chat('123','public:1','20',0,'Python release','checked','model','high',web_receipt=receipt)
+assert store.chat_context('123','public:1','20')['web_research'] == [receipt]
+'''
+    result = subprocess.run([sys.executable, '-c', code, str(tmp_path/'offline.sqlite3')], cwd=root,
+        env={**os.environ, 'PYTHONPATH': str(root/'src')}, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

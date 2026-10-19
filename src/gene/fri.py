@@ -22,6 +22,7 @@ from .fri_memory import describe_memory, memory_intent
 from .fri_panel import DraftView, HomeView, authorized, card, reply, sessions
 from .fri_requests import request_dm_component
 from .fri_reviews import ReviewButton, notify_owner
+from .fri_usage import describe_usage, usage_requested
 from .panels import defer_panel
 from .privacy import clean
 from .reviews import owner_dm_component
@@ -176,6 +177,15 @@ class Fri(discord.Client):
                     return ChatResult(reply=notice, status='cooldown')
             async with self.chat_slots:
                 context = await self.api('POST', '/chat/context', scope)
+                if user_id == self.owner_id and guild_id == self.guild_id and usage_requested(text):
+                    usage = await self.api('POST', '/agent/usage',
+                                           {'guild_id': str(guild_id), 'user_id': str(user_id)})
+                    report = describe_usage(usage, by_model='by model' in ' '.join(text.casefold().split()))
+                    await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
+                        'source': source.model_dump(), 'input': text, 'reply': report,
+                        'model': 'local-usage-report', 'effort': '', 'notes': [],
+                        'input_tokens': 0, 'output_tokens': 0})
+                    return ChatResult(reply=report, status='completed')
                 if self.agent:
                     context.update(await self.agent.extra_context(channel_id, user_id, visibility == 'public'))
                 actions = Actions(self.agent, user_id, channel_id, visibility == 'public') if self.agent else None

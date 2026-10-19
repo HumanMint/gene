@@ -22,6 +22,7 @@ from .fri_agent_store import DEFAULTS, RANGES
 from .fri_chat import VOICE
 from .fri_memory import memory_intent
 from .fri_panel import DraftView
+from .fri_usage import usage_requested
 from .privacy import clean
 from .subscription import private_json
 
@@ -187,15 +188,13 @@ class Agent:
             return False
         if message.guild and message.guild.id != self.fri.guild_id:
             return False  # Lab is for conversation; administrative output stays in FF/owner DMs.
+        if usage_requested(text):
+            return False  # Keep reports in the normal attributed conversation and privacy flow.
         lower = text.lower()
         if re.search(r'\b(refresh|update)\b.*\bmodels?\b', lower):
             catalog = await self.fri.chat.models()
             await self.fri.api('POST', '/chat/models/update', {**self.identity(message.author.id), 'models': catalog})
             await message.reply('Available subscription models: '+', '.join(catalog)+'. Selected models were kept.', allowed_mentions=NO_MENTIONS)
-            return True
-        if re.search(r'\b(usage|tokens used|token usage)\b', lower):
-            usage = await self.fri.api('POST', '/agent/usage', self.identity(message.author.id))
-            await message.reply('Usage by task:\n```json\n'+json.dumps(usage, indent=2)[:1700]+'\n```', allowed_mentions=NO_MENTIONS)
             return True
         subject = re.search(r'\b(settings?|heartbeat|personality|system prompt|learning|learn|tone|voice|cooldown|summary|summaries|model)\b', lower)
         inspect = re.search(r'\b(show|list|current)\b.*\b(settings?|configuration|models?|\w+ notes|system prompt)\b|\bhow (often|far)\b', lower)
@@ -272,10 +271,12 @@ class Agent:
             return
         directed = text if dm else await addressed_text(message, self.fri.user.id)
         owner_addressed = directed is not None or channel == self.dedicated or self.active.get((channel, message.author.id), 0) > time.time()
-        if owner_addressed and message.author.id == self.fri.owner_id and await self.owner_control(message, text):
+        if owner_addressed and message.author.id == self.fri.owner_id and await self.owner_control(message, directed or text):
             return
         privacy = memory_intent(text)
-        if not self.config['enabled'] and not privacy:
+        owner_report = (owner_addressed and message.author.id == self.fri.owner_id and
+                        (dm or message.guild.id == self.fri.guild_id) and usage_requested(directed or text))
+        if not self.config['enabled'] and not privacy and not owner_report:
             return
         if (directed is not None or channel == self.dedicated) and re.search(r'["“]([^"”]{2,100})["”]', text) and re.search(
                 r'(?i)\b(search|find|look up)\b.*\b(history|logs?|messages?|said)\b', text):

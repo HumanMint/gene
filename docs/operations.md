@@ -583,3 +583,44 @@ is fresh for 20 seconds after the last runtime poll. Deployment checks both read
 and the offered command catalog. `python -m gene.fri_eval --suite controls` tests model
 choices with fictional context and inert receipts: it never submits a Gene command,
 writes a member conversation, or sends a Discord message. Usage is recorded as evaluation.
+
+### Selected-track preparation and Fri request previews
+
+Gene's trusted runtime adapter prepares only the selected YouTube file before sending
+Lavalink's play operation. This avoids its ten-second stuck detector expiring during a
+cold download. The Mac remains the temporary download relay; decoding, cached files
+and voice transmission remain on Hostinger. `/prepare` uses the existing authenticated
+resolver, a 100-second client bound and a three-minute cache handoff pin. Stop, skip,
+disconnect, pause and seek still apply while preparation is pending. A failed preparation
+uses Red's existing track-error handling; it never sends a play operation. Red and
+Lavalink's installed package files remain unchanged.
+
+Set `GENE_AUDIO_PREPARE_URL=http://gene-audio:2334` and `GENE_AUDIO_PREPARE_TOKEN` in
+`runtime.env`. The latter is the resolver service credential, never a Discord token.
+The resolver must bind `0.0.0.0` inside its Docker network namespace; do not publish
+port 2334 on the host. Keep its token and namespace isolated. Build the resolver image
+from the same tested SHA. Roll back its image/environment alongside the bot runtime.
+
+Set `GENE_COMMAND_CHANNEL_ID` in controller configuration to the approved bot commands
+channel. Fri sends member-DM controls there, with member/channel access rechecked.
+Public controls stay in their original channel. For verified DM commands, a normal
+Red before-invoke hook updates an existing player's notification destination after
+permission checks pass. The development workshop is never an implicit DM fallback.
+
+Fri's request draft has a **Review request** button in the current chat, including DMs.
+The full preview offers **Submit & allow coding** only to the verified owner; other
+members submit for owner review. The request is stored before the separate hashed
+intake decision, and exact-commit release approval remains mandatory. Buttons check
+the original member, Fri-authored message, server scope and current DM membership.
+Automatic error requests identify Fri as reporter and Gene as error source. Older
+reports are displayed correctly without rewriting their approved request hash.
+
+Recent Gene command receipts are retained for at most 24 hours and scoped to the
+same member and conversation, with current channel access rechecked. They distinguish
+an earlier enqueue from a later denied attempt; they never prove audible playback.
+Erasure removes these receipts. A proposal based on an older release gets an
+informational notice with its saved diff, without an active approval button.
+
+Attention still uses Luna. Investigations use `gpt-6.1-sol` at `xhigh`; the conversation
+and coding defaults remain `gpt-6.1-sol` at `high`. The investigation prompt still gets
+bounded error evidence and release state, with no added shell or log-reading authority.

@@ -51,6 +51,20 @@ class ControlContext(commands.Context):
 class ControlRunner:
     def __init__(self, bot):
         self.bot, self.task = bot, None
+        self.previous_before = bot._before_invoke
+        async def before(ctx):
+            if self.previous_before:
+                await self.previous_before(ctx)
+            # Red calls this only after its checks pass. Existing players can retain
+            # an earlier notification channel, so explicitly route verified DM controls.
+            if isinstance(ctx, ControlContext) and getattr(ctx, 'gene_dm_control', False):
+                import lavalink
+                try:
+                    lavalink.get_player(ctx.guild.id).store('notify_channel', ctx.channel.id)
+                except (lavalink.NodeNotFound, lavalink.PlayerNotFound):
+                    pass  # A newly created player will use this command's channel.
+        self.before = before
+        bot.before_invoke(before)
 
     def catalog(self):
         result = []
@@ -64,6 +78,8 @@ class ControlRunner:
         self.task = asyncio.create_task(self.run())
 
     async def close(self):
+        if self.bot._before_invoke is self.before:
+            self.bot._before_invoke = self.previous_before
         if self.task:
             self.task.cancel()
             try:
@@ -141,6 +157,7 @@ class ControlRunner:
         message.attachments, message.embeds = [], []
         ctx = await self.bot.get_context(message, cls=ControlContext)
         ctx.outputs = []
+        ctx.gene_dm_control = source['guild_id'] is None
         expected = self.bot.get_command(name)
         if ctx.command is not self.bot.get_command(name.split()[0]) or expected is None:
             return {'blocked': 'Gene did not resolve the expected command.'}

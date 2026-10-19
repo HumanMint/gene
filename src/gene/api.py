@@ -180,7 +180,9 @@ def create_app(settings: Settings | None = None):
         return store.status()
 
     def public_job(job):
-        return {k: v for k, v in job.items() if k not in ('lease', 'heartbeat')}
+        return {**{k: v for k, v in job.items() if k not in ('lease', 'heartbeat')},
+                'proposal_current': bool(job.get('proposal') and
+                    job['proposal']['base_sha'] == store.status()['active_sha'])}
 
     @app.get('/requests', dependencies=[auth('fri')])
     def recent():

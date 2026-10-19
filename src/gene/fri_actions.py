@@ -156,9 +156,13 @@ class Actions:
         current = await self.fri.api('POST', '/chat/context', self.scope)
         if current['revision'] != self.revision:
             return {'blocked': 'The conversation was cleared before Gene could start.'}
-        # Prefer the existing bot workshop for DMs; never choose another server or hidden room.
-        target = str(self.channel) if self.public else (
-            str(self.fri.workshop_id) if str(self.fri.workshop_id) in channels else next(iter(channels)))
+        # A DM has no text destination of its own. Use the explicit utility channel,
+        # never the development workshop or an arbitrary readable channel.
+        target = str(self.channel)
+        if not self.public:
+            target = (await self.fri.api('GET', '/controls/catalog')).get('dm_channel_id', '')
+            if target not in channels:
+                return {'blocked': 'The configured bot commands channel is not accessible. Ask there instead.'}
         from .fri_context import discord_source
         submitted = await self.fri.api('POST', '/controls', {**self.scope, 'source': discord_source(self.event).model_dump(),
             'target_channel_id': target, 'request_text': clean(self.event.content, 4000),

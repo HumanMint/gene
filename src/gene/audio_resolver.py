@@ -309,8 +309,7 @@ def create_app(token: str | None = None, extractor=None, *, cache_dir=None, down
                 raise
             raise HTTPException(502, 'This track could not be downloaded.') from None
 
-    @app.post('/resolve', dependencies=[Depends(authenticate)])
-    def resolve(body: Query):
+    def prepared(body: Query, *, ttl=7200):
         if not cache:
             raise HTTPException(404, 'Playback runs on Hostinger')
         if not VIDEO_ID.fullmatch(body.identifier):
@@ -325,7 +324,7 @@ def create_app(token: str | None = None, extractor=None, *, cache_dir=None, down
                 row = metadata.pop(body.identifier, None)
                 if row:
                     cache.save_metadata(body.identifier, row)
-                lease = cache.pin(body.identifier)
+                lease = cache.pin(body.identifier, ttl=ttl)
         except HTTPException:
             metadata.pop(body.identifier, None)
             raise
@@ -333,6 +332,17 @@ def create_app(token: str | None = None, extractor=None, *, cache_dir=None, down
             metadata.pop(body.identifier, None)
             raise HTTPException(502, 'This track could not be prepared. Try again or choose another track.') from None
         return {'path': str(path), 'lease': lease}
+
+    @app.post('/resolve', dependencies=[Depends(authenticate)])
+    def resolve(body: Query):
+        return prepared(body)
+
+    @app.post('/prepare', dependencies=[Depends(authenticate)])
+    def prepare_selected(body: Query):
+        # A short durable pin spans transport handoff. The source then takes its own
+        # playback lease. Orphaned handoffs expire without periodic work on the Mac.
+        prepared(body, ttl=180)
+        return {'ready': True}
 
     @app.post('/release', dependencies=[Depends(authenticate)])
     def release(body: Query):

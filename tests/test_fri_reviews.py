@@ -101,3 +101,17 @@ def test_failed_dm_reports_failure_without_approving_request():
         assert cog.api.await_args_list[1].args == (
             'POST', '/reviews/012345abcdef/delivered', {'lease': 'notice-lease'})
     asyncio.run(scenario())
+
+
+def test_automatic_reports_distinguish_fri_reporter_from_gene_error_and_keep_stale_proposals():
+    async def scenario():
+        item = notice()
+        item['job'].update(user_id='old-gene-bot-id', source_id='gene-error:123')
+        embed, attachment, view = review_message(item)
+        assert any(f.name == 'Reported by' and 'Fri' in f.value for f in embed.fields)
+        attachment.close()
+        item['phase'] = 'stale'
+        embed, attachment, view = review_message(item)
+        assert 'rebuild' in embed.title and not view.children
+        attachment.close()
+    asyncio.run(scenario())

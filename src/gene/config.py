@@ -23,6 +23,7 @@ class Settings:
     test_guild_id: str = ''
     test_channel_id: str = ''
     web_search_enabled: bool = False
+    command_channel_id: str = ''
 
     def chat_channel_allowed(self, guild, channel):
         if not guild or not channel:
@@ -51,6 +52,7 @@ class Settings:
             test_guild_id=os.environ.get('FRI_TEST_GUILD_ID', ''),
             test_channel_id=os.environ.get('FRI_TEST_CHANNEL_ID', ''),
             web_search_enabled=os.environ.get('FRI_WEB_SEARCH_ENABLED', '').lower() == 'true',
+            command_channel_id=os.environ.get('GENE_COMMAND_CHANNEL_ID', ''),
         )
         tokens = [settings.runtime_token, settings.worker_token, settings.deploy_token, settings.fri_token]
         if any(len(token) < 32 for token in tokens) or len(set(tokens)) != 4:

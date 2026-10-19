@@ -29,6 +29,25 @@ class Controls:
             row = db.execute('SELECT at,actions FROM gene_control_catalog WHERE id=1').fetchone()
             return json.loads(row['actions']) if row and row['at'] > time.time()-20 else []
 
+    def recent(self, user, guild, conversation):
+        """Small dated receipts, scoped like the original command and erased with chats."""
+        with self.store.connection() as db:
+            rows = db.execute('SELECT * FROM gene_controls WHERE user_id=? AND created>? '
+                              'ORDER BY created DESC LIMIT 30', (user, time.time()-86400)).fetchall()
+        receipts = []
+        for row in rows:
+            payload = json.loads(row['payload'])
+            if payload.get('guild_id') != guild or payload.get('conversation_id') != conversation:
+                continue
+            receipts.append({'at': row['created'], 'action': payload['action'], 'argument': payload['argument'],
+                'state': row['state'], 'channel_id': payload['target_channel_id'],
+                'result': self._result(row)})
+            if receipts[-1]['result'].get('output'):
+                receipts[-1]['result']['output'] = receipts[-1]['result']['output'][:1000]
+            if len(receipts) == 3:
+                break
+        return receipts
+
     def enqueue(self, body):
         source = ChatSource.model_validate(body['source']).check(body['guild_id'], body['conversation_id'], body['user_id'])
         if source.kind != 'discord_message' or not -5 <= time.time()-source.timestamp().timestamp() <= 300:
@@ -91,8 +110,12 @@ class Controls:
             payload = json.loads(row['payload'])
             if payload['guild_id'] != guild or payload['conversation_id'] != conversation:
                 raise ValueError('Action belongs to another conversation')
-            if row['state'] in ('finished', 'expired'):
-                return {'done': True, **json.loads(row['result'])}
-            if row['created'] < time.time()-115:
-                return {'done': True, 'uncertain': 'Gene has not confirmed the outcome. Do not retry automatically or claim success.'}
-            return {'done': False}
+            return self._result(row)
+
+    @staticmethod
+    def _result(row):
+        if row['state'] in ('finished', 'expired'):
+            return {'done': True, **json.loads(row['result'])}
+        if row['created'] < time.time()-115:
+            return {'done': True, 'uncertain': 'Gene has not confirmed the outcome. Do not retry automatically or claim success.'}
+        return {'done': False}

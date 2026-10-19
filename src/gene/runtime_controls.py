@@ -127,9 +127,17 @@ class ControlRunner:
         channel = self.bot.get_channel(int(claim['target_channel_id']))
         if not member or member.bot or not channel or getattr(channel, 'guild', None) != guild:
             return {'blocked': 'Gene cannot access that member or channel.'}
+        thread = isinstance(channel, discord.Thread)
+        if source['guild_id'] is not None:
+            parent_id = channel.parent_id if thread else channel.id
+            if str(parent_id) != claim['channel_id']:
+                return {'blocked': 'The source channel is outside the approved channel scope.'}
+            if thread and (channel.is_private() or not channel.parent or channel.parent.nsfw):
+                return {'blocked': 'Gene controls require an approved public thread.'}
         for who in (member, guild.me):
             permissions = channel.permissions_for(who)
-            if not permissions.view_channel or not permissions.read_message_history or not permissions.send_messages:
+            can_send = permissions.send_messages_in_threads if thread else permissions.send_messages
+            if not permissions.view_channel or not permissions.read_message_history or not can_send:
                 return {'blocked': 'The member or Gene cannot use that text channel.'}
         if source['guild_id'] is not None:
             if source['guild_id'] != claim['guild_id'] or source['channel_id'] != str(channel.id):

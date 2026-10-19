@@ -78,11 +78,14 @@ def register(app, store, settings, auth):
     @app.post('/controls', dependencies=[auth('fri')])
     def enqueue(body: Control):
         scope(body)
-        if not settings.chat_channel_allowed(body.guild_id, body.target_channel_id):
-            raise HTTPException(403, 'Gene cannot use that destination channel')
-        if body.source.guild_id is not None and body.source.channel_id != body.target_channel_id:
-            raise HTTPException(403, 'Public controls stay in their source channel')
-        if body.source.guild_id is None and body.target_channel_id != settings.command_channel_id:
+        if body.source.guild_id is not None:
+            if (body.source.channel_id != body.target_channel_id or
+                    body.conversation_id != 'public:'+body.target_channel_id):
+                raise HTTPException(403, 'Public controls stay in their source channel')
+            # channel_id is the approved parent for a public thread. Gene independently
+            # verifies the actual Discord parent before starting; never redirect to it.
+        elif (body.target_channel_id != settings.command_channel_id or
+              not settings.chat_channel_allowed(body.guild_id, body.target_channel_id)):
             raise HTTPException(403, 'DM commands require the configured bot commands channel')
         if body.action not in controls.catalog():
             raise ValueError('Gene is not currently offering that command')

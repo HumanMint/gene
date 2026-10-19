@@ -42,7 +42,14 @@ def requested(text, action):
     """Require a current request, not a quote, example, capability question, or old chat."""
     text = re.sub(r'```[\s\S]*?```|["“][^"”]*["”]|(?m:^>[^\n]*)', '', text).lower()
     text = re.sub(r'<@!?\d+>', 'fri', text)
-    if re.search(r"\b(for example|hypothetically|can i|could i|are you able|if i|used to|dont|don't|do not)\b", text):
+    if re.search(r"\b(for example|hypothetically|can i|could i|are you able|if i|used to)\b", text):
+        return False
+    if re.search(r"\b(?:dont|don't|do not) (?:check|show|read|inspect|run)\b", text):
+        return False
+    if action in ('queue', 'now_playing', 'status') and re.search(
+            r"\b(?:(?:dont|don't|do not|cant|can't|cannot) hear|no (?:sound|audio|music)|music (?:died|stopped|is broken))\b", text):
+        return True  # Read-only troubleshooting is appropriate when the member reports silence.
+    if re.search(r"\b(dont|don't|do not)\b", text):
         return False
     verbs = {'play': r'play|queue|put on|add', 'pause': r'pause', 'resume': r'resume|unpause',
              'skip': r'skip', 'stop': r'stop', 'volume': r'volume|turn (?:it|the music) (?:up|down)',

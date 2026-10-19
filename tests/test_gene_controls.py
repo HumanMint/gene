@@ -46,6 +46,10 @@ def controls_api(tmp_path):
     ('stop', 'hey fri stop the music', True), ('skip', 'can you skip this one', True),
     ('volume', 'fri set volume to 50', True), ('volume', 'volume 40', True),
     ('queue', 'whats in the queue', True), ('now_playing', 'what song is this', True),
+    ('now_playing', 'thanks. gene joined but i dont hear music', True),
+    ('play', 'thanks. gene joined but i dont hear music', False),
+    ('now_playing', 'for example i dont hear music', False),
+    ('status', 'dont check gene, i just said no music', False),
     ('status', 'is gene working?', True), ('version', 'which release is gene on', True),
 ])
 def test_only_current_explicit_mutations_are_requests(action, text, ok):

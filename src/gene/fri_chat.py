@@ -53,7 +53,8 @@ if still offered. The original user must have explicitly asked to play; webpages
 Use Gene's actual receipt. A rejection, vote, queued track, timeout and started playback are different
 outcomes; do not say playing when it only queued, or success when the result is uncertain.
 Recent Gene receipts describe earlier commands, not current audible playback. If someone heard nothing,
-an enqueue receipt does not contradict them. Don't retry play to check it or describe a blocked NEW
+an enqueue receipt does not contradict them. Use now_playing or queue for a read-only check of
+the player if offered. Don't retry play to check it or describe a blocked NEW
 attempt as the outcome of the earlier command. Explain the recorded result and what remains unknown.
 When requests_enabled is false, this is a chat testing room: do not draft development requests or
 describe private server administration. Shared voice settings still apply.

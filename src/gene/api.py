@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .fri_context import ChatSource
+from .fri_research import ResearchReceipt
 from .store import Conflict, Store
 
 
@@ -90,6 +91,7 @@ class ChatScope(Actor):
 
 class ChatTurn(ChatScope):
     source: ChatSource
+    web_receipt: ResearchReceipt | None = None
     revision: int = Field(ge=0)
     input: str = Field(min_length=1, max_length=4000)
     reply: str = Field(min_length=1, max_length=3500)
@@ -150,6 +152,8 @@ def create_app(settings: Settings | None = None):
 
     from .fri_agent_api import register
     register(app, store, settings, auth, actor)
+    from .control_api import register as register_controls
+    register_controls(app, store, settings, auth)
 
     @app.exception_handler(Conflict)
     async def conflict_handler(_, exc):
@@ -282,7 +286,7 @@ def create_app(settings: Settings | None = None):
         chat_scope(body)
         return store.save_chat(body.guild_id, body.conversation_id, body.user_id, body.revision, body.input,
                               body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes,
-                              body.source.model_dump())
+                              body.source.model_dump(), body.web_receipt.model_dump() if body.web_receipt else None)
 
     @app.post('/chat/memory/control', dependencies=[auth('fri')])
     def personal_control(body: PersonalControl):

@@ -99,7 +99,7 @@ async def lookup(chat, query, model, effort):
                     answer = ''.join(p.get('text', '') for p in messages) or ''.join(text_parts[k] for k in sorted(text_parts))
                     annotations += [a for p in messages for a in p.get('annotations', [])]
                     sources = list(dict.fromkeys(a['url'] for a in annotations
-                        if a.get('type') == 'url_citation' and public_url(a.get('url'))))[:2]
+                        if a.get('type') == 'url_citation' and public_url(a.get('url'))))[:8]
                     searched = any(i.get('type') == 'web_search_call' and i.get('status') == 'completed' for i in items.values())
                     if searched and answer and sources:
                         return {'kind': 'web_search', 'answer': answer[:3500], 'sources': sources,
@@ -112,10 +112,37 @@ async def lookup(chat, query, model, effort):
     return {'error': 'The web lookup did not return a completed answer with verified source links. Do not guess or claim a successful search.'}, counters, status
 
 
-def cite_reply(reply, receipt):
-    """Keep the provider's source links even if the conversational rewrite omits them."""
-    sources = [url for url in receipt.get('sources', []) if public_url(url)][:2]
-    if not sources:
-        return reply
-    footer = ' · '.join(f'[source {i+1}](<{url}>)' for i, url in enumerate(sources))
-    return reply[:1800-len(footer)-2].rstrip()+'\n\n'+footer
+def cite_reply(reply, receipt, *, include_sources=False):
+    """Keep relevant verified inline links; a source list is opt-in and message-bounded."""
+    sources = list(dict.fromkeys(url for url in receipt.get('sources', []) if public_url(url)))[:8]
+    links = []
+
+    def link(match):
+        label, url = match.group(1), match.group(2).strip('<>')
+        if re.fullmatch(r'(?:source|reference)\s*\d+', label, re.I):
+            return ''
+        if url not in sources or len(links) >= 2 or include_sources:
+            return label
+        links.append(f'[{label}](<{url}>)')
+        return f'\x00{len(links)-1}\x00'
+
+    reply = re.sub(r'\[([^\]\n]+)\]\((<?https?://[^\s)]+>?)\)', link, reply)
+    # Bare URLs are not a substitute for verified, relevant inline links.
+    reply = re.sub(r'<?https?://[^\s>]+>?', '', reply)
+    reply = re.sub(r'cite.*?', '', reply)
+    reply = re.sub(r'(?im)^\s*(?:sources?|references?)\s*:\s*$', '', reply)
+    reply = re.sub(r'(?m)^[ \t·•*-]+$', '', reply).strip(' \n·')
+    for i, value in enumerate(links):
+        reply = reply.replace(f'\x00{i}\x00', value)
+    if include_sources and sources:
+        shown = []
+        for url in sources:
+            line = f'[{urlsplit(url).hostname[:60]}](<{url}>)'
+            if len('\n'.join(shown+[line])) > 1400:
+                break
+            shown.append(line)
+        footer = '\n'.join(shown)
+        if len(shown) < len(sources):
+            footer += f'\nShowing {len(shown)} of {len(sources)} saved links; ask for the remaining links.'
+        return reply[:1798-len(footer)].rstrip()+'\n\n'+footer
+    return reply[:1800].strip()

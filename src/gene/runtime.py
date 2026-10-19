@@ -7,6 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Import before Red loads a cog named gene and temporarily occupies that module name.
+from .runtime_controls import ControlRunner
+
 
 def allowed_guild(guild_id: int | None) -> bool:
     configured = os.environ.get('GENE_GUILD_ID', '')
@@ -48,6 +51,11 @@ def install_private_runtime():
             kwargs.update(status=discord.Status(configured_presence()), activity=None)
             return await super().change_presence(**kwargs)
 
+        async def close(self):
+            if getattr(self, '_gene_controls', None):
+                await self._gene_controls.close()
+            await super().close()
+
         def dispatch(self, event, /, *args, **kwargs):
             private_events = ('message', 'message_edit', 'message_delete', 'bulk_message_delete',
                               'raw_message_edit', 'raw_message_delete', 'raw_bulk_message_delete',
@@ -88,6 +96,8 @@ def install_private_runtime():
                 guild = discord.Object(id=int(os.environ['GENE_GUILD_ID']))
                 self.tree.add_command(cog.gene.app_command, guild=guild, override=True)
                 await self.tree.sync(guild=guild)
+                self._gene_controls = ControlRunner(self)
+                self._gene_controls.start()
 
     red_bot.RedTree = PrivateTree
     red_main.Red = PrivateRed

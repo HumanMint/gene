@@ -43,7 +43,8 @@ def test_live_lookup_uses_subscription_and_only_public_topic():
     assert status == 'completed' and result['live_access'] and counters['input_tokens'] == 120
     assert result['sources'] == ['https://www.python.org/downloads/']
     reply = cite_reply('x'*1800, result)
-    assert len(reply) <= 1800 and result['sources'][0] in reply
+    assert len(reply) <= 1800 and 'source 1' not in reply
+    assert result['sources'][0] in cite_reply('here you go', result, include_sources=True)
 
 
 @pytest.mark.parametrize('kind,searched,cited', [('failed', True, True), ('incomplete', True, True),
@@ -133,8 +134,9 @@ def test_web_reply_preserves_sources_and_keeps_only_a_neutral_receipt(monkeypatc
         fri.api = api
         fri.chat.respond = AsyncMock(side_effect=[
             ChatResult(status='completed', action={'kind': 'web_search', 'query': 'Python release'}),
-            ChatResult(status='completed', reply='heres the current release', draft='unexpected draft')])
-        receipt = {'kind': 'web_search', 'answer': 'public evidence', 'sources': ['https://python.org/downloads/']}
+            ChatResult(status='completed', reply='heres the [current release](https://python.org/downloads/)', draft='unexpected draft')])
+        receipt = {'kind': 'web_search', 'answer': 'public evidence', 'sources': ['https://python.org/downloads/'],
+                   'checked_at': '2026-10-19T20:00:00+00:00'}
         with patch('gene.fri_actions.lookup', new=AsyncMock(return_value=(receipt, {'input_tokens': 20}, 'completed'))):
             result = await fri.talk(123, 1, 20, 'fri Python release?', 'public',
                 event=event(user=20, channel=1, content='fri Python release?'))
@@ -143,6 +145,7 @@ def test_web_reply_preserves_sources_and_keeps_only_a_neutral_receipt(monkeypatc
         assert not context['actions'] and context['action_result'] == receipt
         saved = next(body for path, body in calls if path == '/chat/turn')
         assert saved['reply'].startswith('Earlier check: web_search') and 'public evidence' not in saved['reply']
+        assert saved['web_receipt'] == {k: receipt[k] for k in ('query', 'answer', 'sources', 'checked_at')}
         roles = [body.get('role', 'conversation') for path, body in calls if path == '/chat/usage/report']
         assert roles == ['conversation', 'web_search', 'conversation']
         assert not list((tmp_path/'usage').glob('*.json'))

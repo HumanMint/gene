@@ -177,6 +177,9 @@ class Fri(discord.Client):
                 if self.agent:
                     context.update(await self.agent.extra_context(channel_id, user_id, visibility == 'public'))
                 actions = Actions(self.agent, user_id, channel_id, visibility == 'public') if self.agent else None
+                if actions:
+                    actions.event, actions.scope, actions.revision = event, scope, context['revision']
+                    actions.web_research = context.get('web_research', [])
                 context['actions'] = await actions.available() if actions else {}
                 context['display_name'] = source.display_name
                 context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
@@ -195,10 +198,28 @@ class Fri(discord.Client):
                     try:
                         receipt = await actions.execute(result.action)
                     except (commands.UserFeedbackCheckFailure, discord.HTTPException):
-                        receipt = {'error': 'The check could not complete. Do not claim success or retry automatically.'}
-                    result = await self.chat_once(text, {**context, 'actions': {}, 'action_result': receipt})
+                        receipt = {'uncertain': 'Completion was not confirmed. Do not claim success or retry automatically.'}
+                    research = None
+                    if action_kind == 'web_search' and all(receipt.get(k) for k in ('query', 'answer', 'sources', 'checked_at')):
+                        research = {k: receipt[k] for k in ('query', 'answer', 'sources', 'checked_at')}
+                    remaining = {}
+                    from .gene_controls import requested
+                    if research and requested(text, 'play') and 'gene_command' in context['actions']:
+                        remaining = {'gene_command': context['actions']['gene_command']}
+                    result = await self.chat_once(text, {**context, 'actions': remaining, 'action_result': receipt})
                     if result.action:
-                        raise commands.UserFeedbackCheckFailure('That check needs a new request. No further actions were run.')
+                        if not remaining or result.action['kind'] != 'gene_command':
+                            raise commands.UserFeedbackCheckFailure('That check needs a new request. No further actions were run.')
+                        try:
+                            control = await actions.execute(result.action)
+                        except (commands.UserFeedbackCheckFailure, discord.HTTPException):
+                            control = {'uncertain': 'Gene did not confirm completion. Do not automatically retry or claim success.'}
+                        receipt = {'kind': 'gene_command', 'gene_result': control, 'research': research,
+                                   'sources': research['sources']}
+                        action_kind = 'gene_command'
+                        result = await self.chat_once(text, {**context, 'actions': {}, 'action_result': receipt})
+                        if result.action:
+                            raise commands.UserFeedbackCheckFailure('The action limit was reached. No further commands were run.')
                     current = await self.api('POST', '/chat/context', scope)
                     if current['revision'] != context['revision'] or not await actions.valid():
                         raise commands.UserFeedbackCheckFailure('Access or memory changed during that check. Ask again for a fresh reply.')
@@ -208,16 +229,17 @@ class Fri(discord.Client):
                     breadcrumb = f'Earlier check: {action_kind}'
                     if checked_channel:
                         breadcrumb += f' in channel {checked_channel}'
-                    breadcrumb += '. Fetch current evidence for follow-up details; no findings are retained here.'
+                    breadcrumb += ('. Public research receipts are available separately for follow-ups.' if research or action_kind == 'web_sources'
+                                   else '. Fetch current evidence for follow-up details; no findings are retained here.')
                     await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                         'source': source.model_dump(),
                         'input': text, 'reply': breadcrumb, 'model': context['model'],
-                        'effort': context['effort'], 'notes': []})
+                        'effort': context['effort'], 'notes': [], 'web_receipt': research})
                     result.notes = []
                     result.draft = None
-                    if action_kind == 'web_search':
+                    if receipt.get('sources'):
                         from .fri_web import cite_reply
-                        result.reply = cite_reply(result.reply, receipt)
+                        result.reply = cite_reply(result.reply, receipt, include_sources=action_kind == 'web_sources')
                     return result
                 saved = await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                     'source': source.model_dump(),

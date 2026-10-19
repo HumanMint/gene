@@ -3,11 +3,11 @@
 Gene is a private Discord assistant for a friend server: classic Red commands and
 music, meme highlights, and an owner-approved development loop for Discord requests.
 
-**Current mode: Gene online in Fricking Fricks; Fri invisible in Discord Lab.**
+**Current mode: Gene online in Fricking Fricks; Fri invisible in FF and Discord Lab.**
 Gene handles music, meme highlights, and the established Red functions. Fri is a separate
 bot for conversation and development requests. Each registers commands only in its configured
-server. Ordinary DMs stay disabled; only the
-owner's approval buttons on Fri's own review DMs are accepted.
+server. Fri accepts bounded support DMs from verified FF members and keeps owner
+reviews separate from ordinary conversation.
 
 In **Fricking Fricks**, open `/gene menu` for music and server tools. Join a voice channel
 before adding music. In **Discord Lab → #tests_n_stuff**, just say “fri”, @mention her,
@@ -15,9 +15,15 @@ or reply to one of her messages. `/fri` remains available for private chat, revi
 Each bot keeps one private panel per member, edits it in place, and provides Close.
 Panels expire after ten minutes; old panels from before a restart may need dismissal.
 
-Fri speaks in normal messages, with a relaxed, dry sense of humor. She responds only when
-addressed in the workshop or its threads; she does not archive ambient chat. Her Message Content
-intent lets her recognize her name. **Chat with Fri** in the panel remains private.
+Fri speaks in normal messages, with a relaxed, dry sense of humor. She recognizes
+her name, mentions and conversational follow-ups in configured channels, with bounded
+attention and gradual learning. **Chat with Fri** in the panel remains private.
+
+In FF or a member DM, ask “fri play Sad Machine by Porter Robinson”, “fri pause”,
+or “what’s queued?”. Fri uses the existing Gene music and status commands with
+normal member permissions and no coding approval. Admin commands stay protected,
+and Discord Lab cannot control FF music. Web answers keep useful inline links
+without a numbered source footer; ask for sources afterward to see saved research.
 
 She keeps six exchanges for seven days and gradually saves up to five small personal notes per
 person and conversation: nickname, games, music, hobbies, and preferred conversational style.
@@ -36,7 +42,8 @@ proposal is ready, the same DM shows its summary, code link, and full SHA for se
 release approval. Progress and failure explanations update that DM too. Stale decisions
 are rejected. Unavailable DMs never grant approval; the panel remains a fallback.
 
-Chat has no tools or shell access. The controller owns approvals and deployment, and Gene's
+Chat has bounded, audited tools for context, public web research and ordinary Gene controls.
+It has no shell access. The controller owns approvals and deployment, and Gene's
 service credential cannot access Fri's request, model, memory, or release endpoints.
 This limits what a malicious message can trigger; the owner still reviews the resulting code.
 
@@ -52,7 +59,7 @@ This limits what a malicious message can trigger; the owner still reviews the re
 - Feature branches in this private repository; no automatic merge to `main`.
 - Immutable cog releases, exact-commit approval for Discord requests, backups, health checks, and
   automatic code rollback when a release fails to reconnect.
-- Explicit, inspectable server facts and bounded Fri conversation context. No passive collection.
+- Explicit, inspectable server facts, bounded conversation context and scoped gradual learning.
 - A resumable, redacted `#bot-commands` importer that produces evidence for review.
 - Net meme voting with unique voters, self-vote exclusion, removal handling, and
   persistent highlight IDs.

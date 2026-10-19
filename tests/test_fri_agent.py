@@ -342,3 +342,13 @@ def test_owner_can_inspect_saved_behavior_notes_as_an_attachment():
         assert attachment.filename == 'fri-behavior-notes.json'
         assert attachment.fp.closed
     asyncio.run(scenario())
+
+
+def test_request_panel_does_not_expose_previous_lab_requests(setup_agent):
+    store, settings, _ = setup_agent
+    current = store.request('guild', 'person', 'current', '', 'A server feature')
+    private = store.request('previous-lab', 'owner', 'private', '', 'Private development context')
+    client = TestClient(create_app(settings))
+    response = client.get('/requests', headers=headers('fri'))
+    assert [item['id'] for item in response.json()] == [current['id']]
+    assert client.get('/requests/'+private['id'], headers=headers('fri')).status_code == 403

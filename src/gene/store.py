@@ -259,9 +259,11 @@ class Store:
         with self.connection() as db:
             return self._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
 
-    def recent(self):
+    def recent(self, guild_id=None):
         with self.connection() as db:
-            return [self._job(r) for r in db.execute('SELECT * FROM jobs ORDER BY created DESC LIMIT 20')]
+            return [self._job(r) for r in db.execute(
+                'SELECT * FROM jobs WHERE (? IS NULL OR guild_id=?) ORDER BY created DESC LIMIT 20',
+                (guild_id, guild_id))]
 
     def claim(self):
         with self.connection() as db:

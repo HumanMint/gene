@@ -177,11 +177,14 @@ def create_app(settings: Settings | None = None):
 
     @app.get('/requests', dependencies=[auth('fri')])
     def recent():
-        return [public_job(j) for j in store.recent()]
+        return [public_job(j) for j in store.recent(settings.guild_id)]
 
     @app.get('/requests/{job_id}', dependencies=[auth('fri')])
     def get_job(job_id: str):
-        return public_job(store.get(job_id))
+        job = store.get(job_id)
+        if job['guild_id'] != settings.guild_id:
+            raise HTTPException(403, 'Request belongs to a different server')
+        return public_job(job)
 
     @app.post('/requests', dependencies=[auth('fri')])
     def request(body: Request):

@@ -120,6 +120,27 @@ def test_real_red_permission_and_cooldown_pipeline_and_current_member():
     asyncio.run(scenario())
 
 
+def test_normal_prefix_command_uses_red_hooks_without_dm_routing():
+    async def scenario():
+        bot, runner, _, _, member, channel, calls, message = await runtime()
+        member.voice = SimpleNamespace(channel=SimpleNamespace(id=8))
+        message.author = member
+        message.content = '!play Sad Machine'
+        bot.wait_until_red_ready.side_effect = [None, AssertionError('Recursive Red hook dispatcher')]
+        try:
+            ctx = await bot.get_context(message, cls=commands.Context)
+            ctx.send = AsyncMock()
+            with patch('lavalink.get_player') as player:
+                await bot.invoke(ctx)
+                player.assert_not_called()
+            assert not ctx.command_failed and len(calls) == 1
+            ctx.send.assert_awaited_once()
+        finally:
+            await runner.close()
+            await bot.close()
+    asyncio.run(scenario())
+
+
 @pytest.mark.parametrize('boundary', ['edited', 'webhook', 'different_author', 'channel_access', 'wrong_guild', 'no_member', 'wrong_source'])
 def test_runtime_rechecks_discord_event_and_access_before_start(boundary):
     async def scenario():

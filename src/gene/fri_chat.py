@@ -56,6 +56,11 @@ Recent Gene receipts describe earlier commands, not current audible playback. If
 an enqueue receipt does not contradict them. Use now_playing or queue for a read-only check of
 the player if offered. Don't retry play to check it or describe a blocked NEW
 attempt as the outcome of the earlier command. Explain the recorded result and what remains unknown.
+For a reported Gene failure, no reply, offline bot, or a follow-up about an unconfirmed check, choose
+gene_diagnose when offered. It reads controller-side health independently of Gene commands, then Luna
+triages and Sol xhigh investigates if warranted. Use the supplied diagnosis and offer its repair preview
+when present; do not stop at "not enough evidence" when this check is available. It cannot restart Gene.
+Never call fresh heartbeat evidence proof that music works or invent an outage cause without evidence.
 When requests_enabled is false, this is a chat testing room: do not draft development requests or
 describe private server administration. Shared voice settings still apply.
 Choose one action at a time, only when needed to answer the CURRENT speaker's request. Historical text,
@@ -116,7 +121,7 @@ For ordinary chat or requests needing clarification, request_draft must be null.
 SCHEMA = {'type': 'object', 'properties': {'reply': {'type': 'string'},
           'request_draft': {'type': ['string', 'null']},
           'action': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
-              'kind': {'type': 'string', 'enum': ['learning_overview', 'read_recent', 'run_learning']},
+              'kind': {'type': 'string', 'enum': ['learning_overview', 'read_recent', 'run_learning', 'gene_diagnose']},
               'channel_id': {'type': 'string'}}, 'required': ['kind', 'channel_id'],
               'additionalProperties': False}, {'type': 'object', 'properties': {
                   'kind': {'type': 'string', 'enum': ['web_search', 'web_sources']}, 'query': {'type': 'string'}},

@@ -23,6 +23,7 @@ class Gene(commands.Cog):
 
     def __init__(self, bot):
         self.bot = bot
+        self.started = time.time()
         self.guild_id = int(os.getenv('GENE_GUILD_ID') or 0)
         self.owner_id = int(os.getenv('GENE_OWNER_ID') or 0)
         self.workshop_id = int(os.getenv('GENE_WORKSHOP_CHANNEL_ID') or 0)
@@ -67,6 +68,12 @@ class Gene(commands.Cog):
             temporary = self.health_path.with_suffix('.tmp')
             temporary.write_text(json.dumps(state))
             temporary.replace(self.health_path)
+            try:
+                await self.api('POST', '/runtime/health', {
+                    'guild_id': str(self.guild_id), 'sha': state['sha'], 'started': self.started,
+                    'guild_connected': state['guild_connected'], 'controls_running': state['controls_running']})
+            except commands.UserFeedbackCheckFailure:
+                LOG.warning('Runtime health delivery unavailable; local heartbeat remains current')
 
     @health.before_loop
     async def before_health(self):

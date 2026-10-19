@@ -254,7 +254,12 @@ class Fri(discord.Client):
                         'input': text, 'reply': breadcrumb, 'model': context['model'],
                         'effort': context['effort'], 'notes': [], 'web_receipt': research})
                     result.notes = []
-                    result.draft = None
+                    diagnosis = (receipt if action_kind == 'gene_diagnose'
+                                 else receipt.get('gene_result', receipt).get('diagnostic', {}))
+                    # An action's proposal used to be discarded here. Keep the checked diagnosis
+                    # as a real preview; submission, coding and release approval remain separate.
+                    proposal = diagnosis.get('proposed_request', '')
+                    result.draft = proposal if len(proposal) >= 5 else None
                     if receipt.get('sources'):
                         from .fri_web import cite_reply
                         result.reply = cite_reply(result.reply, receipt, include_sources=action_kind == 'web_sources')

@@ -36,6 +36,14 @@ and releases. Fri is the separate chat and request companion. The controller rem
   is a future explicit capability with its own review and limits.
 - Use meaningful tests for state, authorization, persistence, and failure recovery.
   Tests from a candidate are run without credentials or network access.
+- Before merging maintainer changes, obtain an independent adversarial review from
+  a fresh-context agent (prefer GPT-6.1 Sol at xhigh). Give it the repository and
+  candidate SHA, not the implementation conversation. Prioritize broken user
+  workflows and major reachable security risks; reproduce findings before fixing.
+  Keep the review offline and leave live workers alone. Broad live soak testing is
+  not a default requirement; use focused functional checks appropriate to the change.
+- Report which workflows were verified and what remains untested. A passing test
+  count, healthy heartbeat, or queued track alone does not prove user-facing success.
 - Never inject synthetic live-test dialogue into a real member's conversation.
   Use `python -m gene.fri_eval` for isolated voice checks. Live conversation writes
   require a matching Discord event; usage receipts are separate from chat history.

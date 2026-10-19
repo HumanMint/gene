@@ -271,12 +271,23 @@ If that fails, it restores the preceding code and checks it again. Code rollback
 not undo state; ordinary feature changes must remain backward compatible. State restore
 is a deliberate operator action from the stopped Red backup if needed.
 
+After a deployment attempt completes, the coordinator atomically saves its result to
+`/srv/gene/deploy-result.json` (0600) before reporting it. A connection failure or
+coordinator restart retries that receipt before claiming new work. The controller
+accepts an exact duplicate lease/outcome once and never reapplies an older release.
+Changed outcomes or leases are rejected. Retrying a receipt never reruns deployment.
+If the coordinator dies before recording a known result, the existing deployment
+lease remains blocked for operator reconciliation; do not invent or replay its outcome.
+
 **Pause development** in Fri’s owner settings stops new work; an already-running job/release is allowed to finish.
 For an emergency, stop `gene-worker` / `gene-deployer` through systemd. The existing bot
 continues running. A deployment interrupted by a host crash remains `deploying`; it is
 not automatically retried. Inspect `release.env`, the heartbeat SHA, and the job record;
 restore a known healthy release or complete the matching deployment result using the
 deployer credentials. Never manually mark an unknown runtime healthy.
+Check for `deploy-result.json` when reconciling a stuck release. A valid pending result
+will normally clear itself after controller connectivity returns. Preserve and inspect
+an invalid or conflicting receipt privately instead of deleting it to unblock claims.
 
 The trusted `gene` control cog should remain loadable. If a candidate breaks it, use
 SSH for recovery; Discord commands are not the only recovery path.
@@ -285,6 +296,20 @@ Maintainer control-plane updates build a versioned runtime image and set
 `GENE_RUNTIME_IMAGE` in `release.env` before recreating the controller and Red. Ordinary
 cog releases preserve that trusted image setting. Retain the previous image and source
 for rollback; do not overwrite the `bootstrap` image tag with a new control plane.
+
+Maintainer merge checks include a fresh-context independent review of the candidate,
+then offline reproductions and regressions for confirmed issues. Record the reviewed
+SHA, functional outcomes, and limits separately from the overall test count. Deployment
+receipt tests exercise real controller/database state with failed delivery and lost
+acknowledgements, but substitute actual host activation. Thread-control tests connect
+Fri's action handler, the controller, and Red's command checks with fictional Discord
+events; they do not establish audible music playback.
+
+Fri can hand ordinary Gene controls to public threads under approved FF channels.
+The controller retains the actual thread as the destination; Gene rechecks its parent,
+current member/bot thread permissions, source author, and original message before
+execution. Private threads, a different parent, and redirected public requests fail
+closed. Lab controls still cannot operate FF music, and Red's own command checks apply.
 
 ## History recovery and privacy
 

@@ -130,3 +130,23 @@ def test_deployment_lease_survives_restart_for_operator_reconciliation(store):
     assert fresh.claim_deploy() is None
     assert fresh.get(deployed['id'])['state'] == 'deploying'
 
+
+def test_completion_retry_is_exact_and_never_rewinds_a_newer_release(store):
+    first = proposed(store)
+    store.approve(first['id'], 'b'*40, 'owner')
+    first = store.claim_deploy()
+    store.finish_deploy(first['id'], first['lease'], True, 'Healthy')
+    second = proposed(store, sha='c'*40, source='second')
+    store.approve(second['id'], 'c'*40, 'owner')
+    second = store.claim_deploy()
+    store.finish_deploy(second['id'], second['lease'], True, 'Healthy')
+    restarted = Store(store.path)
+    restarted.finish_deploy(first['id'], first['lease'], True, 'Healthy')
+    assert restarted.status()['active_sha'] == 'c'*40
+    assert restarted.status()['previous_sha'] == 'b'*40
+    for lease, success, detail in [('wrong', True, 'Healthy'),
+                                   (first['lease'], False, 'Healthy'),
+                                   (first['lease'], True, 'Different outcome')]:
+        with pytest.raises(Conflict):
+            restarted.finish_deploy(first['id'], lease, success, detail)
+

@@ -6,14 +6,28 @@ import discord
 import pytest
 from discord.ext import commands as discord_commands
 from redbot.core import commands
+from redbot.core.bot import Red
 
 from gene.runtime_controls import ControlRunner
 from tests.test_gene_controls import control_body
 
 
+class OfflineRed(discord_commands.Bot):
+    """Use installed Red's additive hook dispatcher, not discord.py's single hook."""
+    _before_invoke = Red._before_invoke
+    _red_before_invoke_method = Red._red_before_invoke_method
+    before_invoke = Red.before_invoke
+    remove_before_invoke_hook = Red.remove_before_invoke_hook
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._red_before_invoke_objs = set()
+        self.wait_until_red_ready = AsyncMock()
+
+
 async def runtime():
     """Real Red commands/checks/parser with an offline Discord transport and fictional members."""
-    bot = discord_commands.Bot(command_prefix='!', intents=discord.Intents.none(), help_command=None, owner_ids={10})
+    bot = OfflineRed(command_prefix='!', intents=discord.Intents.none(), help_command=None, owner_ids={10})
     bot._connection.user = discord.ClientUser(state=bot._connection,
         data={'id': '99', 'username': 'Gene', 'discriminator': '0', 'avatar': None})
     bot.dispatch = Mock()
@@ -63,6 +77,27 @@ async def runtime():
     message.author = SimpleNamespace(id=20, bot=False, name='old nick')
     channel.fetch_message = AsyncMock(return_value=message)
     return bot, ControlRunner(bot), cog, claim, member, channel, calls, message
+
+
+def test_red_hook_dispatch_does_not_reenter_and_unload_preserves_other_hooks():
+    async def scenario():
+        bot, runner, cog, claim, member, channel, calls, message = await runtime()
+        # Fail immediately on recursion rather than allocating tasks until OOM.
+        bot.wait_until_red_ready.side_effect = [None, AssertionError('Recursive Red hook dispatcher')]
+        other = AsyncMock()
+        bot.before_invoke(other)
+        member.voice = SimpleNamespace(channel=SimpleNamespace(id=8))
+        try:
+            result = await runner.execute(cog, claim)
+            assert 'Track Enqueued' in result['output']
+            assert len(calls) == 1
+            other.assert_awaited_once()
+            await runner.close()
+            assert runner.before not in bot._red_before_invoke_objs
+            assert other in bot._red_before_invoke_objs
+        finally:
+            await bot.close()
+    asyncio.run(scenario())
 
 
 def test_real_red_permission_and_cooldown_pipeline_and_current_member():

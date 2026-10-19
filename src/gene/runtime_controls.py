@@ -51,10 +51,9 @@ class ControlContext(commands.Context):
 class ControlRunner:
     def __init__(self, bot):
         self.bot, self.task = bot, None
-        self.previous_before = bot._before_invoke
         async def before(ctx):
-            if self.previous_before:
-                await self.previous_before(ctx)
+            # Red registers additive hooks. Calling its _before_invoke dispatcher
+            # from one of those hooks re-enters this hook and grows tasks until OOM.
             # Red calls this only after its checks pass. Existing players can retain
             # an earlier notification channel, so explicitly route verified DM controls.
             if isinstance(ctx, ControlContext) and getattr(ctx, 'gene_dm_control', False):
@@ -78,8 +77,7 @@ class ControlRunner:
         self.task = asyncio.create_task(self.run())
 
     async def close(self):
-        if self.bot._before_invoke is self.before:
-            self.bot._before_invoke = self.previous_before
+        self.bot.remove_before_invoke_hook(self.before)
         if self.task:
             self.task.cancel()
             try:

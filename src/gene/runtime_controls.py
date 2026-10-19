@@ -80,10 +80,10 @@ class ControlRunner:
                     claim = await cog.api('POST', '/runtime/controls/poll', {'actions': self.catalog()})
                     if claim:
                         try:
-                            async with asyncio.timeout(90):
-                                result = await self.execute(cog, claim)
-                        except TimeoutError:
-                            result = {'uncertain': 'Gene timed out; the action may have started. Check before retrying.'}
+                            # Keep Red's own operation timeouts and cleanup. Cancelling a loading
+                            # track here can strand its queue lock. Fri has a separate bounded wait,
+                            # and no other bridge action is claimed until this invocation finishes.
+                            result = await self.execute(cog, claim)
                         except (discord.HTTPException, commands.CommandError, ValueError):
                             result = {'uncertain': 'Gene could not verify completion. Check channel, voice and DJ permissions before retrying.'}
                         except Exception:
@@ -146,11 +146,17 @@ class ControlRunner:
             return {'blocked': 'Gene did not resolve the expected command.'}
         await cog.api('POST', '/runtime/controls/'+claim['id']+'/start', {'lease': claim['lease']})
         if action in ('queue', 'now_playing'):
-            # Red's text views wait for reaction menus. Use its checks, then the same queue as Gene's panel.
-            if (not expected.is_enabled(ctx.guild) or not await self.bot.can_run(ctx, call_once=True)
-                    or not await expected.can_run(ctx)):
+            # Red's text views wait for reaction menus. Preserve prepare/cleanup (including
+            # Audio's before hook and channel restrictions) around a bounded player read.
+            if not await self.bot.can_run(ctx, call_once=True):
                 return {'blocked': 'Gene denied access to that command.'}
-            return {'output': self.queue(cog.guild_id, action == 'queue')}
+            await expected.prepare(ctx)
+            try:
+                return {'output': self.queue(cog.guild_id, action == 'queue')}
+            finally:
+                if expected._max_concurrency is not None:
+                    await expected._max_concurrency.release(ctx)
+                await expected.call_after_hooks(ctx)
         if action in ('pause', 'resume'):
             if (not expected.is_enabled(ctx.guild) or not await self.bot.can_run(ctx, call_once=True)
                     or not await expected.can_run(ctx)):

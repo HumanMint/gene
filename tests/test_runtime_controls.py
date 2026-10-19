@@ -140,11 +140,72 @@ def test_disabled_queue_never_opens_menu_and_pause_does_not_toggle_twice():
                 cmd = bot.get_command(action)
                 cmd.disable_in(channel.guild)
                 with patch('lavalink.get_player', return_value=SimpleNamespace(paused=True)):
-                    assert 'blocked' in await runner.execute(cog, claim)
+                    if action == 'queue':
+                        with pytest.raises(commands.DisabledCommand):
+                            await runner.execute(cog, claim)
+                    else:
+                        assert 'blocked' in await runner.execute(cog, claim)
                 cmd.enable_in(channel.guild)
             with patch('lavalink.get_player', return_value=SimpleNamespace(paused=True)):
                 assert 'already paused' in (await runner.execute(cog, claim))['output']
             assert not calls
         finally:
+            await bot.close()
+    asyncio.run(scenario())
+
+
+
+def test_queue_adapter_preserves_red_before_and_after_hooks():
+    async def scenario():
+        bot, runner, cog, claim, member, channel, calls, message = await runtime()
+        claim.update(action='queue', argument='', request_text='fri whats queued')
+        message.content = claim['request_text']
+        cmd = bot.get_command('queue')
+        before, after = AsyncMock(), AsyncMock()
+        cmd.before_invoke(before)
+        cmd.after_invoke(after)
+        try:
+            with patch.object(runner, 'queue', return_value='Nothing queued') as read:
+                assert (await runner.execute(cog, claim))['output'] == 'Nothing queued'
+                before.assert_awaited_once()
+                after.assert_awaited_once()
+                read.assert_called_once()
+            before.side_effect = commands.CheckFailure('Channel restricted by Audio hook')
+            with patch.object(runner, 'queue') as read:
+                with pytest.raises(commands.CheckFailure):
+                    await runner.execute(cog, claim)
+                read.assert_not_called()
+        finally:
+            await bot.close()
+    asyncio.run(scenario())
+
+
+def test_slow_red_operation_keeps_its_lifecycle_and_no_second_claim_starts():
+    async def scenario():
+        bot, runner, cog, claim, _, _, _, _ = await runtime()
+        pending, started = asyncio.Event(), asyncio.Event()
+        bot.wait_until_ready = AsyncMock()
+        bot.is_closed = lambda: False
+        bot.get_cog = lambda _: cog
+        cog.api.return_value = claim
+        async def operation(*args):
+            started.set()
+            await pending.wait()
+            bot.is_closed = lambda: True
+            return {'output': 'Track enqueued'}
+        runner.execute = operation
+        runner.start()
+        try:
+            await started.wait()
+            assert not runner.task.done() and cog.api.await_count == 1
+            # Fri/controller can report an uncertain result independently; no cancellation or retry.
+            pending.set()
+            with patch('gene.runtime_controls.asyncio.sleep', new=AsyncMock()):
+                await runner.task
+            assert cog.api.await_count == 2
+            assert cog.api.await_args.args[1].endswith('/finish')
+            assert cog.api.await_args.args[2]['output'] == 'Track enqueued'
+        finally:
+            await runner.close()
             await bot.close()
     asyncio.run(scenario())

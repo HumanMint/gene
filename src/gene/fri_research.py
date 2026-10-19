@@ -4,7 +4,7 @@ import datetime as dt
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .fri_web import public_url
+from .web_policy import public_url
 
 
 class ResearchReceipt(BaseModel):

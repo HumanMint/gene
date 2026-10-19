@@ -7,9 +7,10 @@ import time
 import discord
 from redbot.core import commands
 
-from .fri_web import lookup, public_query
+from .fri_web import lookup
 from .gene_controls import COMMANDS, arguments, requested
 from .privacy import clean
+from .web_policy import public_query
 
 
 class Actions:
@@ -162,11 +163,15 @@ class Actions:
         submitted = await self.fri.api('POST', '/controls', {**self.scope, 'source': discord_source(self.event).model_dump(),
             'target_channel_id': target, 'request_text': clean(self.event.content, 4000),
             'action': verb, 'argument': argument, 'revision': self.revision})
-        for _ in range(60):
-            await asyncio.sleep(2)
-            result = await self.fri.api('POST', '/controls/'+submitted['id']+'/result', self.scope)
-            if result.get('done'):
-                return {'kind': 'gene_command', 'action': verb, **result}
+        try:
+            async with asyncio.timeout(120):
+                while True:
+                    await asyncio.sleep(2)
+                    result = await self.fri.api('POST', '/controls/'+submitted['id']+'/result', self.scope)
+                    if result.get('done'):
+                        return {'kind': 'gene_command', 'action': verb, **result}
+        except TimeoutError:
+            pass  # Stop waiting, not the underlying Red operation; never resubmit automatically.
         return {'kind': 'gene_command', 'uncertain': 'Gene has not confirmed completion. Check the player before retrying.'}
 
     async def valid(self):

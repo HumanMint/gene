@@ -10,6 +10,7 @@ import re
 import time
 import uuid
 from collections import defaultdict, deque
+from contextlib import closing
 
 import discord
 from discord.ext import tasks
@@ -191,7 +192,8 @@ class Agent:
                      'permissions and code-release rules are protected. Background history is FF ADMEN only in the configured channels.')
             if any(self.config[k] for k in ('voice_notes', 'attention_notes', 'learning_notes')):
                 notes = {k: v for k, v in self.config.items() if k.endswith('_notes')}
-                with discord.File(io.BytesIO(json.dumps(notes, indent=2).encode()), filename='fri-behavior-notes.json') as attachment:
+                with io.BytesIO(json.dumps(notes, indent=2).encode()) as buffer, closing(
+                        discord.File(buffer, filename='fri-behavior-notes.json')) as attachment:
                     await message.reply(text[:1950], file=attachment, allowed_mentions=NO_MENTIONS)
             else:
                 await message.reply(text[:1950], allowed_mentions=NO_MENTIONS)

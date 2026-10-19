@@ -328,3 +328,17 @@ def test_external_privacy_change_removes_buffer_before_attention_or_context():
         assert await agent.context_messages(456) == []
         assert not agent.recent[456]
     asyncio.run(scenario())
+
+
+def test_owner_can_inspect_saved_behavior_notes_as_an_attachment():
+    async def scenario():
+        fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456, api=AsyncMock())
+        agent = Agent(fri)
+        agent.state['config']['voice_notes'] = 'Keep replies brief.'
+        fri.api.return_value = agent.state
+        message = SimpleNamespace(author=SimpleNamespace(id=10), reply=AsyncMock())
+        assert await agent.owner_control(message, 'show settings')
+        attachment = message.reply.await_args.kwargs['file']
+        assert attachment.filename == 'fri-behavior-notes.json'
+        assert attachment.fp.closed
+    asyncio.run(scenario())

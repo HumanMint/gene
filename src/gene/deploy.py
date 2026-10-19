@@ -13,8 +13,8 @@ from pathlib import Path
 from .client import ControllerClient
 from .policy import git, validate_commit
 from .privacy import clean
+from .private_files import private_json
 from .store import Store
-from .subscription import private_json
 
 LOG = logging.getLogger('gene.deploy')
 

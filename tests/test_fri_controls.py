@@ -86,3 +86,21 @@ def test_web_to_gene_chain_is_bounded_and_requires_original_request(monkeypatch,
                 assert fri.chat.respond.await_args.args[1]['actions'] == {}
         await fri.close()
     asyncio.run(run())
+
+
+def test_receipt_timeout_never_resubmits_or_cancels_the_gene_command(monkeypatch, tmp_path):
+    async def scenario():
+        fri, agent, _, _ = harness(monkeypatch, tmp_path)
+        actions = Actions(agent, 20, 1, True)
+        actions.event = event(user=20, channel=1, content='fri play Sad Machine')
+        actions.event.webhook_id = None
+        actions.event.channel.fetch_message = AsyncMock(return_value=actions.event)
+        actions.message = 'fri play Sad Machine'
+        actions.scope = {'guild_id': '123', 'user_id': '20', 'channel_id': '1', 'conversation_id': 'public:1'}
+        fri.api = AsyncMock(side_effect=[{'revision': 0}, {'id': 'one-command'}])
+        with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock(side_effect=TimeoutError)):
+            result = await actions.execute({'kind': 'gene_command', 'action': 'play', 'argument': 'Sad Machine'})
+        assert 'uncertain' in result
+        assert [call.args[1] for call in fri.api.await_args_list] == ['/chat/context', '/controls']
+        await fri.close()
+    asyncio.run(scenario())

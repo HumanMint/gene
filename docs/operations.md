@@ -571,7 +571,9 @@ source, destination channel, or arbitrary Red command string.
 The controller stores a short-lived command receipt, polls through the separate runtime
 credential, and claims each Discord message at most once. Unclaimed requests expire in
 30 seconds; execution must start within 45 seconds. Claims are never replayed after
-restart or uncertain delivery. A 90-second execution timeout reports uncertainty.
+restart or uncertain delivery. Fri waits at most two minutes for a receipt, then reports uncertainty. The runtime
+lets Red finish under its own timeouts and cleanup, and claims no further command
+until it finishes. This avoids cancelling a download while Red holds its queue lock.
 Clearing or forgetting chat redacts the request and cancels pending work; an action
 already executed cannot be undone. Receipts expire after 24 hours. Fri reports the
 actual result, distinguishing rejection, votes, enqueueing and confirmed completion.

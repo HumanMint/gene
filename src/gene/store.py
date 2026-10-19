@@ -73,6 +73,9 @@ class Store:
                     job_id TEXT PRIMARY KEY, sha TEXT NOT NULL, previous_sha TEXT NOT NULL,
                     state TEXT NOT NULL, at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS deployment_receipts (
+                    job_id TEXT PRIMARY KEY, lease TEXT NOT NULL, result TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS review_notices (
                     job_id TEXT PRIMARY KEY REFERENCES jobs(id), phase TEXT NOT NULL,
                     reference TEXT NOT NULL, channel_id TEXT, message_id TEXT,
@@ -413,8 +416,16 @@ class Store:
             return None
 
     def finish_deploy(self, job_id, lease, success, detail):
+        detail = clean(detail)
+        result = json.dumps({'success': success, 'detail': detail}, sort_keys=True)
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
+            receipt = db.execute('SELECT lease,result FROM deployment_receipts WHERE job_id=?',
+                                 (job_id,)).fetchone()
+            if receipt:
+                if receipt['lease'] != lease or receipt['result'] != result:
+                    raise Conflict('Deployment completion differs from the recorded receipt')
+                return  # A lost acknowledgement must not reapply or rewind a release.
             row = self._leased(db, job_id, lease, 'deploying')
             proposal = json.loads(row['proposal'])
             if success:
@@ -424,6 +435,7 @@ class Store:
             db.execute('UPDATE jobs SET state=?,result=?,lease=NULL,updated=? WHERE id=?',
                        (state, clean(detail), time.time(), job_id))
             db.execute('UPDATE deployments SET state=? WHERE job_id=?', (state, job_id))
+            db.execute('INSERT INTO deployment_receipts VALUES (?,?,?)', (job_id, lease, result))
             self._audit(db, 'deployer', state, job_id, detail)
 
     def add_usage(self, job_id, lease, attempt_id, model, counters):

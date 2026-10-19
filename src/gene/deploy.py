@@ -4,6 +4,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import subprocess
 import tarfile
 import time
@@ -11,7 +12,9 @@ from pathlib import Path
 
 from .client import ControllerClient
 from .policy import git, validate_commit
+from .privacy import clean
 from .store import Store
+from .subscription import private_json
 
 LOG = logging.getLogger('gene.deploy')
 
@@ -108,7 +111,43 @@ class Deployer:
                 raise RuntimeError('Release and automatic rollback both failed. Operator recovery required') from None
             raise RuntimeError('Release failed health checks; the previous code was restored') from None
 
+    def finish_pending(self):
+        """Retry only the durable completion receipt, never repeat its deployment."""
+        path = self.root / 'deploy-result.json'
+        receipt = getattr(self, 'pending_result', None)
+        if receipt is None:
+            try:
+                receipt = json.loads(path.read_text())
+            except FileNotFoundError:
+                return False
+        # Corrupt state needs operator reconciliation, not a new claim or guessed outcome.
+        if (not isinstance(receipt, dict) or set(receipt) != {'job_id', 'lease', 'success', 'detail'}
+                or not re.fullmatch(r'[a-f0-9]{12}', str(receipt['job_id']))
+                or not re.fullmatch(r'[a-f0-9]{32}', str(receipt['lease']))
+                or type(receipt['success']) is not bool or not isinstance(receipt['detail'], str)):
+            raise ValueError('Invalid deployment completion receipt; operator reconciliation required')
+        self.pending_result = receipt
+        private_json(path, receipt)
+        self.sync_directory()
+        payload = {key: receipt[key] for key in ('lease', 'success', 'detail')}
+        acknowledgement = self.api.post(f'/deploy/{receipt["job_id"]}/finish', payload)
+        if acknowledgement != {'ok': True}:
+            raise RuntimeError('Controller did not acknowledge the deployment receipt')
+        path.unlink()
+        self.sync_directory()
+        self.pending_result = None
+        return True
+
+    def sync_directory(self):
+        descriptor = os.open(self.root, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
     def tick(self):
+        if self.finish_pending():
+            return True
         job = self.api.post('/deploy/claim')
         if not job:
             return False
@@ -119,9 +158,11 @@ class Deployer:
         except Exception as exc:
             success, detail = False, str(exc)
             LOG.error('Deployment %s failed (%s)', job['id'], type(exc).__name__)
-        self.api.post(f'/deploy/{job["id"]}/finish',
-                      {'lease': job['lease'], 'success': success, 'detail': detail})
-        return True
+        # Keep the result in memory as well, so a temporary disk failure cannot cause
+        # the running process to forget it. A crash before persistence still fails closed.
+        self.pending_result = {'job_id': job['id'], 'lease': job['lease'],
+                               'success': success, 'detail': clean(detail)}
+        return self.finish_pending()
 
 
 def main():

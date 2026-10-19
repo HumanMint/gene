@@ -2,6 +2,7 @@
 
 import json
 import random
+import re
 import time
 import uuid
 
@@ -129,24 +130,31 @@ class AgentStore:
                        (user, space, started, turns+1, until))
             return {'allowed': not until, 'notice': bool(until), 'until': until}
 
-    def claim(self):
+    def claim(self, manual=False):
         now = time.time()
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             c = self.config(db)
-            if not c['enabled'] or not c['learning_enabled'] or now < self.get(db, 'next_learning', 0):
+            def blocked(reason):
+                return {'blocked': reason} if manual else None
+
+            if not c['enabled'] or not c['learning_enabled']:
+                return blocked('Learning is paused. Changing that still needs an owner settings preview.')
+            if manual and now < self.get(db, 'manual_learning_after', 0):
+                return blocked('An owner-requested pass can run at most once every five minutes.')
+            if not manual and now < self.get(db, 'next_learning', 0):
                 return None
             # A report outage pauses learning, so the owner does not lose visibility.
             if db.execute('SELECT 1 FROM agent_reports WHERE delivered=0').fetchone():
-                return None
+                return blocked('The previous learning report still needs to reach the owner.')
             pending = self.get(db, 'learning_claim')
             if pending:
                 if now-pending['at'] < 600:
-                    return None
+                    return blocked('A learning pass is already running.')
                 db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
                            (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; no automatic replay.'))
                 self.put(db, 'learning_claim', None)
-                return None
+                return blocked('The previous pass was interrupted. Its report is pending; its allowance remains reserved.')
             day = int((now-self.get(db, 'started', now))//86400)
             budget = self.get(db, 'budget', {'day': day, 'used': 0})
             if budget['day'] != day:
@@ -154,15 +162,17 @@ class AgentStore:
             limit = min(c['history_batch'], c['history_daily_messages']-budget['used'])
             channels = [x for x in self.settings.agent_history_channels.split(',') if x]
             if limit <= 0 or not channels:
-                return None
+                return blocked('The daily scan allowance is used up or no learning channels are configured.')
             cursors = self.get(db, 'cursors', {})
-            channel = channels[self.get(db, 'channel_index', 0) % len(channels)]
-            cursor = cursors.get(channel, {})
+            index = self.get(db, 'channel_index', 0)
             # Once caught up, a channel has no further retrospective work this week.
-            if cursor.get('done_at', 0) > now-7*86400:
-                self.put(db, 'channel_index', self.get(db, 'channel_index', 0)+1)
-                self.put(db, 'next_learning', now+60)
-                return None
+            for offset in range(len(channels)):
+                channel = channels[(index+offset) % len(channels)]
+                cursor = cursors.get(channel, {})
+                if cursor.get('done_at', 0) <= now-7*86400:
+                    break
+            else:
+                return blocked('The configured recent-history slices have already been checked. No archive replay is needed.')
             if cursor.get('done_at'):
                 cursor = {}
             claim = {'id': uuid.uuid4().hex, 'at': now, 'channel_id': channel,
@@ -172,7 +182,9 @@ class AgentStore:
             budget['used'] += limit
             self.put(db, 'budget', budget)
             self.put(db, 'learning_claim', claim)
-            self.put(db, 'channel_index', self.get(db, 'channel_index', 0)+1)
+            self.put(db, 'channel_index', index+offset+1)
+            if manual:
+                self.put(db, 'manual_learning_after', now+300)
             first = now-self.get(db, 'started', now) < 86400
             self.put(db, 'next_learning', now+60*c['learning_first_minutes' if first else 'learning_later_minutes'])
             return {**claim, 'used_today': budget['used'], 'daily_limit': c['history_daily_messages']}
@@ -233,12 +245,38 @@ class AgentStore:
                       f"reasoning {counters.get('reasoning_output_tokens', 'unknown')}\n"
                       f"Next eligible pass: <t:{int(self.get(db, 'next_learning', now))}:R>\n"
                       f"Daily reserved scan allowance: {self.get(db, 'budget', {}).get('used', 0)}/{self.config(db)['history_daily_messages']}\n"
-                      + ('\nUntrusted summary: '+summary if summary else '')
+                      + ('\nConversation summary: '+summary if summary else '')
                       + ('\nSaved disclosures:\n'+'\n'.join(kept) if kept else '')
                       + ('\nIssue: '+clean(error, 180) if error else '')
                       + '\nAsk me to change learning frequency, pause learning, or show settings.')
             db.execute('INSERT INTO agent_reports VALUES (?,?,?,0)', (batch_id, now, report))
-            return {'saved': len(kept)}
+            return {'saved': len(kept), 'report_id': batch_id, 'scanned': scanned,
+                    'eligible': len(accepted), 'error': bool(error)}
+
+    def overview(self):
+        """Owner-only evidence, not settings or authority. Bound both age and size."""
+        now = time.time()
+        with self.store.connection() as db:
+            config = self.config(db)
+            day = int((now-self.get(db, 'started', now))//86400)
+            budget = self.get(db, 'budget', {})
+            reports = [dict(r) for r in db.execute(
+                'SELECT id,at,body,delivered FROM agent_reports WHERE at>? ORDER BY at DESC LIMIT 3',
+                (now-7*86400,))]
+            for report in reports:
+                report['body'] = report['body'].replace('Untrusted summary:', 'Conversation summary:')
+                channel = re.search(r'Channel: <#(\d+)>', report['body'])
+                report['channel_id'] = channel[1] if channel else None
+            summaries = [dict(r) for r in db.execute(
+                'SELECT channel_id,body,at FROM agent_summaries WHERE at>? ORDER BY at DESC LIMIT 5',
+                (now-2*86400,)) if r['channel_id'] in self.settings.agent_history_channels.split(',')]
+            return {'reports': reports, 'summaries': summaries,
+                    'learning_enabled': config['enabled'] and config['learning_enabled'],
+                    'history_channels': [x for x in self.settings.agent_history_channels.split(',') if x],
+                    'role_id': self.settings.agent_role_id, 'history_days': config['history_days'],
+                    'next_learning': self.get(db, 'next_learning', 0),
+                    'daily_reserved': budget.get('used', 0) if budget.get('day') == day else 0,
+                    'daily_limit': config['history_daily_messages'], 'images_inspected': False}
 
     def context(self, channel, user):
         with self.store.connection() as db:

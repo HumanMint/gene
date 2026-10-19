@@ -14,6 +14,7 @@ from discord import app_commands
 from discord.ext import tasks
 from redbot.core import commands
 
+from .fri_actions import Actions
 from .fri_addressing import addressed_text
 from .fri_chat import Chat, ChatResult
 from .fri_memory import describe_memory, memory_intent
@@ -115,6 +116,20 @@ class Fri(discord.Client):
                 await self.api('POST', '/chat/usage/report', json.loads(path.read_text()))
                 path.unlink()
 
+    async def chat_once(self, text, context):
+        result = await self.chat.respond(text, context)
+        attempt = uuid.uuid4().hex
+        private_json(self.data / 'usage' / (attempt + '.json'), {
+            'attempt_id': attempt, 'model': context['model'], 'effort': context['effort'],
+            'status': result.status, 'counters': result.counters})
+        try:
+            await self.flush_usage()
+        except commands.UserFeedbackCheckFailure:
+            LOG.warning('Usage is saved locally; controller delivery will retry')
+        if result.error or result.status != 'completed':
+            raise commands.UserFeedbackCheckFailure(result.error or 'Fri could not complete that reply. Try again shortly.')
+        return result
+
     async def talk(self, guild_id, channel_id, user_id, text, visibility, display_name=''):
         channel = self.get_channel(channel_id) if self.agent else None
         source_channel = (getattr(channel, 'parent_id', None) or channel_id) if visibility == 'public' and self.agent else self.workshop_id
@@ -147,26 +162,36 @@ class Fri(discord.Client):
                     'space': 'dm' if visibility == 'private' else 'public'})
                 if not admission['allowed']:
                     minutes = max(1, int((admission['until']-time.time()+59)//60))
-                    notice = (f'brb, virtual cigarette break. back in about {minutes} min. '
-                              'daniel’s token stash needs a breather.') if admission.get('notice') else ''
+                    notice = (f'bro im cooked rn, gotta recharge my social battery and save daniel’s ai wallet lol. '
+                              f'back in about {minutes} mins') if admission.get('notice') else ''
                     return ChatResult(reply=notice, status='cooldown')
             async with self.chat_slots:
                 context = await self.api('POST', '/chat/context', scope)
                 if self.agent:
                     context.update(await self.agent.extra_context(channel_id, user_id, visibility == 'public'))
+                actions = Actions(self.agent, user_id, channel_id, visibility == 'public') if self.agent else None
+                context['actions'] = await actions.available() if actions else {}
                 context['display_name'] = clean(display_name, 80)
                 text = clean(text, 4000)
-                result = await self.chat.respond(text, context)
-                attempt = uuid.uuid4().hex
-                private_json(self.data / 'usage' / (attempt + '.json'), {
-                    'attempt_id': attempt, 'model': context['model'], 'effort': context['effort'],
-                    'status': result.status, 'counters': result.counters})
-                try:
-                    await self.flush_usage()
-                except commands.UserFeedbackCheckFailure:
-                    LOG.warning('Usage is saved locally; controller delivery will retry')
-                if result.error:
-                    raise commands.UserFeedbackCheckFailure(result.error)
+                result = await self.chat_once(text, context)
+                if result.action:
+                    if not actions or result.action['kind'] not in context['actions']:
+                        raise commands.UserFeedbackCheckFailure('That action is not available here.')
+                    try:
+                        receipt = await actions.execute(result.action)
+                    except (commands.UserFeedbackCheckFailure, discord.HTTPException):
+                        receipt = {'error': 'The check could not complete. Do not claim success or retry automatically.'}
+                    result = await self.chat_once(text, {**context, 'actions': {}, 'action_result': receipt})
+                    if result.action:
+                        raise commands.UserFeedbackCheckFailure('That check needs a new request. No further actions were run.')
+                    current = await self.api('POST', '/chat/context', scope)
+                    if current['revision'] != context['revision'] or not await actions.valid():
+                        raise commands.UserFeedbackCheckFailure('Access or memory changed during that check. Ask again for a fresh reply.')
+                    # Retrieved messages and derived answers must not outlive source erasure in someone else's chat.
+                    # The learning worker alone may save validated, attributed disclosures.
+                    result.notes = []
+                    result.draft = None
+                    return result
                 saved = await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                     'input': text, 'reply': result.reply, 'model': context['model'], 'effort': context['effort'],
                     'notes': result.notes,

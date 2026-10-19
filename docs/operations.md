@@ -360,6 +360,42 @@ test coverage. Sustained listening in Discord remains a human acceptance step.
 
 ## Fri attention and gradual learning
 
+### Conversation access to learning
+
+Fri can now select one bounded harness action during an ordinary conversation:
+`learning_overview`, `read_recent`, or `run_learning`. The model selects a structured
+request; trusted Python checks the actual Discord identity and audience, the controller
+checks owner identity for learning administration, and the final Sol reply uses the
+confirmed result. There is at most one action and two conversation model calls per
+turn; both calls receive separate usage receipts, including failed calls.
+
+In a private owner conversation, ask “what have you learned about us?” for up to three
+recent learning reports and five current summaries, or “run a learning pass now” for
+one pass. Manual passes use the existing cursor, batch size, daily reserved scan budget,
+pause state and report-delivery gate. They may bypass the scheduled due time, but run
+at most once every five minutes and cannot replay an exhausted archive. Reports say
+“Conversation summary”; their contents remain untrusted evidence internally.
+
+“Have a look around” or “read recent chat in memba-chat” can read up to 20 recent text
+messages from one configured, non-NSFW channel the requester can currently read.
+Public replies can only retrieve their own channel; private replies can use another
+approved channel visible to the requester. Private threads are excluded. Bot messages
+and opted-out authors are skipped. Default history is at most seven days, with fri-chat
+additionally limited to messages after this agent was enabled. Explicit quoted archive
+search remains available separately; old Fri output is never startup personality data.
+These reads inspect text only, not meme images or attachments.
+
+Access and source privacy are checked again after inference. Lookup-derived replies
+are not persisted as chat turns or personal notes, so they cannot leave copies in
+another person's saved conversation after source erasure. Learning reports and
+administrative details are only available through these actions to the owner privately.
+Questions about learning no longer go straight to the settings helper.
+
+Fri's compact voice foundation is `VOICE` in `src/gene/fri_chat.py`, shared with archive
+answers. It uses a few contrasting tone examples rather than retaining a full style
+quiz in every prompt. Owner voice notes remain a separate, versioned preference;
+style examples never count as evidence of completed actions or bypass approval.
+
 Fri now has a persistent Hostinger heartbeat and a Discord adapter. Gene's Red
 extensions and separate audio services are unchanged. Promote Fri and the
 controller's primary guild/workshop together to FF; preserve the prior Lab env

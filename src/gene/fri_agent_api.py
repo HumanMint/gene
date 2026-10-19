@@ -74,6 +74,16 @@ def register(app, store, settings, auth, actor):
     def claim():
         return agent.claim()
 
+    @app.post('/agent/learning/overview', dependencies=[auth('fri')])
+    def overview(body: Identity):
+        actor(body, owner=True)
+        return agent.overview()
+
+    @app.post('/agent/learning/request', dependencies=[auth('fri')])
+    def request_learning(body: Identity):
+        actor(body, owner=True)
+        return agent.claim(manual=True)
+
     @app.post('/agent/learning/{batch_id}/finish', dependencies=[auth('fri')])
     def finish(batch_id: str, body: Finish):
         return agent.finish(batch_id, **body.model_dump())

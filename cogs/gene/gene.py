@@ -12,13 +12,12 @@ from discord.ext import tasks
 from redbot.core import commands
 
 from .panel import HomeView, card, reply, sessions
-from .review import ReviewButton, notify_owner
 
 LOG = logging.getLogger('gene')
 
 
 class Gene(commands.Cog):
-    """Gene's private workshop. Calm, concise, and accountable."""
+    """Gene's functional tools. Calm, concise, and accountable."""
 
     def __init__(self, bot):
         self.bot = bot
@@ -31,14 +30,10 @@ class Gene(commands.Cog):
         self.health_path = Path(os.getenv('GENE_HEALTH_FILE', '/data/gene-health.json'))
         self.panel = HomeView(self)
         self.bot.add_view(self.panel)
-        self.bot.add_dynamic_items(ReviewButton)
         self.health.start()
-        self.owner_reviews.start()
 
     async def cog_unload(self):
         self.health.cancel()
-        self.owner_reviews.cancel()
-        self.bot.remove_dynamic_items(ReviewButton)
         self.panel.stop()
         await sessions(self).close_all()
         await self.session.close()
@@ -64,17 +59,6 @@ class Gene(commands.Cog):
 
     @health.before_loop
     async def before_health(self):
-        await self.bot.wait_until_red_ready()
-
-    @tasks.loop(seconds=15)
-    async def owner_reviews(self):
-        try:
-            await notify_owner(self)
-        except (commands.UserFeedbackCheckFailure, aiohttp.ClientError, TimeoutError) as exc:
-            LOG.warning('Owner review notification waiting: %s', type(exc).__name__)
-
-    @owner_reviews.before_loop
-    async def before_owner_reviews(self):
         await self.bot.wait_until_red_ready()
 
     async def api(self, method, path, payload=None):
@@ -103,15 +87,15 @@ class Gene(commands.Cog):
     @commands.hybrid_group(name='gene', invoke_without_command=True)
     @commands.guild_only()
     async def gene(self, ctx):
-        """Requests, status, context, and reviewed releases."""
+        """Music, server tools, and status."""
         await self.open_panel(ctx)
 
     async def open_panel(self, ctx):
         if ctx.interaction:
-            await reply(self, ctx.interaction, embed=card('Gene', 'Music, requests, and server tools. Choose an action below.'),
+            await reply(self, ctx.interaction, embed=card('Gene', 'Music and server tools. Choose an action below.'),
                         view=HomeView(self, ctx.author.id))
             return
-        await ctx.send(embed=card('Gene', 'Music, requests, and server tools. Choose an action below. '
+        await ctx.send(embed=card('Gene', 'Music and server tools. Choose an action below. '
             'Your menus and settings are shown only to you.'), view=self.panel,
             allowed_mentions=discord.AllowedMentions.none())
 
@@ -120,139 +104,18 @@ class Gene(commands.Cog):
         """Open Gene's buttons, menus, and forms."""
         await self.open_panel(ctx)
 
-    @gene.command(name='request')
-    async def request(self, ctx, *, description: str):
-        """Request a feature or fix. The owner must allow coding before it starts."""
-        channel = ctx.channel.parent_id if isinstance(ctx.channel, discord.Thread) else ctx.channel.id
-        payload = {**self.actor(ctx), 'source_id': str(ctx.message.id),
-                   'source_url': ctx.message.jump_url, 'body': description, 'channel_id': str(channel)}
-        await ctx.defer()
-        job = await self.api('POST', '/requests', payload)
-        await self.say(ctx, f"Request `{job['id']}` is {job['state'].replace('_', ' ')}. "
-                           'The owner reviews requests by DM before coding and approves each live release separately.')
-
     @gene.command(name='status')
-    async def status(self, ctx, request_id: str = ''):
-        """Show system status or a particular request's proposal."""
-        if request_id:
-            job = await self.api('GET', '/requests/' + request_id)
-            text = f"`{job['id']}` · **{job['state']}**\n{job['body']}"
-            if job.get('model'):
-                text += f"\nModel: `{job['model']}` · effort: `{job.get('effort')}`"
-            if job['proposal']:
-                proposal = job['proposal']
-                text += f"\n{proposal.get('summary', '')}\nCommit: `{proposal['sha']}`"
-                if proposal.get('url'):
-                    text += '\n' + proposal['url']
-            if job.get('result'):
-                text += '\n' + job['result']
-        else:
-            state = await self.api('GET', '/status')
-            text = ('Development paused.' if state['paused'] else 'Development active.')
-            text += f"\nRelease: `{state['active_sha'] or 'not initialized'}`\n"
-            text += f"Worker: `{state['model']}` · effort: `{state['effort']}`\n"
-            text += ', '.join(f'{count} {name}' for name, count in state['jobs'].items()) or 'No requests yet.'
-        await self.say(ctx, text)
-
-    @gene.command(name='approve')
-    @commands.is_owner()
-    async def approve(self, ctx, request_id: str, commit_sha: str):
-        """Approve exactly the tested commit shown by gene status."""
-        await self.api('POST', f'/requests/{request_id}/approve',
-                       {**self.actor(ctx), 'sha': commit_sha})
-        await self.say(ctx, f'Approved `{request_id}`. Deployment will check health and roll back on failure.')
-
-    @gene.command(name='models')
-    @commands.is_owner()
-    async def models(self, ctx, refresh: bool = False):
-        """List available worker models. Pass true to request a fresh account catalog."""
-        path = '/models/refresh' if refresh else '/models'
-        state = await self.api('POST', path, self.actor(ctx))
-        text = f"Selected: `{state['selected']}` ({state['effort']})."
-        if state['refresh_pending']:
-            text += '\nCatalog refresh queued; the worker will refresh between jobs, even while paused.'
-        if state['error']:
-            text += '\nLast refresh: ' + state['error']
-        if state['refreshed_at']:
-            text += f"\nCatalog last refreshed <t:{int(state['refreshed_at'])}:R>."
-        for model in state['models']:
-            text += f"\n`{model['id']}` · {model['name']} · efforts: {', '.join(model['efforts'])}"
-        if not state['selected_available']:
-            text += '\nThe selected model is not in the current catalog. Coding waits; there is no silent fallback.'
-        await self.say(ctx, text)
-
-    @gene.command(name='model')
-    @commands.is_owner()
-    async def model(self, ctx, model_id: str = '', effort: str = ''):
-        """Show or select the worker model and optional supported reasoning effort."""
-        if model_id:
-            state = await self.api('POST', '/models/select',
-                                  {**self.actor(ctx), 'model_id': model_id, 'effort': effort})
-        else:
-            state = await self.api('POST', '/models', self.actor(ctx))
-        await self.say(ctx, f"Worker model: `{state['selected']}` · `{state['effort']}`. "
-                           'Changes apply to new jobs; running jobs keep their recorded model.')
-
-    @gene.command(name='reject')
-    @commands.is_owner()
-    async def reject(self, ctx, request_id: str):
-        """Reject a queued request or pending proposal."""
-        await self.api('POST', f'/requests/{request_id}/reject', self.actor(ctx))
-        await self.say(ctx, f'Rejected `{request_id}`.')
-
-    @gene.command(name='pause')
-    @commands.is_owner()
-    async def pause(self, ctx, paused: bool = True):
-        """Pause new coding and release jobs. Use false to resume."""
-        await self.api('POST', '/pause', {**self.actor(ctx), 'paused': paused})
-        await self.say(ctx, 'New development and deployments paused.' if paused else 'Development resumed.')
-
-    @gene.command(name='rollback')
-    @commands.is_owner()
-    async def rollback(self, ctx):
-        """Queue a return to the previous healthy release."""
-        job = await self.api('POST', '/rollback', self.actor(ctx))
-        await self.say(ctx, f"Rollback `{job['id']}` queued. If development is paused, resume to apply it.")
-
-    @gene.command(name='usage')
-    @commands.is_owner()
-    async def usage(self, ctx):
-        """Show recorded Codex usage. Cached tokens are a subset of input tokens."""
-        rows = await self.api('POST', '/usage', self.actor(ctx))
-        text = '\n'.join(f"{r['model']}: {r['attempts']} jobs, input {r['input_tokens']}, "
-                         f"output {r['output_tokens']}, cached input {r['cached_input_tokens']}, "
-                         f"unknown {r['unknown_attempts']}" for r in rows)
-        await self.say(ctx, text or 'No Codex usage recorded yet.')
-
-    @gene.command(name='remember')
-    @commands.is_owner()
-    async def remember(self, ctx, *, fact: str):
-        """Approve a small server fact for future development jobs."""
-        result = await self.api('POST', '/memory',
-            {**self.actor(ctx), 'body': fact, 'source_url': ctx.message.jump_url})
-        await self.say(ctx, f"Saved approved context `{result['id']}`.")
-
-    @gene.command(name='memories')
-    @commands.is_owner()
-    async def memories(self, ctx):
-        """Inspect approved server facts."""
-        rows = await self.api('POST', '/memory/list', self.actor(ctx))
-        await self.say(ctx, '\n'.join(f"`{r['id']}` {r['body']}" for r in rows) or 'No saved context.')
-
-    @gene.command(name='forget')
-    @commands.is_owner()
-    async def forget(self, ctx, memory_id: str):
-        """Delete an approved fact from future job context."""
-        await self.api('POST', '/memory/' + memory_id + '/forget', self.actor(ctx))
-        await self.say(ctx, f'Forgot `{memory_id}`. Already running jobs keep their existing input.')
+    async def status(self, ctx):
+        """Show the current functional bot release."""
+        state = await self.api('GET', '/status')
+        await self.say(ctx, f"Gene release: `{state['active_sha']}`. Music and server tools are ready.")
 
     @gene.command(name='forgetme')
     async def forgetme(self, ctx, confirm: bool = False):
         """Erase your stored requests/context and cancel pending work. Pass true to confirm."""
         if not confirm:
-            await self.say(ctx, 'Use `gene forgetme true` to erase your request text, links, and saved '
-                               'context and cancel pending proposals. Running jobs have already received '
-                               'their inputs. Code, Discord posts, and retained backups are separate records.')
+            await self.say(ctx, 'Use `gene forgetme true` to erase your request text, links, saved chats and '
+                               'context and cancel pending proposals. Code, Discord posts, and backups are separate records.')
             return
         await self.api('POST', '/privacy/erase', self.actor(ctx))
-        await self.say(ctx, 'Your stored request text, links, and approved context have been erased.')
+        await self.say(ctx, 'Your stored requests, chats, links, and approved context have been erased.')

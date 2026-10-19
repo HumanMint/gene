@@ -7,12 +7,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .reviews import owner_dm_component
-
 
 def allowed_guild(guild_id: int | None) -> bool:
     configured = os.environ.get('GENE_GUILD_ID', '')
     return bool(configured) and str(guild_id) == configured
+
+
+def configured_presence():
+    # Deployment configuration controls visibility; Discord commands cannot change it.
+    return 'online' if os.getenv('GENE_PRESENCE') == 'online' else 'invisible'
 
 
 def install_private_runtime():
@@ -37,18 +40,15 @@ def install_private_runtime():
     class PrivateRed(red_bot.Red):
         def __init__(self, *args, **kwargs):
             # Included in the first gateway IDENTIFY, avoiding a brief online flash.
-            kwargs['status'] = discord.Status.invisible
+            kwargs['status'] = discord.Status(configured_presence())
             kwargs['activity'] = None
             super().__init__(*args, **kwargs)
 
         async def change_presence(self, **kwargs):
-            kwargs.update(status=discord.Status.invisible, activity=None)
+            kwargs.update(status=discord.Status(configured_presence()), activity=None)
             return await super().change_presence(**kwargs)
 
         def dispatch(self, event, /, *args, **kwargs):
-            if (event == 'interaction' and args and owner_dm_component(
-                    args[0], getattr(self.user, 'id', None), os.getenv('GENE_OWNER_ID'))):
-                return super().dispatch(event, *args, **kwargs)
             private_events = ('message', 'message_edit', 'message_delete', 'bulk_message_delete',
                               'raw_message_edit', 'raw_message_delete', 'raw_bulk_message_delete',
                               'reaction_add', 'reaction_remove', 'reaction_clear',

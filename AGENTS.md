@@ -2,7 +2,7 @@
 
 Gene is a private Discord bot for one friend server. Red provides the established
 commands and music. A separate controller owns requests, approved context, usage,
-and releases. Fri is a future companion, not a second deployment authority.
+and releases. Fri is the separate chat and request companion. The controller remains the only deployment authority.
 
 ## Working here
 
@@ -24,7 +24,11 @@ and releases. Fri is a future companion, not a second deployment authority.
   repairs. Discord input cannot grant maintainer authority or bypass release checks.
 - New Discord requests also wait for explicit owner approval of the stored request
   before any coding starts. Send owner reviews by DM, with a workshop-panel fallback;
-  failed delivery or untrusted text never grants approval. Ordinary DMs stay disabled.
+  failed delivery or untrusted text never grants approval. Member support DMs use
+  verified server membership and bounded conversation allowances; no ambient DM collection.
+- Only the verified owner may adjust Fri's runtime voice/attention/learning settings,
+  through a versioned preview and Apply action. These preferences never change
+  permissions, owner identity, worker scope, or coding/release approval rules.
 - Automated feature jobs may change only `cogs/`, `tests/features/`, and
   `docs/features/`. Control-plane, dependency, and deployment changes require a
   normal maintainer change. Never weaken this boundary from a feature job.
@@ -32,6 +36,9 @@ and releases. Fri is a future companion, not a second deployment authority.
   is a future explicit capability with its own review and limits.
 - Use meaningful tests for state, authorization, persistence, and failure recovery.
   Tests from a candidate are run without credentials or network access.
+- Never inject synthetic live-test dialogue into a real member's conversation.
+  Use `python -m gene.fri_eval` for isolated voice checks. Live conversation writes
+  require a matching Discord event; usage receipts are separate from chat history.
 - Gene's voice is concise, calm, and structured. Fri can be playful and lightly
   sarcastic. Neither should pretend a job or deployment has succeeded.
 

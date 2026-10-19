@@ -25,7 +25,7 @@ def main():
         os.chown(ROOT / relative, 10001, 10001)
     base = {'GENE_CONTROLLER_URL': 'http://127.0.0.1:8787', 'GENE_REPOSITORY': 'HumanMint/gene'}
     connection = ('GENE_GUILD_ID', 'GENE_OWNER_ID', 'GENE_WORKSHOP_CHANNEL_ID', 'GENE_HISTORY_CHANNEL_ID')
-    controller = {key: env.get(key, '') for key in (*connection, 'GENE_RUNTIME_TOKEN', 'GENE_WORKER_TOKEN', 'GENE_DEPLOY_TOKEN')}
+    controller = {key: env.get(key, '') for key in (*connection, 'GENE_RUNTIME_TOKEN', 'GENE_WORKER_TOKEN', 'GENE_DEPLOY_TOKEN', 'GENE_FRI_TOKEN')}
     runtime_keys = (*connection, 'DISCORD_TOKEN', 'GENE_RUNTIME_TOKEN', 'GENE_HIGHLIGHT_CHANNEL_ID',
                     'GENE_MEME_SOURCE_CHANNEL_IDS', 'GENE_HIGHLIGHT_THRESHOLD', 'GENE_PREFIX',
                     'GENE_AUDIO_HOST', 'GENE_AUDIO_PORT', 'GENE_AUDIO_PASSWORD', 'GENE_LAB_MODE')

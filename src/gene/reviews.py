@@ -5,7 +5,7 @@ import json
 import re
 
 REVIEW_ID = re.compile(
-    r'^gene:review:(?P<phase>i|r):(?P<decision>a|x):(?P<job_id>[a-f0-9]{12}):'
+    r'^fri:review:(?P<phase>i|r):(?P<decision>a|x):(?P<job_id>[a-f0-9]{12}):'
     r'(?P<reference>[a-f0-9]{64}|[a-f0-9]{40})$'
 )
 
@@ -22,6 +22,17 @@ def pending_review(job, active_sha):
     if job['state'] == 'review' and proposal and proposal['base_sha'] == active_sha:
         return 'release', proposal['sha']
     return None
+
+
+def pending_notice(job, active_sha):
+    review = pending_review(job, active_sha)
+    if review:
+        return review
+    if job['state'] not in ('queued', 'building', 'approved', 'deploying', 'deployed',
+                            'failed', 'needs_attention', 'rejected'):
+        return None
+    fields = {key: job.get(key) for key in ('id', 'state', 'progress', 'result', 'approved_sha')}
+    return 'status', hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
 
 
 def owner_dm_component(interaction, bot_id, owner_id):

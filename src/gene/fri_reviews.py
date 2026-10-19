@@ -8,7 +8,7 @@ from redbot.core import commands
 
 from gene.reviews import REVIEW_ID, owner_dm_component
 
-LOG = logging.getLogger('gene.review')
+LOG = logging.getLogger('fri.review')
 NO_MENTIONS = discord.AllowedMentions.none()
 
 
@@ -19,20 +19,20 @@ class ReviewButton(discord.ui.DynamicItem[discord.ui.Button], template=REVIEW_ID
         label = 'Reject' if decision == 'x' else ('Allow coding' if phase == 'i' else 'Approve this commit')
         super().__init__(discord.ui.Button(label=label,
             style=discord.ButtonStyle.danger if decision == 'x' else discord.ButtonStyle.primary,
-            custom_id=f'gene:review:{phase}:{decision}:{job_id}:{reference}'))
+            custom_id=f'fri:review:{phase}:{decision}:{job_id}:{reference}'))
 
     @classmethod
     async def from_custom_id(cls, interaction, item, match):
         return cls(**match.groupdict())
 
     async def interaction_check(self, interaction):
-        cog = interaction.client.get_cog('Gene')
+        cog = interaction.client
         return bool(cog and owner_dm_component(interaction, interaction.client.user.id, cog.owner_id))
 
     async def callback(self, interaction):
         if not await self.interaction_check(interaction):
             return
-        cog = interaction.client.get_cog('Gene')
+        cog = interaction.client
         await interaction.response.defer()
         try:
             await cog.api('POST', f'/requests/{self.job_id}/review', {
@@ -58,6 +58,20 @@ class ReviewButton(discord.ui.DynamicItem[discord.ui.Button], template=REVIEW_ID
 
 def review_message(notice):
     job, phase, reference = notice['job'], notice['phase'], notice['reference']
+    if phase == 'status':
+        state = job['state'].replace('_', ' ')
+        description = job.get('result') or job.get('progress') or {
+            'queued': 'Development approved; waiting for the worker.',
+            'building': 'The worker is preparing a proposal.',
+            'approved': 'This exact commit is approved; waiting for deployment.',
+            'deploying': 'Deployment is running health checks.',
+            'deployed': 'The release passed its health checks.',
+            'rejected': 'This request was rejected.'}.get(job['state'], 'Open Fri’s Requests panel for details.')
+        embed = discord.Embed(title=f"Request {job['id']} · {state}", description=description[:3800], colour=0x5865F2)
+        if job.get('model'):
+            embed.set_footer(text=f"{job['model']} · {job.get('effort') or 'model default'}")
+        attachment = discord.File(io.BytesIO(job['body'].encode()), filename=f"request-{job['id']}.txt")
+        return embed, attachment, discord.ui.View(timeout=None)
     intake = phase == 'intake'
     title = 'Allow this feature or fix to be developed?' if intake else 'Approve this tested release?'
     explanation = ('No coding has started. Allowing coding does not approve a live release.' if intake else
@@ -68,6 +82,7 @@ def review_message(notice):
     embed.add_field(name='Request', value=f"`{job['id']}`", inline=True)
     embed.add_field(name='Submitted by', value=f"<@{job['user_id']}>", inline=True)
     if not intake:
+        embed.add_field(name='Proposal', value=(job.get('proposal') or {}).get('summary', 'Review the linked code changes.')[:900] or 'No summary', inline=False)
         embed.add_field(name='Commit to deploy', value=f'`{reference}`', inline=False)
     embed.set_footer(text='Read the complete request in the attachment. Request text cannot grant permissions.')
     document = (f"Request: {job['id']}\nSubmitted by: {job['user_id']}\nSource: {job['source_url']}\n\n"
@@ -85,7 +100,7 @@ def review_message(notice):
 async def deliver_review(cog, notice):
     """Send to the configured owner only, or edit that request's previous DM."""
     if not cog.owner_id:
-        raise ValueError('Gene owner is not configured')
+        raise ValueError('Fri owner is not configured')
     owner = cog.bot.get_user(cog.owner_id) or await cog.bot.fetch_user(cog.owner_id)
     channel = await owner.create_dm()
     previous = None
@@ -98,7 +113,7 @@ async def deliver_review(cog, notice):
     try:
         if previous:
             if previous.author.id != cog.bot.user.id:
-                raise ValueError('Review message is not authored by Gene')
+                raise ValueError('Review message is not authored by Fri')
             return await previous.edit(content=None, embed=embed, attachments=[attachment], view=view,
                                        allowed_mentions=NO_MENTIONS)
         return await channel.send(embed=embed, file=attachment, view=view, allowed_mentions=NO_MENTIONS)

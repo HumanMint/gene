@@ -20,6 +20,7 @@ def test_initial_identify_and_presence_updates_are_invisible(monkeypatch):
     import redbot.__main__ as red_main
     import redbot.core.bot as red_bot
     original_red, original_tree = red_main.Red, red_bot.RedTree
+    monkeypatch.delenv('GENE_PRESENCE', raising=False)
     try:
         main = install_private_runtime()
         with patch.object(red_bot.Red, '__init__', return_value=None) as init:
@@ -28,6 +29,26 @@ def test_initial_identify_and_presence_updates_are_invisible(monkeypatch):
         with patch.object(red_bot.Red, 'change_presence', new_callable=AsyncMock) as change:
             asyncio.run(instance.change_presence(status=discord.Status.online))
             assert change.call_args.kwargs['status'] == discord.Status.invisible
+    finally:
+        red_main.Red, red_bot.RedTree = original_red, original_tree
+
+
+def test_online_presence_is_controlled_by_deployment_not_discord(monkeypatch):
+    import asyncio
+
+    import discord
+    import redbot.__main__ as red_main
+    import redbot.core.bot as red_bot
+    monkeypatch.setenv('GENE_PRESENCE', 'online')
+    original_red, original_tree = red_main.Red, red_bot.RedTree
+    try:
+        main = install_private_runtime()
+        with patch.object(red_bot.Red, '__init__', return_value=None) as init:
+            instance = main.Red()
+            assert init.call_args.kwargs['status'] == discord.Status.online
+        with patch.object(red_bot.Red, 'change_presence', new_callable=AsyncMock) as change:
+            asyncio.run(instance.change_presence(status=discord.Status.invisible))
+            assert change.call_args.kwargs['status'] == discord.Status.online
     finally:
         red_main.Red, red_bot.RedTree = original_red, original_tree
 
@@ -52,7 +73,7 @@ def test_other_server_and_dm_events_never_reach_cogs(monkeypatch):
         red_main.Red, red_bot.RedTree = original_red, original_tree
 
 
-def test_runtime_admits_only_owner_review_buttons_from_dms(monkeypatch):
+def test_gene_runtime_rejects_all_dm_components_after_fri_migration(monkeypatch):
     import discord
     import redbot.__main__ as red_main
     import redbot.core.bot as red_bot
@@ -69,7 +90,7 @@ def test_runtime_admits_only_owner_review_buttons_from_dms(monkeypatch):
             data={'custom_id': 'gene:review:i:a:012345abcdef:' + 'a' * 64})
         with patch.object(red_bot.Red, 'dispatch') as dispatch:
             instance.dispatch('interaction', event)
-            dispatch.assert_called_once_with('interaction', event)
+            dispatch.assert_not_called()
             dispatch.reset_mock()
             event.user.id = 11
             instance.dispatch('interaction', event)
@@ -81,3 +102,21 @@ def test_runtime_admits_only_owner_review_buttons_from_dms(monkeypatch):
     finally:
         red_main.Red, red_bot.RedTree = original_red, original_tree
 
+
+
+def test_red_cog_loader_does_not_confuse_gene_cog_with_control_package():
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    code = '''
+import importlib.util
+import gene.runtime
+spec = importlib.util.spec_from_file_location('gene', 'cogs/gene/__init__.py')
+cog = spec.loader.load_module()
+assert cog.Gene.__module__ == 'gene.gene'
+'''
+    result = subprocess.run([sys.executable, '-c', code], cwd=root,
+                            env={**os.environ, 'PYTHONPATH': str(root / 'src')}, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr

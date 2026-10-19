@@ -9,6 +9,10 @@ from pathlib import Path
 ALLOWED = ('cogs/', 'tests/features/', 'docs/features/')
 
 
+class NoFeatureChanges(ValueError):
+    pass
+
+
 def git(root: Path, *args: str) -> str:
     # Disable hooks, file protocols and user-supplied Git configuration.
     environment = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
@@ -24,7 +28,7 @@ def git(root: Path, *args: str) -> str:
 
 def validate_paths(paths: list[str]):
     if not paths:
-        raise ValueError('No feature changes were produced')
+        raise NoFeatureChanges('No feature changes were produced')
     for path in paths:
         if not path.startswith(ALLOWED) or any(p in ('.git', '..') for p in Path(path).parts):
             raise ValueError(f'Feature job changed a protected path: {path}')

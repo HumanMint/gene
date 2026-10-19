@@ -20,6 +20,7 @@ def store(tmp_path):
     result.bootstrap('a' * 40)
     result.update_models([{'id': 'gpt-6-astra', 'name': 'GPT-6 Astra',
                            'efforts': ['medium', 'high'], 'default_effort': 'medium'}])
+    result.select_model('gpt-6-astra', 'medium', 'owner')
     result.set_paused(False, 'owner')
     return result
 
@@ -28,7 +29,7 @@ def store(tmp_path):
 def client(tmp_path):
     settings = Settings(Path(tmp_path / 'api.sqlite3'), 'guild', 'owner',
                         'runtime-' + 'x' * 32, 'worker-' + 'x' * 32, 'deploy-' + 'x' * 32,
-                        workshop_channel_id='workshop')
+                        workshop_channel_id='workshop', fri_token='fri-' + 'x' * 32)
     return TestClient(create_app(settings))
 
 

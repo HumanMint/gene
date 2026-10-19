@@ -114,7 +114,7 @@ def test_stale_release_is_not_messaged_or_approvable(store):
         store.review_decision(job['id'], 'release', 'b' * 40, 'approve', 'owner')
 
 
-@pytest.mark.parametrize('role,user,status', [('runtime', 'member', 403), ('worker', 'owner', 401),
+@pytest.mark.parametrize('role,user,status', [('fri', 'member', 403), ('runtime', 'owner', 401), ('worker', 'owner', 401),
                                             ('deploy', 'owner', 401)])
 def test_review_endpoint_enforces_role_and_owner(client, role, user, status):
     response = client.post('/requests/012345abcdef/review', headers=headers(role), json={
@@ -125,10 +125,25 @@ def test_review_endpoint_enforces_role_and_owner(client, role, user, status):
 def test_api_intake_review_is_explicit_and_idempotent_requests_stay_gated(client):
     payload = {**actor('member'), 'source_id': '123', 'source_url': '',
                'body': 'Please add a coin flip', 'channel_id': 'workshop'}
-    job = client.post('/requests', headers=headers('runtime'), json=payload).json()
+    job = client.post('/requests', headers=headers('fri'), json=payload).json()
     assert job['state'] == 'awaiting_owner'
-    again = client.post('/requests', headers=headers('runtime'), json=payload).json()
+    again = client.post('/requests', headers=headers('fri'), json=payload).json()
     assert again['id'] == job['id'] and again['state'] == 'awaiting_owner'
     decision = {**actor(), 'phase': 'intake', 'reference': request_reference(job), 'decision': 'approve'}
-    assert client.post(f"/requests/{job['id']}/review", headers=headers('runtime'), json=decision).status_code == 200
-    assert client.post(f"/requests/{job['id']}/review", headers=headers('runtime'), json=decision).status_code == 409
+    assert client.post(f"/requests/{job['id']}/review", headers=headers('fri'), json=decision).status_code == 200
+    assert client.post(f"/requests/{job['id']}/review", headers=headers('fri'), json=decision).status_code == 409
+
+def test_needs_attention_notifies_owner_with_explanation_and_no_new_approval(store):
+    job = submitted(store)
+    store.review_decision(job['id'], 'intake', request_reference(job), 'approve', 'owner')
+    claimed = store.claim()
+    store.heartbeat(job['id'], claimed['lease'], 'Coding')
+    notice = store.claim_review_notice()
+    assert notice['phase'] == 'status' and notice['job']['progress'] == 'Coding'
+    store.finish_review_notice(job['id'], notice['lease'], '100', '200')
+    store.finish_build(job['id'], claimed['lease'], None, error='Needs a maintainer history import.', outcome='needs_attention')
+    notice = store.claim_review_notice()
+    assert notice['phase'] == 'status'
+    assert notice['message_id'] == '200'
+    assert notice['job']['result'] == 'Needs a maintainer history import.'
+    assert store.claim_deploy() is None

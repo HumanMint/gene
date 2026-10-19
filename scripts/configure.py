@@ -83,6 +83,7 @@ def main():
         'GENE_WORKSHOP_CHANNEL_ID': workshop, 'GENE_HISTORY_CHANNEL_ID': history,
         'GENE_HIGHLIGHT_CHANNEL_ID': highlights, 'GENE_MEME_SOURCE_CHANNEL_IDS': sources,
         'GENE_HIGHLIGHT_THRESHOLD': '5', 'GENE_PREFIX': prefix, 'DISCORD_TOKEN': token,
+        'GENE_FRI_TOKEN': secrets.token_urlsafe(48),
         'GENE_RUNTIME_TOKEN': secrets.token_urlsafe(48),
         'GENE_WORKER_TOKEN': secrets.token_urlsafe(48),
         'GENE_DEPLOY_TOKEN': secrets.token_urlsafe(48),

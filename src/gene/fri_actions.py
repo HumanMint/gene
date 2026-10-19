@@ -1,5 +1,6 @@
 """One bounded conversational action. Discord text never selects authority or scope."""
 
+import asyncio
 import datetime as dt
 import time
 
@@ -7,6 +8,7 @@ import discord
 from redbot.core import commands
 
 from .fri_web import lookup, public_query
+from .gene_controls import COMMANDS, arguments, requested
 from .privacy import clean
 
 
@@ -18,6 +20,8 @@ class Actions:
         self.owner = user == self.fri.owner_id and not public
         self.sources, self.revisions, self.overview = set(), {}, None
         self.message, self.model, self.effort = '', '', ''
+        self.event, self.scope, self.revision = None, {}, 0
+        self.web_research = []
 
     async def channels(self, fresh=False):
         member = await self.agent.member(self.user, fresh=fresh, guild_id=self.guild)
@@ -53,6 +57,17 @@ class Actions:
         if self.agent.state.get('web_search_enabled'):
             actions['web_search'] = {'description': 'Look up current public facts with live web access and sources. '
                 'query must be a short exact excerpt of the current message, with no private details. One lookup per reply.'}
+        if self.web_research:
+            actions['web_sources'] = {'description': 'Show sources from saved public research in this conversation. '
+                'query="" means latest; otherwise use an exact saved query. No new search.'}
+        if self.guild == self.fri.guild_id and isinstance(self.event, discord.Message):
+            catalog = await self.fri.api('GET', '/controls/catalog')
+            offered = {key: COMMANDS[key][2] for key in catalog.get('actions', []) if key in COMMANDS}
+            if offered:
+                actions['gene_command'] = {'commands': offered, 'description': 'Use an existing Gene command now, '
+                    'as this member with normal permissions. No owner development approval is needed. '
+                    'Requires an explicit current request, not an example or capability question. '
+                    'action is a listed command; argument is a song, numeric volume, or empty.'}
         return actions
 
     def scoped_overview(self, overview, channels):
@@ -67,11 +82,18 @@ class Actions:
         kind = action.get('kind')
         if not channels:
             return {'blocked': 'No approved channels are currently readable.'}
+        if kind == 'web_sources':
+            matches = [r for r in self.web_research if not action.get('query') or r['query'] == action['query']]
+            return {'kind': kind, **matches[0]} if matches else {'blocked': 'That search is no longer retained here. Ask for a fresh lookup.'}
+        if kind == 'gene_command':
+            return await self.control(action, channels)
         if kind == 'web_search':
             if not self.agent.state.get('web_search_enabled') or not public_query(action.get('query'), self.message):
                 return {'blocked': 'Provide a short public topic in the current message; private context cannot be sent to web search.'}
             result, counters, status = await lookup(self.fri.chat, action['query'], self.model, self.effort)
             await self.agent.record('web_search', self.model, self.effort, counters, status)
+            if status == 'completed' and result.get('answer') and result.get('sources'):
+                result['query'] = action['query']
             return result
         if kind in ('learning_overview', 'run_learning'):
             if not self.owner:
@@ -116,6 +138,36 @@ class Actions:
         return {'kind': kind, 'channel_id': channel_id, 'channel_name': clean(channel.name, 60),
                 'scanned': scanned, 'messages': list(reversed(records)), 'lookback_floor': after,
                 'images_inspected': False, 'personal_notes_saved': 0}
+
+    async def control(self, action, channels):
+        if self.guild != self.fri.guild_id or not isinstance(self.event, discord.Message):
+            return {'blocked': 'Ask in Gene’s server or your member DM; Lab cannot control another server.'}
+        verb, argument = action.get('action'), action.get('argument')
+        try:
+            arguments(verb, argument)
+        except ValueError as exc:
+            return {'blocked': str(exc)}
+        if not requested(self.message, verb):
+            return {'blocked': 'That was not an explicit request to run this action now.'}
+        original = await self.event.channel.fetch_message(self.event.id)
+        if original.author.id != self.user or original.webhook_id or original.content != self.event.content:
+            return {'blocked': 'The original request changed. Send a fresh request.'}
+        current = await self.fri.api('POST', '/chat/context', self.scope)
+        if current['revision'] != self.revision:
+            return {'blocked': 'The conversation was cleared before Gene could start.'}
+        # Prefer the existing bot workshop for DMs; never choose another server or hidden room.
+        target = str(self.channel) if self.public else (
+            str(self.fri.workshop_id) if str(self.fri.workshop_id) in channels else next(iter(channels)))
+        from .fri_context import discord_source
+        submitted = await self.fri.api('POST', '/controls', {**self.scope, 'source': discord_source(self.event).model_dump(),
+            'target_channel_id': target, 'request_text': clean(self.event.content, 4000),
+            'action': verb, 'argument': argument, 'revision': self.revision})
+        for _ in range(60):
+            await asyncio.sleep(2)
+            result = await self.fri.api('POST', '/controls/'+submitted['id']+'/result', self.scope)
+            if result.get('done'):
+                return {'kind': 'gene_command', 'action': verb, **result}
+        return {'kind': 'gene_command', 'uncertain': 'Gene has not confirmed completion. Check the player before retrying.'}
 
     async def valid(self):
         """Fail closed if access or source privacy changed while the model was answering."""

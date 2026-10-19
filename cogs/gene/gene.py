@@ -52,6 +52,8 @@ class Gene(commands.Cog):
             state = {'at': time.time(), 'guild_connected': guild is not None and not guild.unavailable,
                      'guild_id': self.guild_id, 'presence': str(self.bot._connection._status),
                      'sha': os.getenv('GENE_RELEASE_SHA', 'development')}
+            runner = getattr(self.bot, '_gene_controls', None)
+            state['controls_running'] = bool(runner and runner.task and not runner.task.done())
             self.health_path.parent.mkdir(parents=True, exist_ok=True)
             temporary = self.health_path.with_suffix('.tmp')
             temporary.write_text(json.dumps(state))

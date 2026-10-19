@@ -27,6 +27,10 @@ class Store:
         path.parent.mkdir(parents=True, exist_ok=True)
         with self.connection() as db:
             initialize(db)
+            from .control_store import initialize as initialize_controls
+            initialize_controls(db)
+            from .fri_research import initialize as initialize_research
+            initialize_research(db)
             db.executescript('''
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -142,6 +146,7 @@ class Store:
             # The controller health check runs even when nobody chats with Fri.
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
             db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
+            db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
             return {
                 'paused': self._setting(db, 'paused') == 'true',
                 'active_sha': self._setting(db, 'active_sha'),
@@ -502,6 +507,7 @@ class Store:
 
     def chat_context(self, guild_id, channel_id, user_id):
         with self.connection() as db:
+            db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
@@ -516,12 +522,21 @@ class Store:
             facts = [row[0] for row in db.execute('SELECT body FROM memories WHERE guild_id=? '
                                                   'ORDER BY created DESC LIMIT 20', (guild_id,))]
             return {'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
+                    'web_research': [json.loads(row[0]) for row in db.execute(
+                        'SELECT receipt FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY id DESC LIMIT 3',
+                        (guild_id, channel_id, user_id))],
                     'personal_memory': profile,
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
 
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
-                  input_tokens=None, output_tokens=None, notes=(), source=None):
+                  input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None):
         source = ChatSource.model_validate(source).check(guild_id, channel_id, user_id) if source else None
+        if web_receipt:
+            from .fri_research import ResearchReceipt
+            from .fri_web import public_query
+            web_receipt = ResearchReceipt.model_validate(web_receipt).model_dump()
+            if not public_query(web_receipt['query'], text):
+                raise ValueError('Research query must come from the current message')
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
@@ -530,6 +545,12 @@ class Store:
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             if not profile['enabled']:
                 return {'ok': True, 'first_memory': False}
+            if web_receipt:
+                db.execute('INSERT INTO web_research(guild_id,user_id,channel_id,created,receipt) VALUES (?,?,?,?,?)',
+                           (guild_id, user_id, channel_id, time.time(), json.dumps(web_receipt)))
+                db.execute('DELETE FROM web_research WHERE guild_id=? AND user_id=? AND channel_id=? '
+                           'AND id NOT IN (SELECT id FROM web_research WHERE guild_id=? AND user_id=? AND channel_id=? ORDER BY id DESC LIMIT 3)',
+                           (guild_id, user_id, channel_id, guild_id, user_id, channel_id))
             saved = 0
             for candidate in list(notes)[:3]:
                 note = personal_note(candidate, text)
@@ -570,8 +591,10 @@ class Store:
             db.execute('INSERT INTO personal_preferences VALUES (?,?) ON CONFLICT(user_id) '
                        'DO UPDATE SET enabled=excluded.enabled', (user_id, action == 'enable'))
             if action == 'disable':
+                db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
+                db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
                 for row in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
                     if user_id in json.loads(row['authors']):
                         db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (row['channel_id'],))
@@ -585,7 +608,9 @@ class Store:
     def clear_chats(self, user_id):
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
+            db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
+            db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
             db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
                        'DO UPDATE SET revision=revision+1', (user_id,))
 

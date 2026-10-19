@@ -366,8 +366,9 @@ Fri can now select one bounded harness action during an ordinary conversation:
 `learning_overview`, `read_recent`, or `run_learning`. The model selects a structured
 request; trusted Python checks the actual Discord identity and audience, the controller
 checks owner identity for learning administration, and the final Sol reply uses the
-confirmed result. There is at most one action and two conversation model calls per
-turn; both calls receive separate usage receipts, including failed calls.
+confirmed result. Learning actions use one action and two conversation model calls per turn. The
+only two-action path is a web lookup followed by one explicitly requested Gene command,
+using at most three conversation calls. Every call has a separate usage receipt.
 
 In a private owner conversation, ask “what have you learned about us?” for up to three
 recent learning reports and five current summaries, or “run a learning pass now” for
@@ -462,9 +463,14 @@ not a guaranteed provider billing limit; the subscription route has no supported
 `max_tool_calls` field. No tool runs at all for ordinary chat.
 
 Only a completed web call with provider citation annotations can produce a search
-receipt. Fri rewrites it in her voice and the harness appends verified source links.
-Failures are reported without inventing a searched answer; the receipt cannot
-request further actions or create a feature job. Webpages remain untrusted evidence.
+receipt. Fri keeps up to two useful verified inline links, with no numbered source
+footer. The last three public research receipts (query, answer, up to eight source
+URLs, and checked time) stay in the requesting member’s conversation for 24 hours.
+A later source question can retrieve them without searching again. These are public
+evidence, never hidden reasoning. Sources are dated, and opt-out, clear, and erasure
+remove them and invalidate in-flight saves. Explicit source requests may show a
+bounded list; unusually long lists indicate how many links remain. Failures do not
+produce a searched answer. A webpage cannot authorize an action or a feature job.
 Live access allows fresh page retrieval, but search indexes, inaccessible sites, and
 page publication dates still affect freshness. Usage appears separately as
 `web_search`; the ordinary selection and reply calls remain `conversation` usage.
@@ -537,3 +543,41 @@ Luna must select the error first, then Sol assesses its bounded text and control
 status. A proposed repair enters the existing stored-request owner review workflow.
 No coding begins until intake approval; no deployment or repair bypasses exact-SHA
 release approval. No shell or Docker credentials are exposed to Fri's model.
+
+
+## Conversational Gene controls
+
+Fri can use `play`, `pause`, `resume`, `skip`, `stop`, `volume` (0–100), `queue`,
+`now_playing`, `status`, and `version` when Gene reports them available. Ordinary
+existing functions do not need owner development approval. Commands outside this
+audited catalog, including Red administration, configuration, shell, and deployment,
+are not exposed to the model. New Discord feature/fix requests retain both approval gates.
+
+Use “fri play Sad Machine by Porter Robinson”, “fri pause”, or “what’s queued?”.
+A clear request to play an unidentified song may use one public web lookup followed
+by one play action. Examples and capability questions do not execute. Every action
+must originate in a fresh, verified Discord message. Gene re-fetches public messages,
+checks current membership and text-channel permissions, and invokes the existing Red
+command pipeline as that member. Voice/DJ checks, roles, cooldowns, hooks and the
+existing audio download/cache/playback path still apply. Queue/now-playing return a
+bounded read of the same player after Red access checks, without opening reaction menus.
+
+Public actions stay in their configured source channel. Verified member DMs use a
+readable approved FF channel, preferring the existing workshop. Joining the appropriate
+FF voice channel is still required by Red. Lab chat cannot control FF, and panel-modal
+conversations do not execute commands. The model cannot select the server, member,
+source, destination channel, or arbitrary Red command string.
+
+The controller stores a short-lived command receipt, polls through the separate runtime
+credential, and claims each Discord message at most once. Unclaimed requests expire in
+30 seconds; execution must start within 45 seconds. Claims are never replayed after
+restart or uncertain delivery. A 90-second execution timeout reports uncertainty.
+Clearing or forgetting chat redacts the request and cancels pending work; an action
+already executed cannot be undone. Receipts expire after 24 hours. Fri reports the
+actual result, distinguishing rejection, votes, enqueueing and confirmed completion.
+
+`gene-health.json` reports `controls_running`; `/controls/catalog` (Fri credential)
+is fresh for 20 seconds after the last runtime poll. Deployment checks both readiness
+and the offered command catalog. `python -m gene.fri_eval --suite controls` tests model
+choices with fictional context and inert receipts: it never submits a Gene command,
+writes a member conversation, or sends a Discord message. Usage is recorded as evaluation.

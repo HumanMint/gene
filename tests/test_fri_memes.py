@@ -112,14 +112,14 @@ def test_vision_reaction_and_usage_survive_restart_without_duplicate(harness):
             assert 'tools' not in body and body['store'] is False
             assert body['input'][0]['content'][1] == {'type': 'input_image', 'image_url': IMAGE, 'detail': 'auto'}
             return httpx.Response(200, text='data: '+json.dumps(response_event(content=json.dumps({
-                'reaction': '💀', 'confidence': 'high', 'observation': 'A dry joke'})))+'\n\n')
+                'reaction': '💩', 'confidence': 'high', 'observation': 'A visual poop joke'})))+'\n\n')
 
         h.fri.chat = Chat(SimpleNamespace(access_token=lambda: 'plan-auth'), httpx.MockTransport(model))
         h.fri.usage_lock = asyncio.Lock()
         h.fri.flush_usage = lambda: Fri.flush_usage(h.fri)
         h.agent.run = Agent.run.__get__(h.agent, Agent)
         await h.agent.memes.check()
-        m.add_reaction.assert_awaited_once_with('💀')
+        m.add_reaction.assert_awaited_once_with('💩')
         assert not list((h.fri.data/'usage').glob('*.json'))
         with h.store.connection() as db:
             usage = db.execute('SELECT role,model,input_tokens FROM agent_usage_roles JOIN chat_usage USING(attempt_id)').fetchone()
@@ -138,7 +138,7 @@ def test_vision_reaction_and_usage_survive_restart_without_duplicate(harness):
 
 
 @pytest.mark.parametrize('reaction,confidence,status', [('quiet', 'high', 'completed'),
-    ('💀', 'medium', 'completed'), ('ban everyone', 'high', 'completed'), ('💀', 'high', 'failed')])
+    ('💩', 'medium', 'completed'), ('ban everyone', 'high', 'completed'), ('💀', 'high', 'failed')])
 def test_quiet_uncertain_invalid_or_failed_model_never_reacts(harness, reaction, confidence, status):
     async def scenario():
         h = harness

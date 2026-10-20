@@ -20,6 +20,7 @@ from .fri_chat import Chat, ChatResult
 from .fri_context import discord_source
 from .fri_memory import describe_memory, memory_intent
 from .fri_panel import DraftView, HomeView, authorized, card, reply, sessions
+from .fri_reports import ReportButton, report_component
 from .fri_requests import request_dm_component
 from .fri_reviews import ReviewButton, notify_owner
 from .fri_usage import describe_usage, usage_requested
@@ -69,7 +70,7 @@ class Fri(discord.Client):
         self.agent = Agent(self)
         await self.agent.start()
         self.add_view(HomeView(self))
-        self.add_dynamic_items(ReviewButton)
+        self.add_dynamic_items(ReviewButton, ReportButton)
 
         @self.tree.command(name='fri', description='Chat, request a feature or fix, and follow development.',
                            guild=discord.Object(id=self.guild_id))
@@ -96,6 +97,7 @@ class Fri(discord.Client):
             if behavior:
                 allowed = True
             if (not allowed and not owner_dm_component(interaction, getattr(self.user, 'id', None), self.owner_id)
+                    and not report_component(interaction, getattr(self.user, 'id', None), self.owner_id)
                     and not request_dm_component(interaction, getattr(self.user, 'id', None))):
                 return
         super().dispatch(event, *args, **kwargs)

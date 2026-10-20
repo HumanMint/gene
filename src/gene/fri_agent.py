@@ -194,6 +194,7 @@ class Agent:
             scope = getattr(parent, 'parent_id', None) or channel
             profile = await self.profile(scope, user)
             data.update(recent=await self.context_messages(channel), summary=profile['summary'])
+            data['historical_topics'] = profile.get('historical_topics', [])
         return data
 
     async def owner_control(self, message, text):
@@ -425,6 +426,9 @@ class Agent:
             claim = await self.fri.api('POST', '/agent/learning/claim')
         if not claim:
             return
+        if claim.get('mode') == 'explore':
+            from .fri_explore import explore
+            return await explore(self, claim)
         records, scanned, before, done, output, counters, error = [], 0, claim['before'], False, {}, {}, ''
         oldest = newest = newest_id = None
         try:

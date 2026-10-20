@@ -549,6 +549,45 @@ an interruption report rather than replaying indefinitely. Reports are retained
 for seven days after delivery. Discord delivery can be repeated after a crash
 between sending and acknowledgement; the batch identifier makes this visible.
 
+### Autonomous archive exploration
+
+With `exploration_enabled=true`, learning passes actively investigate existing
+human conversations instead of waiting for new posts. `exploration_days=365`
+sets the owner-approved one-year boundary independently of the seven-day recent
+context window. The channel allowlist, FF ADMEN eligibility, opt-outs, per-pass
+reservation, daily allowance and report delivery gate still apply. No old Fri/bot
+replies, private threads, DMs, or images enter this learning path.
+
+Each pass uses the configured summary model (initially Luna/medium) to choose an
+eligible member or discovery, a short optional topic/keyword, and a brief purpose.
+The planner sees bounded coverage counts, recent query progress, historical topic
+labels and current nicknames. The controller validates the plan before the harness
+uses Discord's documented [Search Guild Messages endpoint](https://docs.discord.com/developers/resources/message#search-guild-messages),
+with one fixed approved channel, author/type filters and a hard date/result limit.
+One plan, one search (at most one short indexing retry), and one summary are allowed
+per pass; no general tools, shell, web search or administrative actions are offered.
+Planner usage appears separately as `exploration_plan`.
+
+Searches retain a cursor per channel/member/term/depth. Short result pages do not
+mean exhaustion; an empty fully indexed page completes that query. Checked message
+IDs are retained across searches and restarts, so overlaps are not summarized or
+saved again. Failed/incomplete indexing or inference never advances coverage.
+Reports show the focus, purpose, range, duplicate count and new historical notes.
+
+Small per-member notes retain exact source excerpts, author IDs, source dates and
+harmless topic labels. These describe historical discussion, not present-day
+preferences or inferred personality. At most eight source messages per member and
+channel are retained, expiring 90 days after learning. They are supplied only for
+the current speaker in the same FF channel, or through a scoped private owner
+overview. They never replace the current channel summary or enter Lab/DM chat
+context. Memory opt-out erases their notes, member metadata and checked IDs, clears
+derived query terms, and invalidates an in-flight archive pass. Coverage metadata
+contains no raw message bodies; selected source excerpts remain private local data.
+
+`PLANNER` and `SUMMARIZER` in `src/gene/fri_explore.py` define this task's prompts.
+The owner can guide future exploration through versioned `learning_notes` previews
+without changing Fri's conversational voice or any authority boundary.
+
 Luna low decides whether new shared-channel activity warrants participation or
 investigation. Luna medium summarizes bounded source batches and suggests exact
 self-disclosed preferences. Sol High handles Fri's voice, owner setting proposals,

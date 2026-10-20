@@ -478,6 +478,42 @@ bounded roster reads. The runtime keeps Members/Presence gateway subscriptions o
 Only current FF ADMEN IDs/nicknames enter rotation; historical author membership
 is rechecked with bounded individual member lookups before reading history.
 
+Fri's optional meme attention is separate from text learning and ambient help.
+Set `FRI_MEME_CHANNEL_IDS` in controller.env to explicitly approved text channels,
+then enable `meme_enabled` through the owner's versioned behavior settings or an
+audited maintainer change. Give Fri View Channel, Read Message History and Add
+Reactions on those channels. This does not expand ordinary chat, commands, history
+learning, or development scope. It requires no upstream Red changes.
+
+The default is a 30-minute check of up to 20 messages from the last 24 hours,
+inspecting at most two unseen eligible posts per pass and 24 per rolling day.
+Luna/medium receives the caption, up to two small still images, Fri's base voice
+and current owner voice preferences. No other members' histories or personal
+profiles enter this task. Its only choices are quiet or a small fixed emoji set.
+Quiet is normal; only a high-confidence matching joke can get a reaction, at most
+one per hour and four per rolling day. These are ceilings, never targets.
+`meme_model`, `meme_effort`, `meme_interval_minutes`, `meme_daily_checks`, and
+`meme_daily_reactions` are visible and owner-adjustable with the normal preview/Apply
+flow. Channels and permissions remain maintainer-only configuration.
+
+Only actual PNG/JPEG/WebP attachments or Discord-proxied still-image embeds are
+loaded, in memory, up to 4 MiB each. The [image input format](https://developers.openai.com/api/docs/guides/images-vision)
+uses the existing subscription OAuth connection; no separate API key is used.
+CDN requests have no auth headers and follow no redirects. GIFs, videos, spoilers,
+oversized files and external link-only posts are skipped, rather than judging a
+video from its thumbnail. Images/captions are untrusted evidence with no tools,
+commands, settings or approval powers. Current membership, opt-out, source edits,
+channel access and runtime settings are checked again before reacting.
+
+`/data/meme-attention.json` keeps private, atomic message-ID receipts and reserved
+budgets across restarts. A reserved or ambiguous send is never retried. It retains
+no captions, images, model observations or member profiles; old IDs expire after
+three days. Usage appears separately as "meme checks." The health file and owner
+DM context include actual check/image/reaction times, not invented observations.
+Other conversations only receive status for their own channel. A successful
+model check does not prove a Discord reaction was delivered; only a completed
+Discord call records `reacted`.
+
 For a second, chat-only testing room, set `FRI_TEST_GUILD_ID` and
 `FRI_TEST_CHANNEL_ID` in controller.env. Fri reads this scope from the controller.
 The current Lab room is `#tests_n_stuff`; no extra slash registration is needed.

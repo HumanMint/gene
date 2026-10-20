@@ -85,6 +85,7 @@ class Agent:
         self.slots = asyncio.Semaphore(1)
         self.report_lock = asyncio.Lock()
         self.control_busy = False
+        self.memes = None
         self.heartbeat_started = self.heartbeat_finished = 0
         self.heartbeat_status = 'starting'
 
@@ -125,11 +126,12 @@ class Agent:
         except commands.UserFeedbackCheckFailure:
             LOG.warning('Agent usage queued for delivery')
 
-    async def run(self, role, instruction, data, schema, model=None, effort=None):
+    async def run(self, role, instruction, data, schema, model=None, effort=None, *, images=()):
         model = model or self.config[role+'_model']
         effort = effort or self.config[role+'_effort']
         async with self.slots:
-            result, counters, status = await analyze(self.fri.chat, instruction, data, model, effort, schema)
+            result, counters, status = await analyze(self.fri.chat, instruction, data, model, effort, schema,
+                                                    **({'images': images} if images else {}))
         await self.record(role, model, effort, counters, status)
         return result, counters, status
 
@@ -189,6 +191,8 @@ class Agent:
 
     async def extra_context(self, channel, user, public):
         data = {'voice_notes': self.config['voice_notes']}
+        if self.memes:
+            data['meme_attention'] = self.memes.status(None if not public and user == self.fri.owner_id else channel)
         if public:
             parent = self.fri.get_channel(channel)
             scope = getattr(parent, 'parent_id', None) or channel
@@ -210,7 +214,7 @@ class Agent:
             await self.fri.api('POST', '/chat/models/update', {**self.identity(message.author.id), 'models': catalog})
             await message.reply('Available subscription models: '+', '.join(catalog)+'. Selected models were kept.', allowed_mentions=NO_MENTIONS)
             return True
-        subject = re.search(r'\b(settings?|heartbeat|personality|system prompt|learning|learn|tone|voice|sarcasm|playful|cooldown|summary|summaries|model)\b', lower)
+        subject = re.search(r'\b(settings?|heartbeat|personality|system prompt|learning|learn|tone|voice|sarcasm|playful|cooldown|summary|summaries|model|memes?|reactions?)\b', lower)
         inspect = re.search(r'\b(show|list|current)\b.*\b(settings?|configuration|models?|\w+ notes|system prompt)\b|\bhow (often|far)\b', lower)
         change = re.search(r'\b(change|set|adjust|tune|tweak|pause|stop|resume|enable|disable|make|use|be|sound|speak|respond)\b', lower)
         if not subject or not (inspect or change):
@@ -560,6 +564,11 @@ class Agent:
             if self.config['enabled']:
                 await self.learn()
                 await self.attend()
+                if self.config['meme_enabled']:
+                    from .fri_memes import Memes
+                    if self.memes is None:
+                        self.memes = Memes(self)
+                    await self.memes.check()
             self.heartbeat_status = 'ok'
         except (commands.UserFeedbackCheckFailure, discord.HTTPException, TimeoutError, ValueError, KeyError):
             self.heartbeat_status = 'deferred'

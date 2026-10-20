@@ -194,7 +194,9 @@ usage receipts retry delivery to the controller without duplicating attempts.
 ### Connect Fri on the personal VM
 
 Create a distinct Discord bot application. Enable Message Content Intent so Fri can recognize
-her name in normal messages; leave Members and Presence intents off. Run `scripts/configure_fri.py`
+her name in normal messages. Enable the application's Server Members Intent for complete
+role-roster REST reads used by archive rotation; Presence remains off. The runtime does not
+subscribe to Members/Presence gateway events. Run `scripts/configure_fri.py`
 locally, enter the bot token privately, and use its printed invite if Fri is not in the Lab.
 It writes `.secrets/fri.env`; Gene's existing bot identity is untouched.
 
@@ -471,8 +473,10 @@ Set `FRI_CHANNEL_IDS` in both controller.env and fri.env to the explicit allowed
 channels. Set `FRI_HISTORY_CHANNEL_IDS` and `FRI_LEARNING_ROLE_ID` in controller.env.
 Set `FRI_CHAT_CHANNEL_ID` and `GENE_BOT_ID` in fri.env. Give Fri only the necessary
 View Channel, Read Message History, and Send Messages permissions in those channels.
-Members and Presence privileged intents remain off. Historical author membership
-is checked with bounded individual member lookups, not a full member import.
+The application's Server Members Intent must be enabled for archive rotation's
+bounded roster reads. The runtime keeps Members/Presence gateway subscriptions off.
+Only current FF ADMEN IDs/nicknames enter rotation; historical author membership
+is rechecked with bounded individual member lookups before reading history.
 
 For a second, chat-only testing room, set `FRI_TEST_GUILD_ID` and
 `FRI_TEST_CHANNEL_ID` in controller.env. Fri reads this scope from the controller.

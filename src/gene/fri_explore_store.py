@@ -99,12 +99,15 @@ class Exploration:
             member = min(pending, key=lambda m: (visits.get(m['user_id'], {}).get('at', 0), int(m['user_id'])))
             user = member['user_id']
             channels = [c for c in self.agent.settings.agent_history_channels.split(',') if c]
-            available = []
+            unread, refresh = [], []
             for channel in channels:
                 key = self.query_key(channel, user, '', claim['depth'])
                 q = db.execute('SELECT done,at FROM fri_explore_queries WHERE key=?', (key,)).fetchone()
-                if not q or not q['done'] or q['at']+REFRESH_SECONDS <= claim['at']:
-                    available.append(channel)
+                if not q or not q['done']:
+                    unread.append(channel)
+                elif q['at']+REFRESH_SECONDS <= claim['at']:
+                    refresh.append(channel)
+            available = unread or refresh
             if not channels:
                 raise ValueError('No approved history channels')
             # Prefer a channel where this person actually has history; otherwise use configured order.

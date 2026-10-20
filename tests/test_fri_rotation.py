@@ -190,3 +190,21 @@ def test_roster_paginates_before_rotation_and_filters_bots_and_other_roles():
     request.side_effect = [first, first]  # A repeated page is incomplete, never a partial authoritative roster.
     with pytest.raises(ValueError, match='incomplete'):
         asyncio.run(roster(agent, '90'))
+
+
+def test_unread_channel_is_explored_before_refreshing_exhausted_history(learning):
+    clock, store, settings, scheduler = archive(learning)
+    settings = replace(settings, agent_history_channels='1,2')
+    scheduler = AgentStore(store, settings)
+    people = members(11)
+    first, _, _ = turn(clock, scheduler, people)
+    assert first['channel_id'] == '1'
+    clock[0] += 26*3600
+    drained = scheduler.exploration.target(scheduler.claim()['id'], people)
+    assert drained['channel_id'] == '1'
+    scheduler.exploration.prepare(drained['id'], '11', '', 'continue history')
+    finish(scheduler, drained, [])
+    scheduler.delivered(drained['id'])
+    clock[0] += 26*3600
+    next_turn = scheduler.exploration.target(scheduler.claim()['id'], people)
+    assert next_turn['channel_id'] == '2'

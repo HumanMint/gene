@@ -25,6 +25,10 @@ def archive(learning):
     return clock, store, settings, scheduler
 
 
+def assigned(scheduler, claim):
+    return scheduler.exploration.target(claim['id'], [{'user_id': '11', 'name': 'friend', 'role_id': '90'}])
+
+
 def row(at, user='11', text='played minecraft with everyone', channel='1', bot=False):
     return {'id': str(int(snowflake_floor(at))+1), 'channel_id': channel,
             'author': {'id': user, 'bot': bot}, 'content': text}
@@ -53,18 +57,14 @@ def test_real_learning_harness_explores_old_messages_and_deduplicates_cross_quer
     clock, store, settings, scheduler = archive(learning)
     client = TestClient(create_app(settings))
     old = row(clock[0]-120*86400)
-    other = row(clock[0]-130*86400, user='12', text='old conversation')
-    bot = row(clock[0]-140*86400, user='99', bot=True)
-    opted = row(clock[0]-150*86400, user='13')
     new = row(clock[0]-160*86400, text='minecraft redstone was fun')
     store.personal_control('13', 'disable')
     owner = SimpleNamespace(send=AsyncMock())
     channel = SimpleNamespace(id=1, name='memba-chat', guild=SimpleNamespace(id=123, me=object()),
         permissions_for=lambda _: SimpleNamespace(view_channel=True, read_message_history=True))
-    plans = iter([{'member_id': '', 'term': '', 'reason': 'discover members and their topics'},
-                  {'member_id': '11', 'term': 'minecraft', 'reason': 'follow their Minecraft discussions'},
+    plans = iter([{'member_id': '11', 'term': 'minecraft', 'reason': 'follow their Minecraft discussions'},
                   {'member_id': '11', 'term': 'minecraft', 'reason': 'continue the unchecked older results'}])
-    pages = iter([[old, other, bot, opted], [old, new], []])
+    pages = iter([[old], [old, new], []])
     model_inputs, searches = [], []
 
     async def api(method, path, payload=None):
@@ -73,6 +73,9 @@ def test_real_learning_harness_explores_old_messages_and_deduplicates_cross_quer
         return response.json()
 
     async def http(route, params):
+        if route.url.endswith('/members'):
+            return [{'user': {'id': str(user), 'username': 'friend', 'bot': user == 99},
+                     'roles': [] if user == 12 else ['90']} for user in (11, 12, 13, 99)]
         assert route.method == 'GET' and route.url.endswith('/guilds/123/messages/search')
         assert params['channel_id'] == '1' and params['include_nsfw'] == 'false'
         assert params['author_type'] == 'user' and params['limit'] <= 25
@@ -110,7 +113,7 @@ def test_real_learning_harness_explores_old_messages_and_deduplicates_cross_quer
         agent = runtime()
         agent.run = summarize
         first = await agent.learn()
-        assert first['scanned'] == 4 and first['eligible'] == first['historical_notes'] == 1
+        assert first['scanned'] == 1 and first['eligible'] == first['historical_notes'] == 1
         history = scheduler.context('1', '11')['historical_topics']
         assert history[0]['source_id'] == old['id'] and history[0]['source_date']
         assert not scheduler.context('1', '12')['historical_topics']
@@ -141,9 +144,9 @@ def test_real_learning_harness_explores_old_messages_and_deduplicates_cross_quer
 
 def test_plans_are_bound_to_claim_members_channels_and_privacy(learning):
     _, store, settings, scheduler = archive(learning)
-    claim = scheduler.claim()
+    claim = assigned(scheduler, scheduler.claim())
     client = TestClient(create_app(settings))
-    payload = {'member_id': '', 'term': 'minecraft', 'reason': 'learn a shared game'}
+    payload = {'member_id': '11', 'term': 'minecraft', 'reason': 'learn a shared game'}
     for role in ('runtime', 'worker', 'deploy'):
         assert client.post('/agent/learning/'+claim['id']+'/plan', headers=headers(role), json=payload).status_code == 401
     for member, term in [('999', ''), ('', 'password'), ('', 'https://example.com'), ('', 'a'*81)]:
@@ -161,8 +164,8 @@ def test_plans_are_bound_to_claim_members_channels_and_privacy(learning):
 def test_failed_inference_does_not_check_off_history_and_erasure_blocks_inflight_notes(learning):
     clock, store, settings, scheduler = archive(learning)
     item = row(clock[0]-100*86400)
-    claim = scheduler.claim()
-    scheduler.exploration.prepare(claim['id'], '', 'minecraft', 'discover who discusses the game')
+    claim = assigned(scheduler, scheduler.claim())
+    scheduler.exploration.prepare(claim['id'], '11', 'minecraft', 'discover who discusses the game')
     finish(scheduler, claim, [item], [note(item)], error='Summary failed')
     with store.connection() as db:
         assert db.execute('SELECT count(*) FROM fri_explore_queries').fetchone()[0] == 0
@@ -171,12 +174,12 @@ def test_failed_inference_does_not_check_off_history_and_erasure_blocks_inflight
     scheduler.delivered(claim['id'])
     clock[0] += 1800
     scheduler = AgentStore(Store(settings.db), settings)
-    claim = scheduler.claim()
-    scheduler.exploration.prepare(claim['id'], '', 'minecraft', 'try the unread archive')
+    claim = assigned(scheduler, scheduler.claim())
+    scheduler.exploration.prepare(claim['id'], '11', 'minecraft', 'try the unread archive')
     assert finish(scheduler, claim, [item], [note(item)])['historical_notes'] == 1
     scheduler.delivered(claim['id'])
     clock[0] += 1800
-    claim = scheduler.claim()
+    claim = assigned(scheduler, scheduler.claim())
     scheduler.exploration.prepare(claim['id'], '11', '', 'look at another conversation')
     store.personal_control('11', 'disable')
     result = finish(scheduler, claim, [item], [note(item)])
@@ -193,7 +196,7 @@ def test_failed_inference_does_not_check_off_history_and_erasure_blocks_inflight
 @pytest.mark.parametrize('bad', ['future', 'channel', 'member', 'indexing'])
 def test_discord_search_rejects_unready_or_out_of_scope_results(learning, bad):
     clock, _, _, scheduler = archive(learning)
-    claim = scheduler.claim()
+    claim = assigned(scheduler, scheduler.claim())
     item = row(clock[0]-100, user='11')
     plan = {'member_id': '11', 'term': 'minecraft', 'before_id': claim['until_id']}
     if bad == 'future':
@@ -211,8 +214,8 @@ def test_discord_search_rejects_unready_or_out_of_scope_results(learning, bad):
 def test_source_forgery_and_sensitive_candidates_do_not_become_member_notes(learning):
     clock, _, _, scheduler = archive(learning)
     item = row(clock[0]-100*86400)
-    claim = scheduler.claim()
-    scheduler.exploration.prepare(claim['id'], '', '', 'discover past conversations')
+    claim = assigned(scheduler, scheduler.claim())
+    scheduler.exploration.prepare(claim['id'], '11', '', 'discover past conversations')
     findings = [note(item, source_id='999'), note(item, evidence='made up quote'),
                 note(item, topic='health diagnosis'), note(item)]
     assert finish(scheduler, claim, [item], findings)['historical_notes'] == 1
@@ -220,8 +223,8 @@ def test_source_forgery_and_sensitive_candidates_do_not_become_member_notes(lear
     # A short nonempty search page remains unfinished, unlike ordinary history pagination.
     scheduler.delivered(claim['id'])
     clock[0] += 1800
-    next_claim = scheduler.claim()
-    assert scheduler.exploration.prepare(next_claim['id'], '', '', 'continue older history')['before_id'] == item['id']
+    next_claim = assigned(scheduler, scheduler.claim())
+    assert scheduler.exploration.prepare(next_claim['id'], '11', '', 'continue older history')['before_id'] == item['id']
 
 
 def test_planner_and_summary_usage_outbox_delivers_through_controller(learning, tmp_path):

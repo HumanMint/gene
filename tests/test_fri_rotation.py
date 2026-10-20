@@ -208,3 +208,25 @@ def test_unread_channel_is_explored_before_refreshing_exhausted_history(learning
     clock[0] += 26*3600
     next_turn = scheduler.exploration.target(scheduler.claim()['id'], people)
     assert next_turn['channel_id'] == '2'
+
+
+def test_daily_refreshes_eventually_find_new_messages_in_each_exhausted_channel(learning):
+    clock, store, settings, scheduler = archive(learning)
+    settings = replace(settings, agent_history_channels='1,2')
+    scheduler = AgentStore(store, settings)
+    history = {'1': [row(clock[0]-1000, channel='1')], '2': [row(clock[0]-900, channel='2')]}
+    selected, added = [], None
+    for index in range(7):
+        claim = scheduler.exploration.target(scheduler.claim()['id'], members(11))
+        plan = scheduler.exploration.prepare(claim['id'], '11', '', 'read broadly')
+        selected.append(claim['channel_id'])
+        page = [r for r in history[claim['channel_id']] if int(r['id']) < int(plan['before_id'])]
+        finish(scheduler, claim, page)
+        scheduler.delivered(claim['id'])
+        clock[0] += 26*3600
+        if index == 3:
+            added = row(clock[0]-100, channel='2', text='watched a new film')
+            history['2'].append(added)
+    assert selected == ['1', '1', '2', '2', '1', '1', '2']
+    with store.connection() as db:
+        assert db.execute('SELECT 1 FROM fri_explore_seen WHERE message_id=?', (added['id'],)).fetchone()

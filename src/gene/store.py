@@ -603,6 +603,8 @@ class Store:
             db.execute('INSERT INTO personal_preferences VALUES (?,?) ON CONFLICT(user_id) '
                        'DO UPDATE SET enabled=excluded.enabled', (user_id, action == 'enable'))
             if action == 'disable':
+                from .fri_explore_store import erase
+                erase(db, user_id)
                 db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))

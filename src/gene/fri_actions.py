@@ -85,6 +85,7 @@ class Actions:
         return {**overview,
             'reports': [r for r in overview['reports'] if not r.get('channel_id') or r['channel_id'] in channels],
             'summaries': [r for r in overview['summaries'] if r['channel_id'] in channels],
+            'historical_notes': [r for r in overview.get('historical_notes', []) if r['channel_id'] in channels],
             'history_channels': [c for c in overview['history_channels'] if c in channels]}
 
     async def execute(self, action):
@@ -264,7 +265,7 @@ class Actions:
                 latest = self.scoped_overview(await self.fri.api('POST', '/agent/learning/overview',
                     self.agent.identity(self.user)), channels)
                 # A new report may arrive during inference; all evidence used must still exist unchanged.
-                for key in ('reports', 'summaries'):
+                for key in ('reports', 'summaries', 'historical_notes'):
                     if any(row not in latest[key] for row in self.overview[key]):
                         return False
             return True

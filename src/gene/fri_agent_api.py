@@ -32,6 +32,18 @@ class LearningRecord(BaseModel):
     revision: int = Field(ge=0)
     text: str = Field(max_length=500)
     at: float = Field(ge=0)
+    display_name: str = Field(default='', max_length=80)
+
+
+class ExplorationPlan(BaseModel):
+    member_id: str = Field(default='', pattern=r'^\d{0,25}$')
+    term: str = Field(max_length=80)
+    reason: str = Field(max_length=180)
+    member_name: str = Field(default='', max_length=80)
+
+
+class Checked(BaseModel):
+    message_ids: list[str] = Field(max_length=25)
 
 
 class Finish(BaseModel):
@@ -45,6 +57,7 @@ class Finish(BaseModel):
     oldest: float | None = Field(default=None, ge=0)
     newest: float | None = Field(default=None, ge=0)
     newest_id: str | None = Field(default=None, pattern=r'^\d{1,25}$')
+    scanned_ids: list[str] = Field(default_factory=list, max_length=25)
 
 
 def register(app, store, settings, auth, actor):
@@ -91,6 +104,14 @@ def register(app, store, settings, auth, actor):
     @app.post('/agent/learning/{batch_id}/finish', dependencies=[auth('fri')])
     def finish(batch_id: str, body: Finish):
         return agent.finish(batch_id, **body.model_dump())
+
+    @app.post('/agent/learning/{batch_id}/plan', dependencies=[auth('fri')])
+    def plan(batch_id: str, body: ExplorationPlan):
+        return agent.exploration.prepare(batch_id, **body.model_dump())
+
+    @app.post('/agent/learning/{batch_id}/checked', dependencies=[auth('fri')])
+    def checked(batch_id: str, body: Checked):
+        return agent.exploration.checked(batch_id, body.message_ids)
 
     @app.get('/agent/reports', dependencies=[auth('fri')])
     def reports():

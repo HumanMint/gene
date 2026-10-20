@@ -7,6 +7,9 @@ import re
 import time
 import uuid
 
+from .fri_explore_store import Exploration
+from .fri_explore_store import initialize as initialize_exploration
+from .fri_explore_store import notes as historical_notes
 from .fri_memory import personal_note
 from .privacy import clean
 
@@ -16,12 +19,14 @@ DEFAULTS = {
     'summary_model': 'gpt-6-luna', 'summary_effort': 'medium',
     'heartbeat_seconds': 180, 'learning_first_minutes': 30, 'learning_later_minutes': 360,
     'history_days': 7, 'history_batch': 30, 'history_daily_messages': 360,
+    'exploration_enabled': False, 'exploration_days': 365,
     'dm_turns': 8, 'public_turns': 20, 'cooldown_min_minutes': 10,
     'cooldown_max_minutes': 20, 'voice_notes': '', 'attention_notes': '', 'learning_notes': '',
 }
 RANGES = {'heartbeat_seconds': (60, 1800), 'learning_first_minutes': (15, 360),
           'learning_later_minutes': (60, 1440), 'history_days': (1, 14),
           'history_batch': (5, 40), 'history_daily_messages': (30, 720),
+          'exploration_days': (30, 5000),
           'dm_turns': (3, 30), 'public_turns': (5, 60),
           'cooldown_min_minutes': (10, 20), 'cooldown_max_minutes': (10, 20)}
 
@@ -32,6 +37,7 @@ def snowflake_floor(timestamp):
 
 
 def initialize(db):
+    initialize_exploration(db)
     db.executescript('''
         CREATE TABLE IF NOT EXISTS agent_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS agent_reports (
@@ -48,6 +54,7 @@ def initialize(db):
 class AgentStore:
     def __init__(self, store, settings):
         self.store, self.settings = store, settings
+        self.exploration = Exploration(self)
 
     @staticmethod
     def get(db, key, default=None):
@@ -229,6 +236,11 @@ class AgentStore:
                      'until_id': until_id, 'limit': limit,
                      'after': floor, 'role_id': self.settings.agent_role_id,
                      'model': c['summary_model'], 'effort': c['summary_effort']}
+            if c['exploration_enabled']:
+                limit = min(limit, 25)  # Discord search returns at most 25 matches.
+                claim.update(mode='explore', before=None, after=now-c['exploration_days']*86400,
+                             depth=c['exploration_days'], limit=limit,
+                             exploration=self.exploration.context(db, channel))
             budget['used'] += limit
             self.put(db, 'budget', budget)
             self.put(db, 'learning_claim', claim)
@@ -241,10 +253,13 @@ class AgentStore:
             self.put(db, 'next_learning', next_learning)
             return {**claim, 'used_today': budget['used'], 'daily_limit': c['history_daily_messages']}
 
-    def finish(self, batch_id, records, result, scanned, before, done, counters, error='', oldest=None, newest=None, newest_id=None):
+    def finish(self, batch_id, records, result, scanned, before, done, counters, error='', oldest=None, newest=None, newest_id=None,
+               scanned_ids=()):
         now = time.time()
         if not isinstance(result.get('notes', []), list) or not isinstance(result.get('summary', ''), str):
             raise ValueError('Invalid summary output')
+        if not isinstance(result.get('observations', []), list):
+            raise ValueError('Invalid historical observations')
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             claim = self.get(db, 'learning_claim')
@@ -255,6 +270,10 @@ class AgentStore:
             # Only a short successful fetch establishes that this slice is drained.
             done = scanned < claim['limit']
             mode = claim.get('mode', 'history')
+            if claim.get('privacy_invalidated'):
+                records, result, error = [], {}, 'Privacy changed during exploration; findings discarded.'
+            if mode == 'explore' and not error:
+                self.exploration.validate(claim, scanned, scanned_ids)
             if mode == 'recent' and not error and scanned:
                 if (not newest_id or not before or not newest_id.isdigit() or not before.isdigit() or
                         not int(claim['after_id']) < int(before) <= int(newest_id) < int(claim['until_id'])):
@@ -264,6 +283,8 @@ class AgentStore:
             accepted = {}
             for r in records:
                 if (r.get('role_id') != claim['role_id'] or not claim['after'] <= r['at'] <= now or
+                        (mode == 'explore' and (r['id'] not in scanned_ids or
+                         (claim['plan']['member_id'] and r['user_id'] != claim['plan']['member_id']))) or
                         (mode == 'recent' and not int(claim['after_id']) < int(r['id']) < int(claim['until_id']))):
                     continue
                 revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (r['user_id'],)).fetchone()
@@ -271,7 +292,7 @@ class AgentStore:
                 if profile['enabled'] and r.get('revision') == (revision[0] if revision else 0):
                     accepted[r['id']] = r
             kept = []
-            for candidate in result.get('notes', [])[:5]:
+            for candidate in (result.get('notes', [])[:5] if mode != 'explore' else []):
                 if not isinstance(candidate, dict) or not isinstance(candidate.get('source_id'), str):
                     continue
                 r = accepted.get(candidate.get('source_id'))
@@ -287,20 +308,27 @@ class AgentStore:
             if not accepted or len(accepted) != len(records):
                 summary = ''
             # Any opt-out/revision change invalidates the entire derived summary.
-            if summary and accepted and len(accepted) == len(records):
+            if summary and accepted and len(accepted) == len(records) and mode != 'explore':
                 db.execute('INSERT INTO agent_summaries VALUES (?,?,?,?) ON CONFLICT(channel_id) '
                            'DO UPDATE SET body=excluded.body,authors=excluded.authors,at=excluded.at',
                            (claim['channel_id'], summary, json.dumps(sorted({r['user_id'] for r in accepted.values()})), now))
             cursors = self.get(db, 'cursors', {})
+            discoveries = []
+            already_checked = 0
             if not error:
                 cursor = dict(claim.get('cursor', cursors.get(claim['channel_id'], {})))
-                if mode == 'recent':
+                if mode == 'explore':
+                    already_checked = sum(bool(db.execute('SELECT 1 FROM fri_explore_seen WHERE message_id=?', (mid,)).fetchone())
+                                          for mid in scanned_ids)
+                    discoveries = self.exploration.finish(db, claim, accepted, result, scanned_ids)
+                elif mode == 'recent':
                     after_id = str(int(claim['until_id'])-1) if done else (newest_id or claim['after_id'])
                     cursor['after_id'] = max(cursor['after_id'], after_id, key=int)
                 else:
                     cursor.update(before=before, done_at=now if done else 0)
-                cursors[claim['channel_id']] = cursor
-                self.put(db, 'cursors', cursors)
+                if mode != 'explore':
+                    cursors[claim['channel_id']] = cursor
+                    self.put(db, 'cursors', cursors)
                 budget = self.get(db, 'budget', {})
                 if claim.get('budget_day') == budget.get('day'):
                     budget['used'] = max(0, budget['used']-(claim['limit']-scanned))
@@ -310,8 +338,19 @@ class AgentStore:
             if oldest is not None and newest is not None and claim['after'] <= oldest <= newest <= now:
                 dates = [oldest, newest]
             window = ('<t:'+str(int(min(dates)))+':f> to <t:'+str(int(max(dates)))+':f>') if dates else 'no eligible messages'
+            plan = claim.get('plan', {})
+            exploration_report = ''
+            if mode == 'explore':
+                name = next((m['name'] or m['user_id'] for m in claim.get('exploration', {}).get('members', [])
+                             if m['user_id'] == plan.get('member_id')), plan.get('member_id') or 'member discovery')
+                name = plan.get('member_name') or name
+                exploration_report = (f"Focus: {name}; term: {plan.get('term') or '(open conversation)'}\n"
+                    f"Purpose: {plan.get('reason') or 'No completed search plan'}\n"
+                    f"Previously checked matches: {already_checked}; new historical notes: {len(discoveries)}\n"
+                    + ('\n'.join(discoveries)+'\n' if discoveries else ''))
             report = (f"Learning pass {batch_id[:8]}\nChannel: <#{claim['channel_id']}>; FF ADMEN only\n"
-                      f"Mode: {'new messages' if mode == 'recent' else 'initial history scan'}\n"
+                      f"Mode: {'member/topic archive search' if mode == 'explore' else 'new messages' if mode == 'recent' else 'initial history scan'}\n"
+                      + exploration_report +
                       f"Scanned {scanned}; eligible {len(accepted)}; saved exact preferences {len(kept)}\n"
                       f"Examined range: {window}\nLookback floor: <t:{int(claim['after'])}:f>\n"
                       f"Model: {claim['model']} / {claim['effort']}\n"
@@ -327,7 +366,7 @@ class AgentStore:
                       + '\nAsk me to change learning frequency, pause learning, or show settings.')
             db.execute('INSERT INTO agent_reports VALUES (?,?,?,0)', (batch_id, now, report))
             return {'saved': len(kept), 'report_id': batch_id, 'scanned': scanned,
-                    'eligible': len(accepted), 'error': bool(error)}
+                    'eligible': len(accepted), 'historical_notes': len(discoveries), 'error': bool(error)}
 
     def overview(self):
         """Owner-only evidence, not settings or authority. Bound both age and size."""
@@ -347,6 +386,8 @@ class AgentStore:
                 'SELECT channel_id,body,at FROM agent_summaries WHERE at>? ORDER BY at DESC LIMIT 5',
                 (now-2*86400,)) if r['channel_id'] in self.settings.agent_history_channels.split(',')]
             return {'reports': reports, 'summaries': summaries,
+                    'historical_notes': [dict(channel_id=c, **n) for c in self.settings.agent_history_channels.split(',')
+                                         for n in historical_notes(db, c)][:20],
                     'learning_schedule': self.learning_schedule(db, now),
                     'learning_enabled': config['enabled'] and config['learning_enabled'],
                     'history_channels': [x for x in self.settings.agent_history_channels.split(',') if x],
@@ -363,6 +404,7 @@ class AgentStore:
             profile = self.store._personal_context(db, guild, 'public:'+channel, user)
             rev = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
             return {'summary': row[0] if row and profile['enabled'] and guild == self.settings.guild_id else '',
+                    'historical_topics': historical_notes(db, channel, user) if profile['enabled'] and guild == self.settings.guild_id else [],
                     'enabled': profile['enabled'], 'revision': rev[0] if rev else 0}
 
     def reports(self):

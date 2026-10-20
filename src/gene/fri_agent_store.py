@@ -348,6 +348,12 @@ class AgentStore:
                     f"Purpose: {plan.get('reason') or 'No completed search plan'}\n"
                     f"Previously checked matches: {already_checked}; new historical notes: {len(discoveries)}\n"
                     + ('\n'.join(discoveries)+'\n' if discoveries else ''))
+                target = claim.get('target')
+                if target:
+                    exploration_report += (f"Member rotation: round {target['round']}, turn {target['position']}/{target['total']}\n"
+                        + ('No unread history remains in the approved channels.\n' if target['exhausted'] else '')
+                        + ('No eligible messages found in this slice; this is a checked turn, not a learned preference.\n'
+                           if not accepted and not error else ''))
             report = (f"Learning pass {batch_id[:8]}\nChannel: <#{claim['channel_id']}>; FF ADMEN only\n"
                       f"Mode: {'member/topic archive search' if mode == 'explore' else 'new messages' if mode == 'recent' else 'initial history scan'}\n"
                       + exploration_report +

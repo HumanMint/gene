@@ -42,6 +42,16 @@ class ExplorationPlan(BaseModel):
     member_name: str = Field(default='', max_length=80)
 
 
+class ExplorationMember(BaseModel):
+    user_id: str = Field(pattern=r'^\d{1,25}$')
+    role_id: str = Field(pattern=r'^\d{1,25}$')
+    name: str = Field(max_length=80)
+
+
+class ExplorationRoster(BaseModel):
+    members: list[ExplorationMember] = Field(min_length=1, max_length=200)
+
+
 class Checked(BaseModel):
     message_ids: list[str] = Field(max_length=25)
 
@@ -108,6 +118,10 @@ def register(app, store, settings, auth, actor):
     @app.post('/agent/learning/{batch_id}/plan', dependencies=[auth('fri')])
     def plan(batch_id: str, body: ExplorationPlan):
         return agent.exploration.prepare(batch_id, **body.model_dump())
+
+    @app.post('/agent/learning/{batch_id}/target', dependencies=[auth('fri')])
+    def target(batch_id: str, body: ExplorationRoster):
+        return agent.exploration.target(batch_id, body.model_dump()['members'])
 
     @app.post('/agent/learning/{batch_id}/checked', dependencies=[auth('fri')])
     def checked(batch_id: str, body: Checked):

@@ -194,7 +194,9 @@ usage receipts retry delivery to the controller without duplicating attempts.
 ### Connect Fri on the personal VM
 
 Create a distinct Discord bot application. Enable Message Content Intent so Fri can recognize
-her name in normal messages; leave Members and Presence intents off. Run `scripts/configure_fri.py`
+her name in normal messages. Enable the application's Server Members Intent for complete
+role-roster REST reads used by archive rotation; Presence remains off. The runtime does not
+subscribe to Members/Presence gateway events. Run `scripts/configure_fri.py`
 locally, enter the bot token privately, and use its printed invite if Fri is not in the Lab.
 It writes `.secrets/fri.env`; Gene's existing bot identity is untouched.
 
@@ -471,8 +473,10 @@ Set `FRI_CHANNEL_IDS` in both controller.env and fri.env to the explicit allowed
 channels. Set `FRI_HISTORY_CHANNEL_IDS` and `FRI_LEARNING_ROLE_ID` in controller.env.
 Set `FRI_CHAT_CHANNEL_ID` and `GENE_BOT_ID` in fri.env. Give Fri only the necessary
 View Channel, Read Message History, and Send Messages permissions in those channels.
-Members and Presence privileged intents remain off. Historical author membership
-is checked with bounded individual member lookups, not a full member import.
+The application's Server Members Intent must be enabled for archive rotation's
+bounded roster reads. The runtime keeps Members/Presence gateway subscriptions off.
+Only current FF ADMEN IDs/nicknames enter rotation; historical author membership
+is rechecked with bounded individual member lookups before reading history.
 
 For a second, chat-only testing room, set `FRI_TEST_GUILD_ID` and
 `FRI_TEST_CHANNEL_ID` in controller.env. Fri reads this scope from the controller.
@@ -558,21 +562,39 @@ context window. The channel allowlist, FF ADMEN eligibility, opt-outs, per-pass
 reservation, daily allowance and report delivery gate still apply. No old Fri/bot
 replies, private threads, DMs, or images enter this learning path.
 
-Each pass uses the configured summary model (initially Luna/medium) to choose an
-eligible member or discovery, a short optional topic/keyword, and a brief purpose.
-The planner sees bounded coverage counts, recent query progress, historical topic
-labels and current nicknames. The controller validates the plan before the harness
+Each pass refreshes the complete current FF ADMEN roster through Discord's
+[List Guild Members endpoint](https://docs.discord.com/developers/resources/guild#list-guild-members).
+This requires the application's Guild Members privileged intent to be enabled;
+a failed/incomplete roster never falls back to a partial gateway cache. The
+controller chooses a member from a persistent round shared across learning channels.
+Every currently eligible, opted-in member gets a turn before anyone repeats.
+Existing successfully read member history counts once toward the first round.
+New role members join the current round; departed members and opt-outs do not block it.
+
+A member with no previous readable history gets an author-only search, without
+guessing a keyword or spending a planning call. Later passes use the summary model
+(initially Luna/medium) to choose a short optional query and purpose for the assigned
+member. The planner sees their own bounded, dated excerpts, query progress and current
+nickname. It favors natural wording such as watched/playing or evidenced titles;
+generic category labels and exhausted keyword queries fall back to broad conversation.
+The controller binds the member and chooses a channel with unread history before the harness
 uses Discord's documented [Search Guild Messages endpoint](https://docs.discord.com/developers/resources/message#search-guild-messages),
 with one fixed approved channel, author/type filters and a hard date/result limit.
 One plan, one search (at most one short indexing retry), and one summary are allowed
 per pass; no general tools, shell, web search or administrative actions are offered.
-Planner usage appears separately as `exploration_plan`.
+Planner usage appears separately as `exploration_plan` when a planning call is needed.
 
 Searches retain a cursor per channel/member/term/depth. Short result pages do not
 mean exhaustion; an empty fully indexed page completes that query. Checked message
 IDs are retained across searches and restarts, so overlaps are not summarized or
 saved again. Failed/incomplete indexing or inference never advances coverage.
-Reports show the focus, purpose, range, duplicate count and new historical notes.
+Reports show the focus, purpose, range, duplicate count, new historical notes and
+round/turn count. A successful empty search advances the turn and tries the member's
+other approved channel on a later round; it is explicitly reported as checked, not
+learned. Failed passes do not finish the turn. A fully exhausted member uses no
+additional model/search call during that day's remaining turns. An exhausted broad
+query becomes eligible for a fresh head check after 24 hours, retaining checked IDs
+so old matches do not generate duplicate observations.
 
 Small per-member notes retain exact source excerpts, author IDs, source dates and
 harmless topic labels. These describe historical discussion, not present-day

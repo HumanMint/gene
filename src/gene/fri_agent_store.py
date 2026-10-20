@@ -46,6 +46,9 @@ def initialize(db):
         CREATE TABLE IF NOT EXISTS agent_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS agent_reports (
             id TEXT PRIMARY KEY, at REAL NOT NULL, body TEXT NOT NULL, delivered INTEGER DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS agent_report_cards (
+            report_id TEXT PRIMARY KEY REFERENCES agent_reports(id) ON DELETE CASCADE,
+            body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS agent_summaries (
             channel_id TEXT PRIMARY KEY, body TEXT NOT NULL, authors TEXT NOT NULL, at REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS agent_sessions (
@@ -344,6 +347,7 @@ class AgentStore:
                 dates = [oldest, newest]
             window = ('<t:'+str(int(min(dates)))+':f> to <t:'+str(int(max(dates)))+':f>') if dates else 'no eligible messages'
             plan = claim.get('plan', {})
+            name = ''
             exploration_report = ''
             if mode == 'explore':
                 name = next((m['name'] or m['user_id'] for m in claim.get('exploration', {}).get('members', [])
@@ -376,6 +380,17 @@ class AgentStore:
                       + ('\nIssue: '+clean(error, 180) if error else '')
                       + '\nAsk me to change learning frequency, pause learning, or show settings.')
             db.execute('INSERT INTO agent_reports VALUES (?,?,?,0)', (batch_id, now, report))
+            card = {'channel_id': claim['channel_id'], 'mode': mode, 'member': name,
+                    'term': plan.get('term', ''), 'scanned': scanned, 'eligible': len(accepted),
+                    'already_checked': already_checked, 'historical_notes': len(discoveries),
+                    'saved_preferences': len(kept), 'summary': summary, 'error': bool(error),
+                    'findings': discoveries[:3],
+                    'rotation': {key: value for key, value in claim.get('target', {}).items()
+                                 if key in {'round', 'position', 'total', 'exhausted'}},
+                    'oldest': min(dates) if dates else None, 'newest': max(dates) if dates else None,
+                    'next_check': self.get(db, 'next_learning', now)}
+            # Presentation metadata shares the report's retention and privacy deletion boundary.
+            db.execute('INSERT INTO agent_report_cards VALUES (?,?)', (batch_id, json.dumps(card)))
             return {'saved': len(kept), 'report_id': batch_id, 'scanned': scanned,
                     'eligible': len(accepted), 'historical_notes': len(discoveries), 'error': bool(error)}
 
@@ -421,7 +436,20 @@ class AgentStore:
 
     def reports(self):
         with self.store.connection() as db:
-            return [dict(r) for r in db.execute('SELECT id,body FROM agent_reports WHERE delivered=0 ORDER BY at LIMIT 1')]
+            return [self.report_row(r) for r in db.execute(
+                'SELECT r.id,r.body,c.body AS card FROM agent_reports r '
+                'LEFT JOIN agent_report_cards c ON c.report_id=r.id WHERE delivered=0 ORDER BY at LIMIT 1')]
+
+    @staticmethod
+    def report_row(row):
+        return {'id': row['id'], 'body': row['body'], 'card': json.loads(row['card']) if row['card'] else {}}
+
+    def report(self, report_id):
+        with self.store.connection() as db:
+            row = db.execute('SELECT r.id,r.body,c.body AS card FROM agent_reports r '
+                             'LEFT JOIN agent_report_cards c ON c.report_id=r.id WHERE r.id=? AND r.at>?',
+                             (report_id, time.time()-7*86400)).fetchone()
+            return self.report_row(row) if row else None
 
     def delivered(self, report_id):
         with self.store.connection() as db:

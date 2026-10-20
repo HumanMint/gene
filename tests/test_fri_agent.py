@@ -302,7 +302,7 @@ def test_failed_report_delivery_keeps_outbox_pending():
     async def scenario():
         owner = SimpleNamespace(send=AsyncMock(side_effect=RuntimeError('DM unavailable')))
         fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456,
-            api=AsyncMock(return_value=[{'id': 'batch', 'body': 'Learning pass'}]), get_user=lambda _: owner)
+            api=AsyncMock(return_value=[{'id': 'a'*32, 'body': 'Learning pass'}]), get_user=lambda _: owner)
         with pytest.raises(RuntimeError):
             await Agent(fri).send_reports()
         assert fri.api.await_count == 1

@@ -22,6 +22,7 @@ from .fri_agent_store import DEFAULTS, RANGES
 from .fri_chat import VOICE
 from .fri_memory import memory_intent
 from .fri_panel import DraftView
+from .fri_reports import report_message
 from .fri_usage import usage_requested
 from .previews import PagedPreview
 from .privacy import clean
@@ -359,15 +360,8 @@ class Agent:
     async def _send_reports(self):
         for report in await self.fri.api('GET', '/agent/reports'):
             owner = self.fri.get_user(self.fri.owner_id) or await self.fri.fetch_user(self.fri.owner_id)
-            body = discord.utils.escape_mentions(report['body'].replace('Untrusted summary:', 'Conversation summary:'))
-            attachment = discord.File(io.BytesIO(body.encode()), filename='fri-learning-report.txt') if len(body) > 1900 else None
-            try:
-                await owner.send(body[:1850]+ ('\nFull report attached.' if attachment else ''),
-                                 **({'file': attachment} if attachment else {}),
-                                 allowed_mentions=NO_MENTIONS, suppress_embeds=True)
-            finally:
-                if attachment:
-                    attachment.close()
+            content, view = report_message(report)
+            await owner.send(content, view=view, allowed_mentions=NO_MENTIONS, suppress_embeds=True)
             await self.fri.api('POST', '/agent/reports/'+report['id']+'/delivered')
 
     async def search_history(self, message, text):

@@ -126,11 +126,16 @@ def test_initial_scan_then_new_messages_drain_without_skips_after_restart(learni
         assert (await agent.learn())['scanned'] == 1
         assert summaries[-1][0]['id'] == str(boundary)
         clock[0] += 1800
-        assert (await agent.learn())['scanned'] == 0
+        empty = await agent.learn()
+        assert empty['scanned'] == 0
         assert len(summaries) == 4  # Empty checks spend no model tokens.
         assert value(store, 'budget')['used'] == 9
         assert owner.send.await_count == 5 and not scheduler.reports()
-        assert 'input 0, output 0, reasoning 0' in owner.send.await_args.args[0]
+        # The mobile DM is concise; full usage remains available under Details.
+        assert 'no new notes' in owner.send.await_args.args[0]
+        assert 'Tokens:' not in owner.send.await_args.args[0]
+        assert 'input 0, output 0, reasoning 0' in scheduler.report(empty['report_id'])['body']
+        assert owner.send.await_args.kwargs['view'].is_persistent()
         assert channel.reads[0]['after'] is None  # Backward initial scan.
         assert all(read['after'] for read in channel.reads[1:])
         finishes = [body for path, body in requests if path.endswith('/finish')]

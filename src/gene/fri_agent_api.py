@@ -134,6 +134,14 @@ def register(app, store, settings, auth, actor):
     def reports():
         return agent.reports()
 
+    @app.post('/agent/reports/{report_id}/view', dependencies=[auth('fri')])
+    def view_report(report_id: str, body: Identity):
+        actor(body, owner=True)
+        report = agent.report(report_id)
+        if report is None:
+            raise HTTPException(404, 'This learning report expired or was cleared.')
+        return report
+
     @app.post('/agent/reports/{report_id}/delivered', dependencies=[auth('fri')])
     def delivered(report_id: str):
         agent.delivered(report_id)

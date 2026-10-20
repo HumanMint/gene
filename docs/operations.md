@@ -489,7 +489,10 @@ The default is a 30-minute check of up to 20 messages from the last 24 hours,
 inspecting at most two unseen eligible posts per pass and 24 per rolling day.
 Luna/medium receives the caption, up to two small still images, Fri's base voice
 and current owner voice preferences. No other members' histories or personal
-profiles enter this task. Its only choices are quiet or a small fixed emoji set.
+profiles enter this task. Its only choices are quiet or a bounded emoji palette.
+It first decides whether it enjoys the joke, then chooses a contextual callback
+(for example, 💩 for a poop punchline), without defaulting to laughter faces or
+reacting just because an object has a matching emoji.
 Quiet is normal; only a high-confidence matching joke can get a reaction, at most
 one per hour and four per rolling day. These are ceilings, never targets.
 `meme_model`, `meme_effort`, `meme_interval_minutes`, `meme_daily_checks`, and
@@ -581,12 +584,21 @@ a local maintainer operation, not a new Discord or model-controlled endpoint.
 `fri-health.json` separately reports heartbeat task state and last tick timestamps;
 a Discord connection alone does not establish that the learning loop is running.
 
-Every history pass queues an owner DM reporting its channel, eligibility, date
-range, exact saved disclosures, model/effort, measured usage, and next eligible
-run. No eligible source means no model call. An undelivered report pauses further
+Every history pass queues a compact owner DM: who/channel, search term, outcome,
+brief findings, rotation progress and next check. Empty or previously checked
+results explicitly say there are no new notes. **Details** opens the full
+record in the same message, including date limits, exact saved disclosures,
+model/effort, measured usage and scan allowance. **Summary**, **Back**, and **Next**
+navigate without extra messages or attachments. The buttons survive restarts;
+only the configured owner with current server membership can open them.
+Presentation adds no model call. Old reports without summary metadata still
+open under Details, and cleared/expired reports explain that they are unavailable.
+No eligible source means no model call. An undelivered report pauses further
 history learning. A crashed claim reserves its original allowance and produces
 an interruption report rather than replaying indefinitely. Reports are retained
-for seven days after delivery. Discord delivery can be repeated after a crash
+until delivered and seven days old; detail buttons expire seven days after the
+pass. Privacy erasure deletes the report and its companion presentation metadata.
+Discord delivery can be repeated after a crash
 between sending and acknowledgement; the batch identifier makes this visible.
 
 ### Autonomous archive exploration

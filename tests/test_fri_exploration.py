@@ -5,8 +5,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from redbot.core import commands
 
 from gene.api import create_app
+from gene.fri import Fri
 from gene.fri_agent import Agent
 from gene.fri_agent_store import AgentStore, snowflake_floor
 from gene.fri_explore import search
@@ -220,3 +222,23 @@ def test_source_forgery_and_sensitive_candidates_do_not_become_member_notes(lear
     clock[0] += 1800
     next_claim = scheduler.claim()
     assert scheduler.exploration.prepare(next_claim['id'], '', '', 'continue older history')['before_id'] == item['id']
+
+
+def test_planner_and_summary_usage_outbox_delivers_through_controller(learning, tmp_path):
+    _, _, settings, scheduler = archive(learning)
+    client = TestClient(create_app(settings))
+    async def scenario():
+        async def api(method, path, payload=None):
+            response = client.request(method, path, json=payload, headers=headers('fri'))
+            if response.status_code != 200:
+                raise commands.UserFeedbackCheckFailure('Usage rejected')
+            return response.json()
+        fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456, api=api,
+            data=tmp_path/'runtime', usage_lock=asyncio.Lock())
+        fri.flush_usage = lambda: Fri.flush_usage(fri)
+        agent = Agent(fri)
+        for role in ('exploration_plan', 'summary'):
+            await agent.record(role, 'gpt-6-luna', 'medium', {'input_tokens': 100, 'output_tokens': 20}, 'completed')
+        assert not list((fri.data/'usage').glob('*.json'))
+        assert {r['role'] for r in scheduler.usage()} == {'exploration_plan', 'summary'}
+    asyncio.run(scenario())

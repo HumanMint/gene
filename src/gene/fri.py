@@ -351,6 +351,7 @@ class Fri(discord.Client):
         test_permissions = test_channel.permissions_for(test_guild.me) if (
             test_channel and test_guild and test_guild.me and test_channel.guild.id == test_guild.id) else None
         private_json(self.data / 'fri-health.json', {'at': time.time(),
+            'meme_attention': self.agent.memes.status() if self.agent and self.agent.memes else None,
             'agent_heartbeat': {'running': self.agent.heartbeat.is_running(), 'failed': self.agent.heartbeat.failed(),
                 'started': self.agent.heartbeat_started, 'finished': self.agent.heartbeat_finished,
                 'status': self.agent.heartbeat_status} if self.agent else None,

@@ -24,6 +24,10 @@ class Settings:
     test_channel_id: str = ''
     web_search_enabled: bool = False
     command_channel_id: str = ''
+    meme_channel_ids: str = ''
+
+    def meme_channel_allowed(self, guild, channel):
+        return bool(channel and guild == self.guild_id and channel in self.meme_channel_ids.split(','))
 
     def chat_channel_allowed(self, guild, channel):
         if not guild or not channel:
@@ -53,6 +57,7 @@ class Settings:
             test_channel_id=os.environ.get('FRI_TEST_CHANNEL_ID', ''),
             web_search_enabled=os.environ.get('FRI_WEB_SEARCH_ENABLED', '').lower() == 'true',
             command_channel_id=os.environ.get('GENE_COMMAND_CHANNEL_ID', ''),
+            meme_channel_ids=os.environ.get('FRI_MEME_CHANNEL_IDS', ''),
         )
         tokens = [settings.runtime_token, settings.worker_token, settings.deploy_token, settings.fri_token]
         if any(len(token) < 32 for token in tokens) or len(set(tokens)) != 4:

@@ -57,7 +57,7 @@ def test_web_requires_completed_search_and_provider_citation(kind, searched, cit
 
 
 def test_web_call_limit_and_denial_do_not_reveal_unverified_text():
-    stream = [{'type': 'response.output_item.added', 'item': {'id': str(i), 'type': 'web_search_call'}} for i in range(4)]
+    stream = [{'type': 'response.output_item.added', 'item': {'id': str(i), 'type': 'web_search_call'}} for i in range(6)]
     chat = Chat(SimpleNamespace(access_token=lambda: 'plan'), transport(stream+search_events()))
     result, _, status = asyncio.run(lookup(chat, 'Python', 'model', 'high'))
     assert status == 'incomplete' and 'answer' not in result
@@ -141,9 +141,10 @@ def test_web_reply_preserves_sources_and_keeps_only_a_neutral_receipt(monkeypatc
         with patch('gene.fri_actions.lookup', new=AsyncMock(return_value=(receipt, {'input_tokens': 20}, 'completed'))):
             result = await fri.talk(123, 1, 20, 'fri Python release?', 'public',
                 event=event(user=20, channel=1, content='fri Python release?'))
-        assert receipt['sources'][0] in result.reply and result.draft is None
+        assert 'http' not in result.reply and 'current release' in result.reply and result.draft is None
         context = fri.chat.respond.await_args.args[1]
-        assert 'web_search' not in context['actions'] and context['action_result'] == receipt
+        assert 'web_search' not in context['actions'] and 'web_refine' in context['actions']
+        assert context['action_result'] == receipt
         saved = next(body for path, body in calls if path == '/chat/turn')
         assert saved['reply'].startswith('Earlier check: web_search') and 'public evidence' not in saved['reply']
         assert saved['web_receipt'] == {k: receipt[k] for k in ('query', 'answer', 'sources', 'checked_at')}

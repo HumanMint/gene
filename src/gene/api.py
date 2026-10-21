@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .fri_context import ChatSource
+from .fri_pending import Clarification
 from .fri_research import ResearchReceipt
 from .store import Conflict, Store
 
@@ -93,6 +94,7 @@ class ChatScope(Actor):
 class ChatTurn(ChatScope):
     source: ChatSource
     web_receipt: ResearchReceipt | None = None
+    clarification: Clarification | None = None
     revision: int = Field(ge=0)
     input: str = Field(min_length=1, max_length=4000)
     reply: str = Field(min_length=1, max_length=3500)
@@ -101,6 +103,18 @@ class ChatTurn(ChatScope):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     notes: list[dict] = Field(default_factory=list, max_length=3)
+
+
+class ResearchStart(ChatScope):
+    source: ChatSource
+    revision: int = Field(ge=0)
+    input: str = Field(min_length=1, max_length=4000)
+    query: str = Field(min_length=3, max_length=240)
+
+
+class PendingCancel(ChatScope):
+    source: ChatSource
+    input: str = Field(min_length=1, max_length=4000)
 
 
 class PersonalControl(ChatScope):
@@ -288,12 +302,36 @@ def create_app(settings: Settings | None = None):
         chat_scope(body)
         return store.chat_context(body.guild_id, body.conversation_id, body.user_id)
 
+    @app.post('/chat/pending', dependencies=[auth('fri')])
+    def chat_pending(body: ChatScope):
+        chat_scope(body)
+        from .fri_pending import read
+        with store.connection() as db:
+            row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (body.user_id,)).fetchone()
+            pending = read(db, body.guild_id, body.conversation_id, body.user_id, row[0] if row else 0)
+        return {'pending': bool(pending)}
+
+    @app.post('/chat/pending/cancel', dependencies=[auth('fri')])
+    def chat_pending_cancel(body: PendingCancel):
+        chat_scope(body)
+        from .fri_pending import cancel
+        return cancel(store, body.guild_id, body.conversation_id, body.user_id,
+                      body.input, body.source.model_dump())
+
     @app.post('/chat/turn', dependencies=[auth('fri')])
     def chat_turn(body: ChatTurn):
         chat_scope(body)
         return store.save_chat(body.guild_id, body.conversation_id, body.user_id, body.revision, body.input,
                               body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes,
-                              body.source.model_dump(), body.web_receipt.model_dump() if body.web_receipt else None)
+                              body.source.model_dump(), body.web_receipt.model_dump() if body.web_receipt else None,
+                              body.clarification.model_dump() if body.clarification else None)
+
+    @app.post('/chat/research/start', dependencies=[auth('fri')])
+    def research_start(body: ResearchStart):
+        chat_scope(body)
+        from .fri_research import start
+        return start(store, body.guild_id, body.conversation_id, body.user_id, body.revision,
+                     body.source.model_dump(), body.input, body.query)
 
     @app.post('/chat/memory/control', dependencies=[auth('fri')])
     def personal_control(body: PersonalControl):

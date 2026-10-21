@@ -21,6 +21,8 @@ class Control(Scope):
     action: str
     argument: str = Field(max_length=240)
     revision: int = Field(ge=0)
+    continuation_id: str = Field(default='', pattern=r'^(?:[0-9]{1,25})?$')
+    addressed_bot_id: str = Field(default='', pattern=r'^(?:[0-9]{1,25})?$')
 
 
 class Poll(BaseModel):

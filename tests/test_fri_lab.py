@@ -70,6 +70,7 @@ def test_lab_harness_observes_only_selected_channel_and_uses_its_guild(monkeypat
             permissions_for=channels[1].permissions_for, history=channels[1].history)
         fri._connection.user = SimpleNamespace(id=99)
         agent.respond = AsyncMock()
+        fri.api = AsyncMock(return_value={'pending': False})
         message = SimpleNamespace(guild=lab.guild, channel=lab, webhook_id=None, id=100,
             author=SimpleNamespace(id=20, display_name='friend', bot=False), content='normal chat',
             mentions=[], reference=None, reply=AsyncMock())

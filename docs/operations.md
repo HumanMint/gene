@@ -358,6 +358,8 @@ erases all that user's Fri notes and chat turns and disables retention; “fri r
 re-enables it. These controls run without inference and invalidate in-flight replies so deleted
 data cannot be written back. **Forget my chats** clears recent turns while retaining personal notes.
 Anonymous usage counts survive erasure. Personal notes are never shared with the development worker.
+New commands can still hold a five-minute clarification and bounded execution receipts
+while personal memory is disabled; these operational records do not become personal notes.
 Owner **Saved context** controls remain the only way to add shared facts.
 `gene forgetme true` removes the caller's request text, chats, personal notes, links and approved facts from
 the active database, and cancels pending proposals. It cannot recall inputs already

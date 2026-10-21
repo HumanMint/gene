@@ -18,7 +18,19 @@ def initialize(db):
         );
         CREATE TABLE IF NOT EXISTS gene_control_catalog (id INTEGER PRIMARY KEY, at REAL, actions TEXT);
         CREATE TABLE IF NOT EXISTS gene_runtime_health (id INTEGER PRIMARY KEY, at REAL, body TEXT);
+        CREATE TABLE IF NOT EXISTS gene_control_origins (id TEXT PRIMARY KEY, created REAL NOT NULL);
     ''')
+
+
+def source_key(guild, source_id):
+    return hashlib.sha256((guild+':'+source_id).encode()).hexdigest()
+
+
+def source_used(db, guild, source_id):
+    """Keep execution dedupe independent of retained user text and privacy settings."""
+    key = source_key(guild, source_id)
+    return bool(db.execute('SELECT 1 FROM gene_controls WHERE id=? UNION ALL '
+                           'SELECT 1 FROM gene_control_origins WHERE id=? LIMIT 1', (key, key)).fetchone())
 
 
 class Controls:
@@ -77,21 +89,37 @@ class Controls:
         if source.kind != 'discord_message' or not -5 <= time.time()-source.timestamp().timestamp() <= 300:
             raise ValueError('Gene needs a fresh Discord message request')
         arguments(body['action'], body['argument'])
-        if not requested(body['request_text'], body['action']):
-            raise ValueError('Ask explicitly to run that action now; examples do not execute commands')
-        identifier = hashlib.sha256((body['guild_id']+':'+source.id).encode()).hexdigest()
+        identifier = source_key(body['guild_id'], source.id)
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             old = db.execute('SELECT id FROM gene_controls WHERE id=?', (identifier,)).fetchone()
             if old:
                 return {'id': identifier}  # Never enqueue the same message twice, even after a timeout.
+            if source_used(db, body['guild_id'], source.id):
+                raise ValueError('This request was already handled')
             row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (body['user_id'],)).fetchone()
             if body['revision'] != (row[0] if row else 0):
                 raise ValueError('Conversation changed before the action could start')
+            from .fri_pending import clear, completion, read
+            pending = read(db, body['guild_id'], body['conversation_id'], body['user_id'], body['revision'])
+            body = {k: v for k, v in body.items() if k != 'continuation'}
+            if not requested(body['request_text'], body['action']):
+                if (not pending or body.get('continuation_id') != pending['source']['id'] or
+                        not completion(pending, body['request_text'], body['action'], body['argument'],
+                                       body['source'], body['guild_id'], body['conversation_id'],
+                                       body['user_id'], body['revision'], body.get('addressed_bot_id', ''))):
+                    raise ValueError('Ask to play a song, or answer the current song question in this conversation')
+                if source_used(db, body['guild_id'], pending['source']['id']):
+                    raise ValueError('This request was already handled')
+                body['continuation'] = pending
             if db.execute('SELECT 1 FROM gene_controls WHERE user_id=? AND created>?', (body['user_id'], time.time()-3)).fetchone():
                 raise ValueError('Give Gene a moment before another action')
             db.execute('INSERT INTO gene_controls(id,user_id,created,state,payload) VALUES (?,?,?,?,?)',
                        (identifier, body['user_id'], time.time(), 'queued', json.dumps(body)))
+            if body.get('continuation'):
+                db.execute('INSERT INTO gene_control_origins VALUES (?,?)',
+                           (source_key(body['guild_id'], pending['source']['id']), time.time()))
+            clear(db, body['guild_id'], body['conversation_id'], body['user_id'])
         return {'id': identifier}
 
     def poll(self, available):
@@ -100,6 +128,7 @@ class Controls:
             db.execute('INSERT OR REPLACE INTO gene_control_catalog VALUES (1,?,?)',
                        (time.time(), json.dumps([a for a in available if a in COMMANDS])))
             db.execute('DELETE FROM gene_controls WHERE created<?', (time.time()-86400,))
+            db.execute('DELETE FROM gene_control_origins WHERE created<?', (time.time()-86400,))
             db.execute("UPDATE gene_controls SET state='expired',result=? WHERE state='queued' AND created<?",
                        (json.dumps({'blocked': 'Gene did not start the request in time; nothing was run.'}), time.time()-30))
             row = db.execute("SELECT * FROM gene_controls WHERE state='queued' ORDER BY created LIMIT 1").fetchone()

@@ -39,14 +39,22 @@ For a question about what you've learned, choose learning_overview if available.
 look around or read recent chat, choose read_recent with one listed channel_id. For an explicit
 request to do a learning pass now, choose run_learning. The owner-only actions are offered privately.
 Choose web_search for current or uncertain public facts when it would help the current question.
-Its query must be a short EXACT excerpt of the current message naming a public topic, not Discord
-history, private notes, credentials, people in the server, or their personal details. Ask for the
-public topic if only private context identifies it. Web access is live, but some sites can be inaccessible.
-Use cited web evidence for the final reply; never invent links or say you searched after a failure.
-Keep a useful inline link on the song, page or item when it helps. Do not add a source 1/source 2
-footer or link every fact. Only use URLs in the supplied research evidence. When asked for sources,
-including later, choose web_sources with an exact retained query or "" for the latest. Retained
-research is dated evidence from this conversation, not a fresh search or private model reasoning.
+Its query must be a short EXACT excerpt of the current public question or the supplied pending web
+question, never private notes, ambient history, credentials or member details. Include the information
+being asked for (e.g. how the team is doing), not just a generic keyword. The isolated researcher may
+rewrite queries and open current primary pages. For a common public name, research the likely meaning
+and identify it in the answer; don't demand confirmation unnecessarily. When clarification really is
+needed, use clarify(goal=web, topic=the original public question, question=one short question).
+The next answer resolves that question: "ya" means yes, not a reason to ask the same question again.
+If their answer adds a public qualifier ("the car"), use that exact qualifier as query; the harness
+combines it with the pending question. For a simple yes, use the pending question as query.
+When a lookup is irrelevant, incomplete or lacks the requested current facts, use web_refine if offered.
+Do not just describe a bad lookup and stop. If sources still don't establish the answer, state the
+specific uncertainty briefly. Never invent results, links or search success. Give the actual answer
+in one or two natural sentences, like someone who checked it, without narrating the research process.
+Keep URLs/citation markers/source lists out of ordinary replies. Retain sources in the receipt;
+when asked for sources or links (including later), use web_sources with the exact retained query or
+"" for the latest. Research is dated evidence, not private model reasoning.
 When gene_command is available, ordinary existing Gene commands do not need owner development
 approval. Use it for a clear current request to play/control music or read status. Gene checks the
 actual member's permissions. Capability questions ("could I ask you to play...") and hypothetical
@@ -153,14 +161,18 @@ SCHEMA = {'type': 'object', 'properties': {'reply': {'type': 'string'},
               'kind': {'type': 'string', 'enum': ['learning_overview', 'read_recent', 'run_learning', 'gene_diagnose']},
               'channel_id': {'type': 'string'}}, 'required': ['kind', 'channel_id'],
               'additionalProperties': False}, {'type': 'object', 'properties': {
-                  'kind': {'type': 'string', 'enum': ['web_search', 'web_sources']}, 'query': {'type': 'string'}},
+                  'kind': {'type': 'string', 'enum': ['web_search', 'web_sources', 'web_refine']}, 'query': {'type': 'string'}},
                   'required': ['kind', 'query'], 'additionalProperties': False},
                   {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['gene_command']},
                    'action': {'type': 'string'}, 'argument': {'type': 'string'}},
                    'required': ['kind', 'action', 'argument'], 'additionalProperties': False},
                   {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['preview_voice']},
                    'voice_notes': {'type': 'string'}}, 'required': ['kind', 'voice_notes'],
-                   'additionalProperties': False}]},
+                   'additionalProperties': False},
+                  {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['clarify']},
+                   'goal': {'type': 'string', 'enum': ['play', 'volume', 'web']},
+                   'question': {'type': 'string'}, 'topic': {'type': 'string'}},
+                   'required': ['kind', 'goal', 'question', 'topic'], 'additionalProperties': False}]},
           'notes': {'type': 'array', 'items': {'type': 'object', 'properties': {
               'category': {'type': 'string', 'enum': list(CATEGORIES)}, 'evidence': {'type': 'string'}},
               'required': ['category', 'evidence'], 'additionalProperties': False}}},
@@ -202,6 +214,7 @@ class ChatResult:
     action: dict | None = None
     settings_preview: dict | None = None
     post_preview: dict | None = None
+    clarification: dict | None = None
 
 
 def usage(response):
@@ -258,6 +271,7 @@ class Chat:
             'speaker_history_untrusted': context.get('historical_topics', []),
             'meme_attention': context.get('meme_attention', {}),
             'available_actions': context.get('actions', {}),
+            'pending_request': context.get('pending'),
             'requests_enabled': context.get('requests_enabled', True),
             'requester_is_owner': context.get('requester_is_owner', False),
             'recent_gene_receipts_untrusted': context.get('gene_receipts', []),
@@ -311,19 +325,26 @@ class Chat:
                             reply, draft = parsed['reply'], parsed['request_draft']
                             action = parsed.get('action')
                             if action is not None:
-                                web = isinstance(action, dict) and action.get('kind') in ('web_search', 'web_sources')
+                                web = isinstance(action, dict) and action.get('kind') in ('web_search', 'web_sources', 'web_refine')
                                 control = isinstance(action, dict) and action.get('kind') == 'gene_command'
+                                clarify = isinstance(action, dict) and action.get('kind') == 'clarify'
                                 voice = isinstance(action, dict) and action.get('kind') == 'preview_voice'
                                 parameter = 'voice_notes' if voice else ('query' if web else 'channel_id')
                                 work = isinstance(action, dict) and action.get('kind') in WORK_ACTIONS
                                 expected = {'kind', *WORK_ACTIONS[action['kind']]} if work else ({'kind', 'action', 'argument'} if control else {'kind', parameter})
+                                if clarify:
+                                    from .fri_pending import Clarification
+                                    Clarification.model_validate({k: v for k, v in action.items() if k != 'kind'})
+                                    expected = {'kind', 'goal', 'question', 'topic'}
+                                    if action['goal'] not in context.get('actions', {}).get('clarify', {}).get('goals', []):
+                                        raise ValueError('Unavailable clarification')
                                 if control:
                                     from .gene_controls import arguments
                                     arguments(action.get('action'), action.get('argument'))
                                 if (not isinstance(action, dict) or set(action) != expected or
                                         action['kind'] not in context.get('actions', {}) or
                                         (work and not valid_work_action(action)) or
-                                        (not control and not work and (not isinstance(action[parameter], str) or len(action[parameter]) > (1500 if voice else 240 if web else 25))) or
+                                        (not clarify and not control and not work and (not isinstance(action[parameter], str) or len(action[parameter]) > (1500 if voice else 240 if web else 25))) or
                                         reply or draft is not None or parsed.get('notes', [])):
                                     raise ValueError('Invalid or unavailable action')
                             if (not isinstance(reply, str) or not (0 if action else 1) <= len(reply) <= 1800 or

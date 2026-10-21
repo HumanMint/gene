@@ -77,6 +77,15 @@ def test_web_to_gene_chain_is_bounded_and_requires_original_request(monkeypatch,
                 assert result.reply == 'queued it'
                 saved = next(body for path, body in calls if path == '/chat/turn')
                 assert saved['web_receipt'] == RECEIPT and 'gene_command' in saved['reply']
+            elif scenario == 'hypothetical':
+                fri.chat.respond.side_effect = [
+                    ChatResult(status='completed', action={'kind': 'web_search', 'query': 'Python release'}),
+                    ChatResult(status='completed', action=action),
+                    ChatResult(status='completed', reply='you can ask me to play it')]
+                result = await fri.talk(123, 1, 20, text, 'public', event=event(user=20, channel=1, content=text))
+                assert result.reply == 'you can ask me to play it'
+                assert fri.chat.respond.await_args.args[1]['actions'] == {}
+                assert 'blocked' in fri.chat.respond.await_args.args[1]['action_result']
             else:
                 with pytest.raises(commands.UserFeedbackCheckFailure):
                     await fri.talk(123, 1, 20, text, 'public', event=event(user=20, channel=1, content=text))

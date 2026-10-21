@@ -63,14 +63,13 @@ def test_research_cannot_store_reasoning_private_urls_or_export_old_context(stor
         store.save_chat('123', 'public:1', '20', 0, 'hey fri', '', 'model', 'high', web_receipt=RECEIPT)
 
 
-def test_links_stay_inline_but_numbered_footers_and_forged_urls_are_removed():
+def test_normal_answers_hide_sources_without_losing_readable_labels():
     receipt = {'sources': ['https://www.python.org/downloads/', 'https://docs.python.org/3/']}
     reply = ('check the [release](https://www.python.org/downloads/) and [docs](https://docs.python.org/3/). '
              'this [invented link](https://example.com/fake) is invalid.\n\n'
              'Sources:\n[source 1](https://www.python.org/downloads/) · [source 2](https://docs.python.org/3/)')
     result = cite_reply(reply, receipt)
-    assert '[release](<https://www.python.org/downloads/>)' in result
-    assert '[docs](<https://docs.python.org/3/>)' in result
+    assert 'check the release and docs' in result and 'https://' not in result
     assert 'source 1' not in result and 'Sources:' not in result and 'example.com' not in result
     assert result.endswith('invalid.')
     assert 'http' not in cite_reply('https://unverified.example/fake', receipt)

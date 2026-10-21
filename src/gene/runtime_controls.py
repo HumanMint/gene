@@ -9,6 +9,7 @@ import time
 import discord
 from redbot.core import commands
 
+from .fri_pending import completion
 from .gene_controls import COMMANDS, arguments, requested
 from .privacy import clean
 
@@ -114,7 +115,10 @@ class ControlRunner:
     async def execute(self, cog, claim):
         action, argument = claim['action'], claim['argument']
         arguments(action, argument)
-        if action not in self.catalog() or not requested(claim['request_text'], action):
+        continued = completion(claim.get('continuation'), claim['request_text'], action, argument,
+                               claim['source'], claim['guild_id'], claim['conversation_id'],
+                               claim['user_id'], claim['revision'], claim.get('addressed_bot_id', ''))
+        if action not in self.catalog() or not (requested(claim['request_text'], action) or continued):
             return {'blocked': 'That command is unavailable or was not requested.'}
         source = claim['source']
         event_time = discord.utils.snowflake_time(int(source['id'])).timestamp()
@@ -146,6 +150,12 @@ class ControlRunner:
             if (original.author.id != member.id or original.webhook_id or
                     clean(original.content, 4000) != claim['request_text']):
                 return {'blocked': 'The original request was edited, deleted, or has another author.'}
+            if continued:
+                pending = claim['continuation']
+                origin = await channel.fetch_message(int(pending['source']['id']))
+                if (origin.author.id != member.id or origin.webhook_id or
+                        clean(origin.content, 4000) != pending['request_text']):
+                    return {'blocked': 'The earlier music request changed. Ask again with the song included.'}
             message = copy.copy(original)
             message.author = member  # Current roles and voice state, not a stale member snapshot.
         else:

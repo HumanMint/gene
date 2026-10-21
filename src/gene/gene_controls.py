@@ -63,4 +63,4 @@ def requested(text, action):
     prefix = r'(?:(?:hey|yo|bro|ok|okay|fri|please|pls|plz|gene)[\s,:.!]+)*'
     request = r'(?:(?:can|could|would|will) (?:you|u) |(?:i want|i would like|i\'d like) (?:you|u) to )?'
     delegate = r'(?:(?:please|pls) )?(?:(?:ask|get|tell) gene to )?(?:(?:set|change) (?:the )?)?'
-    return bool(re.search(r'(?:^|[.!?\n]\s*)'+prefix+request+delegate+r'(?:'+verbs[action]+r')\b', text.strip()))
+    return bool(re.search(r'(?:^|[.!?\n]\s*)'+prefix+request+delegate+(r'(?:join (?:the |my |our )?(?:vc|voice(?: channel)?) and )?' if action == 'play' else '')+r'(?:'+verbs[action]+r')\b', text.strip()))

@@ -8,6 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from .privacy import clean
 
 
+def addressed_content(content, bot_id):
+    """Remove only the harness's own mention, at any position in the message."""
+    return content.replace(f'<@{bot_id}>', '').replace(f'<@!{bot_id}>', '').strip() if bot_id else content.strip()
+
+
 class ChatSource(BaseModel):
     model_config = ConfigDict(extra='forbid')
     kind: Literal['discord_message', 'discord_interaction']
@@ -47,7 +52,7 @@ def discord_source(event, text=None, bot_id=0):
     import discord
     if isinstance(event, discord.Message):
         if text is not None:
-            visible = event.content.replace(f'<@{bot_id}>', '').replace(f'<@!{bot_id}>', '').strip() or 'hey'
+            visible = addressed_content(event.content, bot_id) or 'hey'
             if clean(text, 4000) not in (clean(event.content, 4000), clean(visible, 4000)):
                 raise ValueError('Conversation text does not match its Discord message')
         author, channel, kind = event.author, event.channel.id, 'discord_message'

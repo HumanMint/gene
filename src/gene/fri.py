@@ -170,6 +170,12 @@ class Fri(discord.Client):
                     'Say “remember me again” if you change your mind. Discord messages and backups are separate.'
                     if intent == 'disable' else 'Memory’s back on. I’ll pick up small preferences as we talk.')
             return ChatResult(reply=text, status='completed')
+        from .fri_pending import cancelled
+        if source.kind == 'discord_message' and cancelled(text):
+            result = await self.api('POST', '/chat/pending/cancel',
+                                    {**scope, 'source': source.model_dump(), 'input': text})
+            if result['cancelled']:
+                return ChatResult(reply='alright, dropped that pending request.', status='completed')
         if user_id in self.busy:
             raise commands.UserFeedbackCheckFailure('I’m still replying to you. Give me a moment.')
         if not 1 <= len(text) <= 4000:
@@ -201,7 +207,9 @@ class Fri(discord.Client):
                 actions = Actions(self.agent, user_id, channel_id, visibility == 'public') if self.agent else None
                 if actions:
                     actions.event, actions.scope, actions.revision = event, scope, context['revision']
+                    actions.message, actions.model, actions.effort = clean(text, 4000), context['model'], context['effort']
                     actions.web_research = context.get('web_research', [])
+                    actions.pending = context.get('pending')
                 context['actions'] = await actions.available() if actions else {}
                 context['display_name'] = source.display_name
                 context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
@@ -214,8 +222,6 @@ class Fri(discord.Client):
                     context['gene_receipts'] = [r for r in recent.get('receipts', []) if r['channel_id'] in readable]
                     actions.sources.update(r['channel_id'] for r in context['gene_receipts'])
                 text = clean(text, 4000)
-                if actions:
-                    actions.message, actions.model, actions.effort = text, context['model'], context['effort']
                 result = await self.chat_once(text, context)
                 if guild_id != self.guild_id:
                     result.draft = None
@@ -237,12 +243,12 @@ class Fri(discord.Client):
                         breadcrumb += f' in channel {checked_channel}'
                     breadcrumb += ('. Public research receipts are available separately for follow-ups.' if research or action_kind == 'web_sources'
                                    else '. Fetch current evidence for follow-up details; no findings are retained here.')
-                    if result.settings_preview or result.post_preview:
+                    if result.settings_preview or result.post_preview or result.clarification:
                         breadcrumb = result.reply
                     await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                         'source': source.model_dump(),
-                        'input': text, 'reply': breadcrumb, 'model': context['model'],
-                        'effort': context['effort'], 'notes': [], 'web_receipt': research})
+                        'input': clean(event.content, 4000) if result.clarification else text, 'reply': breadcrumb, 'model': context['model'],
+                        'effort': context['effort'], 'notes': [], 'web_receipt': research, 'clarification': result.clarification})
                     result.notes = []
                     diagnosis = (receipt if action_kind == 'gene_diagnose'
                                  else receipt.get('gene_result', receipt).get('diagnostic', {}))

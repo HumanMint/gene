@@ -318,6 +318,11 @@ class Agent:
                 'name': 'Gene', 'text': text[:1800], 'at': time.time(), 'gene_error': True})
             return
         active = self.active.get((channel, message.author.id), 0) > time.time()
+        if not active and directed is None and not dm and not message.author.bot:
+            pending = await self.fri.api('POST', '/chat/pending', {
+                'guild_id': str(message.guild.id), 'user_id': str(message.author.id),
+                'channel_id': str(parent), 'conversation_id': 'public:'+str(channel)})
+            active = bool(pending.get('pending'))
         if message.mentions and not any(u.id == self.fri.user.id for u in message.mentions):
             active = False
         if message.reference and directed is None:
@@ -356,7 +361,7 @@ class Agent:
         await message.reply(view.content if result.settings_preview else result.reply[:1950], view=view, mention_author=False,
                             allowed_mentions=NO_MENTIONS, suppress_embeds=True)
         if result.status == 'completed':
-            self.active[(message.channel.id, message.author.id)] = time.time()+120
+            self.active[(message.channel.id, message.author.id)] = time.time()+(300 if result.clarification else 120)
         self.last_spoke[message.channel.id] = time.time()
 
     async def send_reports(self):

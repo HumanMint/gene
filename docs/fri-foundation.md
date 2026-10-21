@@ -53,6 +53,42 @@ status. Re-check Discord before explicitly preparing another uncertain post.
 
 ## Verification
 
+Clarification requests are separate from saved work and old conversation history.
+The `clarify` action holds an explicit music request or public research question
+for five minutes, scoped to the same author, guild and actual channel. A song or
+volume answer can complete that request without repeating the command verb. The
+controller consumes the permission in the same transaction that queues the action;
+Gene rechecks both public source messages and still runs Red's current member,
+voice, DJ and cooldown checks. Cancellation, unrelated replies, expiry, changed
+sources, chat clear and forgetting invalidate the continuation. A restart does not
+lose it or authorize a second command. This grants no admin or repair authority.
+This short-lived operational state also works with chat memory disabled. Consumed
+request IDs are fenced in both clarification and direct command paths. A hash of
+the original event ID and guild survives text erasure for 24 hours to prevent replay;
+it retains no message text, names or user ID. Privacy erasure cancels existing pending requests.
+Explicit cancellation clears an armed clarification before inference, admission or
+busy checks, and retires its origin against late/replayed replies. It does not undo
+a command Gene already accepted; an active player still needs the normal stop command.
+
+Public research receives only a current public question or the explicit pending
+question and current clarification. The assistant question, saved preferences and
+ambient member messages are never sent to the research model. The isolated
+researcher may rewrite queries and inspect up to five public search/page results.
+Fri can request one refinement with up to three further operations when the first
+result misses the question. Both fit within the four-action, five-minute turn
+budget. A ten-minute receipt permit preserves the validated public query through a long lookup
+or a subsequent command, without extending command permission. Source URLs are retained for 24 hours in the same member/conversation
+scope, displayed when requested, and erased by the existing privacy controls.
+
+`tests/test_fri_continuity.py` exercises the question/answer path through Fri,
+the real controller and installed Red checks using offline Discord/model transports.
+It also tests scope, cancellation, edits, privacy, expiry, restart, duplicate
+delivery and bounded research recovery. `python -m gene.fri_eval --suite continuity`
+checks actual model choices across turns and performs isolated live public research,
+with anonymous evaluation usage only. It cannot invoke Discord or write conversations.
+These checks do not prove audible playback or guarantee that every public question
+has an accessible, current answer.
+
 `tests/test_fri_workspace.py` covers persistence, scope isolation, erase/revision
 fences, fresh owner approvals, stale draft versions, restart and ambiguous sends,
 revoked permissions, lost controller receipts and the bounded tool chain. Existing

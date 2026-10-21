@@ -7,7 +7,6 @@ import discord
 from redbot.core import commands
 
 from .fri_chat import ChatResult
-from .gene_controls import requested
 
 MAX_STEPS = 4
 TERMINAL = {'gene_command', 'gene_diagnose', 'run_learning'}
@@ -23,7 +22,7 @@ async def run(fri, actions, text, context, result):
 async def _run(fri, actions, text, context, result):
     receipts, seen, research = [], set(), None
     offered = dict(context['actions'])
-    async with asyncio.timeout(240):
+    async with asyncio.timeout(300):
         for _ in range(MAX_STEPS):
             action = result.action
             if not action:
@@ -33,13 +32,20 @@ async def _run(fri, actions, text, context, result):
             if kind not in offered or fingerprint in seen:
                 raise commands.UserFeedbackCheckFailure('That step is unavailable or already ran. No action repeated.')
             seen.add(fingerprint)
-            if kind == 'gene_command' and not requested(text, action.get('action')):
-                raise commands.UserFeedbackCheckFailure('That was not an explicit request to run Gene now.')
+            if kind == 'gene_command' and not actions.command_requested(action):
+                receipt = {'blocked': 'The music request expired or was not requested in this conversation. Ask briefly for a fresh complete request.'}
+                result = await fri.chat_once(text, {**context, 'actions': {}, 'action_result': receipt})
+                if result.action:
+                    raise commands.UserFeedbackCheckFailure('That request needs the song and play instruction together. Nothing was run.')
+                return result, [{'kind': kind, **receipt}], research
             try:
                 receipt = await actions.execute(action)
             except (commands.UserFeedbackCheckFailure, discord.HTTPException):
                 receipt = {'uncertain': 'Completion was not confirmed. Do not claim success or retry automatically.'}
             receipts.append({'kind': kind, **receipt})
+            if receipt.get('clarification'):
+                return ChatResult(reply=receipt['clarification']['question'], status='completed',
+                                  clarification=receipt['clarification']), receipts, research
             if kind == 'preview_voice':
                 preview = receipt.get('settings_preview')
                 return ChatResult(reply='Voice settings preview prepared. Nothing is saved until you click Apply.' if preview
@@ -47,15 +53,21 @@ async def _run(fri, actions, text, context, result):
             if receipt.get('post_preview'):
                 return ChatResult(reply='Post preview prepared. Nothing is sent until you click Send once.',
                     status='completed', post_preview=receipt['post_preview']), receipts, research
-            if kind == 'web_search' and all(receipt.get(k) for k in ('query', 'answer', 'sources', 'checked_at')):
+            if kind in ('web_search', 'web_refine') and all(receipt.get(k) for k in ('query', 'answer', 'sources', 'checked_at')):
+                if research:
+                    receipt['sources'] = list(dict.fromkeys(receipt['sources']+research['sources']))[:8]
                 research = {k: receipt[k] for k in ('query', 'answer', 'sources', 'checked_at')}
             offered.pop(kind, None)
+            if kind == 'web_search' and research:
+                offered['web_refine'] = {'description': 'If the lookup did not answer the actual question, investigate further '
+                    'using public sources. query="". One refinement only; no private context is exported.'}
             if kind in TERMINAL or receipt.get('blocked') or receipt.get('uncertain') or receipt.get('error'):
                 offered = {}
             # Reading private member evidence cannot become a persistent draft or a public post.
             if kind in ('read_recent', 'learning_overview', 'run_learning'):
                 offered.pop('work_save', None)
                 offered.pop('prepare_post', None)
+                offered.pop('clarify', None)
             if len(seen) == MAX_STEPS:
                 offered = {}
             result = await fri.chat_once(text, {**context, 'actions': offered,

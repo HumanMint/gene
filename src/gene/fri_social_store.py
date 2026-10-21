@@ -97,6 +97,19 @@ class Social:
         db.execute('DELETE FROM fri_social_events WHERE created<?', (now-31*86400,))
 
     @staticmethod
+    def preserve_confirmed(db, user, revision):
+        """Carry existing confirmation across one item edit, in its transaction.
+
+        Expire delivery leases first. Never promote pending or stale work, renew
+        a lease, clear a sending fence, or recreate a deleted reminder.
+        """
+        Social.prune(db)
+        # Chat revisions are global per member, including memory in Discord Lab.
+        db.execute("UPDATE fri_reminders SET revision=? WHERE user_id=? "
+                   "AND revision=? AND state IN ('scheduled','claimed','sending')",
+                   (revision+1, user, revision))
+
+    @staticmethod
     def reminder_row(db, item, scope=None):
         row = db.execute('SELECT * FROM fri_reminders WHERE id=?', (item,)).fetchone()
         if not row or (scope and (row['guild_id'] != scope['guild_id'] or row['user_id'] != scope['user_id'] or scope['conversation_id'] != 'private:'+row['dm_id'])):

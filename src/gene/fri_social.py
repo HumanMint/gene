@@ -28,7 +28,44 @@ SOCIAL_ACTIONS = {
 KINDS = set(SOCIAL_ACTIONS)
 REMINDER_REQUEST = re.compile(r'(?i)\bremind(?:er|ers)?\b')
 PLAN_REQUEST = re.compile(r'(?i)\b(plan|choose|organize|organise|availability|schedule|game night|set up)\b')
-CANCEL_REQUEST = re.compile(r'(?i)\b(cancel|delete|remove|drop)\b')
+
+
+def cancellation_requested(text, bot_id=0):
+    """Only a bounded direct current instruction authorizes natural-language cancellation.
+
+    Quotes/code remain data placeholders, so deleting them cannot join words into
+    a command. Ambiguous, negated and compound discussion needs a fresh request.
+    The actual reminder ID and ownership still come from the scoped controller.
+    """
+    if not isinstance(text, str) or not 1 <= len(text) <= 4000:
+        return False
+    text = re.sub(r'```[\s\S]*?```|`[^`]*`|["“][^"”]*["”]|‘[^’]*’|(?<!\w)\x27[^\x27\n]*\x27(?!\w)|(?m:^\s*>.*$)|https?://\S+',
+                  ' quoted ', text)
+    text = ' '.join(addressed_content(text, bot_id).casefold().replace('’', "'").split())
+    if re.search(r"\b(?:don't|dont|do not|never|not|no|can't|cannot|without|if|unless|"
+                 r"hypothetically|hypothetical|for example|suppose|imagine|pretend)\b", text):
+        return False
+    # A separate final "also" request may accompany an image question. Its
+    # text must still satisfy the complete direct-request grammar below.
+    text = re.split(r'[.!?;]\s+(?:also|and)\s+', text)[-1]
+    prefix = r'(?:(?:hey|hi|yo|bro|ok|okay|fri|please|pls|plz)[\s,:.!]+)*'
+    request = r"(?:(?:can|could|would|will) (?:you|u) (?:please |pls )?|(?:i want|i'd like|i would like) (?:you|u) to )?"
+    target = r'(?:(?:all )?(?:(?:my|the|this|that|these|those) )?(?:[a-z0-9_-]+ ){0,6}reminders?|it|that|this)'
+    text = re.sub('^'+prefix, '', text)
+    # A modal question about the general capability is not a request to affect
+    # an owned reminder. A specific possessive/demonstrative target is required.
+    if re.match(r'(?:can|could|would|will) (?:you|u) ', text) and not re.match(
+            request+r'(?:cancel|delete|remove|drop) (?:all )?(?:my |the |this\b|that\b|these |those |it\b)', text):
+        return False
+    match = re.fullmatch(request+r'(?:cancel|delete|remove|drop) '+target+r'(?P<tail>.*)', text)
+    if not match:
+        return False
+    tail = match['tail'].strip(' ,.!?')
+    if not tail or re.fullmatch(r'(?:(?:please|pls|thanks|thank you|now)[ ,]*)+', tail):
+        return True
+    # Titles and activity qualifiers can follow a direct reminder request. A
+    # statement such as "cancel my reminder is an example" cannot pass as one.
+    return bool(re.fullmatch(r'(?:to|for|about|called|named|at|on|quoted) [^;.!?]{1,240}|quoted|[a-f0-9]{32}', tail))
 
 
 def available(actions):
@@ -49,8 +86,8 @@ def available(actions):
         }
         if actions.private_evidence:
             tools.pop('reminder_prepare')
-            if not CANCEL_REQUEST.search(actions.message):
-                tools.pop('reminder_cancel')
+        if not cancellation_requested(actions.event.content, getattr(actions.fri.user, 'id', 0)):
+            tools.pop('reminder_cancel')
         return tools
     if actions.public:
         if actions.private_evidence:
@@ -92,6 +129,8 @@ async def preparation_text(actions, context, pattern):
 
 async def execute(actions, action):
     kind = action['kind']
+    if kind == 'reminder_cancel' and not cancellation_requested(actions.event.content, getattr(actions.fri.user, 'id', 0)):
+        return {'blocked': 'Ask directly to cancel your reminder, for example: fri cancel my reminder to update the mods.'}
     if actions.private_evidence and kind in ('reminder_prepare', 'plan_prepare'):
         return {'blocked': 'Retrieved member history cannot become a persistent reminder or game-night card. Supply the details in your own fresh message.'}
     if kind not in available(actions):
@@ -108,7 +147,7 @@ async def execute(actions, action):
     payload = {**actions.scope, 'source': source, 'revision': actions.revision}
     if kind == 'reminder_cancel':
         item = action.get('reminder_id', '')
-        if not re.fullmatch(r'[a-f0-9]{32}', item) or not CANCEL_REQUEST.search(actions.message):
+        if not re.fullmatch(r'[a-f0-9]{32}', item):
             return {'blocked': 'Ask explicitly to cancel an existing reminder; list your reminders to identify it.'}
         row = await actions.fri.api('POST', '/social/reminders/'+item+'/decide', {**payload, 'decision': 'cancel'})
         return {'kind': kind, 'id': row['id'], 'state': row['state'],

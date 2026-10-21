@@ -101,12 +101,23 @@ def diagnosis_cases():
     ]
 
 
+def pronoun_cases():
+    return [
+        {'name': 'asked_pronouns', 'text': 'fri what pronouns do you use?',
+         'expect': 'They/them, briefly and naturally. No lecture or invented human identity.'},
+        {'name': 'casual_correction', 'text': 'fri shes got the playlist taste lol. anyway what can you do?',
+         'expect': 'Brief they/them correction, then answer the actual question. No scolding.'},
+        {'name': 'unrelated_she', 'text': 'my friend said she likes minecraft',
+         'expect': 'Do not correct pronouns referring to someone else.'},
+    ]
+
+
 async def evaluate(chat, model, effort, voice_notes='', suite='voice'):
-    for case in {'controls': control_cases, 'diagnosis': diagnosis_cases, 'voice': cases, 'settings': settings_cases}[suite]():
+    for case in {'controls': control_cases, 'diagnosis': diagnosis_cases, 'voice': cases, 'settings': settings_cases, 'pronouns': pronoun_cases}[suite]():
         name = case.get('display_name', 'Mint')
         context = {'model': model, 'effort': effort, 'facts': [],
             'turns': case.get('turns', []), 'recent': case.get('recent', []),
-            'actions': case.get('actions', {}), 'requests_enabled': suite != 'voice', 'voice_notes': voice_notes,
+            'actions': case.get('actions', {}), 'requests_enabled': suite not in ('voice', 'pronouns'), 'voice_notes': voice_notes,
             'action_result': case.get('action_result'), 'web_research': case.get('web_research', []),
             'gene_receipts': case.get('gene_receipts', []), 'requester_is_owner': case.get('requester_is_owner', False),
             'personal_memory': {'enabled': False, 'notes': []},
@@ -164,5 +175,5 @@ async def main(suite='voice'):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis', 'settings'), default='voice')
+    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis', 'settings', 'pronouns'), default='voice')
     asyncio.run(main(parser.parse_args().suite))

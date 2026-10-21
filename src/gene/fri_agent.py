@@ -87,6 +87,7 @@ class Agent:
         self.report_lock = asyncio.Lock()
         self.control_busy = False
         self.memes = None
+        self.presence = None
         self.heartbeat_started = self.heartbeat_finished = 0
         self.heartbeat_status = 'starting'
 
@@ -215,7 +216,7 @@ class Agent:
             await self.fri.api('POST', '/chat/models/update', {**self.identity(message.author.id), 'models': catalog})
             await message.reply('Available subscription models: '+', '.join(catalog)+'. Selected models were kept.', allowed_mentions=NO_MENTIONS)
             return True
-        subject = re.search(r'\b(settings?|heartbeat|personality|system prompt|learning|learn|tone|voice|sarcasm|playful|cooldown|summary|summaries|model|memes?|reactions?)\b', lower)
+        subject = re.search(r'\b(settings?|heartbeat|personality|system prompt|learning|learn|tone|voice|sarcasm|playful|cooldown|summary|summaries|model|memes?|reactions?|status|presence)\b', lower)
         inspect = re.search(r'\b(show|list|current)\b.*\b(settings?|configuration|models?|\w+ notes|system prompt)\b|\bhow (often|far)\b', lower)
         change = re.search(r'\b(change|set|adjust|tune|tweak|pause|stop|resume|enable|disable|make|use|be|sound|speak|respond)\b', lower)
         if not subject or not (inspect or change):
@@ -554,6 +555,11 @@ class Agent:
         self.heartbeat_started = time.time()
         try:
             self.state = await self.fri.api('GET', '/agent/state')
+            if self.config['status_enabled'] or self.presence:
+                from .fri_presence import Presence
+                if self.presence is None:
+                    self.presence = Presence(self)
+                await self.presence.check()
             await self.send_reports()
             if self.config['enabled']:
                 await self.learn()

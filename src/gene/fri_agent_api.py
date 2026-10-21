@@ -104,6 +104,13 @@ def register(app, store, settings, auth, actor):
     def claim():
         return agent.claim()
 
+    @app.post('/agent/status-context', dependencies=[auth('fri')])
+    def status_context(body: Context):
+        if not settings.status_context_allowed(body.guild_id, body.channel_id):
+            raise HTTPException(403, 'Channel is outside Fri status context scope')
+        profile = agent.context(body.channel_id, body.user_id, body.guild_id)
+        return {key: profile[key] for key in ('enabled', 'revision')}
+
     @app.post('/agent/learning/overview', dependencies=[auth('fri')])
     def overview(body: Identity):
         actor(body, owner=True)

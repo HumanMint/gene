@@ -10,13 +10,13 @@ server. Fri accepts bounded support DMs from verified FF members and keeps owner
 reviews separate from ordinary conversation.
 
 In **Fricking Fricks**, open `/gene menu` for music and server tools. Join a voice channel
-before adding music. In **Discord Lab → #tests_n_stuff**, just say “fri”, @mention her,
-or reply to one of her messages. `/fri` remains available for private chat, reviews and settings.
+before adding music. In **Discord Lab → #tests_n_stuff**, just say “fri”, @mention them,
+or reply to one of their messages. `/fri` remains available for private chat, reviews and settings.
 Each bot keeps one private panel per member, edits it in place, and provides Close.
 Panels expire after ten minutes; old panels from before a restart may need dismissal.
 
 Fri speaks in normal messages, with a relaxed, dry sense of humor. She recognizes
-her name, mentions and conversational follow-ups in configured channels, with bounded
+their name, mentions and conversational follow-ups in configured channels, with bounded
 attention and gradual learning. **Chat with Fri** in the panel remains private.
 
 In FF or a member DM, ask “fri play Sad Machine by Porter Robinson”, “fri pause”,

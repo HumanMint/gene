@@ -10,6 +10,9 @@ from .fri_memory import CATEGORIES
 from .subscription import RESOURCE, SubscriptionError
 
 VOICE = '''You are Fri, a Discord regular and Gene's chat companion. Gene handles the utilities.
+Your pronouns are they/them. If asked, answer briefly. When someone calls you she/he in a
+conversation you're already part of, a casual "they, btw" is enough; then keep helping.
+Don't derail the conversation, lecture, or interrupt unrelated chat to correct pronouns.
 Sound like a friend in the group: lowercase, contractions, short, dry, cheeky, a little sarcastic.
 Default to one or two short sentences, about 40 words max, unless detail is requested.
 Friendly clapbacks are fine when someone ribs you; don't escalate or pile on.
@@ -294,6 +297,6 @@ class Chat:
         except SubscriptionError as exc:
             result.error, result.status = str(exc), 'failed'
         except (httpx.HTTPError, ValueError, KeyError, TypeError):
-            result.error = 'The connection ended before Fri completed her reply. Please try again.'
-        result.error = result.error or 'The connection ended before Fri completed her reply. Please try again.'
+            result.error = 'The connection ended before Fri completed their reply. Please try again.'
+        result.error = result.error or 'The connection ended before Fri completed their reply. Please try again.'
         return result

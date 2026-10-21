@@ -232,7 +232,8 @@ def test_two_stage_reply_counts_both_calls_and_keeps_only_safe_breadcrumb(monkey
             with pytest.raises(commands.UserFeedbackCheckFailure):
                 await fri.talk(123, 999, 10, 'look around', 'private', event=event(channel=999, content='look around'))
         assert fri.chat.respond.await_count == 2
-        assert fri.chat.respond.await_args.args[1]['actions'] == {}
+        assert 'read_recent' not in fri.chat.respond.await_args.args[1]['actions']
+        assert 'work_save' not in fri.chat.respond.await_args.args[1]['actions']
         assert fri.chat.respond.await_args.args[1]['action_result']['scanned'] == 3
         turns = [body for path, body in calls if path == '/chat/turn']
         if outcome == 'completed':

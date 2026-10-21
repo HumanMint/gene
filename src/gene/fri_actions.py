@@ -1,4 +1,4 @@
-"""One bounded conversational action. Discord text never selects authority or scope."""
+"""Bounded conversational tools. Discord text never selects authority or scope."""
 
 import asyncio
 import datetime as dt
@@ -27,6 +27,7 @@ class Actions:
         self.event, self.scope, self.revision = None, {}, 0
         self.web_research = []
         self.settings_version = None
+        self.private_evidence = False
 
     async def channels(self, fresh=False):
         member = await self.agent.member(self.user, fresh=fresh, guild_id=self.guild)
@@ -40,7 +41,7 @@ class Actions:
                 continue
             channel = self.fri.get_channel(int(channel_id))
             if (not channel or getattr(getattr(channel, 'guild', None), 'id', None) != self.guild or
-                    not self.agent.allowed(channel) or getattr(channel, 'nsfw', False) or
+                    (not self.agent.allowed(channel) and str(channel.id) not in self.agent.state['history_channels']) or getattr(channel, 'nsfw', False) or
                     (isinstance(channel, discord.Thread) and (channel.is_private() or getattr(channel.parent, 'nsfw', True)))):
                 continue
             permissions = channel.permissions_for(member)
@@ -81,6 +82,8 @@ class Actions:
                     'as this member with normal permissions. No owner development approval is needed. '
                     'Requires an explicit current request, not an example or capability question. '
                     'action is a listed command; argument is a song, numeric volume, or empty.'}
+        from .fri_workspace import available
+        actions.update(available(self))
         return actions
 
     def scoped_overview(self, overview, channels):
@@ -96,6 +99,9 @@ class Actions:
         kind = action.get('kind')
         if not channels:
             return {'blocked': 'No approved channels are currently readable.'}
+        from .fri_workspace import KINDS, execute
+        if kind in KINDS:
+            return await execute(self, action)
         if kind == 'preview_voice':
             if not self.owner or self.settings_version is None:
                 return {'blocked': 'Voice settings are available only to the verified owner in private.'}
@@ -124,6 +130,7 @@ class Actions:
                 result['query'] = action['query']
             return result
         if kind in ('learning_overview', 'run_learning'):
+            self.private_evidence = True
             if not self.owner:
                 return {'blocked': 'Learning administration is available only to the verified owner in private.'}
             receipt = None
@@ -140,6 +147,7 @@ class Actions:
             return {'kind': kind, 'completion': receipt, 'evidence': self.overview}
         if kind != 'read_recent':
             return {'blocked': 'That action is not available.'}
+        self.private_evidence = True
         channel_id = action.get('channel_id') or next(iter(channels))
         if channel_id not in channels:
             return {'blocked': 'That channel is outside this conversation’s readable scope.'}

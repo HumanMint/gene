@@ -72,7 +72,8 @@ class Fri(discord.Client):
         self.agent = Agent(self)
         await self.agent.start()
         self.add_view(HomeView(self))
-        self.add_dynamic_items(ReviewButton, ReportButton)
+        from .fri_workspace import PostButton
+        self.add_dynamic_items(ReviewButton, ReportButton, PostButton)
 
         @self.tree.command(name='fri', description='Chat, request a feature or fix, and follow development.',
                            guild=discord.Object(id=self.guild_id))
@@ -97,6 +98,9 @@ class Fri(discord.Client):
                 getattr(getattr(interaction, 'message', None), 'author', None) and
                 interaction.message.author.id == getattr(self.user, 'id', None))
             if behavior:
+                allowed = True
+            from .fri_workspace import post_component
+            if post_component(interaction, getattr(self.user, 'id', None), self.owner_id):
                 allowed = True
             if (not allowed and not owner_dm_component(interaction, getattr(self.user, 'id', None), self.owner_id)
                     and not report_component(interaction, getattr(self.user, 'id', None), self.owner_id)
@@ -218,43 +222,10 @@ class Fri(discord.Client):
                 if result.action:
                     if not actions or result.action['kind'] not in context['actions']:
                         raise commands.UserFeedbackCheckFailure('That action is not available here.')
-                    action_kind = result.action['kind']
-                    try:
-                        receipt = await actions.execute(result.action)
-                    except (commands.UserFeedbackCheckFailure, discord.HTTPException):
-                        receipt = {'uncertain': 'Completion was not confirmed. Do not claim success or retry automatically.'}
-                    if action_kind == 'preview_voice':
-                        current = await self.api('POST', '/chat/context', scope)
-                        if current['revision'] != context['revision'] or not await actions.valid():
-                            raise commands.UserFeedbackCheckFailure('Access or memory changed. Ask again for a fresh preview.')
-                        preview = receipt.get('settings_preview')
-                        text_reply = ('Voice settings preview prepared. Nothing is saved until you click Apply.' if preview
-                                      else receipt.get('blocked') or receipt.get('uncertain'))
-                        await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
-                            'source': source.model_dump(), 'input': text, 'reply': text_reply,
-                            'model': context['model'], 'effort': context['effort'], 'notes': []})
-                        return ChatResult(reply=text_reply, status='completed', settings_preview=preview)
-                    research = None
-                    if action_kind == 'web_search' and all(receipt.get(k) for k in ('query', 'answer', 'sources', 'checked_at')):
-                        research = {k: receipt[k] for k in ('query', 'answer', 'sources', 'checked_at')}
-                    remaining = {}
-                    from .gene_controls import requested
-                    if research and requested(text, 'play') and 'gene_command' in context['actions']:
-                        remaining = {'gene_command': context['actions']['gene_command']}
-                    result = await self.chat_once(text, {**context, 'actions': remaining, 'action_result': receipt})
-                    if result.action:
-                        if not remaining or result.action['kind'] != 'gene_command':
-                            raise commands.UserFeedbackCheckFailure('That check needs a new request. No further actions were run.')
-                        try:
-                            control = await actions.execute(result.action)
-                        except (commands.UserFeedbackCheckFailure, discord.HTTPException):
-                            control = {'uncertain': 'Gene did not confirm completion. Do not automatically retry or claim success.'}
-                        receipt = {'kind': 'gene_command', 'gene_result': control, 'research': research,
-                                   'sources': research['sources']}
-                        action_kind = 'gene_command'
-                        result = await self.chat_once(text, {**context, 'actions': {}, 'action_result': receipt})
-                        if result.action:
-                            raise commands.UserFeedbackCheckFailure('The action limit was reached. No further commands were run.')
+                    from .fri_runner import run
+                    result, receipts, research = await run(self, actions, text, context, result)
+                    receipt = receipts[-1]
+                    action_kind = receipt['kind']
                     current = await self.api('POST', '/chat/context', scope)
                     if current['revision'] != context['revision'] or not await actions.valid():
                         raise commands.UserFeedbackCheckFailure('Access or memory changed during that check. Ask again for a fresh reply.')
@@ -266,6 +237,8 @@ class Fri(discord.Client):
                         breadcrumb += f' in channel {checked_channel}'
                     breadcrumb += ('. Public research receipts are available separately for follow-ups.' if research or action_kind == 'web_sources'
                                    else '. Fetch current evidence for follow-up details; no findings are retained here.')
+                    if result.settings_preview or result.post_preview:
+                        breadcrumb = result.reply
                     await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                         'source': source.model_dump(),
                         'input': text, 'reply': breadcrumb, 'model': context['model'],
@@ -277,9 +250,9 @@ class Fri(discord.Client):
                     # as a real preview unless the controller accepted it for automatic verification.
                     proposal = diagnosis.get('proposed_request', '')
                     result.draft = proposal if len(proposal) >= 5 else None
-                    if receipt.get('sources'):
+                    if research or receipt.get('sources'):
                         from .fri_web import cite_reply
-                        result.reply = cite_reply(result.reply, receipt, include_sources=action_kind == 'web_sources')
+                        result.reply = cite_reply(result.reply, research or receipt, include_sources=action_kind == 'web_sources')
                     return result
                 if context.get('gene_receipts') and not await actions.valid():
                     raise commands.UserFeedbackCheckFailure('Access changed during that check. Ask again for a fresh reply.')

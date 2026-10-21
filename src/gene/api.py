@@ -112,6 +112,11 @@ class ResearchStart(ChatScope):
     query: str = Field(min_length=3, max_length=240)
 
 
+class PendingCancel(ChatScope):
+    source: ChatSource
+    input: str = Field(min_length=1, max_length=4000)
+
+
 class PersonalControl(ChatScope):
     action: Literal['enable', 'disable']
 
@@ -305,6 +310,13 @@ def create_app(settings: Settings | None = None):
             row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (body.user_id,)).fetchone()
             pending = read(db, body.guild_id, body.conversation_id, body.user_id, row[0] if row else 0)
         return {'pending': bool(pending)}
+
+    @app.post('/chat/pending/cancel', dependencies=[auth('fri')])
+    def chat_pending_cancel(body: PendingCancel):
+        chat_scope(body)
+        from .fri_pending import cancel
+        return cancel(store, body.guild_id, body.conversation_id, body.user_id,
+                      body.input, body.source.model_dump())
 
     @app.post('/chat/turn', dependencies=[auth('fri')])
     def chat_turn(body: ChatTurn):

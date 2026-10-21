@@ -170,6 +170,12 @@ class Fri(discord.Client):
                     'Say “remember me again” if you change your mind. Discord messages and backups are separate.'
                     if intent == 'disable' else 'Memory’s back on. I’ll pick up small preferences as we talk.')
             return ChatResult(reply=text, status='completed')
+        from .fri_pending import cancelled
+        if source.kind == 'discord_message' and cancelled(text):
+            result = await self.api('POST', '/chat/pending/cancel',
+                                    {**scope, 'source': source.model_dump(), 'input': text})
+            if result['cancelled']:
+                return ChatResult(reply='alright, dropped that pending request.', status='completed')
         if user_id in self.busy:
             raise commands.UserFeedbackCheckFailure('I’m still replying to you. Give me a moment.')
         if not 1 <= len(text) <= 4000:

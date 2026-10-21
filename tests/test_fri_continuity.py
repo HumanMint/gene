@@ -82,7 +82,7 @@ def test_consumed_origin_cannot_rearm_after_restart_with_memory_disabled(store, 
     assert context['turns'] == [] and context['pending'] is None
     assert not context['personal_memory']['enabled']
     with patch('time.time', return_value=time.time()+4):
-        with pytest.raises(ValueError, match='already ran'):
+        with pytest.raises(ValueError, match='already handled'):
             arm(restarted, initial)
         second = copy.deepcopy(body)
         second['source']['id'] = str(int(body['source']['id'])+1)
@@ -117,13 +117,76 @@ def test_consumed_origin_cannot_replay_as_a_direct_command_even_after_erasure(st
     replay = {key: value for key, value in initial.items() if key != 'goal'}
     replay['revision'] = revision
     with patch('time.time', return_value=time.time()+4):
-        with pytest.raises(ValueError, match='already ran'):
+        with pytest.raises(ValueError, match='already handled'):
             Controls(restarted).enqueue(replay)
         with pytest.raises(ValueError):
             arm(restarted, {**initial, 'revision': revision})
     assert Controls(restarted).poll(['play']) is None
     with restarted.connection() as db:
         assert db.execute('SELECT count(*) FROM gene_controls').fetchone()[0] == 1
+
+
+@pytest.mark.parametrize('unavailable', ['inference', 'busy', 'cooldown'])
+def test_cancellation_clears_permission_without_inference_or_admission(monkeypatch, tmp_path, controls_api, unavailable):  # noqa: F811
+    async def scenario():
+        client, controls = controls_api
+        initial = origin()
+        pending = arm(controls.store, initial)
+        fri, _, _, _ = harness(monkeypatch, tmp_path)
+        async def api(method, path, body=None):
+            if path == '/agent/admit':
+                return {'allowed': unavailable != 'cooldown', 'until': time.time()+600}
+            result = client.request(method, path, headers=headers('fri'), json=body)
+            assert result.is_success, (path, result.text)
+            return result.json()
+        fri.api = api
+        fri.chat.respond = AsyncMock(return_value=ChatResult(status='failed', error='inference unavailable'))
+        if unavailable == 'busy':
+            fri.busy.add(20)
+        actual = event(user=20, channel=1, content='never mind')
+        actual.id = int(control_body()['source']['id'])
+        try:
+            result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
+            assert result.status == 'completed'
+            fri.chat.respond.assert_not_awaited()
+            assert controls.store.chat_context('123', 'public:1', '20')['pending'] is None
+            with pytest.raises(ValueError):
+                controls.enqueue(answer(pending))
+            with pytest.raises(ValueError):
+                arm(controls.store, initial)  # A late reply/replayed event cannot rearm it.
+        finally:
+            await fri.close()
+    asyncio.run(scenario())
+
+
+def test_cancellation_requires_fresh_scoped_event_and_allows_a_new_request(controls_api):  # noqa: F811
+    client, controls = controls_api
+    pending = arm(controls.store)
+    body = {key: control_body()[key] for key in ('guild_id', 'user_id', 'channel_id', 'conversation_id', 'source')}
+    body['input'] = 'never mind'
+    path = '/chat/pending/cancel'
+    for role in ('runtime', 'worker', 'deploy'):
+        assert client.post(path, headers=headers(role), json=body).status_code == 401
+    for changed in (
+        {**body, 'input': 'no rain'},
+        {**body, 'source': {**body['source'], 'user_id': '30'}},
+        {**body, 'source': {**body['source'], 'kind': 'discord_interaction'}},
+        {**body, 'source': {**body['source'], 'id': str(discord.utils.time_snowflake(
+            dt.datetime.now(dt.timezone.utc)-dt.timedelta(seconds=301)))}},
+    ):
+        assert client.post(path, headers=headers('fri'), json=changed).status_code == 400
+    older = {**body, 'source': {**body['source'], 'id': str(int(pending['source']['id'])-1)}}
+    other = {**body, 'user_id': '30', 'source': {**body['source'], 'user_id': '30'}}
+    elsewhere = {**body, 'channel_id': '2', 'conversation_id': 'public:2',
+                 'source': {**body['source'], 'channel_id': '2'}}
+    for changed in (older, other, elsewhere):
+        assert client.post(path, headers=headers('fri'), json=changed).json() == {'cancelled': False}
+    assert controls.store.chat_context('123', 'public:1', '20')['pending'] == pending
+    assert client.post(path, headers=headers('fri'), json=body).json() == {'cancelled': True}
+    assert client.post(path, headers=headers('fri'), json=body).json() == {'cancelled': False}
+    new = origin()
+    new['source']['id'] = str(int(body['source']['id'])+1)
+    assert arm(controls.store, new)['source']['id'] == new['source']['id']
 
 
 @pytest.mark.parametrize('change', ['user', 'channel', 'guild', 'private', 'expired', 'clear', 'disable',

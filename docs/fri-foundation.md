@@ -66,6 +66,9 @@ This short-lived operational state also works with chat memory disabled. Consume
 request IDs are fenced in both clarification and direct command paths. A hash of
 the original event ID and guild survives text erasure for 24 hours to prevent replay;
 it retains no message text, names or user ID. Privacy erasure cancels existing pending requests.
+Explicit cancellation clears an armed clarification before inference, admission or
+busy checks, and retires its origin against late/replayed replies. It does not undo
+a command Gene already accepted; an active player still needs the normal stop command.
 
 Public research receives only a current public question or the explicit pending
 question and current clarification. The assistant question, saved preferences and

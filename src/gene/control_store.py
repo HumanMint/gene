@@ -96,7 +96,7 @@ class Controls:
             if old:
                 return {'id': identifier}  # Never enqueue the same message twice, even after a timeout.
             if source_used(db, body['guild_id'], source.id):
-                raise ValueError('This request already ran')
+                raise ValueError('This request was already handled')
             row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (body['user_id'],)).fetchone()
             if body['revision'] != (row[0] if row else 0):
                 raise ValueError('Conversation changed before the action could start')
@@ -110,7 +110,7 @@ class Controls:
                                        body['user_id'], body['revision'], body.get('addressed_bot_id', ''))):
                     raise ValueError('Ask to play a song, or answer the current song question in this conversation')
                 if source_used(db, body['guild_id'], pending['source']['id']):
-                    raise ValueError('This request already ran')
+                    raise ValueError('This request was already handled')
                 body['continuation'] = pending
             if db.execute('SELECT 1 FROM gene_controls WHERE user_id=? AND created>?', (body['user_id'], time.time()-3)).fetchone():
                 raise ValueError('Give Gene a moment before another action')

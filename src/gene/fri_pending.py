@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .control_store import source_used
+from .control_store import source_key, source_used
 from .fri_context import ChatSource, addressed_content
 from .gene_controls import arguments, requested
 from .privacy import clean
@@ -54,6 +54,24 @@ def clear(db, guild, conversation, user):
                (guild, conversation, user))
 
 
+def cancel(store, guild, conversation, user, text, source):
+    source = ChatSource.model_validate(source).check(guild, conversation, user)
+    if (not cancelled(text) or source.kind != 'discord_message' or
+            not -5 <= time.time()-source.timestamp().timestamp() <= TTL):
+        raise ValueError('Cancellation needs a fresh explicit Discord message')
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
+        pending = read(db, guild, conversation, user, row[0] if row else 0)
+        if not pending or int(source.id) <= int(pending['source']['id']):
+            return {'cancelled': False}
+        clear(db, guild, conversation, user)
+        # Retire its permission even if an older inference finishes after cancellation.
+        db.execute('INSERT OR IGNORE INTO gene_control_origins VALUES (?,?)',
+                   (source_key(guild, pending['source']['id']), time.time()))
+        return {'cancelled': True}
+
+
 def save(db, guild, conversation, user, revision, text, source, clarification):
     clear(db, guild, conversation, user)
     if not clarification:
@@ -73,7 +91,7 @@ def save(db, guild, conversation, user, revision, text, source, clarification):
                   (user, source.id)).fetchone():
         raise ValueError('This message already has a reply')
     if source_used(db, guild, source.id):
-        raise ValueError('This request already ran')
+        raise ValueError('This request was already handled')
     body = {**value, 'source': source.model_dump(), 'request_text': text, 'revision': revision}
     db.execute('INSERT INTO chat_pending VALUES (?,?,?,?,?,?,?)',
                (guild, conversation, user, source.id, source.timestamp().timestamp(), revision, json.dumps(body)))

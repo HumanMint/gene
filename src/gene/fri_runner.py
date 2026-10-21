@@ -67,6 +67,7 @@ async def _run(fri, actions, text, context, result):
             if kind in ('read_recent', 'learning_overview', 'run_learning'):
                 offered.pop('work_save', None)
                 offered.pop('prepare_post', None)
+                offered.pop('clarify', None)
             if len(seen) == MAX_STEPS:
                 offered = {}
             result = await fri.chat_once(text, {**context, 'actions': offered,

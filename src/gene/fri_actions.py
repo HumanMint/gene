@@ -38,7 +38,8 @@ class Actions:
             return True
         return bool(self.event and completion(self.pending, self.message, action.get('action'),
             action.get('argument'), discord_source(self.event).model_dump(),
-            str(self.guild), self.scope.get('conversation_id', ''), str(self.user), self.revision))
+            str(self.guild), self.scope.get('conversation_id', ''), str(self.user), self.revision,
+            str(getattr(getattr(self.fri, 'user', None), 'id', ''))))
 
     async def pending_unchanged(self):
         if not self.pending or not self.event:
@@ -111,8 +112,9 @@ class Actions:
         from .fri_workspace import available
         actions.update(available(self))
         if isinstance(self.event, discord.Message):
-            goals = [k for k in ('play', 'volume') if k in actions.get('gene_command', {}).get('commands', {})]
-            if 'web_search' in actions:
+            goals = [k for k in ('play', 'volume') if k in actions.get('gene_command', {}).get('commands', {})
+                     and requested(self.message, k)]
+            if 'web_search' in actions and not self.pending:
                 goals.append('web')
             if goals:
                 actions['clarify'] = {'goals': goals, 'description': 'Ask ONE necessary question and hold this request for 5 minutes. '
@@ -156,6 +158,8 @@ class Actions:
         if kind == 'gene_diagnose':
             return await self.diagnose(channels)
         if kind == 'clarify':
+            if self.private_evidence:
+                return {'blocked': 'Read member evidence cannot be persisted in a clarification.'}
             value = Clarification.model_validate({k: v for k, v in action.items() if k != 'kind'}).model_dump()
             if (value['goal'] == 'web' and public_query(value['topic'], self.message) or
                     value['goal'] in ('play', 'volume') and requested(self.message, value['goal']) and not value['topic']):
@@ -178,6 +182,12 @@ class Actions:
                 return {'blocked': 'Provide a short public topic in the current message; private context cannot be sent to web search.'}
             if not public_query(query, self.message) and not await self.pending_unchanged():
                 return {'blocked': 'The earlier question changed. Send the public topic again.'}
+            if not public_query(query, self.message):
+                # Validate provenance before searching; a later command or timeout can
+                # consume the pending question without losing the completed research.
+                await self.fri.api('POST', '/chat/research/start', {**self.scope,
+                    'revision': self.revision, 'source': discord_source(self.event).model_dump(),
+                    'input': self.message, 'query': query})
             self.search_count += 1
             result, counters, status = await lookup(self.fri.chat, query, self.model, self.effort)
             await self.agent.record('web_search', self.model, self.effort, counters, status)
@@ -261,7 +271,8 @@ class Actions:
         submitted = await self.fri.api('POST', '/controls', {**self.scope, 'source': discord_source(self.event).model_dump(),
             'target_channel_id': target, 'request_text': clean(self.event.content, 4000),
             'action': verb, 'argument': argument, 'revision': self.revision,
-            'continuation_id': self.pending['source']['id'] if continued else ''})
+            'continuation_id': self.pending['source']['id'] if continued else '',
+            'addressed_bot_id': str(getattr(getattr(self.fri, 'user', None), 'id', ''))})
         result = None
         try:
             async with asyncio.timeout(120):

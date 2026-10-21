@@ -46,10 +46,10 @@ async def evaluate(chat, model, effort, voice_notes):
     yield report('music_cancel', 'No music action after cancellation.', not cancelled.action), cancelled
     unrelated = await chat.respond('anyway what can you help with', context)
     yield report('music_topic_change', 'Do not treat unrelated chat as a song.', not unrelated.action), unrelated
-    other = {**base, 'recent': [{'user_id': '202', 'text': first_text}], 'turns': []}
+    other = {**base, 'actions': {**actions, 'clarify': {**actions['clarify'], 'goals': ['web']}}, 'recent': [{'user_id': '202', 'text': first_text}], 'turns': []}
     confused = await chat.respond('blind melon no rain', other)
     yield report('other_member', 'No play authority from another member.',
-                 not confused.action or confused.action.get('kind') != 'gene_command'), confused
+                 not confused.action or confused.action.get('kind') not in ('gene_command', 'clarify')), confused
 
     topic = 'how are the bills doing nowadays'
     pending = {'goal': 'web', 'topic': topic, 'question': 'you mean the buffalo bills?',
@@ -60,6 +60,14 @@ async def evaluate(chat, model, effort, voice_notes):
     query = research_query(selected.get('query'), 'ya', pending)
     yield report('research_confirmation', 'Confirmation researches the original question without asking twice.',
                  selected.get('kind') == 'web_search' and query == topic), confirmed
+    qualifier_context = {**base, 'pending': {**pending, 'request_text': 'how fast is a jaguar',
+        'topic': 'how fast is a jaguar', 'question': 'the animal or the car?'},
+        'turns': [{'input': 'how fast is a jaguar', 'reply': 'the animal or the car?', 'source': old}]}
+    qualified = await chat.respond('the car', qualifier_context)
+    yield report('research_qualifier', 'Carry the new public qualifier into the original question.',
+        (qualified.action or {}).get('kind') == 'web_search' and
+        research_query((qualified.action or {}).get('query'), 'the car', qualifier_context['pending']) ==
+        'how fast is a jaguar; clarification: the car'), qualified
     refine = {'web_refine': {'description': 'Investigate further when the first result did not answer the question. query="". Once only.'}}
     insufficient = {'kind': 'web_search', 'query': topic, 'answer': 'Only the league schedule was found. No Bills record or results established.',
                     'sources': ['https://www.nfl.com/schedules/'], 'checked_at': dt.datetime.now(dt.timezone.utc).isoformat()}

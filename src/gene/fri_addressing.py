@@ -4,6 +4,8 @@ import re
 
 import discord
 
+from .fri_context import addressed_content
+
 
 async def addressed_text(message, bot_id):
     content = message.content or ''
@@ -23,4 +25,4 @@ async def addressed_text(message, bot_id):
         responding = getattr(getattr(original, 'author', None), 'id', None) == bot_id
     if not (explicit or named or responding):
         return None
-    return content.replace(f'<@{bot_id}>', '').replace(f'<@!{bot_id}>', '').strip() or 'hey'
+    return addressed_content(content, bot_id) or 'hey'

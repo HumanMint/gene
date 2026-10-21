@@ -69,7 +69,8 @@ ambient member messages are never sent to the research model. The isolated
 researcher may rewrite queries and inspect up to five public search/page results.
 Fri can request one refinement with up to three further operations when the first
 result misses the question. Both fit within the four-action, five-minute turn
-budget. Source URLs are retained for 24 hours in the same member/conversation
+budget. A ten-minute receipt permit preserves the validated public query through a long lookup
+or a subsequent command, without extending command permission. Source URLs are retained for 24 hours in the same member/conversation
 scope, displayed when requested, and erased by the existing privacy controls.
 
 `tests/test_fri_continuity.py` exercises the question/answer path through Fri,

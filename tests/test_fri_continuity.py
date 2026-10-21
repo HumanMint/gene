@@ -7,11 +7,13 @@ from unittest.mock import AsyncMock, patch
 
 import discord
 import pytest
+from redbot.core import commands
 
 from gene.control_store import Controls
 from gene.fri_actions import Actions
 from gene.fri_chat import ChatResult
 from gene.fri_pending import research_query
+from gene.fri_research import start as start_research
 from gene.fri_runner import run
 from gene.gene_controls import requested
 from gene.store import Store
@@ -113,11 +115,11 @@ def test_compound_play_request_is_supported_without_enabling_join_or_arbitrary_c
     assert not requested('can you join the VC and delete everything', 'eval')
 
 
-@pytest.mark.parametrize('text,query', [('no rain', 'no rain'), ('<@99> no rain', 'no rain')])
+@pytest.mark.parametrize('text,query', [('no rain', 'no rain'), ('<@99> no rain', 'no rain'), ('no rain <@99>', 'no rain'), ('no <@!99> rain', 'no rain')])
 def test_song_title_or_direct_mention_is_not_mistaken_for_a_cancellation(store, text, query):
     pending = arm(store)
     body = answer(pending)
-    body.update(request_text=text, argument=query)
+    body.update(request_text=text, argument=query, addressed_bot_id='99')
     assert Controls(store).enqueue(body)['id']
 
 
@@ -149,8 +151,10 @@ def test_public_research_confirmation_preserves_question_not_private_context(sto
     assert research_query('private saved detail', 'ya', pending) is None
     assert research_query(pending['topic'], 'never mind', pending) is None
     receipt = {**RECEIPT, 'query': pending['topic']}
+    source = control_body()['source']
+    start_research(store, '123', 'public:1', '20', 0, source, 'ya', pending['topic'])
     store.save_chat('123', 'public:1', '20', 0, 'ya', 'Earlier check: web_search', 'model', 'high',
-                    source=control_body()['source'], web_receipt=receipt)
+                    source=source, web_receipt=receipt)
     assert store.chat_context('123', 'public:1', '20')['web_research'] == [receipt]
     assert store.chat_context('123', 'public:1', '20')['pending'] is None
 
@@ -160,8 +164,10 @@ def test_research_correction_combines_only_explicit_public_excerpts(store):
     query = research_query('the car', 'the car', pending)
     assert query == 'how fast is a jaguar; clarification: the car'
     assert research_query('token=private', 'token=private', pending) is None
+    source = control_body()['source']
+    start_research(store, '123', 'public:1', '20', 0, source, 'the car', query)
     store.save_chat('123', 'public:1', '20', 0, 'the car', 'checked', 'model', 'high',
-        source=control_body()['source'], web_receipt={**RECEIPT, 'query': query})
+        source=source, web_receipt={**RECEIPT, 'query': query})
 
 
 def test_real_clarification_to_red_command_keeps_voice_checks_and_receipts(monkeypatch, tmp_path, controls_api):  # noqa: F811
@@ -262,3 +268,96 @@ def test_irrelevant_research_can_refine_once_without_exporting_extra_context(mon
             assert lookup.await_count == 2
         await fri.close()
     asyncio.run(scenario())
+
+
+def test_read_history_cannot_be_persisted_as_a_clarification(monkeypatch, tmp_path, controls_api):  # noqa: F811
+    async def scenario():
+        client, _ = controls_api
+        fri, agent, channels, _ = harness(monkeypatch, tmp_path)
+        secret = 'Maple shared a private story about strawberry soda'
+        async def history(**kwargs):
+            yield SimpleNamespace(author=SimpleNamespace(id=30, bot=False, display_name='Maple'),
+                webhook_id=None, content=secret, jump_url='https://discord.com/channels/123/1/100',
+                created_at=dt.datetime.now(dt.timezone.utc))
+        channels[1].history = history
+        async def api(method, path, body=None):
+            if path == '/agent/admit':
+                return {'allowed': True}
+            result = client.request(method, path, headers=headers('fri'), json=body)
+            assert result.is_success, (path, result.text)
+            return result.json()
+        fri.api = api
+        text = 'fri play music. first read recent chat for suggestions'
+        fri.chat.respond = AsyncMock(side_effect=[
+            ChatResult(status='completed', action={'kind': 'read_recent', 'channel_id': '1'}),
+            ChatResult(status='completed', action={'kind': 'clarify', 'goal': 'play', 'topic': '',
+                                                 'question': 'what song? '+secret})])
+        actual = event(user=20, channel=1, content=text)
+        actual.id = int(control_body()['source']['id'])
+        try:
+            with pytest.raises(commands.UserFeedbackCheckFailure):
+                await fri.talk(123, 1, 20, text, 'public', event=actual)
+            client.app.state.store.personal_control('30', 'disable')
+            context = client.app.state.store.chat_context('123', 'public:1', '20')
+            assert context['pending'] is None and secret not in str(context)
+        finally:
+            await fri.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('removed', ['expired', 'command'])
+def test_completed_research_survives_pending_expiry_or_a_later_command(store, removed):
+    original = origin(goal='web', text='what is the newest Porter Robinson song')
+    original['source']['id'] = str(discord.utils.time_snowflake(dt.datetime.now(dt.timezone.utc)-dt.timedelta(seconds=240)))
+    pending = arm(store, original, topic=original['request_text'])
+    body = control_body(request_text='yes. play it')
+    source = body['source']
+    start_research(store, '123', 'public:1', '20', 0, source, body['request_text'], pending['topic'])
+    if removed == 'command':
+        Controls(store).enqueue(body)
+    with patch('time.time', return_value=time.time()+61):
+        assert store.chat_context('123', 'public:1', '20')['pending'] is None
+        receipt = {**RECEIPT, 'query': pending['topic']}
+        store.save_chat('123', 'public:1', '20', 0, body['request_text'], 'checked', 'model', 'high',
+                        source=source, web_receipt=receipt)
+        assert store.chat_context('123', 'public:1', '20')['web_research'] == [receipt]
+        with store.connection() as db:
+            assert not db.execute('SELECT 1 FROM web_requests').fetchone()
+
+
+@pytest.mark.parametrize('change', ['user', 'channel', 'source', 'query', 'expired', 'privacy'])
+def test_research_receipt_permit_is_scoped_bounded_and_cannot_authorize_commands(store, change):
+    pending = arm(store, origin(goal='web', text='how are the bills doing nowadays'), topic='how are the bills doing nowadays')
+    source = control_body()['source']
+    start_research(store, '123', 'public:1', '20', 0, source, 'ya', pending['topic'])
+    with pytest.raises(ValueError):
+        Controls(store).enqueue(answer(pending))  # Web evidence is never music authority.
+    user, channel, query = '20', 'public:1', pending['topic']
+    if change == 'user':
+        user = source['user_id'] = '30'
+    elif change == 'channel':
+        channel, source['channel_id'] = 'public:2', '2'
+    elif change == 'source':
+        source['id'] = str(int(source['id'])+1)
+    elif change == 'query':
+        query = 'a private fact absent from the request'
+    elif change == 'expired':
+        with store.connection() as db:
+            db.execute('UPDATE web_requests SET created=?', (time.time()-601,))
+    else:
+        store.personal_control('20', 'disable')
+    with pytest.raises(ValueError):
+        store.save_chat('123', channel, user, 0, 'ya', 'checked', 'model', 'high', source=source,
+                        web_receipt={**RECEIPT, 'query': query})
+
+
+def test_only_fri_can_start_a_pending_public_lookup(controls_api):  # noqa: F811
+    client, controls = controls_api
+    pending = arm(controls.store, origin(goal='web', text='how are the bills doing nowadays'), topic='how are the bills doing nowadays')
+    source = control_body()['source']
+    body = {'guild_id': '123', 'user_id': '20', 'channel_id': '1', 'conversation_id': 'public:1',
+            'source': source, 'revision': 0, 'input': 'ya', 'query': pending['topic']}
+    for role in ('worker', 'runtime', 'deploy'):
+        assert client.post('/chat/research/start', headers=headers(role), json=body).status_code == 401
+    assert client.post('/chat/research/start', headers=headers('fri'), json=body).status_code == 200
+    assert client.post('/chat/research/start', headers=headers('fri'), json={**body, 'query': 'private saved notes'}).status_code == 400

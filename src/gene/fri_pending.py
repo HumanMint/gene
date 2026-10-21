@@ -11,7 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from .fri_context import ChatSource
+from .fri_context import ChatSource, addressed_content
 from .gene_controls import arguments, requested
 from .privacy import clean
 from .web_policy import public_query
@@ -37,8 +37,8 @@ def cancelled(text):
                           r"not now|do not play|don't play|dont play)\b|^\s*(?:no|nah|nope|stop)(?: thanks)?[.! ]*$", text, re.I))
 
 
-def answer_text(text):
-    return re.sub(r'^(?:<@!?\d+>[\s,:]*)+', '', text.strip()).strip()
+def answer_text(text, bot_id=''):
+    return ' '.join(addressed_content(text, bot_id).split())
 
 
 def read(db, guild, conversation, user, revision):
@@ -80,7 +80,7 @@ def save(db, guild, conversation, user, revision, text, source, clarification):
                (guild, conversation, user, source.id, source.timestamp().timestamp(), revision, json.dumps(body)))
 
 
-def completion(pending, text, action, argument, source, guild, conversation, user, revision):
+def completion(pending, text, action, argument, source, guild, conversation, user, revision, bot_id=''):
     """Pure shared gate; runtime also refetches both real public Discord messages."""
     if not pending or action not in ('play', 'volume') or pending.get('goal') != action or cancelled(text):
         return False
@@ -92,7 +92,7 @@ def completion(pending, text, action, argument, source, guild, conversation, use
                 and -5 <= time.time()-origin.timestamp().timestamp() <= TTL
                 and -5 <= time.time()-current.timestamp().timestamp() <= TTL
                 and requested(pending['request_text'], action)
-                and argument.strip().casefold() == answer_text(text).casefold()
+                and ' '.join(argument.split()).casefold() == answer_text(text, bot_id).casefold()
                 and bool(arguments(action, argument)))
     except (ValueError, KeyError, TypeError):
         return False

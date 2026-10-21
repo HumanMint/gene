@@ -117,7 +117,7 @@ class ControlRunner:
         arguments(action, argument)
         continued = completion(claim.get('continuation'), claim['request_text'], action, argument,
                                claim['source'], claim['guild_id'], claim['conversation_id'],
-                               claim['user_id'], claim['revision'])
+                               claim['user_id'], claim['revision'], claim.get('addressed_bot_id', ''))
         if action not in self.catalog() or not (requested(claim['request_text'], action) or continued):
             return {'blocked': 'That command is unavailable or was not requested.'}
         source = claim['source']

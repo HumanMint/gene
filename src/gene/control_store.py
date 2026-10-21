@@ -93,7 +93,7 @@ class Controls:
                 if (not pending or body.get('continuation_id') != pending['source']['id'] or
                         not completion(pending, body['request_text'], body['action'], body['argument'],
                                        body['source'], body['guild_id'], body['conversation_id'],
-                                       body['user_id'], body['revision'])):
+                                       body['user_id'], body['revision'], body.get('addressed_bot_id', ''))):
                     raise ValueError('Ask to play a song, or answer the current song question in this conversation')
                 body['continuation'] = pending
             if db.execute('SELECT 1 FROM gene_controls WHERE user_id=? AND created>?', (body['user_id'], time.time()-3)).fetchone():

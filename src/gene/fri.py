@@ -201,6 +201,7 @@ class Fri(discord.Client):
                 actions = Actions(self.agent, user_id, channel_id, visibility == 'public') if self.agent else None
                 if actions:
                     actions.event, actions.scope, actions.revision = event, scope, context['revision']
+                    actions.message, actions.model, actions.effort = clean(text, 4000), context['model'], context['effort']
                     actions.web_research = context.get('web_research', [])
                     actions.pending = context.get('pending')
                 context['actions'] = await actions.available() if actions else {}
@@ -215,8 +216,6 @@ class Fri(discord.Client):
                     context['gene_receipts'] = [r for r in recent.get('receipts', []) if r['channel_id'] in readable]
                     actions.sources.update(r['channel_id'] for r in context['gene_receipts'])
                 text = clean(text, 4000)
-                if actions:
-                    actions.message, actions.model, actions.effort = text, context['model'], context['effort']
                 result = await self.chat_once(text, context)
                 if guild_id != self.guild_id:
                     result.draft = None

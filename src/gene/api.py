@@ -105,6 +105,13 @@ class ChatTurn(ChatScope):
     notes: list[dict] = Field(default_factory=list, max_length=3)
 
 
+class ResearchStart(ChatScope):
+    source: ChatSource
+    revision: int = Field(ge=0)
+    input: str = Field(min_length=1, max_length=4000)
+    query: str = Field(min_length=3, max_length=240)
+
+
 class PersonalControl(ChatScope):
     action: Literal['enable', 'disable']
 
@@ -306,6 +313,13 @@ def create_app(settings: Settings | None = None):
                               body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes,
                               body.source.model_dump(), body.web_receipt.model_dump() if body.web_receipt else None,
                               body.clarification.model_dump() if body.clarification else None)
+
+    @app.post('/chat/research/start', dependencies=[auth('fri')])
+    def research_start(body: ResearchStart):
+        chat_scope(body)
+        from .fri_research import start
+        return start(store, body.guild_id, body.conversation_id, body.user_id, body.revision,
+                     body.source.model_dump(), body.input, body.query)
 
     @app.post('/chat/memory/control', dependencies=[auth('fri')])
     def personal_control(body: PersonalControl):

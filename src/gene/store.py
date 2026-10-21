@@ -158,6 +158,7 @@ class Store:
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
             db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
+            db.execute('DELETE FROM web_requests WHERE created<?', (time.time()-600,))
             return {
                 'paused': self._setting(db, 'paused') == 'true',
                 'active_sha': self._setting(db, 'active_sha'),
@@ -554,6 +555,7 @@ class Store:
     def chat_context(self, guild_id, channel_id, user_id):
         with self.connection() as db:
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
+            db.execute('DELETE FROM web_requests WHERE created<?', (time.time()-600,))
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
@@ -587,19 +589,16 @@ class Store:
             current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             if revision != (current[0] if current else 0):
                 raise Conflict('This conversation was cleared while Fri was replying. Start again.')
-            from .fri_pending import read as read_pending
-            from .fri_pending import research_query
             from .fri_pending import save as save_pending
-            pending = read_pending(db, guild_id, channel_id, user_id, revision)
             if web_receipt:
-                query = web_receipt['query']
-                # Receipts use the same bounded public topic as the executing harness.
-                valid = research_query(query, text, pending) == query
-                if pending and pending.get('goal') == 'web' and '; clarification: ' in query:
-                    suffix = query.split('; clarification: ', 1)[1]
-                    valid = research_query(suffix, text, pending) == query
-                if not valid:
-                    raise ValueError('Research query must come from the current request or pending public topic')
+                from .fri_research import authorized_receipt
+                from .web_policy import public_query
+                if not (public_query(web_receipt['query'], text) or authorized_receipt(db, guild_id,
+                        channel_id, user_id, revision, source, web_receipt['query'])):
+                    raise ValueError('Research has no matching public request for this turn')
+            if source:
+                db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
+                           (guild_id, channel_id, user_id, source.id))
             save_pending(db, guild_id, channel_id, user_id, revision, text, source, clarification)
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             if not profile['enabled']:
@@ -658,6 +657,7 @@ class Store:
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
+                db.execute('DELETE FROM web_requests WHERE user_id=?', (user_id,))
                 db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
                 for row in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
                     if user_id in json.loads(row['authors']):
@@ -675,6 +675,7 @@ class Store:
             db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
+            db.execute('DELETE FROM web_requests WHERE user_id=?', (user_id,))
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
             db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
                        'DO UPDATE SET revision=revision+1', (user_id,))

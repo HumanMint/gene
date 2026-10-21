@@ -190,15 +190,6 @@ class Fri(discord.Client):
             raise commands.UserFeedbackCheckFailure('Keep each message between 1 and 4000 characters.')
         self.busy.add(user_id)
         try:
-            if self.agent and self.agent.config['enabled']:
-                admission = await self.api('POST', '/agent/admit', {**self.agent.identity(user_id, guild_id),
-                    'channel_id': str(source_channel),
-                    'space': 'dm' if visibility == 'private' else 'public'})
-                if not admission['allowed']:
-                    minutes = max(1, int((admission['until']-time.time()+59)//60))
-                    notice = (f'bro im cooked rn, gotta recharge my social battery and save daniel’s ai wallet lol. '
-                              f'back in about {minutes} mins') if admission.get('notice') else ''
-                    return ChatResult(reply=notice, status='cooldown')
             async with self.chat_slots:
                 context = await self.api('POST', '/chat/context', scope)
                 conversation = {}
@@ -223,6 +214,30 @@ class Fri(discord.Client):
                         'model': 'local-usage-report', 'effort': '', 'notes': [],
                         'input_tokens': 0, 'output_tokens': 0})
                     return ChatResult(reply=report, status='completed')
+                from .fri_operational import admit as admit_operation
+                operation = await admit_operation(self, event, source, scope, text, context)
+                if operation.result:
+                    if operation.result.status == 'completed':
+                        saved_result = (ChatResult(reply='Earlier check: gene_command. Fetch current evidence for follow-up details; no findings are retained here.', status='completed')
+                                        if operation.tool_receipt else operation.result)
+                        try:
+                            await self.save_response(scope, source, text, context, saved_result, model='local-control')
+                        except (commands.UserFeedbackCheckFailure, TimeoutError):
+                            if not operation.tool_receipt:
+                                raise
+                            from .fri_outcomes import unrecorded
+                            LOG.warning('Tool result preserved; chat recording unavailable')
+                            return ChatResult(reply=unrecorded([operation.tool_receipt]), status='completed')
+                    return operation.result
+                if self.agent and self.agent.config['enabled'] and not operation.continuation:
+                    admission = await self.api('POST', '/agent/admit', {**self.agent.identity(user_id, guild_id),
+                        'channel_id': str(source_channel),
+                        'space': 'dm' if visibility == 'private' else 'public'})
+                    if not admission['allowed']:
+                        minutes = max(1, int((admission['until']-time.time()+59)//60))
+                        notice = (f'bro im cooked rn, gotta recharge my social battery and save daniel’s ai wallet lol. '
+                                  f'back in about {minutes} mins') if admission.get('notice') else ''
+                        return ChatResult(reply=notice, status='cooldown')
                 if self.agent:
                     context.update(await self.agent.extra_context(channel_id, user_id, visibility == 'public'))
                 actions = Actions(self.agent, user_id, channel_id, visibility == 'public') if self.agent else None
@@ -231,9 +246,17 @@ class Fri(discord.Client):
                     actions.message, actions.model, actions.effort = clean(text, 4000), context['model'], context['effort']
                     actions.web_research = context.get('web_research', [])
                     actions.pending = context.get('pending')
+                    actions.continuation_only = actions.pending['goal'] if operation.continuation else None
                     actions.conversation = conversation
                     actions.private_evidence = bool(conversation.get('reply_target'))
                 context['actions'] = await actions.available() if actions else {}
+                if operation.continuation:
+                    goal = actions.pending['goal']
+                    permitted = 'web_search' if goal == 'web' else 'gene_command'
+                    context['actions'] = {k: v for k, v in context['actions'].items() if k == permitted}
+                    if goal != 'web' and permitted in context['actions']:
+                        control = context['actions'][permitted]
+                        control['commands'] = {k: v for k, v in control['commands'].items() if k == goal}
                 context['display_name'] = source.display_name
                 context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
                 context['requests_enabled'] = guild_id == self.guild_id
@@ -247,6 +270,8 @@ class Fri(discord.Client):
                     readable = await actions.channels(fresh=True)
                     context['gene_receipts'] = [r for r in recent.get('receipts', []) if r['channel_id'] in readable]
                     actions.sources.update(r['channel_id'] for r in context['gene_receipts'])
+                    from .gene_controls import current_music_context
+                    actions.music_context = current_music_context(context['gene_receipts'])
                 text = clean(text, 4000)
                 result = await self.chat_once(text, context)
                 if conversation and (conversation.get('message_burst') or conversation.get('reply_target')):
@@ -267,9 +292,13 @@ class Fri(discord.Client):
                     await require_current_images(context, event)
                     receipt = receipts[-1]
                     action_kind = receipt['kind']
-                    current = await self.api('POST', '/chat/context', scope)
+                    from .fri_outcomes import unrecorded
+                    try:
+                        current = await self.api('POST', '/chat/context', scope)
+                    except (commands.UserFeedbackCheckFailure, TimeoutError):
+                        return ChatResult(reply=unrecorded(receipts, reason='I couldn’t recheck conversation access to show the details.'), status='completed')
                     if current['revision'] != context['revision'] or not await actions.valid():
-                        raise commands.UserFeedbackCheckFailure('Access or memory changed during that check. Ask again for a fresh reply.')
+                        return ChatResult(reply=unrecorded(receipts, reason='Access or memory changed before I could safely show the details.'), status='completed')
                     # Keep only a neutral breadcrumb so follow-ups know which evidence to fetch again.
                     # Retrieved messages/answers never outlive source erasure in someone else's chat.
                     checked_channel = receipt.get('channel_id', '')
@@ -280,14 +309,18 @@ class Fri(discord.Client):
                                    else '. Fetch current evidence for follow-up details; no findings are retained here.')
                     if result.clarification or ((result.settings_preview or result.post_preview) and not actions.private_evidence):
                         breadcrumb = result.reply
-                    await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
-                        'source': source.model_dump(),
-                        'input': clean(event.content, 4000) if result.clarification or context.get('message_burst') else text,
-                        'reply': breadcrumb, 'model': context['model'],
-                        'effort': context['effort'], 'notes': [], 'web_receipt': research, 'clarification': result.clarification,
-                        'burst': context.get('message_burst', []),
-                        'allow_closing': result.allow_closing and not bool(result.draft or result.settings_preview or
-                                                                         result.post_preview or result.clarification)})
+                    try:
+                        await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
+                            'source': source.model_dump(),
+                            'input': clean(event.content, 4000) if result.clarification or context.get('message_burst') else text,
+                            'reply': breadcrumb, 'model': context['model'],
+                            'effort': context['effort'], 'notes': [], 'web_receipt': research, 'clarification': result.clarification,
+                            'burst': context.get('message_burst', []),
+                            'allow_closing': result.allow_closing and not bool(result.draft or result.settings_preview or
+                                                                             result.post_preview or result.clarification)})
+                    except (commands.UserFeedbackCheckFailure, TimeoutError):
+                        LOG.warning('Tool result preserved; chat recording unavailable')
+                        return ChatResult(reply=unrecorded(receipts), status='completed')
                     result.notes = []
                     diagnosis = (receipt if action_kind == 'gene_diagnose'
                                  else receipt.get('gene_result', receipt).get('diagnostic', {}))

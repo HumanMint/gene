@@ -15,7 +15,7 @@ from .fri_history_search import READ_ONLY_AFTER_HISTORY, HistorySearch
 from .fri_history_search import requested as history_requested
 from .fri_pending import Clarification, completion, research_query
 from .fri_web import lookup
-from .gene_controls import COMMANDS, arguments, requested
+from .gene_controls import COMMANDS, arguments, music_control_intent, requested
 from .privacy import clean
 from .web_policy import public_query
 
@@ -40,7 +40,13 @@ class Actions:
         self.history = HistorySearch(self)
 
     def command_requested(self, action):
-        if requested(self.message, action.get('action')):
+        if not music_control_intent(self.message, action.get('action'),
+                                  music_context=getattr(self, 'music_context', False)):
+            return False
+        continuation_only = getattr(self, 'continuation_only', None)
+        if continuation_only and action.get('action') != continuation_only:
+            return False
+        if not continuation_only and requested(self.message, action.get('action')):
             return True
         if self.burst_permission(action):
             return True
@@ -326,6 +332,7 @@ class Actions:
             if target not in channels:
                 return {'blocked': 'The configured bot commands channel is not accessible. Ask there instead.'}
         from .fri_context import discord_source
+        self.sources.add(target)
         submitted = await self.fri.api('POST', '/controls', {**self.scope, 'source': discord_source(self.event).model_dump(),
             'target_channel_id': target, 'request_text': clean(self.event.content, 4000),
             'action': verb, 'argument': argument, 'revision': self.revision,
@@ -344,7 +351,7 @@ class Actions:
             pass  # Stop waiting, not the underlying Red operation; never resubmit automatically.
         if not result or not result.get('done'):
             result = {'uncertain': 'Gene has not confirmed completion. Check the player before retrying.'}
-        if result.get('uncertain'):
+        if result.get('uncertain') and not getattr(self, 'operational', False):
             # The command-wait deadline must not cancel diagnosis and cause a second model run.
             result['diagnostic'] = await self.diagnose(channels)
         return {'kind': 'gene_command', 'action': verb, **result}

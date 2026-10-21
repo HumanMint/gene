@@ -45,6 +45,8 @@ def snowflake_floor(timestamp):
 
 def initialize(db):
     initialize_exploration(db)
+    from .fri_operation_store import initialize as initialize_operations
+    initialize_operations(db)
     db.executescript('''
         CREATE TABLE IF NOT EXISTS agent_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS agent_reports (

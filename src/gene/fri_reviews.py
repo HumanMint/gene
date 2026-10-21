@@ -67,9 +67,17 @@ def review_message(notice):
             'deploying': 'Deployment is running health checks.',
             'deployed': 'The release passed its health checks.',
             'rejected': 'This request was rejected.'}.get(job['state'], 'Open Fri’s Requests panel for details.')
-        embed = discord.Embed(title=f"Request {job['id']} · {state}", description=description[:3800], colour=0x5865F2)
+        if job.get('kind') == 'repair' and not job.get('result') and not job.get('progress'):
+            description = {'queued': 'Checking a reported fault under your existing-feature repair policy. No owner action needed.',
+                'building': 'Verifying the fault and preparing a bounded repair.',
+                'approved': 'The fault was reproduced; its fix passed tests and independent review. Waiting for deployment.'}.get(job['state'], description)
+        label = 'Automatic repair' if job.get('kind') == 'repair' else 'Request'
+        embed = discord.Embed(title=f"{label} {job['id']} · {state}", description=description[:3800], colour=0x5865F2)
         if job.get('model'):
-            embed.set_footer(text=f"{job['model']} · {job.get('effort') or 'model default'}")
+            model, effort = job['model'], job.get('effort') or 'model default'
+            if job.get('kind') == 'repair' and job.get('progress') in ('Verifying fault', 'Independent review'):
+                model, effort = 'gpt-6.1-sol', 'xhigh'
+            embed.set_footer(text=f"{model} · {effort}")
         attachment = discord.File(io.BytesIO(job['body'].encode()), filename=f"request-{job['id']}.txt")
         return embed, attachment, discord.ui.View(timeout=None)
     if phase == 'stale':
@@ -87,6 +95,10 @@ def review_message(notice):
     title = 'Allow this feature or fix to be developed?' if intake else 'Approve this tested release?'
     explanation = ('No coding has started. Allowing coding does not approve a live release.' if intake else
                    'Review the code diff before approving this exact commit. Tests alone do not prove a change is safe.')
+    if job.get('source_id', '').startswith('repair:'):
+        title = 'This repair needs your review' if intake else 'Review this repair before release'
+        explanation = ('The automatic repair checks did not authorize a release. ' + (job.get('result') or '') +
+                       ('\nAllow coding to continue through the normal owner-approved workflow.' if intake else ''))[:1200]
     preview = discord.utils.escape_markdown(discord.utils.escape_mentions(job['body']))[:2200]
     embed = discord.Embed(title=title, description=explanation + '\n\n**Submitted request (untrusted)**\n' + preview,
                           colour=0x5865F2)

@@ -543,11 +543,25 @@ class Agent:
             return
         source_channel = self.fri.get_channel(channel)
         parent = getattr(source_channel, 'parent_id', None) or channel
+        body = clean('Fri noticed a Gene error (untrusted evidence).\n'+record['text']+
+            '\n\nRead-only assessment (gpt-6.1-sol, xhigh):\n'+result.get('summary', '')+
+            '\n\nProposed repair:\n'+result['proposed_request'], 5500)
+        if self.state.get('auto_repairs_enabled'):
+            from .fri_context import discord_source
+            message = await source_channel.fetch_message(int(record['id']))
+            if message.author.id != self.gene_id or message.webhook_id or not self.allowed(source_channel):
+                return
+            scope = {**self.identity(self.gene_id), 'channel_id': str(parent), 'conversation_id': 'public:'+str(channel)}
+            context = await self.fri.api('POST', '/chat/context', scope)
+            repair = await self.fri.api('POST', '/repairs', {**scope, 'source': discord_source(message).model_dump(),
+                'revision': context['revision'], 'body': body})
+            if repair.get('accepted'):
+                self.last_spoke[channel] = time.time()
+                return
         await self.fri.api('POST', '/requests', {**self.identity(self.fri.user.id),
             'source_id': 'gene-error:'+record['id'], 'channel_id': str(parent),
             'source_url': f'https://discord.com/channels/{self.fri.guild_id}/{channel}/{record["id"]}',
-            'body': clean('Fri noticed a Gene error (untrusted evidence).\n'+record['text']+'\n\nRead-only assessment (gpt-6.1-sol, xhigh):\n'
-                          +result.get('summary', '')+'\n\nProposed repair:\n'+result['proposed_request'], 5500)})
+            'body': body})
         self.last_spoke[channel] = time.time()
 
     @tasks.loop(seconds=30)

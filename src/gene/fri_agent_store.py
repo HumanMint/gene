@@ -113,6 +113,7 @@ class AgentStore:
                        (time.time()-86400, time.time()))
             db.execute('DELETE FROM agent_reports WHERE delivered=1 AND at<?', (time.time()-7*86400,))
             return {'config': self.config(db), 'version': self.get(db, 'version', 0),
+                    'auto_repairs_enabled': self.store._setting(db, 'repair_policy') == 'existing-features-v1',
                     'learning_schedule': self.learning_schedule(db, time.time()),
                     'started': self.get(db, 'started', 0), 'next_learning': self.get(db, 'next_learning', 0),
                     'history_channels': self.settings.agent_history_channels.split(','),

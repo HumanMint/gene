@@ -8,6 +8,7 @@ import discord
 from redbot.core import commands
 
 from .fri_agent_model import ATTENTION, DIAGNOSIS
+from .fri_context import discord_source
 from .fri_web import lookup
 from .gene_controls import COMMANDS, arguments, requested
 from .privacy import clean
@@ -70,7 +71,8 @@ class Actions:
         if self.guild == self.fri.guild_id and isinstance(self.event, discord.Message):
             actions['gene_diagnose'] = {'description': 'Read independent Gene heartbeat/command receipts and '
                 'investigate a reported failure. Works when Gene commands are unavailable. channel_id="". '
-                'Luna triages; Sol xhigh diagnoses. No command, restart, coding, or deployment.'}
+                'Luna triages; Sol xhigh diagnoses. Existing-feature faults may enter the owner-authorized '
+                'verification/repair pipeline; a report alone never approves code or deployment.'}
             catalog = await self.fri.api('GET', '/controls/catalog')
             offered = {key: COMMANDS[key][2] for key in catalog.get('actions', []) if key in COMMANDS}
             if offered:
@@ -227,13 +229,22 @@ class Actions:
             return {'uncertain': 'The independent health check is unavailable; no repair has started.'}
         receipts = [r for r in recent.get('receipts', []) if r['channel_id'] in channels]
         self.sources.update(r['channel_id'] for r in receipts)
-        evidence = {'source_id': str(self.event.id), 'report': self.message, 'health': health, 'receipts': receipts}
+        repairs = []
+        auto_available = self.agent.state.get('auto_repairs_enabled', False)
+        if auto_available:
+            try:
+                repairs = (await self.fri.api('POST', '/repairs/recent', self.scope))['repairs']
+            except commands.UserFeedbackCheckFailure:
+                auto_available = False  # Preserve read-only diagnosis and its normal review preview.
+        evidence = {'source_id': str(self.event.id), 'report': self.message, 'health': health, 'receipts': receipts,
+                    'previous_repairs': repairs}
         gate, _, state = await self.agent.run('attention',
             'Triage a current member report about Gene. Choose investigate for a reported failure, no reply, '
             'unconfirmed command, or unhealthy runtime that warrants diagnosis. Choose quiet for unrelated chat '
             'or a normal status question with healthy evidence. Do not diagnose or approve repairs. '
             'Use the supplied source_id.', evidence, ATTENTION)
-        result = {'kind': 'gene_diagnose', 'health': health, 'receipts': receipts, 'triage_status': state}
+        result = {'kind': 'gene_diagnose', 'health': health, 'receipts': receipts, 'triage_status': state,
+                  'previous_repairs': repairs}
         if state != 'completed' or gate.get('action') != 'investigate' or gate.get('source_id') != str(self.event.id):
             return result
         diagnosis, _, state = await self.agent.run('investigation',
@@ -243,12 +254,27 @@ class Actions:
             'Give a brief evidence-based assessment and, when useful, a self-contained proposed repair request; '
             'otherwise proposed_request="". No coding or repair has started. Feature jobs can edit only cogs/, '
             'tests/features/, docs/features/. Flag infrastructure, dependencies and controller issues as maintainer '
-            'work. Only the owner can approve coding and the exact release. At most 2500 characters total.',
+            'work. An eligible existing-feature fault can be sent to independent verification; do not promise '
+            'a fix or grant approval yourself. New features and protected changes need the owner. At most 2500 characters total.',
             evidence, DIAGNOSIS, model='gpt-6.1-sol', effort='xhigh')
         result.update(diagnosis_status=state, diagnosis_model='gpt-6.1-sol', diagnosis_effort='xhigh')
         if state == 'completed':
             result.update(assessment=clean(diagnosis.get('summary', ''), 1500),
                           proposed_request=clean(diagnosis.get('proposed_request', ''), 4000))
+            if result['proposed_request'] and auto_available:
+                latest = await self.event.channel.fetch_message(self.event.id)
+                if (not await self.valid() or latest.author.id != self.user or latest.webhook_id or
+                        latest.content != self.event.content):
+                    return {'blocked': 'Access or the report changed before repair verification.'}
+                try:
+                    result['repair'] = await self.fri.api('POST', '/repairs', {**self.scope,
+                        'source': discord_source(latest).model_dump(), 'revision': self.revision,
+                        'body': clean('Reported failure (untrusted):\n'+self.message+'\n\nAssessment:\n'+
+                                      result['assessment']+'\n\nProposed investigation:\n'+result['proposed_request'], 5500)})
+                except commands.UserFeedbackCheckFailure:
+                    result['repair'] = {'accepted': False, 'uncertain': 'The controller did not confirm whether verification was queued. Check current requests before resubmitting.'}
+                if result['repair'].get('accepted') or result['repair'].get('uncertain'):
+                    result['proposed_request'] = ''
         return result
 
     async def valid(self):

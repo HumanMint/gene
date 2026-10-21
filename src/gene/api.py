@@ -54,7 +54,8 @@ class ReviewDelivery(Lease):
 
 
 class Progress(Lease):
-    progress: Literal['', 'Coding', 'Testing', 'Repairing tests', 'Publishing proposal'] = ''
+    progress: Literal['', 'Coding', 'Testing', 'Repairing tests', 'Publishing proposal',
+                      'Verifying fault', 'Independent review'] = ''
 
 
 class BuildResult(Lease):
@@ -154,6 +155,8 @@ def create_app(settings: Settings | None = None):
     register(app, store, settings, auth, actor)
     from .control_api import register as register_controls
     register_controls(app, store, settings, auth)
+    from .repair_api import register as register_repairs
+    register_repairs(app, store, settings, auth)
 
     @app.exception_handler(Conflict)
     async def conflict_handler(_, exc):

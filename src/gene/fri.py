@@ -271,7 +271,7 @@ class Fri(discord.Client):
                     diagnosis = (receipt if action_kind == 'gene_diagnose'
                                  else receipt.get('gene_result', receipt).get('diagnostic', {}))
                     # An action's proposal used to be discarded here. Keep the checked diagnosis
-                    # as a real preview; submission, coding and release approval remain separate.
+                    # as a real preview unless the controller accepted it for automatic verification.
                     proposal = diagnosis.get('proposed_request', '')
                     result.draft = proposal if len(proposal) >= 5 else None
                     if receipt.get('sources'):

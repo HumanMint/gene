@@ -13,7 +13,7 @@ class NoFeatureChanges(ValueError):
     pass
 
 
-def git(root: Path, *args: str) -> str:
+def git(root: Path, *args: str, raw=False):
     # Disable hooks, file protocols and user-supplied Git configuration.
     environment = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
     environment.update({'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null',
@@ -22,8 +22,8 @@ def git(root: Path, *args: str) -> str:
                              '-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false',
                              '-c', 'protocol.file.allow=never', '-c', 'core.sshCommand=' +
                              os.getenv('GENE_GIT_SSH_COMMAND', 'ssh -oBatchMode=yes'),
-                             *args], cwd=root, env=environment, capture_output=True, text=True, check=True)
-    return result.stdout.strip()
+                             *args], cwd=root, env=environment, capture_output=True, text=not raw, check=True)
+    return result.stdout if raw else result.stdout.strip()
 
 
 def validate_paths(paths: list[str]):

@@ -37,7 +37,8 @@ def agent_summary(events, fallback):
 
 
 def run_sandbox(root: Path, name: str, image: str, command: list[str], *,
-                prompt: str = '', auth: Path | None = None, events: Path | None = None):
+                prompt: str = '', auth: Path | None = None, events: Path | None = None,
+                readonly=False, schema: Path | None = None, allow_failure=False):
     uid = str(os.environ.get('GENE_SANDBOX_UID', '10001'))
     args = ['docker', 'run', '--rm', '--name', name, '--init', '--cap-drop=ALL',
             '--security-opt=no-new-privileges', '--pids-limit=256', '--memory=2g', '--cpus=1.5',
@@ -46,13 +47,15 @@ def run_sandbox(root: Path, name: str, image: str, command: list[str], *,
             '-e', 'PYTEST_DISABLE_PLUGIN_AUTOLOAD=1', '-e', 'PYTHONDONTWRITEBYTECODE=1',
             '-e', 'PYTHONPATH=/workspace/src:/workspace',
             '--workdir', '/workspace', '--mount',
-            f'type=bind,src={root},dst=/workspace' + ('' if auth else ',readonly')]
+            f'type=bind,src={root},dst=/workspace' + ('' if auth and not readonly else ',readonly')]
     if auth:
         # The model gets the worktree and its dedicated Codex login, never host/Git/Discord credentials.
         args += ['--mount', f'type=bind,src={root / ".git"},dst=/workspace/.git,readonly',
                  '--mount', f'type=bind,src={auth},dst=/codex', '-e', 'CODEX_HOME=/codex', '-i']
     else:
         args += ['--network=none']
+    if schema:
+        args += ['--mount', f'type=bind,src={schema},dst=/repair-schema.json,readonly']
     args += [image, *command]
     try:
         if events:
@@ -62,9 +65,10 @@ def run_sandbox(root: Path, name: str, image: str, command: list[str], *,
                                         stderr=subprocess.DEVNULL, timeout=3600)
         else:
             result = subprocess.run(args, capture_output=True, text=True, timeout=300)
-        if result.returncode:
+        if result.returncode and not allow_failure:
             detail = '' if events else clean(((result.stdout or '') + (result.stderr or ''))[-6000:], 4000)
             raise SandboxFailure(f'Sandbox {name} exited with code {result.returncode}\n{detail}'.strip())
+        return result
     finally:
         subprocess.run(['docker', 'rm', '-f', name], capture_output=True, timeout=30)
 
@@ -101,6 +105,11 @@ class Worker:
                 for filename in files:
                     (Path(parent) / filename).chmod(0o644)
         events = directory / 'events.jsonl'
+        repair = None
+        if job.get('kind') == 'repair':
+            from .repair_worker import RepairWork
+            repair = RepairWork(self, job, checkout, directory)
+            repair.verify()
         model = job['model']
         command = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--ephemeral',
                    '--dangerously-bypass-approvals-and-sandbox', '--json', '--color', 'never', '-']
@@ -125,6 +134,11 @@ class Worker:
                           'approved_facts': job['memories']}, ensure_ascii=False)
         )
         feedback = ''
+        if repair:
+            prompt += ('\nRestore only the independently verified existing behavior. The regression test '
+                       + repair.test_path + ' is frozen and must not be changed. Do not add features, imports, '
+                       'commands, classes, function signatures, permissions, global settings or new source files. '
+                       'Only repair existing function bodies. Verification: '+json.dumps(repair.evidence['verification']))
         for attempt in range(3):
             self.api.post(f'/worker/{job_id}/heartbeat', {'lease': lease,
                           'progress': 'Coding' if attempt == 0 else 'Repairing tests'})
@@ -144,6 +158,8 @@ class Worker:
             # return to the model for repairs. Publication remains after all checks.
             try:
                 paths = validate_checkout(checkout)
+                if repair:
+                    repair.check()
             except NoFeatureChanges:
                 self.api.post(f'/worker/{job_id}/finish', {'lease': lease, 'outcome': 'needs_attention',
                     'error': agent_summary(events, 'No feature change was prepared. Clarify the request or ask a maintainer.')})
@@ -169,6 +185,8 @@ class Worker:
         git(checkout, '-c', 'user.name=Gene', '-c', 'user.email=gene@users.noreply.github.com',
             'commit', '-m', f'Implement Gene request {job_id}')
         sha = git(checkout, 'rev-parse', 'HEAD')
+        if repair:
+            repair.review(sha)
         branch = 'codex/request-' + job_id
         git(checkout, 'push', 'origin', f'HEAD:refs/heads/{branch}')
         summary = 'Changed ' + ', '.join(paths) + '. Independent tests and lint passed.'
@@ -176,7 +194,12 @@ class Worker:
         proposal = {'sha': sha, 'base_sha': job['base_sha'], 'branch': branch,
                     'tests_passed': True, 'summary': summary,
                     'url': f'https://github.com/{self.repo}/compare/{job["base_sha"]}...{sha}'}
-        self.api.post(f'/worker/{job_id}/finish', {'lease': lease, 'proposal': proposal})
+        if repair:
+            proposal['repair_verification'] = repair.evidence
+        error = ''
+        if repair and repair.evidence['review']['decision'] != 'allow':
+            error = 'Independent repair review needs owner approval: '+repair.evidence['review']['reason']
+        self.api.post(f'/worker/{job_id}/finish', {'lease': lease, 'proposal': proposal, 'error': error})
         # Retain usage and summary, discard detailed model/tool transcripts after a successful build.
         events.unlink(missing_ok=True)
 

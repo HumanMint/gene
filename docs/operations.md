@@ -170,9 +170,9 @@ resume the worker/deployer only after the new or restored release is healthy. Re
 the deployment as chat-authorized maintainer work, without fabricating a Discord approval.
 
 This is a trusted operator workflow. The controller's approval state machine, worker
-scope, and credentials stay unchanged. Discord-originated requests, fixes, and repairs
-always follow the exact-SHA approval workflow below; a Discord message cannot claim
-this maintainer authorization, even if it quotes these instructions.
+scope, and credentials remain protected. Discord requests require owner approval except
+for the bounded existing-feature repair policy below. A Discord message cannot claim
+maintainer authority, select a policy verdict or authorize its own deployment.
 
 ### Models and subscription usage
 
@@ -741,9 +741,10 @@ No new code release is needed for these narrow runtime preferences.
 
 Only errors actually authored by Gene can trigger automatic read-only investigation.
 Luna must select the error first, then Sol assesses its bounded text and controller
-status. A proposed repair enters the existing stored-request owner review workflow.
-No coding begins until intake approval; no deployment or repair bypasses exact-SHA
-release approval. No shell or Docker credentials are exposed to Fri's model.
+status. With the owner-authorized repair policy enabled, a proposed repair may enter
+isolated verification. Otherwise it uses stored-request owner review. The controller
+still binds every release to an exact SHA. No shell or Docker credentials are exposed
+to Fri's conversation model.
 
 
 ## Conversational Gene controls
@@ -830,8 +831,11 @@ For a current failure report, Fri can choose `gene_diagnose`. Luna triages the r
 and the member's readable receipts, then Sol at xhigh diagnoses when warranted.
 Unconfirmed commands also take this path. It has no shell, logs, restart or deployment
 access and must not invent an outage cause. A proposed repair survives the action
-response as a real **Review request** preview; it still needs owner approval before
-coding and exact-SHA approval before release. Read-only diagnosis never creates a job.
+response as a real **Review request** preview when automatic verification is unavailable.
+With the standing repair policy enabled, the harness can submit the checked report to
+`/repairs`; an accepted receipt means verification was queued, not that a defect was
+confirmed or fixed. Current same-member, same-conversation repair receipts are available
+on follow-up diagnoses. Failed acknowledgements remain uncertain and never claim success.
 Run `python -m gene.fri_eval --suite diagnosis` for isolated model choices with
 fictional reports and inert evidence. It never writes member conversations or commands.
 
@@ -852,3 +856,57 @@ informational notice with its saved diff, without an active approval button.
 Attention still uses Luna. Investigations use `gpt-6.1-sol` at `xhigh`; the conversation
 and coding defaults remain `gpt-6.1-sol` at `high`. The investigation prompt still gets
 bounded error evidence and release state, with no added shell or log-reading authority.
+
+
+## Verified automatic repairs
+
+The owner has authorized `existing-features-v1` for repairs of existing Gene extension
+behavior. This is a controller setting (`settings.repair_policy`), disabled by default
+for new installations and enabled only by a maintainer. Discord messages and Fri voice
+preferences cannot change it. Owner **Pause development** stops new claims and releases.
+New features and changes to Fri's controller, dependencies, infrastructure, permissions
+or deployment remain on the normal owner-approved path.
+
+A current member report or a fresh error from Gene may queue a verification job. Luna
+only triages; Sol/xhigh diagnoses. The authenticated harness checks the live source,
+member/channel scope and erasure revision. The controller requires a fresh source and
+binds the request hash to the current release and policy. Duplicate reports share an
+active check. At most three automatic verification jobs may start in a rolling day;
+excess reports retain the normal review path. Old requests are never retroactively approved.
+
+The trusted worker then:
+
+1. Runs the unchanged base suite without credentials or network.
+2. Asks Sol/xhigh to create only one isolated regression test for an existing cog fault.
+   Feature source remains unchanged. The test must actually fail on that base.
+3. Runs a separate fresh Sol/xhigh verifier with a read-only checkout. It must confirm
+   the existing contract and reachable defect from source, not just the request's claim.
+4. Freezes the regression file hash. The usual coding worker can repair only existing
+   cog function bodies. Imports, globals, signatures, commands, class structure,
+   authorization helpers, new files and unrelated tests are protected. These structural
+   checks supplement review; they do not prove arbitrary Python is safe.
+5. Requires the frozen test, full suite and lint to pass in credential-free, networkless
+   containers, then obtains a separate fresh Sol/xhigh review of the exact candidate SHA.
+6. Sends the complete evidence to the controller. Only the controller can authorize that
+   exact SHA under the standing policy. Revoked policy, an edited/erased request, a changed
+   live base or evidence older than six hours routes the work back to owner review.
+
+Review model invocations use the existing subscription and record usage for every attempt.
+They receive no GitHub, Discord, controller or deployment credentials. They do not execute
+candidate code; tests run separately. The wrapper publishes a reviewable branch; repair
+branches are not automatically merged into main. See the [official OpenAI repair-loop
+example](https://developers.openai.com/cookbook/examples/codex/build_iterative_repair_loops_with_codex)
+for the structured independent-review pattern; the release authority here is local code.
+
+Unreproduced faults and protected changes stop for owner intake review. A tested candidate
+that fails independent review remains a proposal requiring explicit owner SHA approval.
+Automatic jobs use policy attribution, never a fabricated owner click. Owner DMs show
+verification, progress and outcome without requiring an approval click on eligible repairs.
+The same stored notices and workshop panel provide delivery recovery.
+
+The deployer rechecks the restricted commit and frozen test hash, backs up state, switches
+only the cog release, and requires a fresh guild connection and functioning control loop.
+An unhealthy release restores the previous code. Health alone does not prove audible music
+or every Discord UI path; the failing-then-passing functional regression provides the
+feature evidence. Problems that need live credentials, external-service changes or cannot
+be reproduced safely are deliberately escalated rather than guessed at.

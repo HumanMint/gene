@@ -378,3 +378,20 @@ def test_parentless_base_inspection_normalizes_an_absent_parent(monkeypatch):
     monkeypatch.setattr(retention, 'command', command)
     assert retention.image_metadata(iid(1))['parent'] == ''
     assert 'index . "Parent"' in command.call_args.args[4]
+
+
+def test_managed_untagging_preserves_exact_runtime_id_for_a_later_cleanup(host, monkeypatch):
+    root, images, _, _ = host
+    # Docker can remove the last tag while retaining the image object for child layers.
+    def docker(*args):
+        if args[:3] == ('docker', 'image', 'inspect'):
+            return json.dumps([{'Id': iid(5)}])
+        assert args == ('docker', 'image', 'rm', '--no-prune', tag(5))
+        images[iid(5)]['tags'] = []
+        return ''
+
+    monkeypatch.setattr(retention, 'command', docker)
+    retention.run(root, apply=True)
+    result = retention.run(root)
+    assert [r['id'] for r in result['delete_parents']] == [iid(5)]
+    assert iid(5) not in result['keep']

@@ -169,6 +169,9 @@ Only exact unnamed ancestors of an approved retired Gene version may be collecte
 ancestry evidence is saved before deleting the release. Tagged ancestors and configured
 references stay protected. Docker's normal dependency checks preserve any parent with
 remaining child images or containers. There is no forced removal or implicit parent prune.
+If Docker retains the exact retired runtime object after removing its last managed tag,
+that recorded ID remains eligible for a later reviewed plan after its worker children are
+collected. Unknown untagged images never gain eligibility from this retry behavior.
 
 The maintenance policy and state live privately under `/srv/gene/maintenance/`:
 

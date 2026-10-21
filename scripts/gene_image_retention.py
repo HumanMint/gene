@@ -423,6 +423,14 @@ def run(root, apply=False):
     view = snapshot(root, policy)
     now = time.time()
     state = observe(state, view, now)
+    # Classic Docker may untag a runtime but retain its exact image object for worker
+    # children. Carry only IDs that this tool itself retired/untagged into later plans.
+    managed_ids = {row['id'] for row in state.get('removed', {}).values()}
+    for iid in managed_ids & state['retired'].keys() & view['images'].keys():
+        if not view['images'][iid]['tags']:
+            state.setdefault('retired_parents', {}).setdefault(iid, {
+                'from_image': iid, 'retired_at': state['retired'][iid]['retired_at'],
+                'evidence': 'Verified retired Gene version retained after managed untagging'})
     result = plan(view, state, now)
     result['removed_tags'] = []
     for row in result['delete']:

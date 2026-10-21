@@ -81,13 +81,19 @@ async def _run(fri, actions, text, context, result, progress):
             research = {k: receipt[k] for k in ('query', 'answer', 'sources', 'checked_at')}
             progress['research'] = research
         offered.pop(kind, None)
+        if kind == 'history_search' and receipt.get('remaining_searches', 0) > 0:
+            offered['history_search'] = {**context['actions']['history_search'],
+                'remaining_searches': receipt['remaining_searches']}
+        if kind == 'history_search':
+            from .fri_history_search import READ_ONLY_AFTER_HISTORY
+            offered = {key: value for key, value in offered.items() if key in READ_ONLY_AFTER_HISTORY}
         if kind == 'web_search' and research:
             offered['web_refine'] = {'description': 'If the lookup did not answer the actual question, investigate further '
                 'using public sources. query="". One refinement only; no private context is exported.'}
         if kind in TERMINAL or receipt['outcome'] != Outcome.COMPLETED:
             offered = {}
         # Reading private member evidence cannot become a persistent draft or a public post.
-        if kind in ('read_recent', 'learning_overview', 'run_learning'):
+        if kind in ('read_recent', 'learning_overview', 'run_learning', 'history_search'):
             offered.pop('work_save', None)
             offered.pop('prepare_post', None)
             offered.pop('clarify', None)

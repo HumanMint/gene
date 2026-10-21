@@ -62,12 +62,15 @@ def test_archive_intent_and_date_limits_are_bounded():
     for text in ('what was that game Dipper recommended last month?', 'search chat for watched',
                  'find messages before 2026-01-01', 'look through history for Minecraft',
                  'what did Dipper recommend?', 'what did I say about Minecraft?',
-                 'find that game Dipper recommended'):
+                 'find that game Dipper recommended last month', 'who recommended Minecraft?',
+                 'what did we talk about?', 'what did Dipper mention in chat?'):
         assert requested(text)
     for text in ('hey fri', 'play Sad Machine', 'do not search chat', '> find old messages',
                  'what do you recommend?', 'what should I say to a friend who is upset?',
                  'which game would you recommend?', 'what do I have to say?',
-                 'find recommended movies', 'look up recommended games'):
+                 'find recommended movies', 'look up recommended games',
+                 'what are the recommended settings for this game?',
+                 'what is the recommended way to learn Python?'):
         assert not requested(text)
     assert valid_action(query())
     assert not valid_action(query(cursor='invented'))
@@ -82,7 +85,9 @@ def test_archive_intent_and_date_limits_are_bounded():
 
 @pytest.mark.parametrize('text', ['what do you recommend?',
     'what should I say to a friend who is upset?', 'which game would you recommend?',
-    'find recommended movies', 'look up recommended games'])
+    'find recommended movies', 'look up recommended games',
+    'what are the recommended settings for this game?',
+    'what is the recommended way to learn Python?'])
 def test_present_day_advice_does_not_offer_or_authorize_archive_search(monkeypatch, tmp_path, text):
     async def scenario():
         fri, _, actions, _, _, _ = setup(monkeypatch, tmp_path, text=text)

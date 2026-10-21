@@ -22,11 +22,14 @@ def requested(text):
     visible = re.sub(r'```[\s\S]*?```|`[^`]*`|(?m:^>.*$)', '', text)
     if re.search(r"(?i)\b(?:don't|do not|stop)\s+(?:search|look|read)", visible):
         return False
+    # A participle alone ("recommended settings") is not past attribution.
+    # Require archive vocabulary, a recall construction, or an explicit past cue.
     return bool(re.search(
         r'(?is)\b(search|find|look\s+(?:up|through|back)|check)\b.*\b(history|archive|chat|messages?|logs?)\b'
-        r'|\b(search|find|look up)\b.*\bthat\b.+\b(said|recommended|mentioned|posted|linked)\b'
-        r'|\b(what|which|who|when|where)\b.*\b(said|recommended|mentioned|posted|talked|discussed|linked)\b'
-        r'|\b(what|which|who|when|where)\b.*\bdid\b.*\b(say|recommend|mention|post|discuss|link)\b'
+        r'|\bwho\s+(said|recommended|mentioned|posted|talked|discussed|linked)\b'
+        r'|\b(what|which|who|when|where)\b.*\bdid\b.+\b(say|recommend|mention|post|discuss|talk|link)\b'
+        r'|\b(what|which|who|when|where|find|search|look up)\b.*\b(said|recommended|mentioned|posted|talked|discussed|linked)\b.*\b(earlier|before|yesterday|last week|last month|last year|ago|history|chat|messages?|logs?)\b'
+        r'|\b(what|which|who|when|where|find|search|look up)\b.*\b(earlier|yesterday|last week|last month|last year|history|chat|messages?|logs?)\b.*\b(said|recommended|mentioned|posted|talked|discussed|linked)\b'
         r'|\b(search|find)\b.*\b(before|last month|last week|last year|ago)\b', visible))
 
 

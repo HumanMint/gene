@@ -88,6 +88,7 @@ def test_explicit_owned_reminder_cancellation_survives_incidental_reply_context(
             actions = Actions(agent, 10, 999, False)
             actions.event, actions.private_evidence = event, True
             actions.message = 'fri what do you think of that?'
+            event.content = actions.message
             assert set(available(actions)) == {'reminder_list'}
         finally:
             await fri.close()

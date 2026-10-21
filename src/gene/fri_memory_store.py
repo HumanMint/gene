@@ -97,5 +97,9 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
         db.execute('DELETE FROM agent_reports')
         from .fri_explore_store import erase
         erase(db, user)
+        # A preference edit invalidates derivations, not an already explicit
+        # reminder confirmation. Global erasure follows its separate erase path.
+        from .fri_social_store import Social
+        Social.preserve_confirmed(db, user, revision)
         db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) DO UPDATE SET revision=revision+1', (user,))
     return entries(store, guild, conversation, user)

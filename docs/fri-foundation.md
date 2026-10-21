@@ -29,7 +29,11 @@ for Discord’s UTF-16 limits without clipping the accepted reminder body.
 Each member may have five pending/scheduled reminders, due between one minute and
 30 days from preparation. Previews expire after 15 minutes; receipts and reminder
 text expire seven days after the due time. Ask “list my reminders” or “cancel my
-reminder to update the mods” to inspect or cancel work in that same DM. Reminders
+reminder to update the mods” to inspect or cancel work in that same DM. Natural
+cancellation uses a bounded direct request from the current message. Negation,
+quoted commands, examples, hypothetical discussion and general capability questions do not
+authorize it; “can you cancel my reminder to update the mods?” does. Ambiguous
+wording needs a fresh direct request or the reminder's Cancel button. Reminders
 survive restarts. Delivery rechecks membership and the DM recipient, uses no model
 call, and makes one bounded HTTP attempt after a durable sending fence. A crash
 after that fence or an ambiguous response is **uncertain**, and never retried.
@@ -133,6 +137,10 @@ shorter excerpts of the removed note. Existing other items remain; a later expli
 disclosure can renew a preference. Hashes expire with the 90-day learning horizon and
 are erased by **forget me**.
 Other saved preference items remain. Existing Discord posts and backups are separate.
+Already confirmed personal reminders remain scheduled across a single preference
+edit, including an active delivery lease. The edit does not renew that lease,
+restore stale or closed work, or authorize an unconfirmed reminder preview. Global
+**forget me** still erases reminders and invalidates their delivery grants.
 
 `tests/test_fri_conversation_context.py` exercises real offline Red command handling,
 DM/public burst continuity, memory-off behavior, source edits/deletion, identity,

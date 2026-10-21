@@ -94,7 +94,8 @@ def register(app, store, settings, auth, actor):
     @app.post('/agent/context', dependencies=[auth('fri')])
     def context(body: Context):
         if not settings.chat_channel_allowed(body.guild_id, body.channel_id):
-            if not settings.meme_channel_allowed(body.guild_id, body.channel_id):
+            history = body.guild_id == settings.guild_id and body.channel_id in settings.agent_history_channels.split(',')
+            if not history and not settings.meme_channel_allowed(body.guild_id, body.channel_id):
                 raise HTTPException(403, 'Channel is outside Fri scope')
             profile = agent.context(body.channel_id, body.user_id, body.guild_id)
             return {key: profile[key] for key in ('enabled', 'revision')}

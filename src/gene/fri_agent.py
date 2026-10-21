@@ -341,6 +341,10 @@ class Agent:
         except commands.UserFeedbackCheckFailure as exc:
             await message.reply(str(exc)[:1800], allowed_mentions=NO_MENTIONS)
             return
+        if result.post_preview:
+            from .fri_workspace import show_preview
+            await show_preview(self.fri, message, result.post_preview)
+            return
         if not result.reply:
             return
         view = None
@@ -578,6 +582,8 @@ class Agent:
                 if self.presence is None:
                     self.presence = Presence(self)
                 await self.presence.check()
+            from .fri_workspace import deliver_one
+            await deliver_one(self.fri)
             await self.send_reports()
             if self.config['enabled']:
                 await self.learn()

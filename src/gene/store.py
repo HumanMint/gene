@@ -31,6 +31,8 @@ class Store:
             initialize_controls(db)
             from .fri_research import initialize as initialize_research
             initialize_research(db)
+            from .fri_workspace_store import initialize as initialize_workspace
+            initialize_workspace(db)
             db.executescript('''
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -633,6 +635,8 @@ class Store:
             if action == 'disable':
                 from .fri_explore_store import erase
                 erase(db, user_id)
+                from .fri_workspace_store import erase as erase_workspace
+                erase_workspace(db, user_id)
                 db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))

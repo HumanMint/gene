@@ -143,7 +143,7 @@ def test_web_reply_preserves_sources_and_keeps_only_a_neutral_receipt(monkeypatc
                 event=event(user=20, channel=1, content='fri Python release?'))
         assert receipt['sources'][0] in result.reply and result.draft is None
         context = fri.chat.respond.await_args.args[1]
-        assert not context['actions'] and context['action_result'] == receipt
+        assert 'web_search' not in context['actions'] and context['action_result'] == receipt
         saved = next(body for path, body in calls if path == '/chat/turn')
         assert saved['reply'].startswith('Earlier check: web_search') and 'public evidence' not in saved['reply']
         assert saved['web_receipt'] == {k: receipt[k] for k in ('query', 'answer', 'sources', 'checked_at')}

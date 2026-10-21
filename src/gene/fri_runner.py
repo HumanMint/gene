@@ -7,6 +7,7 @@ import discord
 from redbot.core import commands
 
 from .fri_chat import ChatResult
+from .fri_images import require_current as require_current_images
 
 MAX_STEPS = 4
 TERMINAL = {'gene_command', 'gene_diagnose', 'run_learning'}
@@ -24,6 +25,7 @@ async def _run(fri, actions, text, context, result):
     offered = dict(context['actions'])
     async with asyncio.timeout(300):
         for _ in range(MAX_STEPS):
+            await require_current_images(context, getattr(actions, 'event', None))
             action = result.action
             if not action:
                 break
@@ -34,6 +36,7 @@ async def _run(fri, actions, text, context, result):
             seen.add(fingerprint)
             if kind == 'gene_command' and not actions.command_requested(action):
                 receipt = {'blocked': 'The music request expired or was not requested in this conversation. Ask briefly for a fresh complete request.'}
+                await require_current_images(context, getattr(actions, 'event', None))
                 result = await fri.chat_once(text, {**context, 'actions': {}, 'action_result': receipt})
                 if result.action:
                     raise commands.UserFeedbackCheckFailure('That request needs the song and play instruction together. Nothing was run.')
@@ -43,6 +46,7 @@ async def _run(fri, actions, text, context, result):
             except (commands.UserFeedbackCheckFailure, discord.HTTPException):
                 receipt = {'uncertain': 'Completion was not confirmed. Do not claim success or retry automatically.'}
             receipts.append({'kind': kind, **receipt})
+            await require_current_images(context, getattr(actions, 'event', None))
             if receipt.get('clarification'):
                 return ChatResult(reply=receipt['clarification']['question'], status='completed',
                                   clarification=receipt['clarification']), receipts, research
@@ -53,6 +57,9 @@ async def _run(fri, actions, text, context, result):
             if receipt.get('post_preview'):
                 return ChatResult(reply='Post preview prepared. Nothing is sent until you click Send once.',
                     status='completed', post_preview=receipt['post_preview']), receipts, research
+            if receipt.get('social_preview'):
+                return ChatResult(reply='Preview prepared. Nothing is scheduled or published until you confirm it.',
+                    status='completed', social_preview=receipt['social_preview']), receipts, research
             if kind in ('web_search', 'web_refine') and all(receipt.get(k) for k in ('query', 'answer', 'sources', 'checked_at')):
                 if research:
                     receipt['sources'] = list(dict.fromkeys(receipt['sources']+research['sources']))[:8]
@@ -74,10 +81,14 @@ async def _run(fri, actions, text, context, result):
                 offered.pop('work_save', None)
                 offered.pop('prepare_post', None)
                 offered.pop('clarify', None)
+                offered.pop('reminder_prepare', None)
+                offered.pop('plan_prepare', None)
+                offered.pop('reminder_cancel', None)
             if len(seen) == MAX_STEPS:
                 offered = {}
             result = await fri.chat_once(text, {**context, 'actions': offered,
                 'action_result': receipts[-1], 'action_results': list(receipts)})
+            await require_current_images(context, getattr(actions, 'event', None))
             if result.action and not offered:
                 raise commands.UserFeedbackCheckFailure('The action limit was reached. No further actions were run.')
         if result.action:

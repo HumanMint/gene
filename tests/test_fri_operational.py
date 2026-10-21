@@ -27,7 +27,7 @@ def body(text='fri queue', **changes):
 
 
 @pytest.mark.parametrize('text,action', [
-    ('fri pause', 'pause'), ('<@99> stop', 'stop'), ('please resume', 'resume'),
+    ('fri pause music', 'pause'), ('<@99> stop the music', 'stop'), ('please resume playback', 'resume'),
     ('fri queue', 'queue'), ("fri what's playing?", 'now_playing'),
     ('fri volume 100', 'volume'), ('fri controls', 'menu'), ('fri status', 'status'),
 ])
@@ -122,7 +122,7 @@ def test_exact_control_works_during_cooldown_without_model_and_keeps_red_refusal
         for _ in range(21):
             client.app.state.agent.admit('20', 'public', '123')
         assert not client.app.state.agent.admit('20', 'public', '123')['allowed']
-        actual = event(user=20, channel=1, content='fri stop')
+        actual = event(user=20, channel=1, content='fri stop the music')
         actual.id = int(control_body()['source']['id'])
         actual.webhook_id = None
         actual.channel.fetch_message = AsyncMock(return_value=actual)
@@ -283,7 +283,7 @@ def test_source_edit_stops_operational_control_before_admission_or_execution(mon
     from gene.fri_actions import Actions
     async def scenario():
         fri, _, _, _ = harness(monkeypatch, tmp_path)
-        actual = event(user=20, channel=1, content='fri stop')
+        actual = event(user=20, channel=1, content='fri stop the music')
         changed = copy.copy(actual)
         changed.content, changed.webhook_id = 'never mind', None
         actual.channel.fetch_message = AsyncMock(return_value=changed)
@@ -296,6 +296,103 @@ def test_source_edit_stops_operational_control_before_admission_or_execution(mon
             execute.assert_not_awaited()
             assert all(call.args[1] not in ('/chat/operations/admit', '/agent/admit', '/controls')
                        for call in fri.api.await_args_list)
+            fri.chat.respond.assert_not_awaited()
+        finally:
+            await fri.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('text', ['stop', 'fri stop', 'pause', 'resume', 'skip'])
+def test_ambiguous_shorthand_needs_current_music_context(text):
+    assert command(text) is None
+    assert command(text, music_context=True)['action'] in {'stop', 'pause', 'resume', 'skip'}
+
+
+def test_controller_requires_real_scoped_recent_music_receipt_for_shorthand(controls_api):  # noqa: F811
+    from gene.control_store import Controls
+    client, controls = controls_api
+    value = body('stop')
+    endpoint = '/chat/operations/admit'
+    assert client.post(endpoint, headers=headers('fri'), json=value).status_code == 400
+    past = control_body()
+    controls.enqueue(past)
+    # A different member or conversation cannot borrow this music context.
+    elsewhere = copy.deepcopy(value)
+    elsewhere['user_id'] = elsewhere['source']['user_id'] = '30'
+    assert client.post(endpoint, headers=headers('fri'), json=elsewhere).status_code == 400
+    assert client.post(endpoint, headers=headers('fri'), json=value).json()['allowed']
+    # Context still expires even though command receipts remain retained for 24 hours.
+    with controls.store.connection() as db:
+        db.execute('UPDATE gene_controls SET created=?', (time.time()-121,))
+    value['source']['id'] = str(int(value['source']['id'])+1)
+    assert client.post(endpoint, headers=headers('fri'), json=value).status_code == 400
+    assert Controls(controls.store).poll(['play']) is None  # The old queued request expired, not rerun.
+
+
+def test_bare_stop_in_nonmusic_dm_never_forces_or_authorizes_a_music_command(monkeypatch, tmp_path):
+    from gene.fri_actions import Actions
+    from tests.test_fri_chat import CONTEXT
+    async def scenario():
+        fri, _, _, _ = harness(monkeypatch, tmp_path)
+        paths = []
+        async def api(method, path, value=None):
+            paths.append(path)
+            if path == '/chat/context':
+                return {**CONTEXT, 'revision': 0}
+            if path == '/agent/admit':
+                return {'allowed': True}
+            if path == '/controls/recent':
+                return {'receipts': []}
+            return {'ok': True}
+        fri.api = api
+        fri.chat.respond = AsyncMock(side_effect=[
+            ChatResult(status='completed', action={'kind': 'gene_command', 'action': 'stop', 'argument': ''}),
+            ChatResult(status='completed', reply='do you mean stop the music, or stop talking?')])
+        actual = event(user=20, channel=999, guild=None, content='stop')
+        actual.id = int(control_body()['source']['id'])
+        try:
+            with patch.object(Actions, 'available', new=AsyncMock(return_value={'gene_command': {}})), \
+                    patch.object(Actions, 'execute', new=AsyncMock()) as execute:
+                result = await fri.talk(123, 999, 20, actual.content, 'private', event=actual)
+            execute.assert_not_awaited()
+            assert '/chat/operations/admit' not in paths and '/controls' not in paths
+            assert 'do you mean' in result.reply
+            assert fri.chat.respond.await_args.args[1]['action_result']['outcome'] == 'rejected'
+        finally:
+            await fri.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('record_failure', [True, False])
+def test_confirmed_exact_control_is_not_hidden_by_breadcrumb_recording_outage(monkeypatch, tmp_path, controls_api, record_failure):  # noqa: F811
+    from redbot.core import commands
+    async def scenario():
+        client, controls = controls_api
+        fri, _, _, _ = harness(monkeypatch, tmp_path)
+        paths = []
+        async def api(method, path, value=None):
+            paths.append(path)
+            if path == '/chat/turn' and record_failure:
+                raise commands.UserFeedbackCheckFailure('controller unavailable while recording')
+            if path.startswith('/controls/') and path.endswith('/result'):
+                claim = controls.poll(['stop'])
+                controls.finish(claim['id'], claim['lease'], {'output': 'Stopped playback.'})
+            response = client.request(method, path, headers=headers('fri'), json=value)
+            if response.status_code >= 400:
+                raise ControllerRejected(response.json()['detail'])
+            return response.json()
+        fri.api = api
+        fri.chat.respond = AsyncMock()
+        actual = event(user=20, channel=1, content='stop the music')
+        actual.id = int(control_body()['source']['id'])
+        actual.webhook_id = None
+        actual.channel.fetch_message = AsyncMock(return_value=actual)
+        try:
+            with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock()):
+                result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
+            assert ('confirmed command result' if record_failure else 'Stopped playback.') in result.reply
+            assert 'try again' not in result.reply.casefold()
+            assert paths.count('/controls') == paths.count('/chat/turn') == 1
             fri.chat.respond.assert_not_awaited()
         finally:
             await fri.close()

@@ -9,10 +9,10 @@ from .fri_actions import Actions
 from .fri_chat import ChatResult
 from .fri_errors import ControllerRejected
 from .fri_operation_store import command
-from .fri_outcomes import fallback, receipt
-from .gene_controls import requested
+from .fri_outcomes import fallback, receipt, unrecorded
+from .gene_controls import current_music_context, requested
 
-MENU = ('Music controls: `fri pause`, `fri resume`, `fri skip`, `fri stop`, `fri volume 35`, '
+MENU = ('Music controls: `fri pause music`, `fri resume music`, `fri skip track`, `fri stop the music`, `fri volume 35`, '
         '`fri queue`, `fri now playing`. Gene: `fri status`, `fri version`. '
         'You can use these during a chat cooldown. Normal voice, DJ and server permissions still apply. '
         'For songs, say `fri play` followed by the song, or open `/gene menu` during a cooldown.')
@@ -31,6 +31,14 @@ async def admit(fri, event, source, scope, text, context):
         return Admission()
     selected = command(text)
     pending = context.get('pending')
+    recent_music = False
+    candidate = command(text, music_context=True)
+    if (not selected and candidate and candidate['action'] in {'pause', 'resume', 'skip', 'stop'}
+            and int(scope['guild_id']) == fri.guild_id):
+        recent = await fri.api('POST', '/controls/recent', scope)
+        recent_music = current_music_context(recent.get('receipts', []))
+        if recent_music:
+            selected = candidate
     if not selected and any(requested(text, action) for action in ('play', 'volume')):
         return Admission()  # A new complete command uses the ordinary conversation path.
     if not selected and not pending:
@@ -42,6 +50,7 @@ async def admit(fri, event, source, scope, text, context):
     actions.message, actions.model, actions.effort = text, context['model'], context['effort']
     actions.pending = pending
     actions.operational = True
+    actions.music_context = recent_music
     try:
         original = await event.channel.fetch_message(event.id)
     except discord.HTTPException:
@@ -67,5 +76,6 @@ async def admit(fri, event, source, scope, text, context):
     evidence = receipt('gene_command', value)
     # Output can contain player/channel evidence. Preserve the normal fresh access fence.
     if not await actions.valid():
-        return Admission(result=ChatResult(reply='Access changed during the check. Check Gene’s player before retrying.', status='completed'))
+        return Admission(result=ChatResult(reply=unrecorded([evidence],
+            reason='Access changed before I could safely show the details.'), status='completed'))
     return Admission(result=ChatResult(reply=fallback([evidence]), status='completed'), tool_receipt=evidence)

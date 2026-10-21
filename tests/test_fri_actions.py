@@ -232,9 +232,9 @@ def test_two_stage_reply_counts_both_calls_and_keeps_only_safe_breadcrumb(monkey
                 assert 'check completed' in result.reply
                 assert 'trance' not in result.reply and not result.action
         else:
-            from redbot.core import commands
-            with pytest.raises(commands.UserFeedbackCheckFailure):
-                await fri.talk(123, 999, 10, 'look around', 'private', event=event(channel=999, content='look around'))
+            result = await fri.talk(123, 999, 10, 'look around', 'private', event=event(channel=999, content='look around'))
+            assert 'Access or memory changed' in result.reply
+            assert 'music' not in result.reply and 'trance' not in result.reply
         assert fri.chat.respond.await_count == 2
         assert 'read_recent' not in fri.chat.respond.await_args.args[1]['actions']
         assert 'work_save' not in fri.chat.respond.await_args.args[1]['actions']

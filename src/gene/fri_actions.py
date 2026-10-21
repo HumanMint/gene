@@ -12,7 +12,7 @@ from .fri_context import discord_source
 from .fri_errors import ControllerRejected
 from .fri_pending import Clarification, completion, research_query
 from .fri_web import lookup
-from .gene_controls import COMMANDS, arguments, requested
+from .gene_controls import COMMANDS, arguments, music_control_intent, requested
 from .privacy import clean
 from .web_policy import public_query
 
@@ -34,6 +34,9 @@ class Actions:
         self.search_count = 0
 
     def command_requested(self, action):
+        if not music_control_intent(self.message, action.get('action'),
+                                  music_context=getattr(self, 'music_context', False)):
+            return False
         continuation_only = getattr(self, 'continuation_only', None)
         if continuation_only and action.get('action') != continuation_only:
             return False

@@ -205,7 +205,14 @@ class Fri(discord.Client):
                     if operation.result.status == 'completed':
                         saved_result = (ChatResult(reply='Earlier check: gene_command. Fetch current evidence for follow-up details; no findings are retained here.', status='completed')
                                         if operation.tool_receipt else operation.result)
-                        await self.save_response(scope, source, text, context, saved_result, model='local-control')
+                        try:
+                            await self.save_response(scope, source, text, context, saved_result, model='local-control')
+                        except (commands.UserFeedbackCheckFailure, TimeoutError):
+                            if not operation.tool_receipt:
+                                raise
+                            from .fri_outcomes import unrecorded
+                            LOG.warning('Tool result preserved; chat recording unavailable')
+                            return ChatResult(reply=unrecorded([operation.tool_receipt]), status='completed')
                     return operation.result
                 if self.agent and self.agent.config['enabled'] and not operation.continuation:
                     admission = await self.api('POST', '/agent/admit', {**self.agent.identity(user_id, guild_id),
@@ -242,6 +249,8 @@ class Fri(discord.Client):
                     readable = await actions.channels(fresh=True)
                     context['gene_receipts'] = [r for r in recent.get('receipts', []) if r['channel_id'] in readable]
                     actions.sources.update(r['channel_id'] for r in context['gene_receipts'])
+                    from .gene_controls import current_music_context
+                    actions.music_context = current_music_context(context['gene_receipts'])
                 text = clean(text, 4000)
                 result = await self.chat_once(text, context)
                 if guild_id != self.guild_id:
@@ -253,9 +262,13 @@ class Fri(discord.Client):
                     result, receipts, research = await run(self, actions, text, context, result)
                     receipt = receipts[-1]
                     action_kind = receipt['kind']
-                    current = await self.api('POST', '/chat/context', scope)
+                    from .fri_outcomes import unrecorded
+                    try:
+                        current = await self.api('POST', '/chat/context', scope)
+                    except (commands.UserFeedbackCheckFailure, TimeoutError):
+                        return ChatResult(reply=unrecorded(receipts, reason='I couldn’t recheck conversation access to show the details.'), status='completed')
                     if current['revision'] != context['revision'] or not await actions.valid():
-                        raise commands.UserFeedbackCheckFailure('Access or memory changed during that check. Ask again for a fresh reply.')
+                        return ChatResult(reply=unrecorded(receipts, reason='Access or memory changed before I could safely show the details.'), status='completed')
                     # Keep only a neutral breadcrumb so follow-ups know which evidence to fetch again.
                     # Retrieved messages/answers never outlive source erasure in someone else's chat.
                     checked_channel = receipt.get('channel_id', '')
@@ -266,12 +279,16 @@ class Fri(discord.Client):
                                    else '. Fetch current evidence for follow-up details; no findings are retained here.')
                     if result.settings_preview or result.post_preview or result.clarification:
                         breadcrumb = result.reply
-                    await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
-                        'source': source.model_dump(),
-                        'input': clean(event.content, 4000) if result.clarification else text, 'reply': breadcrumb, 'model': context['model'],
-                        'effort': context['effort'], 'notes': [], 'web_receipt': research, 'clarification': result.clarification,
-                        'allow_closing': result.allow_closing and not bool(result.draft or result.settings_preview or
-                                                                         result.post_preview or result.clarification)})
+                    try:
+                        await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
+                            'source': source.model_dump(),
+                            'input': clean(event.content, 4000) if result.clarification else text, 'reply': breadcrumb, 'model': context['model'],
+                            'effort': context['effort'], 'notes': [], 'web_receipt': research, 'clarification': result.clarification,
+                            'allow_closing': result.allow_closing and not bool(result.draft or result.settings_preview or
+                                                                             result.post_preview or result.clarification)})
+                    except (commands.UserFeedbackCheckFailure, TimeoutError):
+                        LOG.warning('Tool result preserved; chat recording unavailable')
+                        return ChatResult(reply=unrecorded(receipts), status='completed')
                     result.notes = []
                     diagnosis = (receipt if action_kind == 'gene_diagnose'
                                  else receipt.get('gene_result', receipt).get('diagnostic', {}))

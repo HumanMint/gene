@@ -67,13 +67,19 @@ def test_confirmed_tool_result_survives_followup_failure_without_reexecution(fai
     asyncio.run(scenario())
 
 
-def test_saved_work_remains_persisted_after_final_model_failure_and_restart(monkeypatch, tmp_path, controls_api):  # noqa: F811
+@pytest.mark.parametrize('model_failure,failure_stage', [(True, 'none'), (False, 'recording'),
+                                                       (True, 'recording'), (False, 'verification')])
+def test_saved_work_remains_persisted_after_reply_or_recording_failure_and_restart(monkeypatch, tmp_path, controls_api, model_failure, failure_stage):  # noqa: F811
     async def scenario():
         client, controls = controls_api
         fri, _, _, _ = harness(monkeypatch, tmp_path)
         calls = []
         async def api(method, path, body=None):
             calls.append(path)
+            if path == '/chat/turn' and failure_stage == 'recording':
+                raise commands.UserFeedbackCheckFailure('Controller temporarily unavailable')
+            if path == '/chat/context' and failure_stage == 'verification' and '/workspace/save' in calls:
+                raise commands.UserFeedbackCheckFailure('Controller temporarily unavailable')
             response = client.request(method, path, headers=headers('fri'), json=body)
             if response.status_code >= 400:
                 raise ControllerRejected(response.json()['detail'])
@@ -86,10 +92,16 @@ def test_saved_work_remains_persisted_after_final_model_failure_and_restart(monk
         fri.chat.respond = AsyncMock(side_effect=[
             ChatResult(status='completed', action={'kind': 'work_save', 'work_id': '', 'version': 0,
                 'title': 'groceries', 'body': 'milk and bread', 'state': 'open'}),
-            ChatResult(status='failed', error='model disconnected')])
+            ChatResult(status='failed' if model_failure else 'completed', reply='saved it',
+                       error='model disconnected' if model_failure else '')])
         try:
             result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
-            assert result.reply == 'Saved your work at version 1 (open).'
+            if failure_stage != 'none':
+                assert 'Your work was saved at version 1.' in result.reply
+                assert 'couldn’t' in result.reply
+                assert 'try again' not in result.reply.casefold()
+            else:
+                assert result.reply == 'Saved your work at version 1 (open).'
             restarted = Store(controls.store.path)
             from gene.fri_workspace_store import Workspace
             scope = {'guild_id': '123', 'user_id': '20', 'conversation_id': 'public:1'}
@@ -98,8 +110,11 @@ def test_saved_work_remains_persisted_after_final_model_failure_and_restart(monk
             assert Workspace(restarted).read(scope, work[0]['id'])['body'] == 'milk and bread'
             assert calls.count('/workspace/save') == 1
             context = restarted.chat_context('123', 'public:1', '20')
-            assert 'work_save' in context['turns'][-1]['reply']
-            assert 'milk and bread' not in context['turns'][-1]['reply']
+            if failure_stage != 'none':
+                assert not context['turns']
+            else:
+                assert 'work_save' in context['turns'][-1]['reply']
+                assert 'milk and bread' not in context['turns'][-1]['reply']
         finally:
             await fri.close()
     asyncio.run(scenario())
@@ -117,3 +132,31 @@ def test_reminder_cancellation_fallback_never_claims_an_inflight_send_was_cancel
     evidence = receipt('reminder_cancel', {'state': state})
     assert evidence['outcome'] == expected
     assert ('Reminder cancelled.' in fallback([evidence])) is (state == 'cancelled')
+
+
+def test_rejected_chat_record_does_not_publish_retrieved_private_read_results(monkeypatch, tmp_path):
+    from tests.test_fri_chat import CONTEXT
+    async def scenario():
+        fri, _, _, _ = harness(monkeypatch, tmp_path)
+        private_detail = 'unrelated private member evidence'
+        async def api(method, path, value=None):
+            if path == '/chat/context':
+                return {**CONTEXT, 'revision': 0}
+            if path == '/agent/admit':
+                return {'allowed': True}
+            if path == '/chat/turn':
+                raise ControllerRejected('Privacy changed: '+private_detail)
+            return {'ok': True}
+        fri.api = api
+        fri.chat.respond = AsyncMock(side_effect=[
+            ChatResult(status='completed', action={'kind': 'read_recent', 'channel_id': '1'}),
+            ChatResult(status='completed', reply=private_detail)])
+        try:
+            actual = event(user=20, channel=1, content='read recent chat')
+            result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
+            assert 'That check completed.' in result.reply
+            assert private_detail not in result.reply and 'trance' not in result.reply
+            assert not result.draft and not result.clarification
+        finally:
+            await fri.close()
+    asyncio.run(scenario())

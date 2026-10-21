@@ -64,3 +64,64 @@ def requested(text, action):
     request = r'(?:(?:can|could|would|will) (?:you|u) |(?:i want|i would like|i\'d like) (?:you|u) to )?'
     delegate = r'(?:(?:please|pls) )?(?:(?:ask|get|tell) gene to )?(?:(?:set|change) (?:the )?)?'
     return bool(re.search(r'(?:^|[.!?\n]\s*)'+prefix+request+delegate+(r'(?:join (?:the |my |our )?(?:vc|voice(?: channel)?) and )?' if action == 'play' else '')+r'(?:'+verbs[action]+r')\b', text.strip()))
+
+
+def control_text(text):
+    text = ' '.join(text.casefold().replace('’', "'").split()).strip(' .!?')
+    text = re.sub(r'^(?:(?:hey|yo)\s+)?(?:fri|<@!?\d+>)[,:]?\s+', '', text)
+    return re.sub(r'^(?:(?:can|could|would) you\s+)?(?:please\s+)?', '', text)
+
+
+MUSIC_OBJECTS = {'pause': ('music', 'playback', 'audio'),
+                 'resume': ('music', 'playback', 'audio'),
+                 'skip': ('song', 'track'), 'stop': ('music', 'playback', 'audio')}
+
+
+def music_object(action):
+    verb = 'resume|unpause' if action == 'resume' else action
+    return r'(?:'+verb+r') (?:the )?(?:this |current )?(?:'+'|'.join(MUSIC_OBJECTS[action])+r')'
+
+
+def quick_control(text, *, music_context=False):
+    """Exact current requests only; no interpretation of quoted or embedded verbs."""
+    text = control_text(text)
+    aliases = {'pause': 'pause', 'resume': 'resume', 'unpause': 'resume', 'skip': 'skip',
+               'stop': 'stop', 'queue': 'queue', 'show queue': 'queue', "what's queued": 'queue',
+               'what is queued': 'queue', 'now playing': 'now_playing', "what's playing": 'now_playing',
+               'what is playing': 'now_playing', 'status': 'status', 'gene status': 'status',
+               'version': 'version', 'gene version': 'version'}
+    if text in ('controls', 'music controls', 'gene controls'):
+        return {'action': 'menu', 'argument': ''}
+    for action in MUSIC_OBJECTS:
+        if re.fullmatch(music_object(action)+r'(?: now| please)?', text):
+            return {'action': action, 'argument': ''}
+    if text in aliases and requested(text, aliases[text]):
+        action = aliases[text]
+        if action in MUSIC_OBJECTS and not music_context:
+            return None
+        return {'action': action, 'argument': ''}
+    volume = re.fullmatch(r'volume (\d{1,3})', text)
+    if volume:
+        try:
+            arguments('volume', volume[1])
+        except ValueError:
+            return None
+        return {'action': 'volume', 'argument': volume[1]}
+    return None
+
+
+
+def current_music_context(receipts):
+    """Use only controller-supplied same-conversation receipts, never assistant claims."""
+    import time
+    return any(-5 <= time.time()-row.get('at', 0) <= 120 and
+               row.get('action') in {'play', 'pause', 'resume', 'skip', 'stop', 'volume', 'queue', 'now_playing'} and
+               row.get('state') in {'queued', 'claimed', 'running', 'finished', 'expired'}
+               for row in receipts)
+
+
+def music_control_intent(text, action, *, music_context=False):
+    """An ambiguous conversation cue is not an instruction to change shared audio."""
+    if action not in {'pause', 'resume', 'skip', 'stop'} or music_context:
+        return True
+    return bool(re.match(music_object(action)+r'\b', control_text(text)))

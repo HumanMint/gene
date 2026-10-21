@@ -1,38 +1,15 @@
 """Persistent operational allowance, separate from conversational inference budgets."""
 
-import re
 import time
 
-from .control_store import source_key
+from .control_store import Controls, source_key
 from .fri_context import ChatSource
 from .fri_pending import cancelled, read
-from .gene_controls import arguments, requested
+from .gene_controls import current_music_context
+from .gene_controls import quick_control as command
 
 WINDOW = 1800
 LIMIT = 12
-
-def command(text):
-    """Exact current requests only; no interpretation of quoted or embedded verbs."""
-    text = ' '.join(text.casefold().replace('’', "'").split()).strip(' .!?')
-    text = re.sub(r'^(?:(?:hey|yo)\s+)?(?:fri|<@!?\d+>)[,:]?\s+', '', text)
-    text = re.sub(r'^(?:(?:can|could|would) you\s+)?(?:please\s+)?', '', text)
-    aliases = {'pause': 'pause', 'resume': 'resume', 'unpause': 'resume', 'skip': 'skip',
-               'stop': 'stop', 'queue': 'queue', 'show queue': 'queue', "what's queued": 'queue',
-               'what is queued': 'queue', 'now playing': 'now_playing', "what's playing": 'now_playing',
-               'what is playing': 'now_playing', 'status': 'status', 'gene status': 'status',
-               'version': 'version', 'gene version': 'version'}
-    if text in ('controls', 'music controls', 'gene controls'):
-        return {'action': 'menu', 'argument': ''}
-    if text in aliases and requested(text, aliases[text]):
-        return {'action': aliases[text], 'argument': ''}
-    volume = re.fullmatch(r'volume (\d{1,3})', text)
-    if volume:
-        try:
-            arguments('volume', volume[1])
-        except ValueError:
-            return None
-        return {'action': 'volume', 'argument': volume[1]}
-    return None
 
 
 
@@ -61,7 +38,9 @@ def admit(store, scope, source, revision, text, continuation):
                 raise ValueError('There is no current accepted request to continue')
             origin = source_key(scope['guild_id'], pending['source']['id'])
         elif not command(text):
-            raise ValueError('Use an exact supported control or answer a current clarification')
+            recent = Controls(store).recent(scope['user_id'], scope['guild_id'], scope['conversation_id'])
+            if not command(text, music_context=current_music_context(recent)):
+                raise ValueError('Name music or playback explicitly, or answer a current clarification')
         old = db.execute('SELECT id FROM fri_operation_admissions WHERE id=?', (identifier,)).fetchone()
         if old:
             return {'allowed': False, 'reason': 'This operational request was already accepted. Check its result before retrying.'}

@@ -61,3 +61,28 @@ def one(last):
     if kind in ('web_search', 'web_refine', 'web_sources') and last.get('answer'):
         return clean(str(last['answer']), 1700)
     return 'That check completed, but I couldn’t finish explaining it. No action was repeated; ask for current details.'
+
+
+def unrecorded(receipts, *, reason='I couldn’t save this chat record.'):
+    """A failed privacy/revision write must not hide an already known side effect.
+
+    Do not quote read results or controller details here: the failed write may be
+    a concurrent privacy/access rejection, rather than a temporary outage.
+    """
+    lines = []
+    for item in receipts:
+        if item['outcome'] == Outcome.COMPLETED and item['kind'] == 'work_save':
+            lines.append(f"Your work was saved at version {item['version']}.")
+        elif item['outcome'] == Outcome.COMPLETED and item['kind'] == 'reminder_cancel':
+            lines.append('The reminder was cancelled.')
+    last = receipts[-1]
+    if last['outcome'] == Outcome.COMPLETED:
+        if last['kind'] == 'gene_command':
+            lines.append('Gene returned a confirmed command result.')
+        elif last['kind'] not in ('work_save', 'reminder_cancel'):
+            lines.append('That check completed.')
+    else:
+        lines.append({'rejected': 'That step was rejected.', 'failed': 'That check failed.',
+                      'uncertain': 'Completion is uncertain.'}[last['outcome']])
+    lines.append(reason+' No action was repeated; check current status before repeating an action.')
+    return '\n'.join(lines)[:1800]

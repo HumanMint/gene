@@ -19,6 +19,10 @@ again in that DM; it is never automatically added to public context. Names and
 nicknames do not establish identity. Forgetting a member removes saved work and
 pending deliveries too. Text already posted on Discord and backups are separate.
 Retrieved member history cannot be copied into saved work by the same tool turn.
+In public channels, new text must appear verbatim in the requesting member’s own
+message; titles are derived from it. Existing bodies may be kept unchanged when
+marking work complete. This also prevents automatically supplied recent messages
+from being copied into someone else’s durable memory. DMs support free drafting.
 
 ## One-off publication
 
@@ -39,7 +43,9 @@ Configured history access is separate from ambient conversation participation.
 The controller stores the draft version, exact text, target, source event and bound
 preview message. A matching fresh owner interaction is the only authorization path.
 The heartbeat can deliver an authorized outbox item without any additional model
-call. A durable send fence and Discord nonce prevent repeat attempts. A crash after
+call. A durable send fence, a bounded single-attempt HTTP transport, and a Discord nonce
+prevent repeat attempts. The transport does not follow redirects or retry after
+a server error, rate limit or connection reset. A crash after
 that fence or an ambiguous response leaves delivery uncertain; it is not retried.
 Successful Discord message IDs are retained and receipt delivery to the controller
 can retry without repeating the post. Ask to read the saved work for its delivery

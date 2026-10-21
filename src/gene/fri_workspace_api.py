@@ -25,6 +25,7 @@ class Save(Scope):
     title: str = Field(min_length=1, max_length=100)
     body: str = Field(min_length=1, max_length=4000)
     state: Literal['open', 'completed', 'cancelled']
+    request_text: str = Field(default='', max_length=4000)
 
 
 class Prepare(Scope):

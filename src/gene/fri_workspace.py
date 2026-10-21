@@ -1,10 +1,12 @@
 """Discord adapter for scoped work, capability inspection and explicit publication."""
 
+import asyncio
 import copy
 import json
 import re
 
 import discord
+import httpx
 from redbot.core import commands
 
 from .fri_context import discord_source
@@ -56,7 +58,8 @@ def available(actions):
         'work_read': {'description': 'Read exact saved work by work_id, including version and status. Never guess an ID.'},
         'work_save': {'description': 'When asked to save/update a draft or task, persist exact text for later. '
             'New work: work_id="", version=0. Edit: first read its current version. title, body, state=open/completed/cancelled. '
-            '30 items per member, 30 day retention. Saving does not schedule or authorize execution.'}}
+            'In public, the body must be exact text from your current message, or unchanged existing work; title is derived from that text. '
+            'Use DMs to compose freely. 30 items per member, 30 day retention. Saving does not schedule or authorize execution.'}}
     if in_owner_dm(actions):
         tools['channel_capabilities'] = {'description': 'Check actual server channel capabilities. channel_id="" lists channels. '
             'Read access, ambient replies and owner-authorized one-off posts are distinct.'}
@@ -91,7 +94,7 @@ async def execute(actions, action):
         if not re.search(r'\b(save|keep|hold|draft|store|remember|update|edit|change|mark|cancel|complete|post|send)\b', actions.message, re.I):
             return {'blocked': 'Ask explicitly to save or update this work first.'}
         return {'kind': kind, **await fri.api('POST', '/workspace/save',
-            {**payload, **{k: v for k, v in action.items() if k != 'kind'}})}
+            {**payload, **{k: v for k, v in action.items() if k != 'kind'}, 'request_text': actions.event.content})}
     if not re.search(r'\b(post|send|publish|introduce|share)\b', actions.message, re.I):
         return {'blocked': 'Ask to prepare a post first; saving a draft does not request delivery.'}
     targets = await capabilities(fri, action['channel_id'])
@@ -200,11 +203,9 @@ async def deliver_one(fri):
             raise ValueError('Original request changed')
         await fri.api('POST', f"/workspace/posts/{post['id']}/sending", {'lease': post['lease']})
         sending = True
-        result = await fri.http.request(discord.http.Route('POST', '/channels/{channel_id}/messages',
-            channel_id=int(post['target_id'])), json={'content': post['body'], 'allowed_mentions': {'parse': []},
-            'nonce': str(int(post['id'][:20], 16)), 'enforce_nonce': True, 'flags': 4})
+        result = await send_once(fri, post)
         message_id, state = str(int(result['id'])), 'sent'
-    except (commands.UserFeedbackCheckFailure, discord.HTTPException, ValueError, KeyError, OSError, TimeoutError):
+    except (commands.UserFeedbackCheckFailure, discord.HTTPException, httpx.HTTPError, ValueError, KeyError, OSError, TimeoutError):
         state = 'uncertain' if sending else 'failed'
     receipt = {'lease': post['lease'], 'state': state, 'message_id': message_id}
     path = directory/(post['id']+'.json')
@@ -219,3 +220,19 @@ async def deliver_one(fri):
                                allowed_mentions=NO_MENTIONS)
     except (discord.HTTPException, ValueError):
         pass  # The durable receipt remains available even if its DM preview was deleted.
+
+
+async def send_once(fri, post, *, transport=None):
+    """Do not use discord.py's retrying HTTPClient for non-repeatable publication.
+
+    No redirects, proxy inheritance, rate-limit sleep or retries. Even a 429/5xx is
+    returned to the outbox as uncertainty, never used to initiate another attempt.
+    """
+    target = str(int(post['target_id']))
+    async with asyncio.timeout(25), httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False, transport=transport) as client:
+        response = await client.post(f'https://discord.com/api/v10/channels/{target}/messages',
+            headers={'Authorization': 'Bot '+fri.http.token},
+            json={'content': post['body'], 'allowed_mentions': {'parse': []},
+                  'nonce': str(int(post['id'][:20], 16)), 'enforce_nonce': True, 'flags': 4})
+        response.raise_for_status()
+        return response.json()

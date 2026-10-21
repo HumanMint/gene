@@ -80,18 +80,24 @@ class Workspace:
                 'AND scope=? ORDER BY updated DESC LIMIT 30',
                 (scope['guild_id'], scope['user_id'], scope['conversation_id']))]}
 
-    def save(self, scope, source, revision, work_id, version, title, body, state):
+    def save(self, scope, source, revision, work_id, version, title, body, state, request_text=''):
         from .store import Conflict
         source.check(scope['guild_id'], scope['conversation_id'], scope['user_id'])
         if source.kind != 'discord_message' or abs(time.time()-source.timestamp().timestamp()) > 900:
             raise ValueError('Saving work needs a fresh Discord message')
         if not title.strip() or not body.strip() or redact(body) != body or redact(title) != title:
             raise ValueError('Work must contain text without credentials')
-        payload = json.dumps([scope, revision, work_id, version, title, body, state], sort_keys=True)
+        payload = json.dumps([scope, revision, work_id, version, title, body, state, request_text], sort_keys=True)
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
             self.revision(db, scope['user_id'], revision)
+            if scope['conversation_id'].startswith('public:'):
+                old = self.get(db, work_id, scope) if work_id else None
+                if body not in request_text and (not old or body != old['body']):
+                    raise ValueError('In a public channel, provide the exact text to save in your own message. Other members’ context cannot be copied.')
+                # Titles also must not launder someone else's ambient context into durable work.
+                title = body.strip()[:100]
             event = db.execute('SELECT * FROM fri_work_events WHERE source_id=?', (source.id,)).fetchone()
             if event:
                 if event['payload'] != payload:

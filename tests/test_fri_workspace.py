@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import discord
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -15,7 +16,7 @@ from gene.fri_chat import ChatResult
 from gene.fri_context import ChatSource
 from gene.fri_errors import ControllerRejected
 from gene.fri_runner import run
-from gene.fri_workspace import capabilities, deliver_one, execute, post_component
+from gene.fri_workspace import capabilities, deliver_one, execute, post_component, send_once
 from gene.fri_workspace_store import Workspace
 from gene.store import Conflict, Store
 
@@ -172,6 +173,9 @@ def discord_harness(api, tmp_path):
 def test_runtime_delivery_failures_do_not_duplicate(api, tmp_path, monkeypatch, failure):
     async def scenario():
         fri, work, post, original = discord_harness(api, tmp_path)
+        async def sender(f, p):
+            return await f.http.request(json={'content': p['body'], 'allowed_mentions': {'parse': []}, 'enforce_nonce': True, 'nonce': str(int(p['id'][:20],16))})
+        monkeypatch.setattr('gene.fri_workspace.send_once', sender)
         monkeypatch.setattr('gene.fri_workspace.capabilities', AsyncMock(return_value={'777': {'one_off_post': failure != 'permission'}}))
         if failure == 'deleted_source':
             original.edited_at = True
@@ -267,3 +271,38 @@ def test_post_button_never_accepts_member_or_public_interaction():
     assert not post_component(interaction, 50, 10)
     interaction.user.id, interaction.guild_id = 10, 123
     assert not post_component(interaction, 50, 10)
+
+
+@pytest.mark.parametrize('response', [500, 502, 504, 429, 307, 'reset'])
+def test_single_attempt_transport_never_retries_ambiguous_failures(response):
+    async def scenario():
+        requests = []
+        def handler(request):
+            requests.append(request)
+            if response == 'reset':
+                raise httpx.ReadError('accepted, then connection reset')
+            return httpx.Response(response, headers={'Retry-After': '600', 'Location': 'https://example.org'},
+                json={'retry_after': 600, 'id': '987'})
+        fri = SimpleNamespace(http=SimpleNamespace(token='fake-token'))
+        post = {'target_id': '777', 'body': 'hello', 'id': 'a'*32}
+        with pytest.raises(httpx.HTTPError):
+            await send_once(fri, post, transport=httpx.MockTransport(handler))
+        assert len(requests) == 1
+        assert str(requests[0].url) == 'https://discord.com/api/v10/channels/777/messages'
+    asyncio.run(scenario())
+
+
+def test_public_saved_work_does_not_launder_ambient_context_or_title(store):
+    work = Workspace(store)
+    scope = {**SCOPE, 'user_id': '20', 'conversation_id': 'public:456'}
+    event = source(user='20', channel='456', guild='123')
+    with pytest.raises(ValueError, match='exact text'):
+        work.save(scope, event, 0, '', 0, 'Someone else private topic', 'member 30 shared this', 'open', 'save what they said')
+    assert work.read(scope)['items'] == []
+    own = work.save(scope, event, 0, '', 0, 'member 30 shared this', 'my checklist', 'open', 'save my checklist')
+    assert own['title'] == 'my checklist'
+    done = work.save(scope, source(5,user='20',channel='456',guild='123'), 0, own['id'], 1,
+                    'member 30 private detail', 'my checklist', 'completed', 'mark my checklist done')
+    assert done['title'] == 'my checklist' and done['state'] == 'completed'
+    store.personal_control('30', 'disable')
+    assert work.read(scope, own['id'])['body'] == 'my checklist'

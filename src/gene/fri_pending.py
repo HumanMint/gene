@@ -11,6 +11,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .control_store import source_used
 from .fri_context import ChatSource, addressed_content
 from .gene_controls import arguments, requested
 from .privacy import clean
@@ -71,11 +72,7 @@ def save(db, guild, conversation, user, revision, text, source, clarification):
     if db.execute("SELECT 1 FROM chat_turns WHERE user_id=? AND json_extract(NULLIF(source,''),'$.id')=?",
                   (user, source.id)).fetchone():
         raise ValueError('This message already has a reply')
-    # Command receipts are the replay fence even when chat memory is disabled.
-    # A continuation stores the original request separately from its answer.
-    if db.execute("SELECT 1 FROM gene_controls WHERE user_id=? AND (json_extract(payload,'$.source.id')=? "
-                  "OR json_extract(payload,'$.continuation.source.id')=?)",
-                  (user, source.id, source.id)).fetchone():
+    if source_used(db, guild, source.id):
         raise ValueError('This request already ran')
     body = {**value, 'source': source.model_dump(), 'request_text': text, 'revision': revision}
     db.execute('INSERT INTO chat_pending VALUES (?,?,?,?,?,?,?)',

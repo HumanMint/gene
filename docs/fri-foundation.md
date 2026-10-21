@@ -63,8 +63,9 @@ voice, DJ and cooldown checks. Cancellation, unrelated replies, expiry, changed
 sources, chat clear and forgetting invalidate the continuation. A restart does not
 lose it or authorize a second command. This grants no admin or repair authority.
 This short-lived operational state also works with chat memory disabled. Consumed
-request IDs are fenced by command receipts, independently of retained chat turns.
-Privacy erasure cancels existing pending requests.
+request IDs are fenced in both clarification and direct command paths. A hash of
+the original event ID and guild survives text erasure for 24 hours to prevent replay;
+it retains no message text, names or user ID. Privacy erasure cancels existing pending requests.
 
 Public research receives only a current public question or the explicit pending
 question and current clarification. The assistant question, saved preferences and

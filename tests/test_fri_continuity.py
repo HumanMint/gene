@@ -91,6 +91,39 @@ def test_consumed_origin_cannot_rearm_after_restart_with_memory_disabled(store, 
     assert Controls(restarted).poll(['play']) is None
     with restarted.connection() as db:
         assert db.execute('SELECT count(*) FROM gene_controls').fetchone()[0] == 1
+        fence = dict(db.execute('SELECT * FROM gene_control_origins').fetchone())
+        assert set(fence) == {'id', 'created'} and len(fence['id']) == 64
+        assert pending['source']['id'] not in str(fence)
+    with patch('time.time', return_value=time.time()+86401):
+        assert Controls(restarted).poll(['play']) is None
+        with restarted.connection() as db:
+            assert db.execute('SELECT count(*) FROM gene_control_origins').fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('erased', [False, True])
+def test_consumed_origin_cannot_replay_as_a_direct_command_even_after_erasure(store, erased):
+    initial = origin()
+    pending = arm(store, initial)
+    controls = Controls(store)
+    body = answer(pending)
+    identifier = controls.enqueue(body)['id']
+    claim = controls.poll(['play'])
+    controls.start(identifier, claim['lease'])
+    controls.finish(identifier, claim['lease'], {'output': 'Track enqueued'})
+    if erased:
+        store.personal_control('20', 'disable')
+    restarted = Store(store.path)
+    revision = restarted.chat_context('123', 'public:1', '20')['revision']
+    replay = {key: value for key, value in initial.items() if key != 'goal'}
+    replay['revision'] = revision
+    with patch('time.time', return_value=time.time()+4):
+        with pytest.raises(ValueError, match='already ran'):
+            Controls(restarted).enqueue(replay)
+        with pytest.raises(ValueError):
+            arm(restarted, {**initial, 'revision': revision})
+    assert Controls(restarted).poll(['play']) is None
+    with restarted.connection() as db:
+        assert db.execute('SELECT count(*) FROM gene_controls').fetchone()[0] == 1
 
 
 @pytest.mark.parametrize('change', ['user', 'channel', 'guild', 'private', 'expired', 'clear', 'disable',

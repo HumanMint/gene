@@ -124,9 +124,10 @@ def test_unverified_report_needs_owner_before_normal_coding(store):
 
 def test_restart_deduplication_budget_pause_and_owner_notice(store):
     enable(store)
-    first=request(store,payload())
+    original=payload()
+    first=request(store,original)
     assert Store(store.path).get(first['id'])['state']=='queued'
-    assert request(store,payload(user='21'))['id']==first['id']
+    assert request(store,original)['id']==first['id']
     assert store.claim_review_notice()['phase']=='status'
     for index in range(3):
         job=store.claim()
@@ -186,3 +187,17 @@ def test_api_uses_fri_credential_scope_and_source_provenance(tmp_path):
         assert len(client.post('/repairs/recent',headers=headers,json=scope).json()['repairs'])==1
         scope['user_id']='other'
         assert client.post('/repairs/recent',headers=headers,json=scope).json()['repairs']==[]
+
+
+def test_unrelated_faults_are_preserved_while_another_repair_is_active(store):
+    enable(store)
+    first_payload=payload()
+    first=request(store,first_payload)
+    second_payload=payload(user='21')
+    second_payload['source']['id']=str(int(first_payload['source']['id'])+1)
+    second_payload['body']='The existing queue pagination fails on the second page.'
+    second=request(store,second_payload)
+    assert second['accepted'] and not second['duplicate']
+    assert second['id'] != first['id']
+    assert store.get(second['id'])['body']==second_payload['body']
+    assert request(store,second_payload)['id']==second['id']

@@ -18,6 +18,7 @@ from .fri_actions import Actions
 from .fri_addressing import addressed_text
 from .fri_chat import Chat, ChatResult
 from .fri_context import discord_source
+from .fri_errors import ControllerRejected
 from .fri_memory import describe_memory, memory_intent
 from .fri_panel import DraftView, HomeView, authorized, card, reply, sessions
 from .fri_reports import ReportButton, report_component
@@ -111,6 +112,8 @@ class Fri(discord.Client):
             async with self.session.request(method, self.url + path, json=payload,
                     headers={'Authorization': 'Bearer ' + self.token}) as response:
                 data = await response.json()
+                if 400 <= response.status < 500:
+                    raise ControllerRejected(str(data.get('detail', 'Controller rejected this request')))
                 if response.status >= 400:
                     raise commands.UserFeedbackCheckFailure(str(data.get('detail', 'Controller rejected this request')))
                 return data

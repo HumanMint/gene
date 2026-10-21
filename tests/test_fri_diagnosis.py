@@ -98,7 +98,7 @@ def test_diagnosis_is_available_with_empty_catalog_and_offers_real_review_withou
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('outcome',['accepted','owner_review','unknown'])
+@pytest.mark.parametrize('outcome',['accepted','owner_review','unknown','rejected'])
 def test_verified_member_report_submits_only_to_bounded_repair_intake(monkeypatch,tmp_path,outcome):
     from redbot.core import commands
     async def scenario():
@@ -123,6 +123,9 @@ def test_verified_member_report_submits_only_to_bounded_repair_intake(monkeypatc
             if path=='/repairs/recent':
                 return {'repairs':[]}
             if path=='/repairs':
+                if outcome=='rejected':
+                    from gene.fri_errors import ControllerRejected
+                    raise ControllerRejected('Repair checks need a fresh Discord message')
                 if outcome=='unknown':
                     raise commands.UserFeedbackCheckFailure('No acknowledgement')
                 return {'accepted':outcome=='accepted','id':'a'*12,'state':'queued'}
@@ -165,4 +168,31 @@ def test_auto_repair_receipt_does_not_attach_a_duplicate_request_preview(monkeyp
             result=await fri.talk(123,1,20,source.content,'public',event=source)
         assert result.draft is None
         await fri.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('status',[400,403,422,500])
+def test_controller_rejection_is_distinct_from_an_uncertain_server_outcome(monkeypatch,tmp_path,status):
+    from unittest.mock import Mock
+
+    from redbot.core import commands
+
+    from gene.fri_errors import ControllerRejected
+    async def scenario():
+        fri,_,_,_=harness(monkeypatch,tmp_path)
+        response=Mock(status=status)
+        response.json=AsyncMock(return_value={'detail':'Repair checks need a fresh Discord message'})
+        context=AsyncMock()
+        context.__aenter__.return_value=response
+        session=Mock()
+        session.request.return_value=context
+        original=fri.session
+        fri.session=session
+        try:
+            with pytest.raises(commands.UserFeedbackCheckFailure) as error:
+                await fri.api('POST','/repairs',{})
+            assert isinstance(error.value,ControllerRejected)==(status<500)
+        finally:
+            fri.session=original
+            await fri.close()
     asyncio.run(scenario())

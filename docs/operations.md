@@ -870,8 +870,9 @@ or deployment remain on the normal owner-approved path.
 A current member report or a fresh error from Gene may queue a verification job. Luna
 only triages; Sol/xhigh diagnoses. The authenticated harness checks the live source,
 member/channel scope and erasure revision. The controller requires a fresh source and
-binds the request hash to the current release and policy. Duplicate reports share an
-active check. At most three automatic verification jobs may start in a rolling day;
+binds the request hash to the current release and policy. Retrying the same Discord
+event returns its existing job; distinct reports remain separate. At most three
+automatic verification jobs may start in a rolling day;
 excess reports retain the normal review path. Old requests are never retroactively approved.
 
 The trusted worker then:

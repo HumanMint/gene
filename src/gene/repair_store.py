@@ -58,10 +58,11 @@ def request(store, body):
         base = store._setting(db, 'active_sha')
         if not base:
             return {'accepted': False, 'reason': 'No live release is available to verify.'}
+        # A retry of the same Discord event is idempotent. Another report is not
+        # evidence of the same fault, even when it concerns the same live release.
         existing = db.execute('SELECT j.id,j.state FROM jobs j JOIN repair_jobs r ON j.id=r.job_id '
-            'WHERE j.source_id=? OR (r.base_sha=? AND j.kind="repair" AND '
-            'j.state IN ("queued","building","approved","deploying")) ORDER BY j.created LIMIT 1',
-            ('repair:'+source.id, base)).fetchone()
+            'WHERE j.source_id=? AND j.guild_id=? AND j.user_id=? AND j.source_url=?',
+            ('repair:'+source.id, body['guild_id'], body['user_id'], source.evidence()['url'])).fetchone()
         if existing:
             return {'accepted': True, 'id': existing['id'], 'state': existing['state'], 'duplicate': True}
         count = db.execute('SELECT count(*) FROM repair_jobs r JOIN jobs j ON r.job_id=j.id WHERE j.created>?',

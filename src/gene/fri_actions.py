@@ -9,6 +9,7 @@ from redbot.core import commands
 
 from .fri_agent_model import ATTENTION, DIAGNOSIS
 from .fri_context import discord_source
+from .fri_errors import ControllerRejected
 from .fri_web import lookup
 from .gene_controls import COMMANDS, arguments, requested
 from .privacy import clean
@@ -271,6 +272,8 @@ class Actions:
                         'source': discord_source(latest).model_dump(), 'revision': self.revision,
                         'body': clean('Reported failure (untrusted):\n'+self.message+'\n\nAssessment:\n'+
                                       result['assessment']+'\n\nProposed investigation:\n'+result['proposed_request'], 5500)})
+                except ControllerRejected as exc:
+                    result['repair'] = {'accepted': False, 'reason': clean(str(exc), 500)}
                 except commands.UserFeedbackCheckFailure:
                     result['repair'] = {'accepted': False, 'uncertain': 'The controller did not confirm whether verification was queued. Check current requests before resubmitting.'}
                 if result['repair'].get('accepted') or result['repair'].get('uncertain'):

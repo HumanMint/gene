@@ -10,6 +10,7 @@ from redbot.core import commands
 from .fri_agent_model import ATTENTION, DIAGNOSIS
 from .fri_context import discord_source
 from .fri_errors import ControllerRejected
+from .fri_pending import Clarification, completion, research_query
 from .fri_web import lookup
 from .gene_controls import COMMANDS, arguments, requested
 from .privacy import clean
@@ -28,6 +29,30 @@ class Actions:
         self.web_research = []
         self.settings_version = None
         self.private_evidence = False
+        self.pending = None
+        self.research = None
+        self.search_count = 0
+
+    def command_requested(self, action):
+        if requested(self.message, action.get('action')):
+            return True
+        return bool(self.event and completion(self.pending, self.message, action.get('action'),
+            action.get('argument'), discord_source(self.event).model_dump(),
+            str(self.guild), self.scope.get('conversation_id', ''), str(self.user), self.revision))
+
+    async def pending_unchanged(self):
+        if not self.pending or not self.event:
+            return False
+        source = self.pending['source']
+        if (source['user_id'] != str(self.user) or source['channel_id'] != str(self.event.channel.id)
+                or self.pending['revision'] != self.revision):
+            return False
+        context = await self.fri.api('POST', '/chat/context', self.scope)
+        if context.get('revision') != self.revision or context.get('pending') != self.pending:
+            return False
+        original = await self.event.channel.fetch_message(int(source['id']))
+        return (original.author.id == self.user and not original.webhook_id and
+                clean(original.content, 4000) == self.pending['request_text'])
 
     async def channels(self, fresh=False):
         member = await self.agent.member(self.user, fresh=fresh, guild_id=self.guild)
@@ -66,7 +91,8 @@ class Actions:
             actions['run_learning'] = {'description': 'Run one learning pass only when explicitly requested, within the existing budget. channel_id="".'}
         if self.agent.state.get('web_search_enabled'):
             actions['web_search'] = {'description': 'Look up current public facts with live web access and sources. '
-                'query must be a short exact excerpt of the current message, with no private details. One lookup per reply.'}
+                'query is a short exact public question from the current message or pending web topic. '
+                'Include what the user wants to know, not just a generic keyword. The isolated researcher can rewrite queries.'}
         if self.web_research:
             actions['web_sources'] = {'description': 'Show sources from saved public research in this conversation. '
                 'query="" means latest; otherwise use an exact saved query. No new search.'}
@@ -84,6 +110,14 @@ class Actions:
                     'action is a listed command; argument is a song, numeric volume, or empty.'}
         from .fri_workspace import available
         actions.update(available(self))
+        if isinstance(self.event, discord.Message):
+            goals = [k for k in ('play', 'volume') if k in actions.get('gene_command', {}).get('commands', {})]
+            if 'web_search' in actions:
+                goals.append('web')
+            if goals:
+                actions['clarify'] = {'goals': goals, 'description': 'Ask ONE necessary question and hold this request for 5 minutes. '
+                    'For play/volume, topic="". For web, topic is the original public QUESTION as an exact current-message excerpt. '
+                    'question is the short reply shown to the member. Do not ask again when their answer resolves it.'}
         return actions
 
     def scoped_overview(self, overview, channels):
@@ -121,13 +155,35 @@ class Actions:
             return await self.control(action, channels)
         if kind == 'gene_diagnose':
             return await self.diagnose(channels)
-        if kind == 'web_search':
-            if not self.agent.state.get('web_search_enabled') or not public_query(action.get('query'), self.message):
-                return {'blocked': 'Provide a short public topic in the current message; private context cannot be sent to web search.'}
-            result, counters, status = await lookup(self.fri.chat, action['query'], self.model, self.effort)
+        if kind == 'clarify':
+            value = Clarification.model_validate({k: v for k, v in action.items() if k != 'kind'}).model_dump()
+            if (value['goal'] == 'web' and public_query(value['topic'], self.message) or
+                    value['goal'] in ('play', 'volume') and requested(self.message, value['goal']) and not value['topic']):
+                return {'clarification': value}
+            return {'blocked': 'That question cannot extend an earlier command. Ask for a fresh complete request.'}
+        if kind == 'web_refine':
+            if (not self.agent.state.get('web_search_enabled') or not self.research or
+                    self.search_count != 1 or action.get('query') not in ('', self.research['query'])):
+                return {'blocked': 'There is no current public lookup to refine.'}
+            self.search_count += 1
+            result, counters, status = await lookup(self.fri.chat, self.research['query'], self.model, self.effort,
+                                                   previous=self.research)
             await self.agent.record('web_search', self.model, self.effort, counters, status)
             if status == 'completed' and result.get('answer') and result.get('sources'):
-                result['query'] = action['query']
+                result['query'] = self.research['query']
+            return result
+        if kind == 'web_search':
+            query = research_query(action.get('query'), self.message, self.pending)
+            if not self.agent.state.get('web_search_enabled') or not query or self.search_count:
+                return {'blocked': 'Provide a short public topic in the current message; private context cannot be sent to web search.'}
+            if not public_query(query, self.message) and not await self.pending_unchanged():
+                return {'blocked': 'The earlier question changed. Send the public topic again.'}
+            self.search_count += 1
+            result, counters, status = await lookup(self.fri.chat, query, self.model, self.effort)
+            await self.agent.record('web_search', self.model, self.effort, counters, status)
+            if status == 'completed' and result.get('answer') and result.get('sources'):
+                result['query'] = query
+                self.research = {k: result[k] for k in ('query', 'answer', 'sources', 'checked_at')}
             return result
         if kind in ('learning_overview', 'run_learning'):
             self.private_evidence = True
@@ -183,8 +239,11 @@ class Actions:
             arguments(verb, argument)
         except ValueError as exc:
             return {'blocked': str(exc)}
-        if not requested(self.message, verb):
-            return {'blocked': 'That was not an explicit request to run this action now.'}
+        if not self.command_requested(action):
+            return {'blocked': 'That music request expired or needs a fresh instruction. Ask me to play it with the song included.'}
+        continued = not requested(self.message, verb)
+        if continued and not await self.pending_unchanged():
+            return {'blocked': 'The earlier music request changed. Ask again with the song included.'}
         original = await self.event.channel.fetch_message(self.event.id)
         if original.author.id != self.user or original.webhook_id or original.content != self.event.content:
             return {'blocked': 'The original request changed. Send a fresh request.'}
@@ -201,7 +260,8 @@ class Actions:
         from .fri_context import discord_source
         submitted = await self.fri.api('POST', '/controls', {**self.scope, 'source': discord_source(self.event).model_dump(),
             'target_channel_id': target, 'request_text': clean(self.event.content, 4000),
-            'action': verb, 'argument': argument, 'revision': self.revision})
+            'action': verb, 'argument': argument, 'revision': self.revision,
+            'continuation_id': self.pending['source']['id'] if continued else ''})
         result = None
         try:
             async with asyncio.timeout(120):

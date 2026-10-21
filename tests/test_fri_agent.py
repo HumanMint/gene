@@ -225,7 +225,7 @@ def test_fri_chat_archive_never_enters_startup_learning(monkeypatch):
 def test_followups_work_without_name_but_dont_follow_someone_elses_reply():
     async def scenario():
         fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456,
-                              user=SimpleNamespace(id=99), api=AsyncMock())
+                              user=SimpleNamespace(id=99), api=AsyncMock(return_value={'pending': False}))
         agent = Agent(fri)
         agent.state['config']['enabled'] = True
         agent.profile = AsyncMock(return_value={'enabled': True})

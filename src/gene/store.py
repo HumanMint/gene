@@ -33,6 +33,8 @@ class Store:
             initialize_research(db)
             from .fri_workspace_store import initialize as initialize_workspace
             initialize_workspace(db)
+            from .fri_pending import initialize as initialize_pending
+            initialize_pending(db)
             db.executescript('''
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -151,6 +153,8 @@ class Store:
     def status(self):
         with self.connection() as db:
             # The controller health check runs even when nobody chats with Fri.
+            from .fri_pending import TTL as pending_ttl
+            db.execute('DELETE FROM chat_pending WHERE created<?', (time.time()-pending_ttl,))
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
             db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
@@ -563,7 +567,9 @@ class Store:
                     'kind': 'legacy_unverified', 'recorded_at': recorded}
             facts = [row[0] for row in db.execute('SELECT body FROM memories WHERE guild_id=? '
                                                   'ORDER BY created DESC LIMIT 20', (guild_id,))]
-            return {'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
+            from .fri_pending import read as read_pending
+            pending = read_pending(db, guild_id, channel_id, user_id, revision[0] if revision else 0)
+            return {'pending': pending, 'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
                     'web_research': [json.loads(row[0]) for row in db.execute(
                         'SELECT receipt FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY id DESC LIMIT 3',
                         (guild_id, channel_id, user_id))],
@@ -571,19 +577,30 @@ class Store:
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
 
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
-                  input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None):
+                  input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None):
         source = ChatSource.model_validate(source).check(guild_id, channel_id, user_id) if source else None
         if web_receipt:
             from .fri_research import ResearchReceipt
-            from .web_policy import public_query
             web_receipt = ResearchReceipt.model_validate(web_receipt).model_dump()
-            if not public_query(web_receipt['query'], text):
-                raise ValueError('Research query must come from the current message')
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             if revision != (current[0] if current else 0):
                 raise Conflict('This conversation was cleared while Fri was replying. Start again.')
+            from .fri_pending import read as read_pending
+            from .fri_pending import research_query
+            from .fri_pending import save as save_pending
+            pending = read_pending(db, guild_id, channel_id, user_id, revision)
+            if web_receipt:
+                query = web_receipt['query']
+                # Receipts use the same bounded public topic as the executing harness.
+                valid = research_query(query, text, pending) == query
+                if pending and pending.get('goal') == 'web' and '; clarification: ' in query:
+                    suffix = query.split('; clarification: ', 1)[1]
+                    valid = research_query(suffix, text, pending) == query
+                if not valid:
+                    raise ValueError('Research query must come from the current request or pending public topic')
+            save_pending(db, guild_id, channel_id, user_id, revision, text, source, clarification)
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             if not profile['enabled']:
                 return {'ok': True, 'first_memory': False}
@@ -640,6 +657,7 @@ class Store:
                 db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
+                db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
                 db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
                 for row in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
                     if user_id in json.loads(row['authors']):
@@ -656,6 +674,7 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
+            db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
             db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
                        'DO UPDATE SET revision=revision+1', (user_id,))

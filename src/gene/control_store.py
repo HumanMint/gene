@@ -77,8 +77,6 @@ class Controls:
         if source.kind != 'discord_message' or not -5 <= time.time()-source.timestamp().timestamp() <= 300:
             raise ValueError('Gene needs a fresh Discord message request')
         arguments(body['action'], body['argument'])
-        if not requested(body['request_text'], body['action']):
-            raise ValueError('Ask explicitly to run that action now; examples do not execute commands')
         identifier = hashlib.sha256((body['guild_id']+':'+source.id).encode()).hexdigest()
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -88,10 +86,21 @@ class Controls:
             row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (body['user_id'],)).fetchone()
             if body['revision'] != (row[0] if row else 0):
                 raise ValueError('Conversation changed before the action could start')
+            from .fri_pending import clear, completion, read
+            pending = read(db, body['guild_id'], body['conversation_id'], body['user_id'], body['revision'])
+            body = {k: v for k, v in body.items() if k != 'continuation'}
+            if not requested(body['request_text'], body['action']):
+                if (not pending or body.get('continuation_id') != pending['source']['id'] or
+                        not completion(pending, body['request_text'], body['action'], body['argument'],
+                                       body['source'], body['guild_id'], body['conversation_id'],
+                                       body['user_id'], body['revision'])):
+                    raise ValueError('Ask to play a song, or answer the current song question in this conversation')
+                body['continuation'] = pending
             if db.execute('SELECT 1 FROM gene_controls WHERE user_id=? AND created>?', (body['user_id'], time.time()-3)).fetchone():
                 raise ValueError('Give Gene a moment before another action')
             db.execute('INSERT INTO gene_controls(id,user_id,created,state,payload) VALUES (?,?,?,?,?)',
                        (identifier, body['user_id'], time.time(), 'queued', json.dumps(body)))
+            clear(db, body['guild_id'], body['conversation_id'], body['user_id'])
         return {'id': identifier}
 
     def poll(self, available):

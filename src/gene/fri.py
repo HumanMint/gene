@@ -202,6 +202,7 @@ class Fri(discord.Client):
                 if actions:
                     actions.event, actions.scope, actions.revision = event, scope, context['revision']
                     actions.web_research = context.get('web_research', [])
+                    actions.pending = context.get('pending')
                 context['actions'] = await actions.available() if actions else {}
                 context['display_name'] = source.display_name
                 context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
@@ -237,12 +238,12 @@ class Fri(discord.Client):
                         breadcrumb += f' in channel {checked_channel}'
                     breadcrumb += ('. Public research receipts are available separately for follow-ups.' if research or action_kind == 'web_sources'
                                    else '. Fetch current evidence for follow-up details; no findings are retained here.')
-                    if result.settings_preview or result.post_preview:
+                    if result.settings_preview or result.post_preview or result.clarification:
                         breadcrumb = result.reply
                     await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                         'source': source.model_dump(),
-                        'input': text, 'reply': breadcrumb, 'model': context['model'],
-                        'effort': context['effort'], 'notes': [], 'web_receipt': research})
+                        'input': clean(event.content, 4000) if result.clarification else text, 'reply': breadcrumb, 'model': context['model'],
+                        'effort': context['effort'], 'notes': [], 'web_receipt': research, 'clarification': result.clarification})
                     result.notes = []
                     diagnosis = (receipt if action_kind == 'gene_diagnose'
                                  else receipt.get('gene_result', receipt).get('diagnostic', {}))

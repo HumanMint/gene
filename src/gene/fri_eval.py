@@ -136,6 +136,11 @@ def foundation_cases():
 
 
 async def evaluate(chat, model, effort, voice_notes='', suite='voice'):
+    if suite == 'continuity':
+        from .fri_continuity_eval import evaluate as continuity
+        async for case, result in continuity(chat, model, effort, voice_notes):
+            yield case, result
+        return
     for case in {'controls': control_cases, 'diagnosis': diagnosis_cases, 'voice': cases, 'settings': settings_cases, 'pronouns': pronoun_cases, 'foundation': foundation_cases}[suite]():
         name = case.get('display_name', 'Mint')
         context = {'model': model, 'effort': effort, 'facts': [],
@@ -181,6 +186,7 @@ async def main(suite='voice'):
         settings = await client.get(url+'/agent/state')
         settings.raise_for_status()
         notes = settings.json()['config']['voice_notes']
+        failed = []
         async for case, result in evaluate(chat, status['chat_model'], status['chat_effort'], notes, suite):
             attempt = uuid.uuid4().hex
             report = {'attempt_id': attempt, 'model': status['chat_model'], 'effort': status['chat_effort'],
@@ -192,11 +198,16 @@ async def main(suite='voice'):
             path.unlink(missing_ok=True)  # The live outbox may already have delivered this receipt.
             print(json.dumps({'case': case['name'], 'expect': case['expect'], 'reply': result.reply,
                 'action': result.action, 'draft': result.draft, 'status': result.status,
-                'error': result.error, 'counters': result.counters}), flush=True)
+                'error': result.error, 'counters': result.counters,
+                **{k: case[k] for k in ('passed', 'evidence') if k in case}}), flush=True)
+            if case.get('passed') is False:
+                failed.append(case['name'])
+        if failed:
+            raise SystemExit('Evaluation failed: '+', '.join(failed))
 
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis', 'settings', 'pronouns', 'foundation'), default='voice')
+    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis', 'settings', 'pronouns', 'foundation', 'continuity'), default='voice')
     asyncio.run(main(parser.parse_args().suite))

@@ -363,17 +363,22 @@ def test_bare_stop_in_nonmusic_dm_never_forces_or_authorizes_a_music_command(mon
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('record_failure', [True, False])
-def test_confirmed_exact_control_is_not_hidden_by_breadcrumb_recording_outage(monkeypatch, tmp_path, controls_api, record_failure):  # noqa: F811
+@pytest.mark.parametrize('record_failure', ['none', 'outage', 'revision'])
+@pytest.mark.parametrize('access_allowed', [True, False])
+def test_confirmed_exact_control_is_not_hidden_by_breadcrumb_recording_outage(monkeypatch, tmp_path, controls_api, record_failure, access_allowed):  # noqa: F811
     from redbot.core import commands
+
+    from gene.fri_actions import Actions
     async def scenario():
         client, controls = controls_api
         fri, _, _, _ = harness(monkeypatch, tmp_path)
         paths = []
         async def api(method, path, value=None):
             paths.append(path)
-            if path == '/chat/turn' and record_failure:
+            if path == '/chat/turn' and record_failure == 'outage':
                 raise commands.UserFeedbackCheckFailure('controller unavailable while recording')
+            if path == '/chat/turn' and record_failure == 'revision':
+                raise ControllerRejected('Conversation changed')
             if path.startswith('/controls/') and path.endswith('/result'):
                 claim = controls.poll(['stop'])
                 controls.finish(claim['id'], claim['lease'], {'output': 'Stopped playback.'})
@@ -388,12 +393,31 @@ def test_confirmed_exact_control_is_not_hidden_by_breadcrumb_recording_outage(mo
         actual.webhook_id = None
         actual.channel.fetch_message = AsyncMock(return_value=actual)
         try:
-            with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock()):
+            with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock()), \
+                    patch.object(Actions, 'valid', new=AsyncMock(return_value=access_allowed)):
                 result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
-            assert ('confirmed command result' if record_failure else 'Stopped playback.') in result.reply
+            assert ('confirmed command result' if record_failure != 'none' or not access_allowed else 'Stopped playback.') in result.reply
             assert 'try again' not in result.reply.casefold()
             assert paths.count('/controls') == paths.count('/chat/turn') == 1
             fri.chat.respond.assert_not_awaited()
         finally:
             await fri.close()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('text,verb', [
+    ('bro stop the music', 'stop'), ('pls pause the music', 'pause'),
+    ('please ask gene to skip the current track', 'skip'), ('can u resume playback', 'resume'),
+    ('plz stop music', 'stop'), ('okay fri, pause playback', 'pause'),
+    ('could you please skip this song', 'skip'), ('will u unpause the audio', 'resume'),
+    ('i would like you to stop the music', 'stop'), ('tell gene to pause music', 'pause'),
+    ('can you get gene to skip the track', 'skip'), ('hey fri, can u resume playback', 'resume'),
+])
+def test_explicit_music_controls_reuse_the_established_request_grammar(controls_api, text, verb):  # noqa: F811
+    from gene.fri_actions import Actions
+    from gene.gene_controls import requested
+    assert requested(text, verb)
+    assert Actions.command_requested(SimpleNamespace(message=text, event=None), {'action': verb, 'argument': ''})
+    assert command(text) == {'action': verb, 'argument': ''}
+    client, _ = controls_api
+    assert client.post('/chat/operations/admit', headers=headers('fri'), json=body(text)).json()['allowed']

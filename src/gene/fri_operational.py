@@ -77,5 +77,5 @@ async def admit(fri, event, source, scope, text, context):
     # Output can contain player/channel evidence. Preserve the normal fresh access fence.
     if not await actions.valid():
         return Admission(result=ChatResult(reply=unrecorded([evidence],
-            reason='Access changed before I could safely show the details.'), status='completed'))
+            reason='Access changed before I could safely show the details.'), status='completed'), tool_receipt=evidence)
     return Admission(result=ChatResult(reply=fallback([evidence]), status='completed'), tool_receipt=evidence)

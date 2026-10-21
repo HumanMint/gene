@@ -24,6 +24,7 @@ from .fri_errors import ControllerRejected
 from .fri_memory import memory_intent
 from .fri_panel import DraftView
 from .fri_reports import report_message
+from .fri_responses import REACTIONS
 from .fri_usage import usage_requested
 from .previews import PagedPreview
 from .privacy import clean
@@ -80,6 +81,9 @@ class Agent:
         self.seen = {}
         self.last_attention = {}
         self.last_spoke = {}
+        self.acknowledged = {}
+        self.last_reaction = {}
+        self.reaction_lock = asyncio.Lock()
         self.last_investigated = {}
         self.members = {}
         self.gene_id = int(os.getenv('GENE_BOT_ID', '0'))
@@ -346,6 +350,11 @@ class Agent:
         except commands.UserFeedbackCheckFailure as exc:
             await message.reply(str(exc)[:1800], allowed_mentions=NO_MENTIONS)
             return
+        if result.response_kind in ('react', 'quiet'):
+            if result.status == 'completed' and result.response_kind == 'react':
+                await self.acknowledge(message, result.reaction)
+            # Neither outcome renews active attention or the ambient reply timer.
+            return
         if result.post_preview:
             from .fri_workspace import show_preview
             await show_preview(self.fri, message, result.post_preview)
@@ -363,6 +372,43 @@ class Agent:
         if result.status == 'completed':
             self.active[(message.channel.id, message.author.id)] = time.time()+(300 if result.clarification else 120)
         self.last_spoke[message.channel.id] = time.time()
+
+    async def acknowledge(self, message, emoji):
+        """Only react to the triggering message, once, within the existing write scope."""
+        if emoji not in REACTIONS or not self.config['enabled']:
+            return
+        async with self.reaction_lock:
+            now = time.time()
+            self.acknowledged = {k: v for k, v in self.acknowledged.items() if now-v < 600}
+            self.last_reaction = {k: v for k, v in self.last_reaction.items() if now-v < 90}
+            channel, user = message.channel, message.author
+            key = (channel.id, user.id)
+            if (message.id in self.acknowledged or now-self.last_reaction.get(key, 0) < 90 or
+                    now-self.last_reaction.get((channel.id, None), 0) < 15):
+                return
+            if not -5 <= now-discord.utils.snowflake_time(message.id).timestamp() <= 300:
+                return
+            if message.guild:
+                if not self.allowed(channel):
+                    return
+                permissions = channel.permissions_for(message.guild.me)
+                if not (permissions.view_channel and permissions.read_message_history and
+                        permissions.add_reactions and (permissions.send_messages_in_threads
+                        if isinstance(channel, discord.Thread) else permissions.send_messages)):
+                    return
+            elif not self.config['support_dms'] or not await self.member(user.id, fresh=True):
+                return
+            try:
+                current = await channel.fetch_message(message.id)
+                if (current.author.id != user.id or current.author.bot or current.webhook_id or
+                        current.content != message.content or any(r.me for r in current.reactions)):
+                    return
+                # Reserve before sending: an ambiguous HTTP failure must not cause retries.
+                self.acknowledged[message.id] = now
+                self.last_reaction[key] = self.last_reaction[(channel.id, None)] = now
+                await current.add_reaction(emoji)
+            except discord.HTTPException:
+                LOG.info('Conversation reaction was not confirmed; leaving the turn quiet')
 
     async def send_reports(self):
         async with self.report_lock:

@@ -10,9 +10,13 @@ import httpx
 import pytest
 from redbot.core import commands
 
-from gene.fri_chat import Chat
+from gene.fri_actions import Actions
+from gene.fri_chat import Chat, ChatResult
 from gene.fri_images import attach, unchanged
+from gene.fri_social_store import Social
+from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
+from tests.test_fri_social import DM, api, confirmed, source  # noqa: F401
 
 
 def message():
@@ -64,4 +68,68 @@ def test_images_not_loaded_from_ambient_or_unsupported_posts(monkeypatch):
         with pytest.raises(commands.UserFeedbackCheckFailure, match='still images'):
             await attach({}, event, 'what is this?')
         loader.assert_not_awaited()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mutation', ['none', 'before_edit', 'after_edit'])
+def test_image_removed_during_later_inference_blocks_stale_answer_and_later_actions(api, monkeypatch, tmp_path, mutation):  # noqa: F811
+    async def scenario():
+        client, call = api
+        social = Social(client.app.state.store)
+        reminder = confirmed(social, 50)
+        fri, _, _, _ = harness(monkeypatch, tmp_path)
+        fri.api = call
+        event = message()
+        event.id = int(source(60).id)
+        event.author.display_name = 'Member'
+        event.guild = None
+        event.content = 'what is this reminder screenshot? also cancel my reminder to update the mods'
+        dm = Mock(spec=discord.DMChannel, id=999)
+        event.channel = dm
+        event.attachments[0].url = 'https://cdn.discordapp.com/attachments/999/1/test.png'
+        current = [event]
+        dm.fetch_message = AsyncMock(side_effect=lambda _: current[0])
+        monkeypatch.setattr('gene.fri_images.load_image', AsyncMock(return_value='data:image/png;base64,aGVsbG8='))
+        calls = []
+        async def respond(text, context):
+            calls.append(context)
+            if len(calls) == 1:
+                action = {'kind': 'reminder_cancel', 'reminder_id': reminder['id']} if mutation == 'before_edit' else {'kind': 'reminder_list', 'reminder_id': ''}
+                return ChatResult(action=action, status='completed')
+            changed = Mock(spec=discord.Message, id=event.id, content=event.content, author=event.author,
+                channel=dm, guild=None, webhook_id=None, embeds=[], edited_at=None, attachments=[])
+            current[0] = changed
+            if mutation == 'after_edit':
+                return ChatResult(action={'kind': 'reminder_cancel', 'reminder_id': reminder['id']}, status='completed')
+            return ChatResult(reply='The removed screenshot says sensitive content.', status='completed')
+        fri.chat_once = AsyncMock(side_effect=respond)
+        try:
+            with pytest.raises(commands.UserFeedbackCheckFailure, match='image') as rejected:
+                await fri.talk(123, 999, 10, event.content, 'private', event=event)
+            assert 'recorded outcomes' in str(rejected.value)
+            assert len(calls) == 2
+            assert social.reminder_list(DM)['items'][0]['state'] == ('cancelled' if mutation == 'before_edit' else 'scheduled')
+            assert not client.app.state.store.chat_context('123', 'private:999', '10')['turns']
+        finally:
+            await fri.close()
+    asyncio.run(scenario())
+
+
+def test_shared_actions_validity_rejects_removed_image_before_another_tool(monkeypatch, tmp_path):
+    async def scenario():
+        fri, agent, _, _ = harness(monkeypatch, tmp_path)
+        original, changed = message(), message()
+        changed.attachments = []
+        original.channel.fetch_message = AsyncMock(return_value=original)
+        actions = Actions(agent, 10, 999, False)
+        actions.event = original
+        actions.image_context = {'image_sources': [str(original.attachments[0].url)]}
+        try:
+            assert await actions.valid()
+            original.channel.fetch_message.return_value = changed
+            assert not await actions.valid()
+            with pytest.raises(commands.UserFeedbackCheckFailure, match='image'):
+                await actions.execute({'kind': 'reminder_list', 'reminder_id': ''})
+        finally:
+            await fri.close()
     asyncio.run(scenario())

@@ -32,6 +32,7 @@ class Actions:
         self.pending = None
         self.research = None
         self.search_count = 0
+        self.image_context = {}
 
     def command_requested(self, action):
         if requested(self.message, action.get('action')):
@@ -133,6 +134,8 @@ class Actions:
             'history_channels': [c for c in overview['history_channels'] if c in channels]}
 
     async def execute(self, action):
+        from .fri_images import require_current
+        await require_current(self.image_context, self.event)
         channels = await self.channels(fresh=True)
         kind = action.get('kind')
         if not channels:
@@ -368,6 +371,9 @@ class Actions:
     async def valid(self):
         """Fail closed if access or source privacy changed while the model was answering."""
         try:
+            from .fri_images import unchanged
+            if not await unchanged(self.image_context, self.event):
+                return False
             channels = await self.channels(fresh=True)
             if not channels or not self.sources <= set(channels):
                 return False

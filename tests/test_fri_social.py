@@ -2,11 +2,13 @@
 
 import asyncio
 import datetime as dt
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import discord
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -17,6 +19,7 @@ from gene.fri_context import ChatSource
 from gene.fri_errors import ControllerRejected
 from gene.fri_social import SocialButton, component, deliver_one, execute, render, show_preview
 from gene.fri_social_store import Social, local_timestamp
+from gene.fri_workspace import send_once
 from gene.store import Store
 from tests.test_fri_actions import harness
 
@@ -252,7 +255,8 @@ def test_delivery_attempts_once_restarts_and_does_not_resurrect_erased_reminders
         assert not list((tmp_path/'reminder-receipts').glob('*.json'))
         if sender.await_count:
             payload = sender.await_args.args[1]
-            assert payload['target_id'] == '999' and payload['body'].startswith('Reminder: update the mods')
+            assert payload['target_id'] == '999' and payload['body'].startswith('Reminder\nScheduled for')
+            assert sender.await_args.kwargs['embed']['description'] == 'update the mods'
     asyncio.run(scenario())
 
 
@@ -398,4 +402,48 @@ def test_game_night_tool_publish_availability_and_rsvp_buttons_use_real_controll
         assert message.reply.await_count == 1
         assert message.reply.await_args.kwargs['allowed_mentions'].everyone is False
         assert (await click('cancel', 10, 6)).edit_original_response.await_count == 1
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('body', ['*'*1000, '😀'*1000, '`'*1000], ids=['markdown', 'utf16', 'backticks'])
+def test_full_reminder_body_fits_confirm_preview_and_single_attempt_delivery(api, tmp_path, monkeypatch, body):
+    async def scenario():
+        client, call = api
+        social = Social(client.app.state.store)
+        row = social.reminder_prepare(DM, source(), 0, body, future(), 'UTC')
+        expected = discord.utils.escape_markdown(discord.utils.escape_mentions(body))
+        def valid_layout(content, embed):
+            assert len((content or '').encode('utf-16-le'))//2 <= 2000
+            assert embed and embed.description == expected
+            assert len(embed.description.encode('utf-16-le'))//2 <= 4096
+        async def reply(content=None, **kwargs):
+            valid_layout(content, kwargs.get('embed'))
+            assert not kwargs.get('suppress_embeds', False)
+            assert kwargs['view'].children[0].item.label == 'Confirm'
+            return SimpleNamespace(id=888)
+        posted = SimpleNamespace(author=SimpleNamespace(id=50), edit=AsyncMock())
+        dm = Mock(spec=discord.DMChannel, id=999, recipient=SimpleNamespace(id=10), fetch_message=AsyncMock(return_value=posted))
+        event = Mock(spec=discord.Message, author=SimpleNamespace(id=10), guild=None, channel=dm, reply=AsyncMock(side_effect=reply))
+        fri = SimpleNamespace(api=call, data=tmp_path, guild_id=123, workshop_id=456, user=SimpleNamespace(id=50),
+            agent=SimpleNamespace(config={'enabled': True, 'support_dms': True}, member=AsyncMock(return_value=SimpleNamespace(id=10))),
+            fetch_channel=AsyncMock(return_value=dm), http=SimpleNamespace(token='synthetic-test-token'))
+        await show_preview(fri, event, {'kind': 'reminder', 'item': row})
+        social.reminder_decide(row['id'], DM, source(2, interaction=True), 0, 'confirm', '888')
+        due(client.app.state.store, row['id'])
+        requests = []
+        def transport(request):
+            requests.append(request)
+            payload = json.loads(request.content)
+            valid_layout(payload['content'], discord.Embed.from_dict(payload['embeds'][0]))
+            assert not payload.get('flags', 0) & 4
+            assert payload['allowed_mentions'] == {'parse': []}
+            return httpx.Response(200, json={'id': '987'})
+        async def sender(f, post, **kwargs):
+            return await send_once(f, post, transport=httpx.MockTransport(transport), **kwargs)
+        monkeypatch.setattr('gene.fri_social.send_once', sender)
+        await deliver_one(fri)
+        await deliver_one(fri)
+        assert len(requests) == 1
+        assert social.reminder_list(DM)['items'][0]['state'] == 'sent'
+        valid_layout(posted.edit.await_args.kwargs['content'], posted.edit.await_args.kwargs['embed'])
     asyncio.run(scenario())

@@ -9,6 +9,9 @@ current-message attachments. It does not collect ambient images, inspect videos,
 GIFs, spoilers, external embeds, or referenced members’ attachments. Image text is
 untrusted evidence and never grants authority for commands, memory, or releases.
 The adapter rechecks the source before accepting the answer.
+It also rechecks images before later tool steps and after follow-up inference. A
+source change discards the stale answer and blocks further actions; actions already
+accepted retain their recorded outcomes and are not silently undone.
 
 In your verified member DM, ask naturally for a one-off reminder, such as “remind
 me tomorrow at 7 pm to update the mods.” Fri resolves the date and prepares an
@@ -19,6 +22,9 @@ short clarification. `FRI_TIMEZONE` supplies the clearly labeled server default,
 also displays the timestamp in the viewer’s local timezone. Repeated or nonexistent
 daylight-saving times are rejected rather than silently shifted: clarify an exact
 UTC time if needed.
+The full reminder text appears in an unsuppressed embed, separate from the time and
+confirmation controls. Previews, state updates and the delivered reminder account
+for Discord’s UTF-16 limits without clipping the accepted reminder body.
 
 Each member may have five pending/scheduled reminders, due between one minute and
 30 days from preparation. Previews expire after 15 minutes; receipts and reminder

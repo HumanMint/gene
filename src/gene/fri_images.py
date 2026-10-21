@@ -10,6 +10,8 @@ from .fri_meme_media import load_image, sources
 
 QUESTION = re.compile(r'(?i)(?:\?|\b(?:what|why|how|explain|describe|read|look|help|identify|'
                       r'compare|analy[sz]e|interpret|screenshot|picture|image)\b)')
+CHANGED = ('The image request changed while I was checking it. Any earlier tool actions keep '
+           'their recorded outcomes; check their status before retrying. Ask again with the current attachment.')
 
 
 async def attach(context, event, text):
@@ -44,3 +46,8 @@ async def unchanged(context, event):
                 sources(current) == context['image_sources'])
     except discord.HTTPException:
         return False
+
+
+async def require_current(context, event):
+    if not await unchanged(context, event):
+        raise commands.UserFeedbackCheckFailure(CHANGED)

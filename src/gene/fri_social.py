@@ -150,8 +150,7 @@ async def identity(fri, interaction, kind):
 def render(kind, row):
     view = discord.ui.View(timeout=None)
     if kind == 'reminder':
-        body = discord.utils.escape_markdown(discord.utils.escape_mentions(row['body']))
-        content = f"**Personal reminder · {row['state']}**\n{body}\n\n<t:{int(row['due'])}:F>\n{row['local_time'].replace('T', ' ')} · {row['timezone']}\nDestination: this DM. One message; no future commands."
+        content = f"**Personal reminder · {row['state']}**\n<t:{int(row['due'])}:F>\n{row['local_time'].replace('T', ' ')} · {row['timezone']}\nDestination: this DM. One message; no future commands."
         if row['state'] == 'pending':
             content += '\nNothing scheduled until Confirm. Preview expires after 15 minutes.'
             view.add_item(SocialButton(kind, row['id'], 'confirm', 'Confirm'))
@@ -180,6 +179,22 @@ def render(kind, row):
     if row['state'] in ('pending', 'open', 'finalized'):
         view.add_item(SocialButton(kind, row['id'], 'cancel', 'Cancel plan', row=2))
     return content, view
+
+
+def reminder_embed(row):
+    """Keep the full exact text separate from metadata; never clip a confirmation."""
+    body = discord.utils.escape_markdown(discord.utils.escape_mentions(row['body']))
+    if len(body.encode('utf-16-le'))//2 > 4096:
+        raise commands.UserFeedbackCheckFailure('The reminder text exceeds Discord’s embed limit. Prepare a shorter reminder.')
+    return discord.Embed(description=body) if body else None
+
+
+def presentation(kind, row):
+    content, view = render(kind, row)
+    if len(content.encode('utf-16-le'))//2 > 2000:
+        raise commands.UserFeedbackCheckFailure('The preview exceeds Discord’s message limit. Prepare a shorter preview.')
+    return {'content': content, 'view': view, 'embed': reminder_embed(row) if kind == 'reminder' else None,
+            'allowed_mentions': NO_MENTIONS}
 
 
 class SocialButton(discord.ui.DynamicItem[discord.ui.Button], template=COMPONENT):
@@ -215,8 +230,7 @@ class SocialButton(discord.ui.DynamicItem[discord.ui.Button], template=COMPONENT
             # Always render current controller state, including votes delivered while
             # the preceding request was in flight. Edits never post another card.
             row = await fri.api('POST', route+'/read', scope)
-            text, view = render(self.kind, row)
-            await interaction.edit_original_response(content=text, view=view, allowed_mentions=NO_MENTIONS)
+            await interaction.edit_original_response(**presentation(self.kind, row))
             if self.kind == 'plan' and self.decision.startswith('vote'):
                 await interaction.followup.send('Your availability was updated. Click the same option again to remove it.', ephemeral=True, allowed_mentions=NO_MENTIONS)
         except (commands.UserFeedbackCheckFailure, discord.HTTPException, ValueError, KeyError):
@@ -233,8 +247,7 @@ async def show_preview(fri, message, preview):
     if row['preview_id']:
         await message.reply('That preview already exists. Use the original card, or ask for current reminder status.', allowed_mentions=NO_MENTIONS)
         return
-    text, view = render(kind, row)
-    posted = await message.reply(text, view=view, mention_author=False, allowed_mentions=NO_MENTIONS, suppress_embeds=True)
+    posted = await message.reply(**presentation(kind, row), mention_author=False, suppress_embeds=kind != 'reminder')
     scope = {'guild_id': str(fri.guild_id), 'user_id': str(message.author.id),
              'channel_id': str(fri.workshop_id if private else (getattr(message.channel, 'parent_id', None) or message.channel.id)),
              'conversation_id': ('private:' if private else 'public:')+str(message.channel.id)}
@@ -267,10 +280,11 @@ async def deliver_one(fri):
         dm = await fri.fetch_channel(int(row['dm_id']))
         if not isinstance(dm, discord.DMChannel) or not dm.recipient or str(dm.recipient.id) != row['user_id']:
             raise ValueError('The reminder DM no longer matches its author')
+        embed = reminder_embed(row)
         await fri.api('POST', '/social/reminders/'+row['id']+'/sending', {'lease': row['lease']})
         sending = True
         result = await send_once(fri, {'id': row['id'], 'target_id': row['dm_id'],
-            'body': 'Reminder: '+row['body']+f"\nScheduled for <t:{int(row['due'])}:F>."})
+            'body': f"Reminder\nScheduled for <t:{int(row['due'])}:F>."}, embed=embed.to_dict() if embed else None)
         message_id, state = str(int(result['id'])), 'sent'
     except (commands.UserFeedbackCheckFailure, discord.HTTPException, httpx.HTTPError, ValueError, KeyError, OSError, TimeoutError):
         state = 'uncertain' if sending else 'failed'
@@ -283,7 +297,6 @@ async def deliver_one(fri):
         dm = await fri.fetch_channel(int(row['dm_id']))
         preview = await dm.fetch_message(int(row['preview_id']))
         if preview.author.id == fri.user.id:
-            text, view = render('reminder', {**row, **receipt})
-            await preview.edit(content=text, view=view, allowed_mentions=NO_MENTIONS)
+            await preview.edit(**presentation('reminder', {**row, **receipt}))
     except (discord.HTTPException, ValueError):
         pass

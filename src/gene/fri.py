@@ -227,6 +227,8 @@ class Fri(discord.Client):
                 context['requester_is_owner'] = user_id == self.owner_id
                 from .fri_images import attach as attach_images
                 await attach_images(context, event, text)
+                if actions:
+                    actions.image_context = {'image_sources': context.get('image_sources', [])}
                 if actions and guild_id == self.guild_id:
                     recent = await self.api('POST', '/controls/recent', scope)
                     readable = await actions.channels(fresh=True)
@@ -234,9 +236,8 @@ class Fri(discord.Client):
                     actions.sources.update(r['channel_id'] for r in context['gene_receipts'])
                 text = clean(text, 4000)
                 result = await self.chat_once(text, context)
-                from .fri_images import unchanged as images_unchanged
-                if not await images_unchanged(context, event):
-                    raise commands.UserFeedbackCheckFailure('The image request changed while I was reading it. Ask again with the current attachment.')
+                from .fri_images import require_current as require_current_images
+                await require_current_images(context, event)
                 if guild_id != self.guild_id:
                     result.draft = None
                 if result.action:
@@ -244,6 +245,7 @@ class Fri(discord.Client):
                         raise commands.UserFeedbackCheckFailure('That action is not available here.')
                     from .fri_runner import run
                     result, receipts, research = await run(self, actions, text, context, result)
+                    await require_current_images(context, event)
                     receipt = receipts[-1]
                     action_kind = receipt['kind']
                     current = await self.api('POST', '/chat/context', scope)

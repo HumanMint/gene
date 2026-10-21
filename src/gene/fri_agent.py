@@ -20,6 +20,7 @@ from .fri_addressing import addressed_text
 from .fri_agent_model import ATTENTION, DIAGNOSIS, SETTINGS, STRING, SUMMARY, analyze, obj
 from .fri_agent_store import DEFAULTS, RANGES
 from .fri_chat import VOICE
+from .fri_errors import ControllerRejected
 from .fri_memory import memory_intent
 from .fri_panel import DraftView
 from .fri_reports import report_message
@@ -553,8 +554,11 @@ class Agent:
                 return
             scope = {**self.identity(self.gene_id), 'channel_id': str(parent), 'conversation_id': 'public:'+str(channel)}
             context = await self.fri.api('POST', '/chat/context', scope)
-            repair = await self.fri.api('POST', '/repairs', {**scope, 'source': discord_source(message).model_dump(),
-                'revision': context['revision'], 'body': body})
+            try:
+                repair = await self.fri.api('POST', '/repairs', {**scope, 'source': discord_source(message).model_dump(),
+                    'revision': context['revision'], 'body': body})
+            except ControllerRejected:
+                repair = {'accepted': False}  # Definite refusal still gets the normal owner review.
             if repair.get('accepted'):
                 self.last_spoke[channel] = time.time()
                 return

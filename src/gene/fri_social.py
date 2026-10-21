@@ -28,6 +28,7 @@ SOCIAL_ACTIONS = {
 KINDS = set(SOCIAL_ACTIONS)
 REMINDER_REQUEST = re.compile(r'(?i)\bremind(?:er|ers)?\b')
 PLAN_REQUEST = re.compile(r'(?i)\b(plan|choose|organize|organise|availability|schedule|game night|set up)\b')
+CANCEL_REQUEST = re.compile(r'(?i)\b(cancel|delete|remove|drop)\b')
 
 
 def available(actions):
@@ -36,7 +37,7 @@ def available(actions):
     clock = {'utc_now': dt.datetime.now(dt.timezone.utc).isoformat(),
              'server_default_timezone': os.getenv('FRI_TIMEZONE', 'America/Los_Angeles')}
     if not actions.public and isinstance(actions.event.channel, discord.DMChannel) and actions.agent.config['support_dms']:
-        return {
+        tools = {
             'reminder_prepare': {**clock, 'description': 'Prepare a ONE-OFF personal DM reminder only when requested. '
                 'Resolve natural dates against utc_now. local_time=YYYY-MM-DDTHH:MM (24-hour), timezone=explicit IANA zone '
                 'or labeled server_default_timezone. Ask ONE brief question for ambiguous AM/PM or genuinely missing details. '
@@ -46,7 +47,14 @@ def available(actions):
             'reminder_list': {'description': 'List this member’s personal DM reminders, exact IDs and delivery states. reminder_id="".'},
             'reminder_cancel': {'description': 'Cancel a reminder only when this member explicitly asks. First list to get its exact reminder_id; never guess.'},
         }
+        if actions.private_evidence:
+            tools.pop('reminder_prepare')
+            if not CANCEL_REQUEST.search(actions.message):
+                tools.pop('reminder_cancel')
+        return tools
     if actions.public:
+        if actions.private_evidence:
+            return {}
         return {'plan_prepare': {**clock, 'description': 'When asked to organize a game night or choose between times, prepare '
             'an availability/RSVP card for THIS channel. title is an exact activity excerpt from the CURRENT message, max 100 characters; ask for it if missing. local_times is 2–4 '
             'YYYY-MM-DDTHH:MM options separated by newlines, timezone is an IANA zone (or labeled server default). '
@@ -84,6 +92,8 @@ async def preparation_text(actions, context, pattern):
 
 async def execute(actions, action):
     kind = action['kind']
+    if actions.private_evidence and kind in ('reminder_prepare', 'plan_prepare'):
+        return {'blocked': 'Retrieved member history cannot become a persistent reminder or game-night card. Supply the details in your own fresh message.'}
     if kind not in available(actions):
         return {'blocked': 'Personal reminders are available in your verified member DM; game-night cards are available in allowed server channels.'}
     original = await actions.event.channel.fetch_message(actions.event.id)
@@ -94,13 +104,11 @@ async def execute(actions, action):
         return {'blocked': 'Privacy settings changed. Ask again for a fresh preview.'}
     if kind == 'reminder_list':
         return {'kind': kind, **await actions.fri.api('POST', '/social/reminders/list', actions.scope)}
-    if actions.private_evidence:
-        return {'blocked': 'Retrieved member history cannot become a persistent reminder or game-night card. Supply the details in your own fresh message.'}
     source = discord_source(actions.event).model_dump()
     payload = {**actions.scope, 'source': source, 'revision': actions.revision}
     if kind == 'reminder_cancel':
         item = action.get('reminder_id', '')
-        if not re.fullmatch(r'[a-f0-9]{32}', item) or not re.search(r'(?i)\b(cancel|delete|remove|drop)\b', actions.message):
+        if not re.fullmatch(r'[a-f0-9]{32}', item) or not CANCEL_REQUEST.search(actions.message):
             return {'blocked': 'Ask explicitly to cancel an existing reminder; list your reminders to identify it.'}
         row = await actions.fri.api('POST', '/social/reminders/'+item+'/decide', {**payload, 'decision': 'cancel'})
         return {'kind': kind, 'id': row['id'], 'state': row['state'],

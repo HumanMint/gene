@@ -25,10 +25,12 @@ normal member permissions and no coding approval. Admin commands stay protected,
 and Discord Lab cannot control FF music. Web answers keep useful inline links
 without a numbered source footer; ask for sources afterward to see saved research.
 
-She keeps six exchanges for seven days and gradually saves up to five small personal notes per
+Fri keeps six exchanges for seven days and gradually saves up to ten small personal notes per
 person and conversation: nickname, games, music, hobbies, and preferred conversational style.
-Notes quote explicit self-disclosures, expire after 90 days, and replace older notes in the same
-category. Other people, channels, and private/public conversations have separate context.
+Notes quote explicit self-disclosures and expire after 90 days, with up to three separate
+preferences per category. **My memory** lets you select, edit or remove one item. Other people,
+channels, and private/public conversations have separate context. Discord replies carry the
+actual referenced message's author and text; short split messages keep their separate sources.
 Ask **“fri what do you remember about me?”** to inspect them, **“fri forget me”** to clear all
 your Fri chats and personal notes and disable memory, or **“fri remember me again”** to opt back in.
 Forget works even while a reply is running. **Forget my chats** clears just recent conversation

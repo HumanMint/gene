@@ -62,6 +62,85 @@ stops on an uncertain result or after an operational Gene action. A tool receipt
 evidence, never permission. Gene, its deployment controller, feature approvals and
 the existing-features-v1 repair policy retain their existing authority.
 
+## Reply context and short message bursts
+
+Fri can use the actual message a member replied to, including another member's message
+or Fri's reply to someone else. The adapter fetches the current message from the same
+channel, checks the requesting member's access, and supplies its author ID and exact
+bounded text as untrusted context. It does not import anyone else's personal notes or
+private conversation. Targets older than seven days, deleted messages, webhooks, other
+bots, unreadable channels, and opted-out members' messages are omitted. Source edits,
+access changes and privacy revisions are checked again before a tool or final reply.
+Reply targets are temporary context. Saved turns keep a neutral breadcrumb in place
+of an answer derived from a target, so neither the target nor quoted findings are
+retained in someone else's memory. Reply to the original message again when its
+details are needed for a later follow-up.
+
+The same retention fence applies before tools are offered and remains active for
+the turn. Read reply targets cannot become personal notes, request drafts, saved
+work, posts, voice settings or model-written clarification state. Saving needs a
+fresh message containing the member's own input. An explicit current play/volume
+request can still receive a fixed, target-free song/volume question, backed only by
+that member's fresh Discord source. Music arguments must likewise come from their
+own current request or a verified continuation, so command receipts cannot retain
+someone else's referenced text.
+Reminder and plan creation are likewise omitted while reply evidence is in use.
+An explicit instruction in the current message can still cancel the member's own
+reminder: it creates no new referenced text, and the existing fresh source, item
+ownership and DM-scope checks still apply. Current image attachments retain their
+independent edit/deletion checks alongside reply-target and burst provenance.
+
+Messages from the same person in the same channel can form one short exchange: up to
+five messages and 4000 total characters, spanning at most five seconds. The existing
+1.5-second pause still produces one response to the newest message. For example,
+“fri help me pick a movie” followed by “something funny” keeps both inputs, including
+in a member DM or with memory off. Each part retains its own real Discord source;
+the adapter never invents a combined source event. The in-flight buffer is removed
+after the exchange or privacy erasure. With memory on, the source-linked burst has
+the same six-turn/seven-day retention and member/conversation scope as ordinary chat.
+
+An immediately preceding incomplete “fri play” or “fri volume” request and its exact
+answer can use the normal music handoff without another clarification question.
+“fri play” followed by “blind melon no rain” is supported. Both sources must be fresh,
+from the same author and actual channel, and within five seconds of each other.
+Complete older commands, examples, cancellations, another person's words, and different
+arguments do not qualify. Fri re-fetches both inputs; Gene also re-fetches both public
+inputs and runs current Red member, voice, DJ and cooldown checks. The controller
+consumes the origin atomically and preserves the existing replay fence across restarts
+and erasure. Other tool permissions and public-research export rules still use their
+existing current-message checks; ordinary burst context does not grant new authority.
+
+## Editing personal preferences
+
+Personal memory keeps up to ten exact, harmless first-person disclosures per member
+and conversation, with at most three in each category. Separate game or music
+preferences can coexist. Exact duplicates renew their timestamp; each item expires
+after 90 days. Old single-note profiles are migrated without changing their existing
+IDs, evidence or dates. Historical learning cannot evict newer preferences to make
+room for an older disclosure.
+
+Open **My memory** in the private Fri panel, or ask what Fri remembers and choose
+**Edit my memory**. Select an entry to edit or remove it. Controls bind the current
+member, channel and memory revision, and remain usable without a model call. An edit
+requires a fresh explicit first-person preference, such as “I prefer Terraria”. It
+keeps the selected category and changes only that conversation's item.
+
+Editing or removing an entry clears recent saved turns and pending clarifications
+in that conversation, invalidates in-flight derivations, and clears cached context
+and derived summaries that could repeat it. A scoped category hash and removal date
+prevent background learning from adding older disclosures in that category, including
+shorter excerpts of the removed note. Existing other items remain; a later explicit
+disclosure can renew a preference. Hashes expire with the 90-day learning horizon and
+are erased by **forget me**.
+Other saved preference items remain. Existing Discord posts and backups are separate.
+
+`tests/test_fri_conversation_context.py` exercises real offline Red command handling,
+DM/public burst continuity, memory-off behavior, source edits/deletion, identity,
+access, expiry and replay. `tests/test_fri_memory_items.py` covers migration, item
+limits, persistence, individual controls, revision races, erasure, expiry and old
+learning. These use fictional Discord/model transports and prove neither live
+delivery nor audible playback.
+
 ## Saved work
 
 Ask Fri to save a draft or task, list saved work, edit it, or mark it completed or

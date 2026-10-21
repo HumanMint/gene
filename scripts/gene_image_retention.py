@@ -425,7 +425,8 @@ def run(root, apply=False):
     state = observe(state, view, now)
     # Classic Docker may untag a runtime but retain its exact image object for worker
     # children. Carry only IDs that this tool itself retired/untagged into later plans.
-    managed_ids = {row['id'] for row in state.get('removed', {}).values()}
+    managed_ids = {row['id'] for key in ('removed', 'removal_intents')
+                   for row in state.get(key, {}).values()}
     for iid in managed_ids & state['retired'].keys() & view['images'].keys():
         if not view['images'][iid]['tags']:
             state.setdefault('retired_parents', {}).setdefault(iid, {
@@ -456,6 +457,8 @@ def run(root, apply=False):
                 actual = json.loads(command('docker', 'image', 'inspect', tag))[0]['Id']
                 if actual != row['id']:
                     raise ValueError('Image was retagged; removal aborted')
+                state.setdefault('removal_intents', {})[tag] = {'id': row['id'], 'at': time.time()}
+                save_json(state_path, state)
                 try:
                     command('docker', 'image', 'rm', '--no-prune', tag)
                 except subprocess.CalledProcessError:
@@ -463,6 +466,7 @@ def run(root, apply=False):
                     continue  # A retained child/container may still require the parent image.
                 result['removed_tags'].append(tag)
                 state.setdefault('removed', {})[tag] = {'id': row['id'], 'at': time.time()}
+                state['removal_intents'].pop(tag, None)
                 save_json(state_path, state)
                 save_json(folder / 'image-retention-result.json', result)
         remove_parents(root, state, view['fingerprint'], result)

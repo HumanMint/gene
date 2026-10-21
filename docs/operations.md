@@ -172,6 +172,9 @@ remaining child images or containers. There is no forced removal or implicit par
 If Docker retains the exact retired runtime object after removing its last managed tag,
 that recorded ID remains eligible for a later reviewed plan after its worker children are
 collected. Unknown untagged images never gain eligibility from this retry behavior.
+Exact-ID removal intent is synced before invoking Docker, so acknowledgement loss or a
+process interruption cannot orphan a managed untagged version. Reconciliation still checks
+current protections, aliases and the normal saved plan before attempting removal.
 
 The maintenance policy and state live privately under `/srv/gene/maintenance/`:
 

@@ -395,3 +395,21 @@ def test_managed_untagging_preserves_exact_runtime_id_for_a_later_cleanup(host, 
     result = retention.run(root)
     assert [r['id'] for r in result['delete_parents']] == [iid(5)]
     assert iid(5) not in result['keep']
+
+
+def test_unknown_untagging_outcome_keeps_durable_exact_id_retry_evidence(host, monkeypatch):
+    root, images, _, _ = host
+
+    def docker(*args):
+        if args[:3] == ('docker', 'image', 'inspect'):
+            return json.dumps([{'Id': iid(5)}])
+        assert args == ('docker', 'image', 'rm', '--no-prune', tag(5))
+        images[iid(5)]['tags'] = []
+        raise subprocess.TimeoutExpired(args, 120)
+
+    monkeypatch.setattr(retention, 'command', docker)
+    with pytest.raises(subprocess.TimeoutExpired):
+        retention.run(root, apply=True)
+    state = retention.read_json(root / 'maintenance/image-retention-state.json')
+    assert state['removal_intents'][tag(5)]['id'] == iid(5)
+    assert [row['id'] for row in retention.run(root)['delete_parents']] == [iid(5)]

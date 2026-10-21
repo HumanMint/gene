@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from .fri_memory import CATEGORIES
+from .fri_responses import KINDS, REACTIONS, acknowledgment_allowed, validate_response
 from .subscription import RESOURCE, SubscriptionError
 
 VOICE = '''You are Fri, a Discord regular and Gene's chat companion. Gene handles the utilities.
@@ -32,6 +33,21 @@ or completed work. Humor changes the wording, never the facts. Don't pitch featu
 '''
 
 INSTRUCTIONS = VOICE + '''
+An active conversation is permission to respond, not an obligation to fill the silence.
+When response_options allows it, choose response_kind=react with one listed reaction, or quiet
+with reaction=null, for a completed exchange that needs no words. Both have reply="", action=null,
+request_draft=null, notes=[]. A simple closing acknowledgment usually needs a reaction or silence,
+not another "yep". Don't react to everything. Match the emotion; don't laugh at genuine distress.
+Keep worthwhile playful follow-ups when a natural joke adds something. Short messages and compliments
+are not automatically endings. Answer new questions, corrections, unresolved trouble, and answers to
+your questions; never drop a song title or a "ya" that completes a request. Serious distress needs
+appropriate engagement. After any tool, explain the actual outcome in text, including failure.
+Otherwise use response_kind=reply and reaction=null (also for action requests). Never interpret a
+reaction as consent, approval, or task success. Prior nontext turns record decisions, not spoken words
+or verified reaction delivery. Style examples are hypothetical, never member history.
+Set allow_closing=true only for a final text reply that has completed the exchange: no unanswered
+question, unfinished work, requested follow-up, or serious distress needing engagement. Otherwise false.
+This lets a later obvious closing acknowledgment skip inference; it never closes other follow-ups.
 Help understand concrete needs and draft
 feature/fix requests when the requirements are clear. Ask a small clarifying question when needed.
 You have no shell, provisioning access, or deployment authority. The harness may offer limited actions.
@@ -155,7 +171,11 @@ Return JSON with reply (under 1800 characters), action (null or one available ac
 under 4000 characters). A draft is an offer, never approval or evidence that work has started.
 For ordinary chat or requests needing clarification, request_draft must be null.'''
 
-SCHEMA = {'type': 'object', 'properties': {'reply': {'type': 'string'},
+SCHEMA = {'type': 'object', 'properties': {
+          'response_kind': {'type': 'string', 'enum': list(KINDS)},
+          'allow_closing': {'type': 'boolean'},
+          'reaction': {'type': ['string', 'null'], 'enum': [None, *REACTIONS]},
+          'reply': {'type': 'string'},
           'request_draft': {'type': ['string', 'null']},
           'action': {'anyOf': [{'type': 'null'}, {'type': 'object', 'properties': {
               'kind': {'type': 'string', 'enum': ['learning_overview', 'read_recent', 'run_learning', 'gene_diagnose']},
@@ -176,7 +196,7 @@ SCHEMA = {'type': 'object', 'properties': {'reply': {'type': 'string'},
           'notes': {'type': 'array', 'items': {'type': 'object', 'properties': {
               'category': {'type': 'string', 'enum': list(CATEGORIES)}, 'evidence': {'type': 'string'}},
               'required': ['category', 'evidence'], 'additionalProperties': False}}},
-          'required': ['reply', 'request_draft', 'notes', 'action'], 'additionalProperties': False}
+          'required': ['response_kind', 'allow_closing', 'reaction', 'reply', 'request_draft', 'notes', 'action'], 'additionalProperties': False}
 
 
 WORK_ACTIONS = {
@@ -215,6 +235,9 @@ class ChatResult:
     settings_preview: dict | None = None
     post_preview: dict | None = None
     clarification: dict | None = None
+    response_kind: str = 'reply'
+    reaction: str | None = None
+    allow_closing: bool = False
 
 
 def usage(response):
@@ -259,9 +282,12 @@ class Chat:
         text_parts = {}
         messages = []
         for turn in context['turns']:
+            response = turn['reply'] if turn.get('response_kind', 'reply') == 'reply' else json.dumps({
+                'response_decision': turn['response_kind'], 'reaction': turn.get('reaction'),
+                'text_sent': False, 'reaction_delivery': 'unverified'})
             messages += [{'role': 'user', 'content': json.dumps({'message': turn['input'],
                           'source': turn.get('source', {'kind': 'legacy_unverified'})})},
-                         {'role': 'assistant', 'content': turn['reply']}]
+                         {'role': 'assistant', 'content': response}]
         # Facts are data in a user message, never inserted into developer instructions.
         messages.append({'role': 'user', 'content': json.dumps({
             'approved_server_facts_for_reference': context['facts'],
@@ -271,6 +297,8 @@ class Chat:
             'speaker_history_untrusted': context.get('historical_topics', []),
             'meme_attention': context.get('meme_attention', {}),
             'available_actions': context.get('actions', {}),
+            'response_options': {'quiet': acknowledgment_allowed(context),
+                                 'reactions': list(REACTIONS) if acknowledgment_allowed(context) else []},
             'pending_request': context.get('pending'),
             'requests_enabled': context.get('requests_enabled', True),
             'requester_is_owner': context.get('requester_is_owner', False),
@@ -324,6 +352,7 @@ class Chat:
                             parsed = json.loads(output)
                             reply, draft = parsed['reply'], parsed['request_draft']
                             action = parsed.get('action')
+                            response_kind, reaction = parsed.get('response_kind', 'reply'), parsed.get('reaction')
                             if action is not None:
                                 web = isinstance(action, dict) and action.get('kind') in ('web_search', 'web_sources', 'web_refine')
                                 control = isinstance(action, dict) and action.get('kind') == 'gene_command'
@@ -347,13 +376,21 @@ class Chat:
                                         (not clarify and not control and not work and (not isinstance(action[parameter], str) or len(action[parameter]) > (1500 if voice else 240 if web else 25))) or
                                         reply or draft is not None or parsed.get('notes', [])):
                                     raise ValueError('Invalid or unavailable action')
-                            if (not isinstance(reply, str) or not (0 if action else 1) <= len(reply) <= 1800 or
+                            if (not isinstance(reply, str) or len(reply) > 1800 or
                                     (draft is not None and (not isinstance(draft, str) or not 5 <= len(draft) <= 4000))):
                                 raise ValueError('Invalid reply shape')
                             notes = parsed.get('notes', [])
                             if not isinstance(notes, list) or len(notes) > 3:
                                 raise ValueError('Invalid notes')
+                            validate_response(response_kind, reply, reaction, draft=draft, notes=notes, action=action)
+                            allow_closing = parsed.get('allow_closing', False)
+                            if type(allow_closing) is not bool or (allow_closing and (response_kind != 'reply' or action or draft)):
+                                raise ValueError('Only a completed text exchange can allow a shortcut')
+                            if response_kind != 'reply' and not acknowledgment_allowed(context):
+                                raise ValueError('This turn needs a text response or action')
                             result.reply, result.draft, result.notes, result.action = reply, draft, notes, action
+                            result.response_kind, result.reaction = response_kind, reaction
+                            result.allow_closing = allow_closing
                         except (ValueError, KeyError, TypeError):
                             result.status = 'invalid_output'
                             result.error = 'Fri received an unreadable reply. Please try again.'

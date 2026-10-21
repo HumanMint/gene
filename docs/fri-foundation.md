@@ -53,6 +53,34 @@ status. Re-check Discord before explicitly preparing another uncertain post.
 
 ## Verification
 
+### Conversation endings
+
+In ordinary message conversations, Fri can reply, choose one acknowledgment reaction,
+or stay quiet. The existing Sol conversation call makes nuanced choices; no extra
+Luna classifier runs for each follow-up. A short whitelist of complete closing phrases
+can skip inference only after the previous verified, same-member reply marked the
+exchange complete, within two minutes, without a pending question, an intervening
+unanswered message, or signs of serious distress. Yes/ok, song titles, compliments
+and banter still reach the normal conversation path. Pending tool clarifications,
+tool outcomes and private panel interactions require text or a tool action.
+
+Reactions are bounded Unicode choices on the triggering message only, subject to
+the existing conversation write scope and Discord permissions. The adapter rechecks
+the message for edits/deletion and existing Fri reactions. It permits at most one
+acknowledgment per member/channel in 90 seconds and one per channel in 15 seconds.
+Failures stay quiet. Neither reactions nor silence renew the follow-up window or
+authorize anything. Decisions are stored as typed turns, never fabricated speech;
+reaction delivery is not claimed by the history record. Normal retention, scope
+isolation and erasure apply. Meme attention has its own unchanged controls.
+
+`tests/test_fri_endings.py` covers the shortcut, pending-request fences, typed
+history, schema validation and Discord delivery checks. `python -m gene.fri_eval
+--suite endings` checks actual model choices on isolated fictional conversations,
+including a playful follow-up, closing acknowledgments, clarifications and distress.
+It writes only anonymous usage receipts, never Discord messages or member history.
+
+### Continuing requests
+
 Clarification requests are separate from saved work and old conversation history.
 The `clarify` action holds an explicit music request or public research question
 for five minutes, scoped to the same author, guild and actual channel. A song or

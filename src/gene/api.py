@@ -97,7 +97,10 @@ class ChatTurn(ChatScope):
     clarification: Clarification | None = None
     revision: int = Field(ge=0)
     input: str = Field(min_length=1, max_length=4000)
-    reply: str = Field(min_length=1, max_length=3500)
+    reply: str = Field(max_length=3500)
+    response_kind: Literal['reply', 'react', 'quiet'] = 'reply'
+    allow_closing: bool = False
+    reaction: str | None = Field(default=None, max_length=16)
     model: str = Field(max_length=100)
     effort: str = Field(max_length=20)
     input_tokens: int | None = Field(default=None, ge=0)
@@ -324,7 +327,8 @@ def create_app(settings: Settings | None = None):
         return store.save_chat(body.guild_id, body.conversation_id, body.user_id, body.revision, body.input,
                               body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes,
                               body.source.model_dump(), body.web_receipt.model_dump() if body.web_receipt else None,
-                              body.clarification.model_dump() if body.clarification else None)
+                              body.clarification.model_dump() if body.clarification else None,
+                              response_kind=body.response_kind, reaction=body.reaction, allow_closing=body.allow_closing)
 
     @app.post('/chat/research/start', dependencies=[auth('fri')])
     def research_start(body: ResearchStart):

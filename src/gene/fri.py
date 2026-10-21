@@ -23,6 +23,7 @@ from .fri_memory import describe_memory, memory_intent
 from .fri_panel import DraftView, HomeView, authorized, card, reply, sessions
 from .fri_reports import ReportButton, report_component
 from .fri_requests import request_dm_component
+from .fri_responses import quick_closure
 from .fri_reviews import ReviewButton, notify_owner
 from .fri_usage import describe_usage, usage_requested
 from .panels import defer_panel
@@ -193,6 +194,11 @@ class Fri(discord.Client):
                     return ChatResult(reply=notice, status='cooldown')
             async with self.chat_slots:
                 context = await self.api('POST', '/chat/context', scope)
+                context['source'] = source.evidence()
+                context['acknowledgments_enabled'] = bool(self.agent and source.kind == 'discord_message')
+                if quick_closure(text, {**context, 'recent': self.agent.messages(channel_id) if self.agent else []}):
+                    result = ChatResult(status='completed', response_kind='react', reaction='👍')
+                    return await self.save_response(scope, source, text, context, result, model='local-closing')
                 if user_id == self.owner_id and guild_id == self.guild_id and usage_requested(text):
                     usage = await self.api('POST', '/agent/usage',
                                            {'guild_id': str(guild_id), 'user_id': str(user_id)})
@@ -213,7 +219,6 @@ class Fri(discord.Client):
                 context['actions'] = await actions.available() if actions else {}
                 context['display_name'] = source.display_name
                 context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
-                context['source'] = source.evidence()
                 context['requests_enabled'] = guild_id == self.guild_id
                 context['requester_is_owner'] = user_id == self.owner_id
                 if actions and guild_id == self.guild_id:
@@ -248,7 +253,9 @@ class Fri(discord.Client):
                     await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                         'source': source.model_dump(),
                         'input': clean(event.content, 4000) if result.clarification else text, 'reply': breadcrumb, 'model': context['model'],
-                        'effort': context['effort'], 'notes': [], 'web_receipt': research, 'clarification': result.clarification})
+                        'effort': context['effort'], 'notes': [], 'web_receipt': research, 'clarification': result.clarification,
+                        'allow_closing': result.allow_closing and not bool(result.draft or result.settings_preview or
+                                                                         result.post_preview or result.clarification)})
                     result.notes = []
                     diagnosis = (receipt if action_kind == 'gene_diagnose'
                                  else receipt.get('gene_result', receipt).get('diagnostic', {}))
@@ -262,17 +269,22 @@ class Fri(discord.Client):
                     return result
                 if context.get('gene_receipts') and not await actions.valid():
                     raise commands.UserFeedbackCheckFailure('Access changed during that check. Ask again for a fresh reply.')
-                saved = await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
-                    'source': source.model_dump(),
-                    'input': text, 'reply': result.reply, 'model': context['model'], 'effort': context['effort'],
-                    'notes': result.notes,
-                    'input_tokens': result.counters.get('input_tokens'), 'output_tokens': result.counters.get('output_tokens')})
-                if saved.get('first_memory'):
-                    result.reply += ('\n\n-# I kept a small preference from this. Ask “what do you remember about me?” '
-                                     'or say “forget me” any time.')
-                return result
+                return await self.save_response(scope, source, text, context, result)
         finally:
             self.busy.discard(user_id)
+
+    async def save_response(self, scope, source, text, context, result, *, model=None):
+        saved = await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
+            'source': source.model_dump(), 'input': text, 'reply': result.reply,
+            'response_kind': result.response_kind, 'reaction': result.reaction,
+            'allow_closing': result.allow_closing,
+            'model': model or context['model'], 'effort': '' if model else context['effort'],
+            'notes': result.notes, 'input_tokens': 0 if model else result.counters.get('input_tokens'),
+            'output_tokens': 0 if model else result.counters.get('output_tokens')})
+        if saved.get('first_memory') and result.response_kind == 'reply':
+            result.reply += ('\n\n-# I kept a small preference from this. Ask “what do you remember about me?” '
+                             'or say “forget me” any time.')
+        return result
 
     async def chat_interaction(self, interaction, text):
         await defer_panel(interaction)

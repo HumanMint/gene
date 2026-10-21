@@ -116,6 +116,10 @@ class Store:
                     db.execute(f'ALTER TABLE jobs ADD COLUMN {name} TEXT')
             if 'source' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
                 db.execute("ALTER TABLE chat_turns ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+            from .fri_memory_store import initialize as initialize_personal_notes
+            initialize_personal_notes(db)
+            if 'burst' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
+                db.execute("ALTER TABLE chat_turns ADD COLUMN burst TEXT NOT NULL DEFAULT '[]'")
             columns = {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}
             if 'response_kind' not in columns:
                 db.execute("ALTER TABLE chat_turns ADD COLUMN response_kind TEXT NOT NULL DEFAULT 'reply'")
@@ -567,9 +571,10 @@ class Store:
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             turns = [dict(row) for row in db.execute(
-                'SELECT input,reply,source,at,response_kind,reaction,allow_closing FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
+                'SELECT input,reply,source,at,response_kind,reaction,allow_closing,burst FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                 'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
             for turn in turns:
+                turn['burst'] = json.loads(turn['burst'])
                 source = turn.pop('source')
                 recorded = turn.pop('at')
                 turn['source'] = ChatSource.model_validate_json(source).evidence() if source else {
@@ -587,12 +592,14 @@ class Store:
 
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
-                  *, response_kind='reply', reaction=None, allow_closing=False):
+                  *, response_kind='reply', reaction=None, allow_closing=False, burst=()):
         from .fri_responses import validate_response
         validate_response(response_kind, reply, reaction, notes=notes)
         if allow_closing and (response_kind != 'reply' or clarification):
             raise ValueError('Only completed text can allow a closing shortcut')
         source = ChatSource.model_validate(source).check(guild_id, channel_id, user_id) if source else None
+        from .fri_conversation import checked_burst
+        burst = checked_burst(burst, source, text) if burst else []
         if response_kind != 'reply' and (not source or source.kind != 'discord_message' or
                 web_receipt or clarification or not -5 <= time.time()-source.timestamp().timestamp() <= 300):
             raise ValueError('Acknowledgments need a fresh message and cannot complete tools')
@@ -632,19 +639,16 @@ class Store:
             for candidate in list(notes)[:3]:
                 note = personal_note(candidate, text)
                 if note:
-                    db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at) '
-                               'VALUES (?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category) '
-                               'DO UPDATE SET evidence=excluded.evidence,at=excluded.at',
-                               (guild_id, channel_id, user_id, *note, time.time()))
-                    saved += 1
+                    from .fri_memory_store import save
+                    saved += save(db, guild_id, channel_id, user_id, note, time.time())
             db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
                        (guild_id, channel_id, user_id, guild_id, channel_id, user_id, MAX_NOTES))
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
-                       'input_tokens,output_tokens,source,response_kind,reaction,allow_closing) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
-                        time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind, reaction, allow_closing))
+                        time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind, reaction, allow_closing, json.dumps(burst)))
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',
@@ -654,6 +658,7 @@ class Store:
     @staticmethod
     def _personal_context(db, guild_id, channel_id, user_id):
         db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
+        db.execute('DELETE FROM personal_note_removals WHERE at<?', (time.time() - TTL,))
         row = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
         return {'enabled': bool(row[0]) if row else True,
                 'notes': [dict(r) for r in db.execute('SELECT category,evidence FROM personal_notes '
@@ -674,6 +679,7 @@ class Store:
                 erase_workspace(db, user_id)
                 db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
+                db.execute('DELETE FROM personal_note_removals WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM web_requests WHERE user_id=?', (user_id,))

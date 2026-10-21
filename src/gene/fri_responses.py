@@ -33,7 +33,8 @@ def quick_closure(text, context):
     """
     normalized = ' '.join(re.sub(r'[,.!]', ' ', text.casefold()).split())
     turns = context.get('turns', [])
-    if (normalized not in CLOSINGS or not acknowledgment_allowed(context) or not turns or
+    if (context.get('reply_target') or len(context.get('message_burst', [])) > 1 or
+            normalized not in CLOSINGS or not acknowledgment_allowed(context) or not turns or
             not turns[-1].get('allow_closing', False)):
         return False
     try:

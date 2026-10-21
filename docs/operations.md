@@ -347,9 +347,9 @@ uv run --no-sync python scripts/import_history.py --delete-evidence
 ```
 
 Shared memory consists of explicit owner-approved facts and operational request/release records.
-Fri retains six exchanges per person and conversation for seven days, plus up to five short
+Fri retains six exchanges per person and conversation for seven days, plus up to ten short
 personal notes for 90 days. The notes are exact, validated self-disclosures for nickname, games,
-music, hobbies, or conversation style; each category replaces its previous note. Public/private
+music, hobbies, or conversation style, with at most three separate entries per category. Public/private
 conversations, channels, users, and guilds stay separate. The attention adapter additionally
 keeps a 15-minute, 30-message RAM buffer per configured channel and bounded recent-history
 summaries as described below; it does not import an unrestricted server archive.
@@ -358,6 +358,11 @@ erases all that user's Fri notes and chat turns and disables retention; “fri r
 re-enables it. These controls run without inference and invalidate in-flight replies so deleted
 data cannot be written back. **Forget my chats** clears recent turns while retaining personal notes.
 Anonymous usage counts survive erasure. Personal notes are never shared with the development worker.
+**My memory** edits or removes an individual entry without inference. Changes are revision-fenced,
+clear stale recent context, and prevent historical learning from restoring the removed disclosure.
+The item-storage upgrade preserves existing IDs and dates in one SQLite savepoint. A rollback to
+the earlier single-note release needs its matching database backup, because that older writer
+expects a different uniqueness constraint. Retain the pre-release database backup with the code SHA.
 New commands can still hold a five-minute clarification and bounded execution receipts
 while personal memory is disabled; these operational records do not become personal notes.
 Owner **Saved context** controls remain the only way to add shared facts.

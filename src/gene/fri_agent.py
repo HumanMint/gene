@@ -20,6 +20,7 @@ from .fri_addressing import addressed_text
 from .fri_agent_model import ATTENTION, DIAGNOSIS, SETTINGS, STRING, SUMMARY, analyze, obj
 from .fri_agent_store import DEFAULTS, RANGES
 from .fri_chat import VOICE
+from .fri_conversation import Bursts
 from .fri_errors import ControllerRejected
 from .fri_memory import memory_intent
 from .fri_panel import DraftView
@@ -78,6 +79,7 @@ class Agent:
         self.recent = defaultdict(lambda: deque(maxlen=30))
         self.active = {}
         self.pending = {}
+        self.bursts = Bursts()
         self.seen = {}
         self.last_attention = {}
         self.last_spoke = {}
@@ -190,6 +192,10 @@ class Agent:
         return accepted
 
     def forget(self, user):
+        self.bursts.forget(user)
+        for key in list(self.pending):
+            if key[1] == user:
+                del self.pending[key]
         for key, rows in self.recent.items():
             self.recent[key] = deque((r for r in rows if r['user_id'] != str(user)), maxlen=30)
         for key in list(self.active):
@@ -321,7 +327,8 @@ class Agent:
             self.recent[channel].append({'id': str(message.id), 'user_id': str(message.author.id),
                 'name': 'Gene', 'text': text[:1800], 'at': time.time(), 'gene_error': True})
             return
-        active = self.active.get((channel, message.author.id), 0) > time.time()
+        active = (self.active.get((channel, message.author.id), 0) > time.time() or
+                  self.bursts.has(channel, message.author.id))
         if not active and directed is None and not dm and not message.author.bot:
             pending = await self.fri.api('POST', '/chat/pending', {
                 'guild_id': str(message.guild.id), 'user_id': str(message.author.id),
@@ -335,18 +342,28 @@ class Agent:
             return
         # Short bursts share context and produce one response to the newest message.
         key = (channel, message.author.id)
+        try:
+            self.bursts.add(message)
+        except ValueError as exc:
+            self.pending.pop(key, None)
+            await message.reply(str(exc), allowed_mentions=NO_MENTIONS, mention_author=False)
+            return
         self.pending[key] = message.id
         await asyncio.sleep(1.5)
         if self.pending.get(key) != message.id:
             return
         self.pending.pop(key, None)
-        await self.respond(message, directed or text, dm)
+        burst = self.bursts.take(message)
+        if len(burst) > 1:
+            await self.respond(message, directed or text, dm, burst=burst)
+        else:
+            await self.respond(message, directed or text, dm)
 
-    async def respond(self, message, text, dm=False):
+    async def respond(self, message, text, dm=False, *, burst=()):
         try:
             async with message.channel.typing():
                 result = await self.fri.talk(self.fri.guild_id if dm else message.guild.id, message.channel.id, message.author.id,
-                    text, 'private' if dm else 'public', message.author.display_name, event=message)
+                    text, 'private' if dm else 'public', message.author.display_name, event=message, burst=burst)
         except commands.UserFeedbackCheckFailure as exc:
             await message.reply(str(exc)[:1800], allowed_mentions=NO_MENTIONS)
             return
@@ -364,6 +381,9 @@ class Agent:
         view = None
         if result.settings_preview:
             view = BehaviorPreview(self, **result.settings_preview)
+        elif result.memory_scope:
+            from .fri_memory_panel import MemoryLauncher
+            view = MemoryLauncher(self.fri, result.memory_scope)
         elif result.draft:
             if dm or message.guild.id == self.fri.guild_id:
                 view = DraftView(self.fri, message.author.id, result.draft, public=True)

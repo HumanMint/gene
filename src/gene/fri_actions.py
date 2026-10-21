@@ -30,16 +30,28 @@ class Actions:
         self.settings_version = None
         self.private_evidence = False
         self.pending = None
+        self.conversation = {}
         self.research = None
         self.search_count = 0
 
     def command_requested(self, action):
         if requested(self.message, action.get('action')):
             return True
+        if self.burst_permission(action):
+            return True
         return bool(self.event and completion(self.pending, self.message, action.get('action'),
             action.get('argument'), discord_source(self.event).model_dump(),
             str(self.guild), self.scope.get('conversation_id', ''), str(self.user), self.revision,
             str(getattr(getattr(self.fri, 'user', None), 'id', ''))))
+
+    def burst_permission(self, action):
+        rows = self.conversation.get('message_burst', [])
+        if not self.event or len(rows) < 2:
+            return None
+        from .fri_conversation import burst_continuation
+        return burst_continuation(rows[-2], discord_source(self.event), clean(self.event.content, 4000),
+            action.get('action'), action.get('argument'), self.revision,
+            str(getattr(getattr(self.fri, 'user', None), 'id', '')))
 
     async def pending_unchanged(self):
         if not self.pending or not self.event:
@@ -131,6 +143,10 @@ class Actions:
             'history_channels': [c for c in overview['history_channels'] if c in channels]}
 
     async def execute(self, action):
+        if self.conversation and (self.conversation.get('message_burst') or self.conversation.get('reply_target')):
+            from .fri_conversation import unchanged
+            if not await unchanged(self.agent, self.event, self.conversation):
+                return {'blocked': 'The conversation evidence changed. Send a fresh request.'}
         channels = await self.channels(fresh=True)
         kind = action.get('kind')
         if not channels:
@@ -252,7 +268,8 @@ class Actions:
         if not self.command_requested(action):
             return {'blocked': 'That music request expired or needs a fresh instruction. Ask me to play it with the song included.'}
         continued = not requested(self.message, verb)
-        if continued and not await self.pending_unchanged():
+        burst = self.burst_permission(action) if continued else None
+        if continued and not burst and not await self.pending_unchanged():
             return {'blocked': 'The earlier music request changed. Ask again with the song included.'}
         original = await self.event.channel.fetch_message(self.event.id)
         if original.author.id != self.user or original.webhook_id or original.content != self.event.content:
@@ -271,7 +288,8 @@ class Actions:
         submitted = await self.fri.api('POST', '/controls', {**self.scope, 'source': discord_source(self.event).model_dump(),
             'target_channel_id': target, 'request_text': clean(self.event.content, 4000),
             'action': verb, 'argument': argument, 'revision': self.revision,
-            'continuation_id': self.pending['source']['id'] if continued else '',
+            'continuation_id': (burst or self.pending)['source']['id'] if continued else '',
+            'burst_origin': self.conversation['message_burst'][-2] if burst else None,
             'addressed_bot_id': str(getattr(getattr(self.fri, 'user', None), 'id', ''))})
         result = None
         try:
@@ -362,6 +380,10 @@ class Actions:
     async def valid(self):
         """Fail closed if access or source privacy changed while the model was answering."""
         try:
+            if self.conversation and (self.conversation.get('message_burst') or self.conversation.get('reply_target')):
+                from .fri_conversation import unchanged
+                if not await unchanged(self.agent, self.event, self.conversation):
+                    return False
             channels = await self.channels(fresh=True)
             if not channels or not self.sources <= set(channels):
                 return False

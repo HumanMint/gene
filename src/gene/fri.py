@@ -100,8 +100,11 @@ class Fri(discord.Client):
                 interaction.message.author.id == getattr(self.user, 'id', None))
             if behavior:
                 allowed = True
+            from .fri_memory_panel import memory_component
             from .fri_workspace import post_component
             if post_component(interaction, getattr(self.user, 'id', None), self.owner_id):
+                allowed = True
+            if memory_component(interaction, getattr(self.user, 'id', None)):
                 allowed = True
             if (not allowed and not owner_dm_component(interaction, getattr(self.user, 'id', None), self.owner_id)
                     and not report_component(interaction, getattr(self.user, 'id', None), self.owner_id)
@@ -149,7 +152,7 @@ class Fri(discord.Client):
             raise commands.UserFeedbackCheckFailure(result.error or 'Fri could not complete that reply. Try again shortly.')
         return result
 
-    async def talk(self, guild_id, channel_id, user_id, text, visibility, display_name='', *, event=None):
+    async def talk(self, guild_id, channel_id, user_id, text, visibility, display_name='', *, event=None, burst=()):
         source = discord_source(event, text, getattr(self.user, 'id', 0)).check(guild_id, f'{visibility}:{channel_id}', user_id)
         channel = self.get_channel(channel_id) if self.agent else None
         source_channel = (getattr(channel, 'parent_id', None) or channel_id) if visibility == 'public' and self.agent else self.workshop_id
@@ -162,7 +165,7 @@ class Fri(discord.Client):
             profile = context['personal_memory']
             profile['notes'] = [{**note, 'evidence': discord.utils.escape_markdown(note['evidence'])}
                                 for note in profile['notes']]
-            return ChatResult(reply=describe_memory(profile), status='completed')
+            return ChatResult(reply=describe_memory(profile), status='completed', memory_scope=scope)
         if intent in ('disable', 'enable'):
             await self.api('POST', '/chat/memory/control', {**scope, 'action': intent})
             if self.agent:
@@ -194,6 +197,14 @@ class Fri(discord.Client):
                     return ChatResult(reply=notice, status='cooldown')
             async with self.chat_slots:
                 context = await self.api('POST', '/chat/context', scope)
+                conversation = {}
+                if self.agent and source.kind == 'discord_message':
+                    from .fri_conversation import evidence
+                    try:
+                        conversation = await evidence(self.agent, event, burst)
+                    except ValueError as exc:
+                        raise commands.UserFeedbackCheckFailure(str(exc)) from None
+                    context.update(conversation)
                 context['source'] = source.evidence()
                 context['acknowledgments_enabled'] = bool(self.agent and source.kind == 'discord_message')
                 if quick_closure(text, {**context, 'recent': self.agent.messages(channel_id) if self.agent else []}):
@@ -216,6 +227,7 @@ class Fri(discord.Client):
                     actions.message, actions.model, actions.effort = clean(text, 4000), context['model'], context['effort']
                     actions.web_research = context.get('web_research', [])
                     actions.pending = context.get('pending')
+                    actions.conversation = conversation
                 context['actions'] = await actions.available() if actions else {}
                 context['display_name'] = source.display_name
                 context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
@@ -228,6 +240,10 @@ class Fri(discord.Client):
                     actions.sources.update(r['channel_id'] for r in context['gene_receipts'])
                 text = clean(text, 4000)
                 result = await self.chat_once(text, context)
+                if conversation and (conversation.get('message_burst') or conversation.get('reply_target')):
+                    from .fri_conversation import unchanged
+                    if not await unchanged(self.agent, event, conversation):
+                        raise commands.UserFeedbackCheckFailure('That conversation changed while I was replying. Ask again for a fresh reply.')
                 if guild_id != self.guild_id:
                     result.draft = None
                 if result.action:
@@ -252,8 +268,10 @@ class Fri(discord.Client):
                         breadcrumb = result.reply
                     await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                         'source': source.model_dump(),
-                        'input': clean(event.content, 4000) if result.clarification else text, 'reply': breadcrumb, 'model': context['model'],
+                        'input': clean(event.content, 4000) if result.clarification or context.get('message_burst') else text,
+                        'reply': breadcrumb, 'model': context['model'],
                         'effort': context['effort'], 'notes': [], 'web_receipt': research, 'clarification': result.clarification,
+                        'burst': context.get('message_burst', []),
                         'allow_closing': result.allow_closing and not bool(result.draft or result.settings_preview or
                                                                          result.post_preview or result.clarification)})
                     result.notes = []
@@ -274,10 +292,18 @@ class Fri(discord.Client):
             self.busy.discard(user_id)
 
     async def save_response(self, scope, source, text, context, result, *, model=None):
+        if context.get('message_burst'):
+            text = context['message_burst'][-1]['text']
+        # A reply to someone else can quote their words. Keep the live answer on
+        # Discord, but never preserve derived copies in this member's memory.
+        referenced = bool(context.get('reply_target'))
+        stored_reply = ('Earlier reply-context check. Fetch current Discord evidence for follow-up details; '
+                        'no quoted findings are retained here.') if referenced else result.reply
         saved = await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
-            'source': source.model_dump(), 'input': text, 'reply': result.reply,
+            'source': source.model_dump(), 'input': text, 'reply': stored_reply if result.response_kind == 'reply' else result.reply,
             'response_kind': result.response_kind, 'reaction': result.reaction,
-            'allow_closing': result.allow_closing,
+            'allow_closing': result.allow_closing and not referenced,
+            'burst': context.get('message_burst', []),
             'model': model or context['model'], 'effort': '' if model else context['effort'],
             'notes': result.notes, 'input_tokens': 0 if model else result.counters.get('input_tokens'),
             'output_tokens': 0 if model else result.counters.get('output_tokens')})
@@ -287,6 +313,10 @@ class Fri(discord.Client):
         return result
 
     async def chat_interaction(self, interaction, text):
+        if memory_intent(text) == 'show':
+            from .fri_memory_panel import show
+            await show(self, interaction)
+            return
         await defer_panel(interaction)
         await reply(self, interaction, 'Thinking…', view=HomeView(self, interaction.user.id))
         try:

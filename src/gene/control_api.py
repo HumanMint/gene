@@ -3,6 +3,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .control_store import Controls
 from .fri_context import ChatSource
+from .fri_conversation import SourceText
 from .gene_controls import COMMANDS
 
 
@@ -23,6 +24,7 @@ class Control(Scope):
     revision: int = Field(ge=0)
     continuation_id: str = Field(default='', pattern=r'^(?:[0-9]{1,25})?$')
     addressed_bot_id: str = Field(default='', pattern=r'^(?:[0-9]{1,25})?$')
+    burst_origin: SourceText | None = None
 
 
 class Poll(BaseModel):

@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from .fri_context import ChatSource
+from .fri_conversation import SourceText
 from .fri_pending import Clarification
 from .fri_research import ResearchReceipt
 from .store import Conflict, Store
@@ -106,6 +107,7 @@ class ChatTurn(ChatScope):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     notes: list[dict] = Field(default_factory=list, max_length=3)
+    burst: list[SourceText] = Field(default_factory=list, max_length=5)
 
 
 class ResearchStart(ChatScope):
@@ -122,6 +124,13 @@ class PendingCancel(ChatScope):
 
 class PersonalControl(ChatScope):
     action: Literal['enable', 'disable']
+
+
+class PersonalNoteEdit(ChatScope):
+    source: ChatSource
+    revision: int = Field(ge=0)
+    action: Literal['remove', 'replace']
+    evidence: str = Field(default='', max_length=180)
 
 
 class ChatUsage(BaseModel):
@@ -328,7 +337,8 @@ def create_app(settings: Settings | None = None):
                               body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes,
                               body.source.model_dump(), body.web_receipt.model_dump() if body.web_receipt else None,
                               body.clarification.model_dump() if body.clarification else None,
-                              response_kind=body.response_kind, reaction=body.reaction, allow_closing=body.allow_closing)
+                              response_kind=body.response_kind, reaction=body.reaction, allow_closing=body.allow_closing,
+                              burst=[row.model_dump() for row in body.burst])
 
     @app.post('/chat/research/start', dependencies=[auth('fri')])
     def research_start(body: ResearchStart):
@@ -342,6 +352,19 @@ def create_app(settings: Settings | None = None):
         chat_scope(body)
         store.personal_control(body.user_id, body.action)
         return {'ok': True}
+
+    @app.post('/chat/memory/notes', dependencies=[auth('fri')])
+    def personal_notes(body: ChatScope):
+        chat_scope(body)
+        from .fri_memory_store import entries
+        return entries(store, body.guild_id, body.conversation_id, body.user_id)
+
+    @app.post('/chat/memory/notes/{identifier}', dependencies=[auth('fri')])
+    def edit_personal_note(identifier: int, body: PersonalNoteEdit):
+        chat_scope(body)
+        from .fri_memory_store import edit
+        return edit(store, body.guild_id, body.conversation_id, body.user_id, identifier,
+                    body.revision, body.source.model_dump(), body.action, body.evidence)
 
     @app.post('/chat/usage/report', dependencies=[auth('fri')])
     def chat_usage_report(body: ChatUsage):

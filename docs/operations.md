@@ -162,8 +162,13 @@ in the audio image for decoding, seeking, and timed sender checks without a comp
 It does not rebuild or restart Gene, change controller approvals, delete backup/source/data
 directories, or touch another application's images, containers, volumes or build cache.
 The only removable tags are `gene-runtime:<full-sha>` and `gene-worker:<full-sha>`.
-An image with an untagged, bootstrap, custom/function-specific, audio, base-image, or
-other-application alias is outside cleanup scope. Inactivity is never retirement evidence.
+Unclassified untagged images and images with bootstrap, custom/function-specific, audio,
+base-image or other-application tags are outside cleanup scope. Inactivity is never
+retirement evidence. The classic Docker builder also retains unnamed intermediate images.
+Only exact unnamed ancestors of an approved retired Gene version may be collected; their
+ancestry evidence is saved before deleting the release. Tagged ancestors and configured
+references stay protected. Docker's normal dependency checks preserve any parent with
+remaining child images or containers. There is no forced removal or implicit parent prune.
 
 The maintenance policy and state live privately under `/srv/gene/maintenance/`:
 
@@ -175,7 +180,8 @@ The maintenance policy and state live privately under `/srv/gene/maintenance/`:
   evidence. Subsequent successful maintainer backup records also identify replaced images,
   including releases between timer runs. New, unclassified builds stay intact.
 - `image-retention-plan.json` and `image-retention-result.json`: latest planned and completed
-  removals. These contain image metadata, never environment credentials or conversation data.
+  removals. Dry runs also save the reviewable plan, without updating retirement state.
+  These contain image metadata, never environment credentials or conversation data.
 
 Always preserve all container references (including stopped containers), configured image
 references (including an idle worker and the running worker's inherited environment), pending

@@ -162,6 +162,8 @@ def snapshot(root, policy):
     # Successful maintainer backup records cover releases between timer runs.
     # An unreferenced build alone never enters this lifecycle history.
     for job, deployed, previous, at in deployments:
+        if job in cog_jobs:
+            continue  # Cog jobs never replace images, even when revisiting a maintainer SHA.
         for backup in (root / 'backups' / ('maintainer-' + deployed), root / 'backups' / job):
             if not (backup / 'release.env').is_file() or not (backup / 'worker.env').is_file():
                 continue
@@ -189,7 +191,8 @@ def snapshot(root, policy):
             raise ValueError('Controller rollback pointer disagrees with deployment history')
         if not SHA.fullmatch(previous):
             raise ValueError('Invalid rollback lineage')
-        choices = [root / 'backups' / ('maintainer-' + cursor), root / 'backups' / job]
+        choices = ([root / 'backups' / job] if job in cog_jobs else
+                   [root / 'backups' / ('maintainer-' + cursor), root / 'backups' / job])
         backup = next((p for p in choices if (p / 'release.env').is_file()
                        and (p / 'worker.env').is_file()), None)
         if backup is None:
@@ -297,7 +300,65 @@ def plan(view, state, now):
                            'retired_at': record['retired_at']})
             continue
         keep[iid] = {'tags': tags, 'reason': reason}
+    # Workers inherit runtime images; remove eligible child versions first.
+    delete.sort(key=lambda row: (not any(t.startswith('gene-worker:') for t in row['tags']), row['id']))
     return {'delete': delete, 'keep': keep, 'fingerprint': view['fingerprint']}
+
+
+def image_metadata(reference):
+    template = '{"id":{{json .Id}},"parent":{{json .Parent}},"tags":{{json .RepoTags}}}'
+    return json.loads(command('docker', 'image', 'inspect', '--format', template, reference))
+
+
+def record_parents(state, row):
+    """Record only unnamed ancestors of an exact, already approved retired Gene image."""
+    parent = image_metadata(row['id'])['parent']
+    visited = {row['id']}
+    for _ in range(100):
+        if not parent:
+            return
+        if not IMAGE_ID.fullmatch(parent) or parent in visited:
+            raise ValueError('Invalid Docker image ancestry')
+        visited.add(parent)
+        metadata = image_metadata(parent)
+        if metadata['id'] != parent:
+            raise ValueError('Docker ancestor identity changed')
+        if metadata.get('tags'):
+            return  # Never remove a tagged parent/base/function image.
+        state.setdefault('retired_parents', {}).setdefault(parent, {
+            'from_image': row['id'], 'retired_at': row['retired_at'],
+            'evidence': 'Unnamed ancestor of a verified retired Gene runtime/worker image'})
+        parent = metadata['parent']
+    raise ValueError('Docker ancestry exceeded inspection limit')
+
+
+def remove_parents(root, policy, state, fingerprint, result):
+    """No implicit pruning: remove recorded ancestors by exact ID, never with force."""
+    pending = dict(state.get('retired_parents', {}))
+    for iid, record in pending.items():
+        if (not IMAGE_ID.fullmatch(iid) or not IMAGE_ID.fullmatch(record['from_image'])
+                or record['from_image'] not in state['retired'] or not record.get('evidence')
+                or time.time() - record['retired_at'] < GRACE):
+            continue
+        fresh = snapshot(root, read_json(root / 'maintenance/image-retention-policy.json'))
+        if fresh['fingerprint'] != fingerprint:
+            raise ValueError('References changed during ancestor cleanup')
+        if iid in fresh['protected']:
+            continue
+        try:
+            metadata = image_metadata(iid)
+        except subprocess.CalledProcessError:
+            continue  # Already collected or unavailable; never broaden the request.
+        if metadata['id'] != iid or metadata.get('tags'):
+            continue
+        try:
+            command('docker', 'image', 'rm', '--no-prune', iid)
+        except subprocess.CalledProcessError:
+            continue  # Docker preserves parents with dependent children/containers.
+        result.setdefault('removed_parent_ids', []).append(iid)
+        state['retired_parents'].pop(iid, None)
+        save_json(root / 'maintenance/image-retention-state.json', state)
+        save_json(root / 'maintenance/image-retention-result.json', result)
 
 
 def run(root, apply=False):
@@ -332,8 +393,8 @@ def run(root, apply=False):
     state = observe(state, view, now)
     result = plan(view, state, now)
     result['removed_tags'] = []
+    save_json(folder / 'image-retention-plan.json', result)
     if apply:
-        save_json(folder / 'image-retention-plan.json', result)
         save_json(state_path, state)
         for row in result['delete']:
             # Abort on a concurrent operator/configuration/container change. No force, no prune.
@@ -344,6 +405,8 @@ def run(root, apply=False):
             eligible = {r['id']: r for r in plan(fresh, state, time.time())['delete']}
             if row['id'] not in eligible or eligible[row['id']]['tags'] != row['tags']:
                 raise ValueError('Image tags or protection changed; remaining removals aborted')
+            record_parents(state, row)
+            save_json(state_path, state)
             for tag in row['tags']:
                 fresh = snapshot(root, read_json(folder / 'image-retention-policy.json'))
                 if fresh['fingerprint'] != view['fingerprint'] or row['id'] in fresh['protected']:
@@ -352,11 +415,16 @@ def run(root, apply=False):
                 actual = json.loads(command('docker', 'image', 'inspect', tag))[0]['Id']
                 if actual != row['id']:
                     raise ValueError('Image was retagged; removal aborted')
-                command('docker', 'image', 'rm', '--no-prune', tag)
+                try:
+                    command('docker', 'image', 'rm', '--no-prune', tag)
+                except subprocess.CalledProcessError:
+                    result.setdefault('skipped_tags', []).append(tag)
+                    continue  # A retained child/container may still require the parent image.
                 result['removed_tags'].append(tag)
                 state.setdefault('removed', {})[tag] = {'id': row['id'], 'at': time.time()}
                 save_json(state_path, state)
                 save_json(folder / 'image-retention-result.json', result)
+        remove_parents(root, policy, state, view['fingerprint'], result)
         save_json(folder / 'image-retention-result.json', result)
     return result
 
@@ -372,7 +440,9 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = run(args.root.resolve(), args.apply)
     print(json.dumps({'apply': args.apply, 'eligible_images': len(result['delete']),
-                      'removed_tags': len(result['removed_tags']), 'kept_images': len(result['keep'])}))
+                      'removed_tags': len(result['removed_tags']),
+                      'removed_parents': len(result.get('removed_parent_ids', [])),
+                      'kept_images': len(result['keep'])}))
 
 
 if __name__ == '__main__':

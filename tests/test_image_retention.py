@@ -1,6 +1,7 @@
 import copy
 import json
 import sqlite3
+import subprocess
 from unittest.mock import Mock
 
 import pytest
@@ -116,6 +117,7 @@ def host(tmp_path, monkeypatch):
     retention.save_json(tmp_path / 'maintenance/image-retention-policy.json', policy)
     monkeypatch.setattr(retention, 'docker_inventory', lambda: (copy.deepcopy(images), {}))
     monkeypatch.setattr(retention, 'process_refs', lambda: [])
+    monkeypatch.setattr(retention, 'image_metadata', lambda ref: {'id': ref, 'parent': '', 'tags': []})
     monkeypatch.setattr(retention.time, 'time', lambda: NOW)
     return tmp_path, images, policy, db
 
@@ -235,6 +237,27 @@ def test_normal_cog_release_keeps_image_retention_working(host):
     assert {iid(n) for n in (1, 11, 2, 12, 3, 13)} <= inventory['protected']
 
 
+def test_cog_rollback_to_a_maintainer_sha_uses_its_own_event_backup(host):
+    root, _, policy, db = host
+    test_normal_cog_release_keeps_image_retention_working(host)
+    sha, previous = f'{1:040x}', f'{6:040x}'
+    (root / 'release.env').write_text(f'GENE_RELEASE_SHA={sha}\nGENE_RUNTIME_IMAGE={tag(1)}\n')
+    (root / 'releases' / previous / 'cogs').mkdir(parents=True)
+    backup = root / 'backups/rollback-job'
+    backup.mkdir()
+    (backup / 'controller.sqlite3').touch()
+    (backup / 'red.tar.gz').touch()
+    db.execute("UPDATE settings SET value=? WHERE key='active_sha'", (sha,))
+    db.execute("UPDATE settings SET value=? WHERE key='previous_sha'", (previous,))
+    db.execute('INSERT INTO jobs VALUES (?,?,?,?,?)',
+               ('rollback-job', 'rollback', 'deployed', json.dumps({'sha': sha, 'base_sha': previous}), sha))
+    db.execute('INSERT INTO deployments VALUES (?,?,?,?,?)',
+               ('rollback-job', sha, previous, 400, 'deployed'))
+    db.commit()
+    inventory = retention.snapshot(root, policy)
+    assert {iid(n) for n in (1, 11, 2, 12, 3, 13)} <= inventory['protected']
+
+
 @pytest.mark.parametrize('hold', [False, True])
 def test_auxiliary_on_demand_or_hold_reactivation_renews_grace(host, hold):
     root, _, policy, _ = host
@@ -261,3 +284,49 @@ def test_subsequent_explicit_retirement_policy_is_reconciled(host):
     policy['retired_images'][iid(5)] = entry
     retention.save_json(root / 'maintenance/image-retention-policy.json', policy)
     assert [row['id'] for row in retention.run(root)['delete']] == [iid(5)]
+
+
+@pytest.mark.parametrize('protection', ['none', 'configured', 'tagged', 'shared_child'])
+def test_only_unnamed_retired_gene_ancestors_can_be_collected(host, monkeypatch, protection):
+    root, images, _, _ = host
+    images[iid(50)] = {'tags': []}
+    metadata = {iid(5): {'id': iid(5), 'parent': iid(50), 'tags': [tag(5)]},
+                iid(50): {'id': iid(50), 'parent': iid(99), 'tags': []},
+                iid(99): {'id': iid(99), 'parent': '', 'tags': ['wordpress:latest']}}
+    monkeypatch.setattr(retention, 'image_metadata', lambda ref: metadata[ref])
+    if protection == 'configured':
+        (root / 'secrets/ondemand.env').write_text('GENE_TOOL_IMAGE=' + iid(50) + '\n')
+    calls = []
+
+    def docker(*args):
+        if args[:3] == ('docker', 'image', 'inspect'):
+            return json.dumps([{'Id': iid(5)}])
+        calls.append(args)
+        target = args[-1]
+        if target == tag(5):
+            del images[iid(5)]
+            if protection == 'tagged':
+                metadata[iid(50)]['tags'] = ['gene-worker:future-function']
+        elif protection == 'shared_child':
+            raise subprocess.CalledProcessError(1, args)
+        else:
+            assert target == iid(50)
+            del images[iid(50)]
+        return ''
+
+    monkeypatch.setattr(retention, 'command', docker)
+    result = retention.run(root, apply=True)
+    assert result['removed_tags'] == [tag(5)]
+    assert (iid(50) not in images) == (protection == 'none')
+    assert iid(99) in images
+    assert not any(c[-1] == iid(99) for c in calls)
+    assert all(c[:4] == ('docker', 'image', 'rm', '--no-prune') for c in calls)
+
+
+def test_dry_run_persists_a_reviewable_plan_without_mutating_retirement_state(host):
+    root, _, _, _ = host
+    retention.run(root)
+    plan = retention.read_json(root / 'maintenance/image-retention-plan.json')
+    assert plan['delete'][0]['tags'] == [tag(5)]
+    assert plan['delete'][0]['evidence']
+    assert not (root / 'maintenance/image-retention-state.json').exists()

@@ -224,9 +224,13 @@ def test_two_stage_reply_counts_both_calls_and_keeps_only_safe_breadcrumb(monkey
             ChatResult(status='failed' if outcome == 'failed' else 'completed', reply='mostly music chat in the bit i checked',
                        action={'kind': 'read_recent', 'channel_id': '2'} if outcome == 'second_action' else None,
                        notes=[{'category': 'music', 'evidence': 'I love trance'}], counters={'input_tokens': 20})])
-        if outcome == 'completed':
+        if outcome != 'erased':
             result = await fri.talk(123, 999, 10, 'look around', 'private', event=event(channel=999, content='look around'))
-            assert result.reply.startswith('mostly music') and result.notes == []
+            if outcome == 'completed':
+                assert result.reply.startswith('mostly music') and result.notes == []
+            else:
+                assert 'check completed' in result.reply
+                assert 'trance' not in result.reply and not result.action
         else:
             from redbot.core import commands
             with pytest.raises(commands.UserFeedbackCheckFailure):
@@ -236,7 +240,7 @@ def test_two_stage_reply_counts_both_calls_and_keeps_only_safe_breadcrumb(monkey
         assert 'work_save' not in fri.chat.respond.await_args.args[1]['actions']
         assert fri.chat.respond.await_args.args[1]['action_result']['scanned'] == 3
         turns = [body for path, body in calls if path == '/chat/turn']
-        if outcome == 'completed':
+        if outcome != 'erased':
             assert len(turns) == 1 and turns[0]['notes'] == []
             assert 'read_recent in channel 1' in turns[0]['reply']
             assert 'music' not in turns[0]['reply'] and 'trance' not in turns[0]['reply']

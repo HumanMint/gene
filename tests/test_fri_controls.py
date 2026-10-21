@@ -3,7 +3,6 @@ import json
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from redbot.core import commands
 
 from gene.fri_actions import Actions
 from gene.fri_chat import Chat, ChatResult
@@ -87,8 +86,9 @@ def test_web_to_gene_chain_is_bounded_and_requires_original_request(monkeypatch,
                 assert fri.chat.respond.await_args.args[1]['actions'] == {}
                 assert 'blocked' in fri.chat.respond.await_args.args[1]['action_result']
             else:
-                with pytest.raises(commands.UserFeedbackCheckFailure):
-                    await fri.talk(123, 1, 20, text, 'public', event=event(user=20, channel=1, content=text))
+                result = await fri.talk(123, 1, 20, text, 'public', event=event(user=20, channel=1, content=text))
+                assert not result.action
+                assert ('Search failed' if scenario == 'failure' else 'Track enqueued') in result.reply
             assert execute.await_count == (2 if scenario in ('requested', 'third_action') else 1)
             if execute.await_count == 2:
                 assert execute.await_args.args[0] == action

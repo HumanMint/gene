@@ -183,15 +183,6 @@ class Fri(discord.Client):
             raise commands.UserFeedbackCheckFailure('Keep each message between 1 and 4000 characters.')
         self.busy.add(user_id)
         try:
-            if self.agent and self.agent.config['enabled']:
-                admission = await self.api('POST', '/agent/admit', {**self.agent.identity(user_id, guild_id),
-                    'channel_id': str(source_channel),
-                    'space': 'dm' if visibility == 'private' else 'public'})
-                if not admission['allowed']:
-                    minutes = max(1, int((admission['until']-time.time()+59)//60))
-                    notice = (f'bro im cooked rn, gotta recharge my social battery and save daniel’s ai wallet lol. '
-                              f'back in about {minutes} mins') if admission.get('notice') else ''
-                    return ChatResult(reply=notice, status='cooldown')
             async with self.chat_slots:
                 context = await self.api('POST', '/chat/context', scope)
                 context['source'] = source.evidence()
@@ -208,6 +199,23 @@ class Fri(discord.Client):
                         'model': 'local-usage-report', 'effort': '', 'notes': [],
                         'input_tokens': 0, 'output_tokens': 0})
                     return ChatResult(reply=report, status='completed')
+                from .fri_operational import admit as admit_operation
+                operation = await admit_operation(self, event, source, scope, text, context)
+                if operation.result:
+                    if operation.result.status == 'completed':
+                        saved_result = (ChatResult(reply='Earlier check: gene_command. Fetch current evidence for follow-up details; no findings are retained here.', status='completed')
+                                        if operation.tool_receipt else operation.result)
+                        await self.save_response(scope, source, text, context, saved_result, model='local-control')
+                    return operation.result
+                if self.agent and self.agent.config['enabled'] and not operation.continuation:
+                    admission = await self.api('POST', '/agent/admit', {**self.agent.identity(user_id, guild_id),
+                        'channel_id': str(source_channel),
+                        'space': 'dm' if visibility == 'private' else 'public'})
+                    if not admission['allowed']:
+                        minutes = max(1, int((admission['until']-time.time()+59)//60))
+                        notice = (f'bro im cooked rn, gotta recharge my social battery and save daniel’s ai wallet lol. '
+                                  f'back in about {minutes} mins') if admission.get('notice') else ''
+                        return ChatResult(reply=notice, status='cooldown')
                 if self.agent:
                     context.update(await self.agent.extra_context(channel_id, user_id, visibility == 'public'))
                 actions = Actions(self.agent, user_id, channel_id, visibility == 'public') if self.agent else None
@@ -216,7 +224,15 @@ class Fri(discord.Client):
                     actions.message, actions.model, actions.effort = clean(text, 4000), context['model'], context['effort']
                     actions.web_research = context.get('web_research', [])
                     actions.pending = context.get('pending')
+                    actions.continuation_only = actions.pending['goal'] if operation.continuation else None
                 context['actions'] = await actions.available() if actions else {}
+                if operation.continuation:
+                    goal = actions.pending['goal']
+                    permitted = 'web_search' if goal == 'web' else 'gene_command'
+                    context['actions'] = {k: v for k, v in context['actions'].items() if k == permitted}
+                    if goal != 'web' and permitted in context['actions']:
+                        control = context['actions'][permitted]
+                        control['commands'] = {k: v for k, v in control['commands'].items() if k == goal}
                 context['display_name'] = source.display_name
                 context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
                 context['requests_enabled'] = guild_id == self.guild_id

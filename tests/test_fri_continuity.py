@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock, patch
 
 import discord
 import pytest
-from redbot.core import commands
 
 from gene.control_store import Controls
 from gene.fri_actions import Actions
@@ -425,8 +424,8 @@ def test_read_history_cannot_be_persisted_as_a_clarification(monkeypatch, tmp_pa
         actual = event(user=20, channel=1, content=text)
         actual.id = int(control_body()['source']['id'])
         try:
-            with pytest.raises(commands.UserFeedbackCheckFailure):
-                await fri.talk(123, 1, 20, text, 'public', event=actual)
+            result = await fri.talk(123, 1, 20, text, 'public', event=actual)
+            assert secret not in result.reply and result.clarification is None
             client.app.state.store.personal_control('30', 'disable')
             context = client.app.state.store.chat_context('123', 'public:1', '20')
             assert context['pending'] is None and secret not in str(context)

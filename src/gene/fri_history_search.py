@@ -23,8 +23,10 @@ def requested(text):
     if re.search(r"(?i)\b(?:don't|do not|stop)\s+(?:search|look|read)", visible):
         return False
     return bool(re.search(
-        r'(?is)\b(search|find|look\s+(?:up|through|back)|check)\b.*\b(history|archive|chat|messages?|logs?|said|recommended|posted)\b'
-        r'|\b(what|which|who|when|where)\b.*\b(said|say|recommend(?:ed)?|mention(?:ed)?|posted|talked|discussed|linked)\b'
+        r'(?is)\b(search|find|look\s+(?:up|through|back)|check)\b.*\b(history|archive|chat|messages?|logs?)\b'
+        r'|\b(search|find|look up)\b.*\bthat\b.+\b(said|recommended|mentioned|posted|linked)\b'
+        r'|\b(what|which|who|when|where)\b.*\b(said|recommended|mentioned|posted|talked|discussed|linked)\b'
+        r'|\b(what|which|who|when|where)\b.*\bdid\b.*\b(say|recommend|mention|post|discuss|link)\b'
         r'|\b(search|find)\b.*\b(before|last month|last week|last year|ago)\b', visible))
 
 

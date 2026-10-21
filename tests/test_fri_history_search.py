@@ -60,9 +60,14 @@ def setup(monkeypatch, tmp_path, *, public=True, text='find old messages about w
 
 def test_archive_intent_and_date_limits_are_bounded():
     for text in ('what was that game Dipper recommended last month?', 'search chat for watched',
-                 'find messages before 2026-01-01', 'look through history for Minecraft'):
+                 'find messages before 2026-01-01', 'look through history for Minecraft',
+                 'what did Dipper recommend?', 'what did I say about Minecraft?',
+                 'find that game Dipper recommended'):
         assert requested(text)
-    for text in ('hey fri', 'play Sad Machine', 'do not search chat', '> find old messages'):
+    for text in ('hey fri', 'play Sad Machine', 'do not search chat', '> find old messages',
+                 'what do you recommend?', 'what should I say to a friend who is upset?',
+                 'which game would you recommend?', 'what do I have to say?',
+                 'find recommended movies', 'look up recommended games'):
         assert not requested(text)
     assert valid_action(query())
     assert not valid_action(query(cursor='invented'))
@@ -73,6 +78,21 @@ def test_archive_intent_and_date_limits_are_bounded():
         bounds('2026-99-99', '', now)
     with pytest.raises(ValueError):
         bounds('2026-02-01', '2026-01-01', now)
+
+
+@pytest.mark.parametrize('text', ['what do you recommend?',
+    'what should I say to a friend who is upset?', 'which game would you recommend?',
+    'find recommended movies', 'look up recommended games'])
+def test_present_day_advice_does_not_offer_or_authorize_archive_search(monkeypatch, tmp_path, text):
+    async def scenario():
+        fri, _, actions, _, _, _ = setup(monkeypatch, tmp_path, text=text)
+        try:
+            assert 'history_search' not in await actions.available()
+            assert 'blocked' in await actions.execute(query())
+            fri.http.request.assert_not_awaited()
+        finally:
+            await fri.close()
+    asyncio.run(scenario())
 
 
 def test_two_pages_keep_scoped_filters_without_skipping_unshown_hits(monkeypatch, tmp_path):

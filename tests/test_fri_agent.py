@@ -370,3 +370,50 @@ def test_investigation_escalates_to_sol_xhigh_and_attributes_report_to_fri():
         assert payload['user_id'] == '99' and payload['source_id'] == 'gene-error:100'
         assert 'xhigh' in payload['body'] and 'approved' not in payload
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('outcome',['accepted','declined','rejected','unknown'])
+def test_proactive_error_keeps_owner_fallback_for_definite_repair_rejection(outcome):
+    from redbot.core import commands
+
+    from gene.fri_context import ChatSource
+    from gene.fri_errors import ControllerRejected
+
+    async def scenario():
+        channel=SimpleNamespace(id=456,guild=SimpleNamespace(id=123),parent_id=None)
+        message=SimpleNamespace(author=SimpleNamespace(id=88),webhook_id=None)
+        channel.fetch_message=AsyncMock(return_value=message)
+        called=[]
+        async def api(method,path,body=None):
+            called.append((path,body))
+            if path=='/status':
+                return {'active_sha':'a'*40,'paused':False}
+            if path=='/chat/context':
+                return {'revision':0}
+            if path=='/repairs':
+                if outcome=='rejected':
+                    raise ControllerRejected('Repair checks need a fresh Discord message')
+                if outcome=='unknown':
+                    raise commands.UserFeedbackCheckFailure('Response was lost')
+                return {'accepted':outcome=='accepted'}
+            assert path=='/requests'
+            return {'id':'owner-review'}
+        fri=SimpleNamespace(owner_id=10,guild_id=123,workshop_id=456,user=SimpleNamespace(id=99),
+            api=api,get_channel=lambda _:channel)
+        agent=Agent(fri)
+        agent.state['auto_repairs_enabled']=True
+        agent.gene_id=88
+        agent.run=AsyncMock(return_value=({'summary':'Evidence uncertain',
+            'proposed_request':'Investigate the existing failed playback'}, {}, 'completed'))
+        source=ChatSource(kind='discord_message',id='100',user_id='88',display_name='Gene',channel_id='456',guild_id='123')
+        with patch('gene.fri_context.discord_source',return_value=source):
+            if outcome=='unknown':
+                with pytest.raises(commands.UserFeedbackCheckFailure):
+                    await agent.investigate(456,{'id':'100','text':'Track Stuck'})
+            else:
+                await agent.investigate(456,{'id':'100','text':'Track Stuck'})
+        fallbacks=[body for path,body in called if path=='/requests']
+        assert len(fallbacks)==int(outcome in ('rejected','declined'))
+        if fallbacks:
+            assert fallbacks[0]['user_id']=='99' and 'approved' not in fallbacks[0]
+    asyncio.run(scenario())

@@ -1,7 +1,7 @@
 # Gene
 
 Gene is a private Discord assistant for a friend server: classic Red commands and
-music, meme highlights, and an owner-approved development loop for Discord requests.
+music, meme highlights, an owner-approved feature workflow, and verified automatic repairs.
 
 **Current mode: Gene online in Fricking Fricks; Fri invisible in FF and Discord Lab.**
 Gene handles music, meme highlights, and the established Red functions. Fri is a separate
@@ -112,8 +112,11 @@ container receives its dedicated Codex authentication cache; tests receive none.
 Changes and fixes the owner requests directly in this Codex chat can be tested,
 committed, pushed, and deployed without another approval. They remain recorded by
 exact commit with backups, health checks, and rollback protection. Discord-originated
-requests, fixes, and repairs still require owner approval of the full commit SHA.
-This maintainer policy does not add an approval bypass to Discord or the controller.
+new features and repairs outside the standing existing-feature policy still require owner
+approval of the full commit SHA. Verified automatic repairs must reproduce the fault,
+pass a frozen regression and full checks, and pass separate Sol/xhigh verification and
+commit review. The controller authorizes the exact SHA; Discord text cannot approve it.
+See [automatic repair boundaries](docs/operations.md#verified-automatic-repairs).
 
 ## Local development
 

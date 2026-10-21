@@ -51,6 +51,7 @@ class Deployer:
             try:
                 report = json.loads(self.health_file.read_text())
                 valid = (report['sha'] == sha and report['guild_connected']
+                         and report.get('controls_running') is True
                          and report['at'] > after and time.time() - report['at'] < 25)
             except (OSError, ValueError, KeyError):
                 valid = False
@@ -72,6 +73,10 @@ class Deployer:
             git(self.root, 'clone', '--no-checkout', f'git@github.com:{self.repository}.git', str(repository))
         git(repository, 'fetch', 'origin', sha)
         validate_commit(repository, base, sha)
+        if job['kind'] == 'repair':
+            from .repair_policy import validate_repair_commit
+            evidence = job['proposal']['repair_verification']
+            validate_repair_commit(repository, base, sha, evidence['regression_path'], evidence['regression_hash'])
         if destination.exists():
             raise RuntimeError('A release directory already exists; inspect it before retrying')
         destination.mkdir(parents=True)

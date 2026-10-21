@@ -104,6 +104,8 @@ class Store:
                     input_tokens INTEGER, output_tokens INTEGER
                 );
             ''')
+            from .repair_store import initialize as initialize_repairs
+            initialize_repairs(db)
             columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
             for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref', 'progress'):
                 if name not in columns:
@@ -113,7 +115,7 @@ class Store:
             # Existing queued requests have never received intake approval. Fail closed
             # during migration; completed/running jobs and release approvals retain their history.
             db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
-                       'AND intake_approved_ref IS NULL')
+                       'AND intake_approved_ref IS NULL AND kind!="repair"')
         path.chmod(0o600)
 
     @contextmanager
@@ -158,6 +160,7 @@ class Store:
                 'effort': self._setting(db, 'code_effort') or 'model default',
                 'chat_model': self._setting(db, 'chat_model'),
                 'chat_effort': self._setting(db, 'chat_effort'),
+                'auto_repairs_enabled': self._setting(db, 'repair_policy') == 'existing-features-v1',
                 'jobs': {r['state']: r['n'] for r in db.execute(
                     'SELECT state, count(*) AS n FROM jobs GROUP BY state')},
             }
@@ -227,7 +230,7 @@ class Store:
             now = time.time()
             active = self._setting(db, 'active_sha')
             rows = db.execute('SELECT * FROM jobs WHERE state IN ("awaiting_owner","review") OR (updated>? '
-                              'AND (intake_approved_ref IS NOT NULL OR kind="rollback")) '
+                              'AND (intake_approved_ref IS NOT NULL OR kind IN ("rollback","repair"))) '
                               'ORDER BY updated', (now - 7 * 86400,)).fetchall()
             for row in rows:
                 job = self._job(row)
@@ -300,7 +303,11 @@ class Store:
             row = db.execute('SELECT * FROM jobs WHERE state="queued" ORDER BY created LIMIT 1').fetchone()
             if row is None:
                 return None
-            if not row['intake_approved_by'] or row['intake_approved_ref'] != request_reference(dict(row)):
+            from .repair_store import eligible, escalate, record
+            if row['kind'] == 'repair' and not eligible(self, db, dict(row)):
+                escalate(self, db, row['id'], 'Automatic repair authorization expired or the live version changed.')
+                return None
+            if row['kind'] != 'repair' and (not row['intake_approved_by'] or row['intake_approved_ref'] != request_reference(dict(row))):
                 db.execute('UPDATE jobs SET state="awaiting_owner",intake_approved_by=NULL,'
                            'intake_approved_ref=NULL WHERE id=?', (row['id'],))
                 return None
@@ -311,6 +318,9 @@ class Store:
             job = self._job(db.execute('SELECT * FROM jobs WHERE id=?', (row['id'],)).fetchone())
             job['base_sha'] = self._setting(db, 'active_sha')
             job['memories'] = [dict(r) for r in db.execute('SELECT * FROM memories ORDER BY created')]
+            if job['kind'] == 'repair':
+                job['repair'] = record(db, job['id'])
+                job['memories'] = []
             return job
 
     @staticmethod
@@ -331,7 +341,7 @@ class Store:
     def finish_build(self, job_id, lease, proposal: dict | None, error: str = '', outcome='failed'):
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            self._leased(db, job_id, lease)
+            row = self._leased(db, job_id, lease)
             if proposal:
                 for key in ('sha', 'base_sha'):
                     if not SHA.fullmatch(proposal.get(key, '')):
@@ -343,9 +353,19 @@ class Store:
             if outcome not in ('failed', 'needs_attention'):
                 raise ValueError('Invalid build outcome')
             state = 'review' if proposal else outcome
-            db.execute('UPDATE jobs SET state=?,proposal=?,result=?,lease=NULL,updated=? WHERE id=?',
+            db.execute('UPDATE jobs SET state=?,proposal=?,result=?,lease=NULL,progress=NULL,updated=? WHERE id=?',
                        (state, json.dumps(proposal) if proposal else None, clean(error), time.time(), job_id))
             self._audit(db, 'worker', state, job_id)
+            if row['kind'] == 'repair':
+                from .repair_policy import ACTOR
+                from .repair_store import eligible, escalate
+                if proposal and eligible(self, db, dict(row), proposal):
+                    db.execute('UPDATE jobs SET state="approved",approved_by=?,approved_sha=? WHERE id=?',
+                               (ACTOR, proposal['sha'], job_id))
+                    self._audit(db, ACTOR, 'verified_repair_authorized', job_id, proposal['sha'])
+                else:
+                    escalate(self, db, job_id, error or 'Automatic verification or independent review did not authorize this repair.',
+                             'review' if proposal else 'awaiting_owner')
 
     def approve(self, job_id, sha, actor):
         with self.connection() as db:
@@ -401,6 +421,12 @@ class Store:
             for row in rows:
                 job = self._job(row)
                 proposal = job['proposal']
+                if job['kind'] == 'repair':
+                    from .repair_policy import ACTOR
+                    from .repair_store import eligible, escalate
+                    if job['approved_by'] != ACTOR or not eligible(self, db, job, proposal):
+                        escalate(self, db, job['id'], 'Automatic repair authorization is no longer current.', 'review')
+                        continue
                 if (proposal['base_sha'] != self._setting(db, 'active_sha')
                         or proposal['sha'] != job['approved_sha']):
                     db.execute('UPDATE jobs SET state="failed",result=? WHERE id=?',
@@ -507,9 +533,11 @@ class Store:
                 proposal = json.loads(row['proposal']) if row['proposal'] else None
                 if proposal:
                     proposal['summary'] = '[User request erased]'
+                    proposal.pop('repair_verification', None)
                 db.execute('UPDATE jobs SET user_id="deleted",body="[User request erased]",'
                            'source_url="",source_id=?,result="",proposal=?,'
-                           'state=CASE WHEN state IN ("awaiting_owner","queued","review","approved") THEN "rejected" '
+                           'state=CASE WHEN state IN ("awaiting_owner","queued","review","approved") '
+                           'OR (kind="repair" AND state="building") THEN "rejected" '
                            'ELSE state END WHERE id=?',
                            ('erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
             db.execute('DELETE FROM memories WHERE approved_by=?', (user_id,))

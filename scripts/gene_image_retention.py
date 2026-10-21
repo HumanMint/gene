@@ -264,6 +264,8 @@ def observe(state, view, now):
     for iid in set(state.get('protected_last', [])) - view['protected']:
         if iid in retired:
             retired[iid]['retired_at'] = now
+        if iid in state.get('retired_parents', {}):
+            state['retired_parents'][iid]['retired_at'] = now
     for iid in state.get('active_ids', []):
         tags = seen[iid]
         if iid not in view['current']:
@@ -332,14 +334,32 @@ def record_parents(state, row):
     raise ValueError('Docker ancestry exceeded inspection limit')
 
 
-def remove_parents(root, policy, state, fingerprint, result):
-    """No implicit pruning: remove recorded ancestors by exact ID, never with force."""
-    pending = dict(state.get('retired_parents', {}))
-    for iid, record in pending.items():
+def plan_parents(view, state, result, now):
+    result['delete_parents'] = []
+    for iid, record in state.get('retired_parents', {}).items():
         if (not IMAGE_ID.fullmatch(iid) or not IMAGE_ID.fullmatch(record['from_image'])
                 or record['from_image'] not in state['retired'] or not record.get('evidence')
-                or time.time() - record['retired_at'] < GRACE):
+                or record['from_image'] in view['protected']):
             continue
+        if iid in view['protected']:
+            continue
+        try:
+            metadata = image_metadata(iid)
+        except subprocess.CalledProcessError:
+            continue  # Already collected or unavailable; never broaden the request.
+        if metadata['id'] != iid or metadata.get('tags'):
+            continue
+        if now - record['retired_at'] < GRACE:
+            result['keep'][iid] = {'tags': [], 'reason': '24-hour ancestor reactivation grace period'}
+            continue
+        result['delete_parents'].append({'id': iid, **record})
+        result['keep'].pop(iid, None)
+
+
+def remove_parents(root, state, fingerprint, result):
+    """No implicit pruning: attempt only exact ancestors listed in the saved plan."""
+    for row in result['delete_parents']:
+        iid = row['id']
         fresh = snapshot(root, read_json(root / 'maintenance/image-retention-policy.json'))
         if fresh['fingerprint'] != fingerprint:
             raise ValueError('References changed during ancestor cleanup')
@@ -348,7 +368,7 @@ def remove_parents(root, policy, state, fingerprint, result):
         try:
             metadata = image_metadata(iid)
         except subprocess.CalledProcessError:
-            continue  # Already collected or unavailable; never broaden the request.
+            continue
         if metadata['id'] != iid or metadata.get('tags'):
             continue
         try:
@@ -393,6 +413,9 @@ def run(root, apply=False):
     state = observe(state, view, now)
     result = plan(view, state, now)
     result['removed_tags'] = []
+    for row in result['delete']:
+        record_parents(state, row)
+    plan_parents(view, state, result, now)
     save_json(folder / 'image-retention-plan.json', result)
     if apply:
         save_json(state_path, state)
@@ -405,8 +428,6 @@ def run(root, apply=False):
             eligible = {r['id']: r for r in plan(fresh, state, time.time())['delete']}
             if row['id'] not in eligible or eligible[row['id']]['tags'] != row['tags']:
                 raise ValueError('Image tags or protection changed; remaining removals aborted')
-            record_parents(state, row)
-            save_json(state_path, state)
             for tag in row['tags']:
                 fresh = snapshot(root, read_json(folder / 'image-retention-policy.json'))
                 if fresh['fingerprint'] != view['fingerprint'] or row['id'] in fresh['protected']:
@@ -424,7 +445,7 @@ def run(root, apply=False):
                 state.setdefault('removed', {})[tag] = {'id': row['id'], 'at': time.time()}
                 save_json(state_path, state)
                 save_json(folder / 'image-retention-result.json', result)
-        remove_parents(root, policy, state, view['fingerprint'], result)
+        remove_parents(root, state, view['fingerprint'], result)
         save_json(folder / 'image-retention-result.json', result)
     return result
 
@@ -440,6 +461,7 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = run(args.root.resolve(), args.apply)
     print(json.dumps({'apply': args.apply, 'eligible_images': len(result['delete']),
+                      'eligible_parents': len(result['delete_parents']),
                       'removed_tags': len(result['removed_tags']),
                       'removed_parents': len(result.get('removed_parent_ids', [])),
                       'kept_images': len(result['keep'])}))

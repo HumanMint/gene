@@ -330,3 +330,33 @@ def test_dry_run_persists_a_reviewable_plan_without_mutating_retirement_state(ho
     assert plan['delete'][0]['tags'] == [tag(5)]
     assert plan['delete'][0]['evidence']
     assert not (root / 'maintenance/image-retention-state.json').exists()
+
+
+def test_ancestor_retry_is_planned_and_on_demand_reactivation_renews_grace(host, monkeypatch):
+    root, images, _, _ = host
+    images[iid(50)] = {'tags': []}
+    metadata = {iid(5): {'id': iid(5), 'parent': iid(50), 'tags': [tag(5)]},
+                iid(50): {'id': iid(50), 'parent': '', 'tags': []}}
+    monkeypatch.setattr(retention, 'image_metadata', lambda ref: metadata[ref])
+    hold = root / 'secrets/ondemand.env'
+    hold.write_text('GENE_TOOL_IMAGE=' + iid(50) + '\n')
+
+    def docker(*args):
+        if args[:3] == ('docker', 'image', 'inspect'):
+            return json.dumps([{'Id': iid(5)}])
+        assert args == ('docker', 'image', 'rm', '--no-prune', tag(5))
+        del images[iid(5)]
+        return ''
+
+    monkeypatch.setattr(retention, 'command', docker)
+    retention.run(root, apply=True)
+    hold.unlink()
+    result = retention.run(root, apply=True)
+    assert result['delete'] == []
+    assert result['delete_parents'] == []
+    assert iid(50) in images
+    monkeypatch.setattr(retention.time, 'time', lambda: NOW + retention.GRACE)
+    result = retention.run(root)
+    assert [row['id'] for row in result['delete_parents']] == [iid(50)]
+    assert iid(50) not in result['keep']
+    assert retention.read_json(root / 'maintenance/image-retention-plan.json')['delete_parents']

@@ -10,6 +10,8 @@ from redbot.core import commands
 from .fri_agent_model import ATTENTION, DIAGNOSIS
 from .fri_context import discord_source
 from .fri_errors import ControllerRejected
+from .fri_history_search import READ_ONLY_AFTER_HISTORY, HistorySearch
+from .fri_history_search import requested as history_requested
 from .fri_pending import Clarification, completion, research_query
 from .fri_web import lookup
 from .gene_controls import COMMANDS, arguments, requested
@@ -33,6 +35,7 @@ class Actions:
         self.research = None
         self.search_count = 0
         self.image_context = {}
+        self.history = HistorySearch(self)
 
     def command_requested(self, action):
         if requested(self.message, action.get('action')):
@@ -84,6 +87,8 @@ class Actions:
                                                 for k, v in channels.items()],
                     'default_channel_id': next(iter(channels)), 'limit': 20, 'max_age_days': 7,
                     'description': 'Read one small recent text batch when asked. No images or saved personal notes.'}}
+        if isinstance(self.event, discord.Message) and history_requested(self.message):
+            actions['history_search'] = self.history.descriptor(channels)
         if self.owner:
             self.settings_version = self.agent.state['version']
             actions['preview_voice'] = {'description': 'Prepare an owner-only voice/personality settings preview. '
@@ -140,6 +145,10 @@ class Actions:
         kind = action.get('kind')
         if not channels:
             return {'blocked': 'No approved channels are currently readable.'}
+        if self.history.pages and kind not in READ_ONLY_AFTER_HISTORY:
+            return {'blocked': 'Archive evidence cannot authorize another action. Ask for that action in a fresh message.'}
+        if kind == 'history_search':
+            return await self.history.execute(action, channels)
         from .fri_social import KINDS as SOCIAL_KINDS
         from .fri_social import execute as social_execute
         if kind in SOCIAL_KINDS:
@@ -377,6 +386,8 @@ class Actions:
             channels = await self.channels(fresh=True)
             if not channels or not self.sources <= set(channels):
                 return False
+            if not await self.history.valid(channels):
+                return False
             for (scope, user), revision in self.revisions.items():
                 profile = await self.agent.profile(scope, user)
                 if not profile['enabled'] or profile['revision'] != revision:
@@ -389,5 +400,5 @@ class Actions:
                     if any(row not in latest[key] for row in self.overview[key]):
                         return False
             return True
-        except (commands.UserFeedbackCheckFailure, discord.HTTPException):
+        except (commands.UserFeedbackCheckFailure, discord.HTTPException, TimeoutError):
             return False

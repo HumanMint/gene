@@ -1,7 +1,8 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
+import discord
 import pytest
 from redbot.core import commands
 
@@ -13,6 +14,8 @@ from gene.store import Store
 from tests.test_api import headers
 from tests.test_fri_actions import harness
 from tests.test_fri_runtime import event
+from tests.test_fri_social import DM, confirmed, source
+from tests.test_fri_social import api as social_api  # noqa: F401
 from tests.test_gene_controls import control_body, controls_api  # noqa: F401
 
 
@@ -159,4 +162,51 @@ def test_rejected_chat_record_does_not_publish_retrieved_private_read_results(mo
             assert not result.draft and not result.clarification
         finally:
             await fri.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('failure', ['model', 'recording', 'access'])
+def test_reminder_cancel_retains_confirmed_outcome_across_combined_turn_failures(social_api, monkeypatch, tmp_path, failure):  # noqa: F811
+    from gene.fri_social_store import Social
+
+    async def scenario():
+        client, call = social_api
+        social = Social(client.app.state.store)
+        row = confirmed(social, 50)
+        fri, _, _, _ = harness(monkeypatch, tmp_path)
+        calls = []
+        cancel_path = '/social/reminders/'+row['id']+'/decide'
+
+        async def api(method, path, body=None):
+            calls.append(path)
+            if failure == 'recording' and path == '/chat/turn':
+                raise ControllerRejected('Privacy changed')
+            if failure == 'access' and path == '/chat/context' and cancel_path in calls:
+                raise commands.UserFeedbackCheckFailure('Controller unavailable')
+            return await call(method, path, body)
+
+        fri.api = api
+        dm = Mock(spec=discord.DMChannel, id=999)
+        message = Mock(spec=discord.Message, id=int(source(60).id),
+            content='cancel my reminder to update the mods',
+            author=SimpleNamespace(id=10, display_name='Member'), guild=None,
+            channel=dm, webhook_id=None, attachments=[], embeds=[], edited_at=None)
+        dm.fetch_message = AsyncMock(return_value=message)
+        action = ChatResult(action={'kind': 'reminder_cancel', 'reminder_id': row['id']}, status='completed')
+        fri.chat_once = AsyncMock(side_effect=[action,
+            commands.UserFeedbackCheckFailure('model unavailable') if failure == 'model'
+            else ChatResult(reply='cancelled', status='completed')])
+        try:
+            result = await fri.talk(123, 999, 10, message.content, 'private', event=message)
+            assert 'reminder' in result.reply.casefold() and 'cancelled' in result.reply.casefold()
+            assert 'update the mods' not in result.reply
+            assert not result.draft and not result.social_preview
+            assert calls.count(cancel_path) == 1
+            restarted = Social(Store(client.app.state.store.path))
+            assert restarted.reminder_list(DM)['items'][0]['state'] == 'cancelled'
+            if failure != 'model':
+                assert not client.app.state.store.chat_context('123', 'private:999', '10')['turns']
+        finally:
+            await fri.close()
+
     asyncio.run(scenario())

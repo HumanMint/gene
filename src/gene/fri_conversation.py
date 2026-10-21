@@ -13,7 +13,7 @@ BURST_SECONDS = 5
 MAX_MESSAGES = 5
 MAX_TEXT = 4000
 REPLY_SECONDS = 7 * 86400
-PERSISTENT_MODEL_WRITES = frozenset({'work_save', 'prepare_post', 'preview_voice'})
+PERSISTENT_MODEL_WRITES = frozenset({'work_save', 'prepare_post', 'preview_voice', 'reminder_prepare', 'plan_prepare'})
 
 
 class SourceText(BaseModel):

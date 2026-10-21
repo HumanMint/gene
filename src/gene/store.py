@@ -33,6 +33,8 @@ class Store:
             initialize_research(db)
             from .fri_workspace_store import initialize as initialize_workspace
             initialize_workspace(db)
+            from .fri_social_store import initialize as initialize_social
+            initialize_social(db)
             from .fri_pending import initialize as initialize_pending
             initialize_pending(db)
             db.executescript('''
@@ -677,6 +679,8 @@ class Store:
                 erase(db, user_id)
                 from .fri_workspace_store import erase as erase_workspace
                 erase_workspace(db, user_id)
+                from .fri_social_store import erase as erase_social
+                erase_social(db, user_id)
                 db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_note_removals WHERE user_id=?', (user_id,))

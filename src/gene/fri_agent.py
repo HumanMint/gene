@@ -371,6 +371,10 @@ class Agent:
             from .fri_workspace import show_preview
             await show_preview(self.fri, message, result.post_preview)
             return
+        if result.social_preview:
+            from .fri_social import show_preview
+            await show_preview(self.fri, message, result.social_preview)
+            return
         if not result.reply:
             return
         view = None
@@ -596,6 +600,8 @@ class Agent:
                 await self.presence.check()
             from .fri_workspace import deliver_one
             await deliver_one(self.fri)
+            from .fri_social import deliver_one as deliver_reminder
+            await deliver_reminder(self.fri)
             await self.send_reports()
             if self.config['enabled']:
                 await self.learn()

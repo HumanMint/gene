@@ -164,7 +164,7 @@ release SHA, and retain the GitHub diff for review. Do not automatically merge t
 Before switching a release, pause the worker/deployer, confirm no job is building or
 deploying, and back up the controller, stopped Red state, previous source, and release
 configuration. Install immutable cogs and check a fresh heartbeat for the expected SHA,
-the configured guild connection and presence: Gene online in FF, Fri invisible in FF.
+the configured guild connection and presence: Gene online in FF, Fri online after promotion.
 Restore the previous release and environment on failure;
 resume the worker/deployer only after the new or restored release is healthy. Record
 the deployment as chat-authorized maintainer work, without fabricating a Discord approval.
@@ -229,13 +229,13 @@ callbacks and the controller enforce authorization independently of model text.
 Only Gene's `runtime.env` uses the reviewed FF guild, workshop, highlight, and meme-source IDs
 from the private `.env.production` configuration. Set `GENE_PRESENCE=online` and
 `GENE_SHOW_FRI=false` there. Fri's `fri.env` and the controller's `GENE_GUILD_ID` and workshop
-remain the Lab IDs; Fri always identifies as invisible. In `controller.env`, set
+remained the Lab IDs; Fri identified as invisible during that stage. In `controller.env`, set
 `GENE_RUNTIME_GUILD_ID` to FF so Gene's privacy endpoint accepts its users without extending
 Fri's request/chat/approval authority outside the Lab. Worker and deployer credentials stay distinct.
 Gene's saved Red settings remain per guild. Confirm FF text and voice permissions, fresh
 heartbeats with the exact guild/presence/SHA, and guild-only command registrations after switching.
 Remove the stale Lab Gene command after successful promotion, retaining its JSON for rollback.
-Do not announce Fri or publish her commands in FF while she is under development.
+The original Lab stage kept Fri unannounced while they were under development.
 
 Sources: [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source),
 [self-hosted VMs](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms),
@@ -432,7 +432,10 @@ copies of someone else's messages after source erasure. Learning reports and
 administrative details are only available through these actions to the owner privately.
 Questions about learning no longer go straight to the settings helper.
 
-Fri's compact voice foundation is `VOICE` in `src/gene/fri_chat.py`, shared with archive
+Fri uses they/them. They answer pronoun questions briefly and can make a light correction
+in conversations they already participate in; this does not change attention/admission rules
+or cause them to interrupt unrelated messages. The compact voice foundation is
+`VOICE` in `src/gene/fri_chat.py`, shared with archive
 answers. It uses a few contrasting tone examples rather than retaining a full style
 quiz in every prompt. Owner voice notes remain a separate, versioned preference;
 style examples never count as evidence of completed actions or bypass approval.
@@ -466,8 +469,43 @@ isolated evaluator are required for future validation.
 Fri now has a persistent Hostinger heartbeat and a Discord adapter. Gene's Red
 extensions and separate audio services are unchanged. Promote Fri and the
 controller's primary guild/workshop together to FF; preserve the prior Lab env
-and command registration for rollback. Fri remains invisible and no global
+and command registration for rollback. Set `FRI_PRESENCE=online` in fri.env for
+public presence (omitting it keeps new installations invisible). No global
 commands are registered.
+
+### Daily public statuses
+
+Enable `status_enabled` through a versioned owner preview or an audited maintainer change.
+One `gpt-6-luna` / `low` task creates a daily batch of up to four short lines; the cached
+batch rotates every six hours without further inference. `status_model`, `status_effort`
+and `status_rotation_minutes` are visible and owner-adjustable. Generation is limited
+to one attempt per rolling 24 hours, including failures/restarts, and avoids the previous
+12 generated lines. Failures keep a cached/neutral line, with bounded gateway retries.
+Usage appears as "daily statuses." Invisibility or disabling status generation clears the
+activity and avoids source reads/inference. This never changes the online/invisible setting.
+
+Set `FRI_STATUS_CONTEXT_CHANNEL_IDS` in controller.env to the explicit read-only source
+allowlist, such as memba-chat and public-chat. Once per daily batch, read at most 20 human
+messages per channel from the past seven days, in at most two channels. Existing membership,
+opt-out, source permissions and NSFW checks apply and are rechecked after inference.
+Only canonical labels from a small game/music/meme vocabulary enter the model.
+Raw messages, identities, quotes, histories, owner voice notes and learning reports do not.
+Private memba-chat may inform broad topics only because the owner explicitly allowed it;
+the resulting public status must not expose its conversations. A quiet server gets generic
+FF flavor rather than a fabricated recent event. This vocabulary deliberately omits unknown
+new topics; expand it through normal maintainer review when useful.
+
+Giving Fri additional Discord read permissions does not expand their status-source,
+learning, reply, command or reaction allowlists. Status-context access has a separate
+privacy-only endpoint and grants no chat-write capability. The private
+`/data/rotating-status.json` stores only public lines, daily reservations and delivery state.
+It survives restart, and its reserved schedule must not be reset to force retries.
+
+Statuses use Discord's [custom activity state](https://docs.discord.com/developers/events/gateway-events#activity-object).
+The generator uses the existing subscription with [structured output](https://developers.openai.com/api/docs/guides/structured-outputs),
+local output validation, and no tools. No API key is needed. `fri-health.json` includes a
+status receipt; a sent gateway payload alone does not establish how every Discord client renders it.
+Use `python -m gene.fri_eval --suite pronouns` for isolated pronoun/voice checks.
 
 Set `FRI_CHANNEL_IDS` in both controller.env and fri.env to the explicit allowed
 channels. Set `FRI_HISTORY_CHANNEL_IDS` and `FRI_LEARNING_ROLE_ID` in controller.env.

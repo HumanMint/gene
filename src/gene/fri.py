@@ -47,7 +47,8 @@ class Fri(discord.Client):
         intents = discord.Intents.none()
         intents.guilds = intents.guild_messages = intents.dm_messages = True
         intents.message_content = True
-        super().__init__(intents=intents, status=discord.Status.invisible,
+        visibility = discord.Status.online if os.getenv('FRI_PRESENCE') == 'online' else discord.Status.invisible
+        super().__init__(intents=intents, status=visibility,
                          allowed_mentions=NO_MENTIONS, max_messages=None)
         self.bot = self
         self.guild_id = int(os.environ['GENE_GUILD_ID'])
@@ -353,6 +354,7 @@ class Fri(discord.Client):
         test_permissions = test_channel.permissions_for(test_guild.me) if (
             test_channel and test_guild and test_guild.me and test_channel.guild.id == test_guild.id) else None
         private_json(self.data / 'fri-health.json', {'at': time.time(),
+            'rotating_status': self.agent.presence.receipt if self.agent and self.agent.presence else None,
             'meme_attention': self.agent.memes.status() if self.agent and self.agent.memes else None,
             'agent_heartbeat': {'running': self.agent.heartbeat.is_running(), 'failed': self.agent.heartbeat.failed(),
                 'started': self.agent.heartbeat_started, 'finished': self.agent.heartbeat_finished,

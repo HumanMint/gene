@@ -22,6 +22,8 @@ DEFAULTS = {
     'exploration_enabled': False, 'exploration_days': 365,
     'meme_enabled': False, 'meme_model': 'gpt-6-luna', 'meme_effort': 'medium',
     'meme_interval_minutes': 30, 'meme_daily_checks': 24, 'meme_daily_reactions': 4,
+    'status_enabled': False, 'status_model': 'gpt-6-luna', 'status_effort': 'low',
+    'status_rotation_minutes': 360,
     'dm_turns': 8, 'public_turns': 20, 'cooldown_min_minutes': 10,
     'cooldown_max_minutes': 20, 'voice_notes': '', 'attention_notes': '', 'learning_notes': '',
 }
@@ -31,6 +33,7 @@ RANGES = {'heartbeat_seconds': (60, 1800), 'learning_first_minutes': (15, 360),
           'exploration_days': (30, 5000),
           'meme_interval_minutes': (15, 360), 'meme_daily_checks': (2, 48),
           'meme_daily_reactions': (0, 8),
+          'status_rotation_minutes': (60, 720),
           'dm_turns': (3, 30), 'public_turns': (5, 60),
           'cooldown_min_minutes': (10, 20), 'cooldown_max_minutes': (10, 20)}
 
@@ -115,6 +118,7 @@ class AgentStore:
                     'history_channels': self.settings.agent_history_channels.split(','),
                     'channels': self.settings.agent_channels.split(','),
                     'meme_channels': [c for c in self.settings.meme_channel_ids.split(',') if c],
+                    'status_context_channels': [c for c in self.settings.status_context_channels.split(',') if c],
                     'test_scope': {'guild_id': self.settings.test_guild_id,
                                    'channel_id': self.settings.test_channel_id},
                     'web_search_enabled': self.settings.web_search_enabled,

@@ -57,13 +57,13 @@ class Subscription:
 
     def access_token(self):
         if not self.path.exists():
-            raise SubscriptionError('Fri needs a ChatGPT subscription sign-in. Ask the owner to connect her.')
+            raise SubscriptionError('Fri needs a ChatGPT subscription sign-in. Ask the owner to connect them.')
         with self.path.with_suffix('.lock').open('a') as lock:
             os.chmod(lock.name, 0o600)
             fcntl.flock(lock, fcntl.LOCK_EX)
             saved = json.loads(self.path.read_text())
             if PLAN_SCOPE not in saved.get('scopes', []):
-                raise SubscriptionError('Fri has no ChatGPT plan permission. Reconnect her subscription.')
+                raise SubscriptionError('Fri has no ChatGPT plan permission. Reconnect their subscription.')
             if saved['expires_at'] > time.time() + 90:
                 return saved['access_token']
             try:
@@ -77,4 +77,4 @@ class Subscription:
                 private_json(self.path, renewed)
                 return renewed['access_token']
             except (httpx.HTTPError, KeyError, ValueError):
-                raise SubscriptionError('Fri could not renew her ChatGPT connection. Reconnect the subscription.') from None
+                raise SubscriptionError('Fri could not renew their ChatGPT connection. Reconnect the subscription.') from None

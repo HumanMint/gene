@@ -14,6 +14,7 @@ REQUEST = re.compile(
 
 LABELS = {'conversation': 'chat', 'web_search': 'web lookups', 'attention': 'attention checks',
           'summary': 'learning summaries', 'exploration_plan': 'archive planning', 'meme': 'meme checks',
+          'status': 'daily statuses',
           'investigation': 'investigations',
           'owner_settings': 'settings previews', 'history': 'history lookups',
           'evaluation': 'isolated tests'}

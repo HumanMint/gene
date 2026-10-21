@@ -61,7 +61,7 @@ def main():
     else:
         print('Fri is already in the configured Discord Lab server.')
     print('Fri uses your ChatGPT subscription. Run scripts/connect_fri_chatgpt.py for sign-in.')
-    print('Enable Message Content Intent for Fri to hear her name. Keep Members and Presence intents off.')
+    print('Enable Message Content and Server Members Intent for Fri. Presence Intent is not needed to show Fri online.')
 
 
 if __name__ == '__main__':

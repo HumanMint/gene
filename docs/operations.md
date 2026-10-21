@@ -180,8 +180,11 @@ The maintenance policy and state live privately under `/srv/gene/maintenance/`:
 Always preserve all container references (including stopped containers), configured image
 references (including an idle worker and the running worker's inherited environment), pending
 proposal/approval versions, and explicit holds. Also retain the controller's current release
-and two previous successful releases, with their exact runtime/worker images, cog directories,
-source, configuration and database/Red/Fri backups. Missing or inconsistent rollback metadata,
+and two previous successful maintainer image configurations, with their exact runtime/worker
+images, cog directories, source, configuration and database/Red/Fri backups. Ordinary cog-only
+feature/repair/rollback releases retain those installed images; their own controller/Red
+backup and previous cog directory are checked while traversing back to the two complete
+maintainer configurations. Missing or inconsistent rollback metadata,
 an active build/deployment, or an unacknowledged deployment receipt aborts cleanup.
 Superseded images receive a 24-hour grace period. Reactivation renews the grace period after
 the next supersession. Unknown aliases and candidates are never classified as obsolete by age.

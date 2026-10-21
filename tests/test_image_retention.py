@@ -103,12 +103,13 @@ def host(tmp_path, monkeypatch):
             (folder / name).touch()
         (tmp_path / 'releases' / f'{previous:040x}' / 'cogs').mkdir(parents=True)
     db = sqlite3.connect(tmp_path / 'data/controller/gene.sqlite3')
-    db.executescript('CREATE TABLE settings (key,value); CREATE TABLE jobs(state,proposal,approved_sha);'
+    db.executescript('CREATE TABLE settings (key,value); CREATE TABLE jobs(id,kind,state,proposal,approved_sha);'
                      'CREATE TABLE deployments(job_id,sha,previous_sha,at,state);')
     db.executemany('INSERT INTO settings VALUES (?,?)', [('active_sha', shas[0]), ('previous_sha', shas[1])])
     db.executemany('INSERT INTO deployments VALUES (?,?,?,?,?)', [
         ('first', shas[0], shas[1], 200, 'deployed'), ('second', shas[1], shas[2], 100, 'deployed')])
-    db.execute('INSERT INTO jobs VALUES (?,?,?)', ('review', json.dumps({'sha': f'{4:040x}'}), None))
+    db.execute('INSERT INTO jobs(state,proposal,approved_sha) VALUES (?,?,?)',
+               ('review', json.dumps({'sha': f'{4:040x}'}), None))
     db.commit()
     policy = {'version': 1, 'keep_images': [], 'retired_images': {
         k: evidence(v['tags']) for k, v in images.items() if k not in [iid(21), iid(22), iid(99)]}}
@@ -140,7 +141,7 @@ def test_incomplete_or_changing_release_state_fails_closed(host, change):
     elif change == 'mismatched_release':
         (root / 'release.env').write_text('GENE_RELEASE_SHA=' + 'a'*40 + '\n')
     elif change == 'inflight':
-        db.execute("INSERT INTO jobs VALUES ('building',NULL,NULL)")
+        db.execute("INSERT INTO jobs(state,proposal,approved_sha) VALUES ('building',NULL,NULL)")
         db.commit()
     elif change == 'receipt':
         (root / 'deploy-result.json').write_text('{}')
@@ -212,3 +213,51 @@ def test_failed_delete_keeps_retry_evidence_and_does_not_force(host, monkeypatch
     state = retention.read_json(root / 'maintenance/image-retention-state.json')
     assert iid(5) in state['retired']
     assert '--force' not in command.call_args.args
+
+
+def test_normal_cog_release_keeps_image_retention_working(host):
+    root, _, policy, db = host
+    sha, previous = f'{6:040x}', f'{1:040x}'
+    (root / 'release.env').write_text(f'GENE_RELEASE_SHA={sha}\nGENE_RUNTIME_IMAGE={tag(1)}\n')
+    (root / 'releases' / previous / 'cogs').mkdir(parents=True)
+    backup = root / 'backups/cog-job'
+    backup.mkdir()
+    (backup / 'controller.sqlite3').touch()
+    (backup / 'red.tar.gz').touch()
+    db.execute("UPDATE settings SET value=? WHERE key='active_sha'", (sha,))
+    db.execute("UPDATE settings SET value=? WHERE key='previous_sha'", (previous,))
+    db.execute('INSERT INTO jobs VALUES (?,?,?,?,?)',
+               ('cog-job', 'feature', 'deployed', json.dumps({'sha': sha, 'base_sha': previous}), sha))
+    db.execute('INSERT INTO deployments VALUES (?,?,?,?,?)',
+               ('cog-job', sha, previous, 300, 'deployed'))
+    db.commit()
+    inventory = retention.snapshot(root, policy)
+    assert {iid(n) for n in (1, 11, 2, 12, 3, 13)} <= inventory['protected']
+
+
+@pytest.mark.parametrize('hold', [False, True])
+def test_auxiliary_on_demand_or_hold_reactivation_renews_grace(host, hold):
+    root, _, policy, _ = host
+    path = root / 'secrets/ondemand.env'
+    if hold:
+        policy['keep_images'] = [tag(5)]
+        retention.save_json(root / 'maintenance/image-retention-policy.json', policy)
+    else:
+        path.write_text('GENE_TOOL_IMAGE=' + tag(5) + '\n')
+    assert retention.run(root, apply=True)['delete'] == []
+    if hold:
+        policy['keep_images'] = []
+        retention.save_json(root / 'maintenance/image-retention-policy.json', policy)
+    else:
+        path.unlink()
+    assert retention.run(root)['delete'] == []
+
+
+def test_subsequent_explicit_retirement_policy_is_reconciled(host):
+    root, _, policy, _ = host
+    entry = policy['retired_images'].pop(iid(5))
+    retention.save_json(root / 'maintenance/image-retention-policy.json', policy)
+    assert retention.run(root, apply=True)['delete'] == []
+    policy['retired_images'][iid(5)] = entry
+    retention.save_json(root / 'maintenance/image-retention-policy.json', policy)
+    assert [row['id'] for row in retention.run(root)['delete']] == [iid(5)]

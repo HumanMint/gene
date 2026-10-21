@@ -87,8 +87,12 @@ def controller_refs(root):
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
         settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('active_sha','previous_sha')"))
-        jobs = []
-        for state, proposal, approved in db.execute('SELECT state,proposal,approved_sha FROM jobs'):
+        jobs, cog_jobs = [], {}
+        for job, kind, state, proposal, approved in db.execute(
+                'SELECT id,kind,state,proposal,approved_sha FROM jobs'):
+            if state == 'deployed' and kind in {'feature', 'repair', 'rollback'}:
+                details = json.loads(proposal) if proposal else {}
+                cog_jobs[job] = (details.get('sha'), details.get('base_sha'))
             if state in TERMINAL:
                 continue
             if state in {'building', 'deploying'}:
@@ -102,7 +106,7 @@ def controller_refs(root):
                                      "WHERE state='deployed' ORDER BY at DESC"))
     if not SHA.fullmatch(settings.get('active_sha', '')):
         raise ValueError('Missing active controller release')
-    return settings, sorted(set(jobs)), deployments
+    return settings, sorted(set(jobs)), deployments, cog_jobs
 
 
 def process_refs():
@@ -131,7 +135,7 @@ def process_refs():
 def snapshot(root, policy):
     images, containers = docker_inventory()
     by_tag = {tag: iid for iid, row in images.items() for tag in row['tags']}
-    settings, jobs, deployments = controller_refs(root)
+    settings, jobs, deployments, cog_jobs = controller_refs(root)
     env = read_env(root / 'release.env')
     worker = read_env(root / 'secrets/worker.env')
     if env.get('GENE_RELEASE_SHA') != settings['active_sha']:
@@ -174,14 +178,14 @@ def snapshot(root, policy):
                         record['tags'].append(ref)
             break
     rollback_files = {}
-    cursor = settings['active_sha']
+    cursor, before, complete = settings['active_sha'], float('inf'), 0
     # Preserve two complete rollback configurations, rather than guessing by image age.
-    for _ in range(2):
-        matches = [row for row in deployments if row[1] == cursor]
+    while complete < 2:
+        matches = [row for row in deployments if row[1] == cursor and row[3] < before]
         if not matches:
             raise ValueError('Missing successful rollback lineage for ' + cursor)
-        job, _, previous, _ = matches[0]
-        if cursor == settings['active_sha'] and previous != settings.get('previous_sha'):
+        job, _, previous, at = matches[0]
+        if before == float('inf') and previous != settings.get('previous_sha'):
             raise ValueError('Controller rollback pointer disagrees with deployment history')
         if not SHA.fullmatch(previous):
             raise ValueError('Invalid rollback lineage')
@@ -189,7 +193,17 @@ def snapshot(root, policy):
         backup = next((p for p in choices if (p / 'release.env').is_file()
                        and (p / 'worker.env').is_file()), None)
         if backup is None:
-            raise ValueError('Missing complete rollback image configuration for ' + cursor)
+            # Trusted feature/repair/rollback jobs preserve the installed images. Their
+            # backups contain Red/controller state, not a replaced control plane.
+            backup = root / 'backups' / job
+            if (cog_jobs.get(job) != (cursor, previous)
+                    or any(not (backup / name).is_file() for name in ('controller.sqlite3', 'red.tar.gz'))
+                    or not (root / 'releases' / previous / 'cogs').is_dir()):
+                raise ValueError('Missing complete rollback image configuration for ' + cursor)
+            rollback_files[str(backup)] = {'cog_sha': cursor, 'previous_sha': previous}
+            protected_shas.add(previous)
+            cursor, before = previous, at
+            continue
         if (not (backup / 'installed-source').is_dir()
                 or any(not (backup / name).is_file() for name in
                        ('controller.sqlite3', 'red.tar.gz', 'fri.tar.gz'))):
@@ -201,7 +215,8 @@ def snapshot(root, policy):
         rollback_files[str(backup)] = [release, old_worker]
         refs.update((release['GENE_RUNTIME_IMAGE'], old_worker['GENE_WORKER_IMAGE']))
         protected_shas.add(previous)
-        cursor = previous
+        cursor, before = previous, at
+        complete += 1
     if (root / 'deploy-result.json').exists():
         raise ValueError('A deployment completion receipt needs reconciliation')
     protected = set(containers.values())
@@ -241,6 +256,11 @@ def observe(state, view, now):
         else:
             retired[iid]['retired_at'] = max(retired[iid]['retired_at'], record['retired_at'])
             retired[iid]['tags'] = sorted(set(retired[iid]['tags']) | set(record['tags']))
+    # Holds and auxiliary configured functions are reactivation too. This only renews
+    # existing evidence; protecting an unknown candidate never classifies it as retired.
+    for iid in set(state.get('protected_last', [])) - view['protected']:
+        if iid in retired:
+            retired[iid]['retired_at'] = now
     for iid in state.get('active_ids', []):
         tags = seen[iid]
         if iid not in view['current']:
@@ -253,6 +273,7 @@ def observe(state, view, now):
         # Reusing an old version cancels retirement; a future switch starts a fresh grace period.
         retired.pop(iid, None)
     state['active_ids'] = sorted(view['current'])
+    state['protected_last'] = sorted(view['protected'])
     return state
 
 
@@ -293,6 +314,15 @@ def run(root, apply=False):
     state = read_json(state_path) if state_path.exists() else {'version': 1, 'retired': seed.copy()}
     if state.get('version') != 1:
         raise ValueError('Unsupported retention state')
+    for iid, record in seed.items():
+        if iid not in state['retired']:
+            state['retired'][iid] = record.copy()
+        else:
+            # A later explicit classification may add reviewed aliases, but cannot erase
+            # a newer observed reactivation/supersession grace period.
+            current = state['retired'][iid]
+            current['retired_at'] = max(current['retired_at'], record['retired_at'])
+            current['tags'] = sorted(set(current['tags']) | set(record['tags']))
     for iid, record in state['retired'].items():
         if not IMAGE_ID.fullmatch(iid):
             raise ValueError('Invalid retired image ID')

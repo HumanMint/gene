@@ -282,19 +282,26 @@ def test_member_error_text_cannot_trigger_gene_investigation():
 
 def test_history_search_cannot_quote_a_different_channel_publicly():
     async def scenario():
+        from gene.fri_actions import Actions
+        from tests.test_fri_runtime import event
+
         permissions = SimpleNamespace(view_channel=True, read_message_history=True)
-        destination = SimpleNamespace(id=456)
+        destination = SimpleNamespace(id=456, guild=SimpleNamespace(id=123), permissions_for=lambda _: permissions)
         source = SimpleNamespace(id=789, guild=SimpleNamespace(id=123), permissions_for=lambda _: permissions, history=AsyncMock())
-        fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456, api=AsyncMock())
+        fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456, api=AsyncMock(),
+                              get_channel=lambda cid: {456: destination, 789: source}[cid])
         agent = Agent(fri)
+        agent.config['enabled'] = True
         agent.state['channels'] = ['456', '789']
         agent.member = AsyncMock(return_value=SimpleNamespace(id=11))
-        message = SimpleNamespace(guild=SimpleNamespace(id=123), channel=destination,
-                                  channel_mentions=[source], author=SimpleNamespace(id=11), reply=AsyncMock())
-        await agent.search_history(message, 'search history for "private"')
+        actions = Actions(agent, 11, 456, True)
+        actions.event = event(user=11, content='search history for "private"')
+        actions.message = actions.event.content
+        result = await actions.execute({'kind': 'history_search', 'channel_id': '789', 'query': 'private',
+                                        'author': '', 'after': '', 'before': '', 'cursor': ''})
         source.history.assert_not_called()
         fri.api.assert_not_awaited()
-        assert 'DM me' in message.reply.await_args.args[0]
+        assert 'blocked' in result
     asyncio.run(scenario())
 
 

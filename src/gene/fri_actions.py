@@ -9,6 +9,7 @@ from redbot.core import commands
 
 from .fri_agent_model import ATTENTION, DIAGNOSIS
 from .fri_context import discord_source
+from .fri_conversation import PERSISTENT_MODEL_WRITES
 from .fri_errors import ControllerRejected
 from .fri_history_search import READ_ONLY_AFTER_HISTORY, HistorySearch
 from .fri_history_search import requested as history_requested
@@ -32,6 +33,7 @@ class Actions:
         self.settings_version = None
         self.private_evidence = False
         self.pending = None
+        self.conversation = {}
         self.research = None
         self.search_count = 0
         self.image_context = {}
@@ -40,10 +42,21 @@ class Actions:
     def command_requested(self, action):
         if requested(self.message, action.get('action')):
             return True
+        if self.burst_permission(action):
+            return True
         return bool(self.event and completion(self.pending, self.message, action.get('action'),
             action.get('argument'), discord_source(self.event).model_dump(),
             str(self.guild), self.scope.get('conversation_id', ''), str(self.user), self.revision,
             str(getattr(getattr(self.fri, 'user', None), 'id', ''))))
+
+    def burst_permission(self, action):
+        rows = self.conversation.get('message_burst', [])
+        if not self.event or len(rows) < 2:
+            return None
+        from .fri_conversation import burst_continuation
+        return burst_continuation(rows[-2], discord_source(self.event), clean(self.event.content, 4000),
+            action.get('action'), action.get('argument'), self.revision,
+            str(getattr(getattr(self.fri, 'user', None), 'id', '')))
 
     async def pending_unchanged(self):
         if not self.pending or not self.event:
@@ -128,6 +141,17 @@ class Actions:
                 actions['clarify'] = {'goals': goals, 'description': 'Ask ONE necessary question and hold this request for 5 minutes. '
                     'For play/volume, topic="". For web, topic is the original public QUESTION as an exact current-message excerpt. '
                     'question is the short reply shown to the member. Do not ask again when their answer resolves it.'}
+        if self.private_evidence:
+            for kind in PERSISTENT_MODEL_WRITES:
+                actions.pop(kind, None)
+            if 'clarify' in actions:
+                goals = [goal for goal in actions['clarify']['goals'] if goal in ('play', 'volume')]
+                if goals:
+                    actions['clarify'] = {**actions['clarify'], 'goals': goals,
+                        'description': 'Ask for the song or numeric volume explicitly requested in the current member message. '
+                        'The harness supplies a fixed question; no referenced text may be retained. topic="".'}
+                else:
+                    actions.pop('clarify')
         return actions
 
     def scoped_overview(self, overview, channels):
@@ -139,6 +163,13 @@ class Actions:
             'history_channels': [c for c in overview['history_channels'] if c in channels]}
 
     async def execute(self, action):
+        if self.private_evidence and action.get('kind') in PERSISTENT_MODEL_WRITES:
+            return {'blocked': 'Read member evidence cannot be copied into a persistent draft, post or setting. '
+                    'Provide the request in a fresh message.'}
+        if self.conversation and (self.conversation.get('message_burst') or self.conversation.get('reply_target')):
+            from .fri_conversation import unchanged
+            if not await unchanged(self.agent, self.event, self.conversation):
+                return {'blocked': 'The conversation evidence changed. Send a fresh request.'}
         from .fri_images import require_current
         await require_current(self.image_context, self.event)
         channels = await self.channels(fresh=True)
@@ -176,9 +207,15 @@ class Actions:
         if kind == 'gene_diagnose':
             return await self.diagnose(channels)
         if kind == 'clarify':
-            if self.private_evidence:
-                return {'blocked': 'Read member evidence cannot be persisted in a clarification.'}
             value = Clarification.model_validate({k: v for k, v in action.items() if k != 'kind'}).model_dump()
+            if self.private_evidence:
+                if value['goal'] not in ('play', 'volume') or value['topic'] or not requested(self.message, value['goal']):
+                    return {'blocked': 'Read member evidence cannot be persisted in a clarification.'}
+                original = await self.event.channel.fetch_message(self.event.id)
+                if (original.author.id != self.user or original.webhook_id or original.content != self.event.content):
+                    return {'blocked': 'Your current request changed. Send a fresh complete request.'}
+                value['question'] = ('what song do you want?' if value['goal'] == 'play'
+                                     else 'what volume from 0 to 100?')
             if (value['goal'] == 'web' and public_query(value['topic'], self.message) or
                     value['goal'] in ('play', 'volume') and requested(self.message, value['goal']) and not value['topic']):
                 return {'clarification': value}
@@ -270,8 +307,11 @@ class Actions:
         if not self.command_requested(action):
             return {'blocked': 'That music request expired or needs a fresh instruction. Ask me to play it with the song included.'}
         continued = not requested(self.message, verb)
-        if continued and not await self.pending_unchanged():
+        burst = self.burst_permission(action) if continued else None
+        if continued and not burst and not await self.pending_unchanged():
             return {'blocked': 'The earlier music request changed. Ask again with the song included.'}
+        if self.private_evidence and argument and not (continued or argument.casefold() in self.message.casefold()):
+            return {'blocked': 'Provide the song or volume in your own fresh message; referenced words cannot be saved in a command.'}
         original = await self.event.channel.fetch_message(self.event.id)
         if original.author.id != self.user or original.webhook_id or original.content != self.event.content:
             return {'blocked': 'The original request changed. Send a fresh request.'}
@@ -289,7 +329,8 @@ class Actions:
         submitted = await self.fri.api('POST', '/controls', {**self.scope, 'source': discord_source(self.event).model_dump(),
             'target_channel_id': target, 'request_text': clean(self.event.content, 4000),
             'action': verb, 'argument': argument, 'revision': self.revision,
-            'continuation_id': self.pending['source']['id'] if continued else '',
+            'continuation_id': (burst or self.pending)['source']['id'] if continued else '',
+            'burst_origin': self.conversation['message_burst'][-2] if burst else None,
             'addressed_bot_id': str(getattr(getattr(self.fri, 'user', None), 'id', ''))})
         result = None
         try:
@@ -380,6 +421,10 @@ class Actions:
     async def valid(self):
         """Fail closed if access or source privacy changed while the model was answering."""
         try:
+            if self.conversation and (self.conversation.get('message_burst') or self.conversation.get('reply_target')):
+                from .fri_conversation import unchanged
+                if not await unchanged(self.agent, self.event, self.conversation):
+                    return False
             from .fri_images import unchanged
             if not await unchanged(self.image_context, self.event):
                 return False

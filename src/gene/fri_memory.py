@@ -5,7 +5,8 @@ import re
 from .privacy import clean
 
 CATEGORIES = ('nickname', 'games', 'music', 'hobbies', 'conversation')
-MAX_NOTES = 5
+MAX_NOTES = 10
+PER_CATEGORY = 3
 TTL = 90 * 86400
 
 
@@ -54,6 +55,7 @@ def describe_memory(profile):
     notes = profile['notes']
     body = '\n'.join('- ' + note['evidence'] for note in notes) or 'No personal notes saved for this conversation yet.'
     return (f'Memory is {state}. {"Here’s what I’ve kept from what you told me:" if notes else ""}\n{body}\n\n'
-            'I keep up to five small notes here for 90 days and six recent exchanges for seven days. '
+            'I keep up to ten small notes here, at most three per category, for 90 days, and six recent exchanges for seven days. '
+            'Use My memory to edit or remove one preference. '
             'Private chats and other channels stay separate. Say “forget me” to erase our saved chats '
             'and personal notes everywhere and turn memory off, or “remember me again” to turn it on.')

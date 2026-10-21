@@ -115,6 +115,12 @@ class ControlRunner:
     async def execute(self, cog, claim):
         action, argument = claim['action'], claim['argument']
         arguments(action, argument)
+        if claim.get('burst_origin'):
+            from .fri_conversation import burst_continuation
+            burst = burst_continuation(claim['burst_origin'], claim['source'], claim['request_text'],
+                action, argument, claim['revision'], claim.get('addressed_bot_id', ''))
+            if not burst or burst != claim.get('continuation'):
+                return {'blocked': 'That split request expired or changed. Send a complete request.'}
         continued = completion(claim.get('continuation'), claim['request_text'], action, argument,
                                claim['source'], claim['guild_id'], claim['conversation_id'],
                                claim['user_id'], claim['revision'], claim.get('addressed_bot_id', ''))

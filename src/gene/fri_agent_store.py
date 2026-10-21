@@ -311,11 +311,8 @@ class AgentStore:
                 r = accepted.get(candidate.get('source_id'))
                 note = personal_note(candidate, r['text']) if r else None
                 if note:
-                    updated = db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at) '
-                        'VALUES (?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category) '
-                        'DO UPDATE SET evidence=excluded.evidence,at=excluded.at WHERE excluded.at>personal_notes.at',
-                        (self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'], *note, r['at']))
-                    if updated.rowcount:
+                    from .fri_memory_store import save
+                    if save(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'], note, r['at']):
                         kept.append(f"{r['user_id']} / {note[0]}: {note[1]}")
             summary = clean(result.get('summary', ''), 600)
             if not accepted or len(accepted) != len(records):

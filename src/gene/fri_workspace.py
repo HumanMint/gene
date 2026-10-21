@@ -80,6 +80,8 @@ async def execute(actions, action):
     current = await fri.api('POST', '/chat/context', actions.scope)
     if current['revision'] != actions.revision or not current['personal_memory']['enabled']:
         return {'blocked': 'Saved work is unavailable while memory is off or changing.'}
+    if actions.private_evidence and kind in ('work_save', 'prepare_post'):
+        return {'blocked': 'Read member evidence cannot be copied into saved work or a post. Provide the request in a fresh message.'}
     if kind == 'work_list':
         return {'kind': kind, **await fri.api('POST', '/workspace/list', actions.scope)}
     if kind == 'work_read':
@@ -89,8 +91,6 @@ async def execute(actions, action):
     source = discord_source(actions.event).model_dump()
     payload = {**actions.scope, 'source': source, 'revision': actions.revision}
     if kind == 'work_save':
-        if actions.private_evidence:
-            return {'blocked': 'Retrieved member history cannot be copied into saved work. Provide the draft in a fresh message.'}
         if not re.search(r'\b(save|keep|hold|draft|store|remember|update|edit|change|mark|cancel|complete|post|send)\b', actions.message, re.I):
             return {'blocked': 'Ask explicitly to save or update this work first.'}
         return {'kind': kind, **await fri.api('POST', '/workspace/save',

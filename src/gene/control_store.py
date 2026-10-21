@@ -102,6 +102,13 @@ class Controls:
                 raise ValueError('Conversation changed before the action could start')
             from .fri_pending import clear, completion, read
             pending = read(db, body['guild_id'], body['conversation_id'], body['user_id'], body['revision'])
+            if body.get('burst_origin'):
+                from .fri_conversation import burst_continuation
+                burst = burst_continuation(body['burst_origin'], body['source'], body['request_text'],
+                    body['action'], body['argument'], body['revision'], body.get('addressed_bot_id', ''))
+                if not burst or (pending and pending['source']['id'] != burst['source']['id']):
+                    raise ValueError('That split request is no longer valid. Send a complete request.')
+                pending = burst
             body = {k: v for k, v in body.items() if k != 'continuation'}
             if not requested(body['request_text'], body['action']):
                 if (not pending or body.get('continuation_id') != pending['source']['id'] or

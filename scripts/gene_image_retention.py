@@ -222,20 +222,30 @@ def snapshot(root, policy):
         complete += 1
     if (root / 'deploy-result.json').exists():
         raise ValueError('A deployment completion receipt needs reconciliation')
-    protected = set(containers.values())
+    protected, resolved = set(containers.values()), {}
     for ref in refs:
         iid = ref if IMAGE_ID.fullmatch(ref) else by_tag.get(ref)
         if iid not in images:
-            raise ValueError('Referenced image is missing: ' + ref)
+            # The default listing hides intermediate images. An explicit ID/digest
+            # hold must resolve through inspection rather than being treated as absent.
+            if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/@-]*', ref):
+                raise ValueError('Invalid configured image reference')
+            metadata = image_metadata(ref)
+            iid = metadata['id']
+            if not IMAGE_ID.fullmatch(iid) or (IMAGE_ID.fullmatch(ref) and ref != iid):
+                raise ValueError('Configured image identity is invalid')
+            images[iid] = {'tags': sorted(metadata.get('tags') or [])}
+        resolved[ref] = iid
         protected.add(iid)
-    current_ids = {by_tag[ref] if ref in by_tag else ref for ref in functional}
+    current_ids = {resolved[ref] for ref in functional}
     current_tags = {iid: sorted(ref for ref in functional if by_tag.get(ref) == iid
                                 and VERSION_TAG.fullmatch(ref)) for iid in current_ids}
     for iid, row in images.items():
         if any((m := VERSION_TAG.fullmatch(t)) and m[1] in protected_shas for t in row['tags']):
             protected.add(iid)
     guard = {'settings': settings, 'jobs': jobs, 'config': config, 'rollback': rollback_files,
-             'containers': containers, 'functional': sorted(functional), 'policy': policy}
+             'containers': containers, 'functional': sorted(functional), 'resolved': resolved,
+             'policy': policy}
     fingerprint = hashlib.sha256(json.dumps(guard, sort_keys=True).encode()).hexdigest()
     return {'images': images, 'protected': protected, 'current': current_ids,
             'current_tags': current_tags, 'past': past, 'fingerprint': fingerprint}
@@ -308,8 +318,10 @@ def plan(view, state, now):
 
 
 def image_metadata(reference):
-    template = '{"id":{{json .Id}},"parent":{{json .Parent}},"tags":{{json .RepoTags}}}'
-    return json.loads(command('docker', 'image', 'inspect', '--format', template, reference))
+    template = '{"id":{{json .Id}},"parent":{{json (index . "Parent")}},"tags":{{json .RepoTags}}}'
+    metadata = json.loads(command('docker', 'image', 'inspect', '--format', template, reference))
+    metadata['parent'] = metadata.get('parent') or ''
+    return metadata
 
 
 def record_parents(state, row):

@@ -360,3 +360,21 @@ def test_ancestor_retry_is_planned_and_on_demand_reactivation_renews_grace(host,
     assert [row['id'] for row in result['delete_parents']] == [iid(50)]
     assert iid(50) not in result['keep']
     assert retention.read_json(root / 'maintenance/image-retention-plan.json')['delete_parents']
+
+
+@pytest.mark.parametrize('hold', [False, True])
+def test_explicit_hidden_intermediate_references_are_resolved_and_preserved(host, hold):
+    root, _, policy, _ = host
+    if hold:
+        policy['keep_images'] = [iid(50)]
+    else:
+        (root / 'secrets/ondemand.env').write_text('GENE_TOOL_IMAGE=' + iid(50) + '\n')
+    inventory = retention.snapshot(root, policy)
+    assert iid(50) in inventory['protected']
+
+
+def test_parentless_base_inspection_normalizes_an_absent_parent(monkeypatch):
+    command = Mock(return_value=json.dumps({'id': iid(1), 'parent': None, 'tags': ['python:3.11']}))
+    monkeypatch.setattr(retention, 'command', command)
+    assert retention.image_metadata(iid(1))['parent'] == ''
+    assert 'index . "Parent"' in command.call_args.args[4]

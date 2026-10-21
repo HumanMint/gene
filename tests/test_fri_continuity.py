@@ -294,7 +294,13 @@ def test_research_correction_combines_only_explicit_public_excerpts(store):
         source=source, web_receipt={**RECEIPT, 'query': query})
 
 
-def test_real_clarification_to_red_command_keeps_voice_checks_and_receipts(monkeypatch, tmp_path, controls_api):  # noqa: F811
+@pytest.mark.parametrize('song,message_text', [
+    ('blind melon no rain', 'blind melon no rain'),
+    ('Hold On by Wilson Phillips', 'fri play Hold On by Wilson Phillips'),
+    ('Nevermind by Nirvana', 'fri play Nevermind by Nirvana'),
+    ('Hold On by Wilson Phillips', 'Hold On by Wilson Phillips'),
+])
+def test_real_clarification_to_red_command_keeps_voice_checks_and_receipts(monkeypatch, tmp_path, controls_api, song, message_text):  # noqa: F811
     async def scenario():
         client, controls = controls_api
         fri, agent, _, _ = harness(monkeypatch, tmp_path)
@@ -303,7 +309,7 @@ def test_real_clarification_to_red_command_keeps_voice_checks_and_receipts(monke
         initial = origin(text='<@99> can you join the VC and play music')
         original.id, original.content = int(initial['source']['id']), initial['request_text']
         original.author = message.author = member
-        message.content = 'blind melon no rain'
+        message.content = message_text
         channel.fetch_message = AsyncMock(side_effect=lambda mid: original if mid == original.id else message)
         async def api(method, path, body=None, role='fri'):
             if path == '/agent/admit':
@@ -315,7 +321,7 @@ def test_real_clarification_to_red_command_keeps_voice_checks_and_receipts(monke
         cog.api = lambda method, path, body=None: api(method, path, body, 'runtime')
         fri.chat.respond = AsyncMock(side_effect=[
             ChatResult(status='completed', action={'kind': 'clarify', 'goal': 'play', 'topic': '', 'question': 'what song?'}),
-            ChatResult(status='completed', action={'kind': 'gene_command', 'action': 'play', 'argument': message.content}),
+            ChatResult(status='completed', action={'kind': 'gene_command', 'action': 'play', 'argument': song}),
             ChatResult(status='completed', reply='queued it')])
         member.voice = SimpleNamespace(channel=SimpleNamespace(id=8))
         async def deliver(_):
@@ -330,7 +336,7 @@ def test_real_clarification_to_red_command_keeps_voice_checks_and_receipts(monke
             with patch('gene.fri_actions.asyncio.sleep', new=deliver):
                 result = await fri.talk(123, 1, 20, message.content, 'public', event=message)
             assert result.reply == 'queued it'
-            assert len(calls) == 1 and calls[0][1] == 'blind melon no rain'
+            assert len(calls) == 1 and calls[0][1] == song
             assert 'Track Enqueued' in fri.chat.respond.await_args.args[1]['action_result']['output']
             assert controls.poll(['play']) is None
             assert client.app.state.store.chat_context('123', 'public:1', '20')['pending'] is None

@@ -34,8 +34,16 @@ def initialize(db):
 
 
 def cancelled(text):
-    return bool(re.search(r"\b(?:never\s?mind|cancel|forget (?:it|that)|leave it|hold (?:on|off)|"
-                          r"not now|do not play|don't play|dont play)\b|^\s*(?:no|nah|nope|stop)(?: thanks)?[.! ]*$", text, re.I))
+    # Song titles are data, including "Hold On" or "Nevermind". Existing explicit
+    # controls keep their normal path; only a standalone cancellation aborts early.
+    if any(requested(text, verb) for verb in ('play', 'volume', 'pause', 'resume', 'skip', 'stop')):
+        return False
+    return bool(re.fullmatch(
+        r"\s*(?:(?:<@!?\d+>|fri|hey|yo|bro|ok|okay|actually|wait|nah|no|please)[,\s]+)*"
+        r"(?:never\s?mind|nvm|cancel(?: (?:it|that|this|my request|the request))?|"
+        r"forget (?:it|that|this)|leave it|hold (?:on|off)|not now|"
+        r"(?:do not|don't|dont) play\b.*|no|nah|nope|stop)"
+        r"(?: (?:please|thanks|for now))?[.!?\s]*", text, re.I))
 
 
 def answer_text(text, bot_id=''):

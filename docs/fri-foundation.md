@@ -20,6 +20,15 @@ of an answer derived from a target, so neither the target nor quoted findings ar
 retained in someone else's memory. Reply to the original message again when its
 details are needed for a later follow-up.
 
+The same retention fence applies before tools are offered and remains active for
+the turn. Read reply targets cannot become personal notes, request drafts, saved
+work, posts, voice settings or model-written clarification state. Saving needs a
+fresh message containing the member's own input. An explicit current play/volume
+request can still receive a fixed, target-free song/volume question, backed only by
+that member's fresh Discord source. Music arguments must likewise come from their
+own current request or a verified continuation, so command receipts cannot retain
+someone else's referenced text.
+
 Messages from the same person in the same channel can form one short exchange: up to
 five messages and 4000 total characters, spanning at most five seconds. The existing
 1.5-second pause still produces one response to the newest message. For example,

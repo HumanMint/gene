@@ -228,6 +228,7 @@ class Fri(discord.Client):
                     actions.web_research = context.get('web_research', [])
                     actions.pending = context.get('pending')
                     actions.conversation = conversation
+                    actions.private_evidence = bool(conversation.get('reply_target'))
                 context['actions'] = await actions.available() if actions else {}
                 context['display_name'] = source.display_name
                 context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
@@ -246,6 +247,8 @@ class Fri(discord.Client):
                         raise commands.UserFeedbackCheckFailure('That conversation changed while I was replying. Ask again for a fresh reply.')
                 if guild_id != self.guild_id:
                     result.draft = None
+                if actions and actions.private_evidence:
+                    result.draft, result.notes = None, []
                 if result.action:
                     if not actions or result.action['kind'] not in context['actions']:
                         raise commands.UserFeedbackCheckFailure('That action is not available here.')
@@ -264,7 +267,7 @@ class Fri(discord.Client):
                         breadcrumb += f' in channel {checked_channel}'
                     breadcrumb += ('. Public research receipts are available separately for follow-ups.' if research or action_kind == 'web_sources'
                                    else '. Fetch current evidence for follow-up details; no findings are retained here.')
-                    if result.settings_preview or result.post_preview or result.clarification:
+                    if result.clarification or ((result.settings_preview or result.post_preview) and not actions.private_evidence):
                         breadcrumb = result.reply
                     await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],
                         'source': source.model_dump(),
@@ -280,7 +283,7 @@ class Fri(discord.Client):
                     # An action's proposal used to be discarded here. Keep the checked diagnosis
                     # as a real preview unless the controller accepted it for automatic verification.
                     proposal = diagnosis.get('proposed_request', '')
-                    result.draft = proposal if len(proposal) >= 5 else None
+                    result.draft = proposal if len(proposal) >= 5 and not actions.private_evidence else None
                     if research or receipt.get('sources'):
                         from .fri_web import cite_reply
                         result.reply = cite_reply(result.reply, research or receipt, include_sources=action_kind == 'web_sources')
@@ -297,6 +300,8 @@ class Fri(discord.Client):
         # A reply to someone else can quote their words. Keep the live answer on
         # Discord, but never preserve derived copies in this member's memory.
         referenced = bool(context.get('reply_target'))
+        if referenced:
+            result.draft, result.notes = None, []
         stored_reply = ('Earlier reply-context check. Fetch current Discord evidence for follow-up details; '
                         'no quoted findings are retained here.') if referenced else result.reply
         saved = await self.api('POST', '/chat/turn', {**scope, 'revision': context['revision'],

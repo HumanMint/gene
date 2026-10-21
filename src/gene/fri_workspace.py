@@ -222,17 +222,24 @@ async def deliver_one(fri):
         pass  # The durable receipt remains available even if its DM preview was deleted.
 
 
-async def send_once(fri, post, *, transport=None):
+async def send_once(fri, post, *, transport=None, embed=None):
     """Do not use discord.py's retrying HTTPClient for non-repeatable publication.
 
     No redirects, proxy inheritance, rate-limit sleep or retries. Even a 429/5xx is
     returned to the outbox as uncertainty, never used to initiate another attempt.
     """
     target = str(int(post['target_id']))
+    if len(post['body'].encode('utf-16-le'))//2 > 2000:
+        raise ValueError('Message content exceeds Discord’s UTF-16 limit')
+    payload = {'content': post['body'], 'allowed_mentions': {'parse': []},
+               'nonce': str(int(post['id'][:20], 16)), 'enforce_nonce': True, 'flags': 4}
+    if embed is not None:
+        if len(embed.get('description', '').encode('utf-16-le'))//2 > 4096:
+            raise ValueError('Reminder embed exceeds Discord’s UTF-16 limit')
+        payload.update(embeds=[embed], flags=0)
     async with asyncio.timeout(25), httpx.AsyncClient(timeout=20, trust_env=False, follow_redirects=False, transport=transport) as client:
         response = await client.post(f'https://discord.com/api/v10/channels/{target}/messages',
             headers={'Authorization': 'Bot '+fri.http.token},
-            json={'content': post['body'], 'allowed_mentions': {'parse': []},
-                  'nonce': str(int(post['id'][:20], 16)), 'enforce_nonce': True, 'flags': 4})
+            json=payload)
         response.raise_for_status()
         return response.json()

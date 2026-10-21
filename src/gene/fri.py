@@ -73,8 +73,9 @@ class Fri(discord.Client):
         self.agent = Agent(self)
         await self.agent.start()
         self.add_view(HomeView(self))
+        from .fri_social import SocialButton
         from .fri_workspace import PostButton
-        self.add_dynamic_items(ReviewButton, ReportButton, PostButton)
+        self.add_dynamic_items(ReviewButton, ReportButton, PostButton, SocialButton)
 
         @self.tree.command(name='fri', description='Chat, request a feature or fix, and follow development.',
                            guild=discord.Object(id=self.guild_id))
@@ -102,6 +103,9 @@ class Fri(discord.Client):
                 allowed = True
             from .fri_workspace import post_component
             if post_component(interaction, getattr(self.user, 'id', None), self.owner_id):
+                allowed = True
+            from .fri_social import component as social_component
+            if social_component(interaction, getattr(self.user, 'id', None)):
                 allowed = True
             if (not allowed and not owner_dm_component(interaction, getattr(self.user, 'id', None), self.owner_id)
                     and not report_component(interaction, getattr(self.user, 'id', None), self.owner_id)
@@ -244,6 +248,10 @@ class Fri(discord.Client):
                 context['speaker'] = {'user_id': source.user_id, 'display_name': source.display_name}
                 context['requests_enabled'] = guild_id == self.guild_id
                 context['requester_is_owner'] = user_id == self.owner_id
+                from .fri_images import attach as attach_images
+                await attach_images(context, event, text)
+                if actions:
+                    actions.image_context = {'image_sources': context.get('image_sources', [])}
                 if actions and guild_id == self.guild_id:
                     recent = await self.api('POST', '/controls/recent', scope)
                     readable = await actions.channels(fresh=True)
@@ -253,6 +261,8 @@ class Fri(discord.Client):
                     actions.music_context = current_music_context(context['gene_receipts'])
                 text = clean(text, 4000)
                 result = await self.chat_once(text, context)
+                from .fri_images import require_current as require_current_images
+                await require_current_images(context, event)
                 if guild_id != self.guild_id:
                     result.draft = None
                 if result.action:
@@ -260,6 +270,7 @@ class Fri(discord.Client):
                         raise commands.UserFeedbackCheckFailure('That action is not available here.')
                     from .fri_runner import run
                     result, receipts, research = await run(self, actions, text, context, result)
+                    await require_current_images(context, event)
                     receipt = receipts[-1]
                     action_kind = receipt['kind']
                     from .fri_outcomes import unrecorded

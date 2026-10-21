@@ -8,6 +8,7 @@ from redbot.core import commands
 
 from .fri_chat import ChatResult
 from .fri_errors import ControllerRejected
+from .fri_images import require_current as require_current_images
 from .fri_outcomes import Outcome, fallback
 from .fri_outcomes import receipt as tool_receipt
 
@@ -34,6 +35,7 @@ async def _run(fri, actions, text, context, result, progress):
     receipts, seen, research = progress['receipts'], set(), None
     offered = dict(context['actions'])
     for _ in range(MAX_STEPS):
+        await require_current_images(context, getattr(actions, 'event', None))
         action = result.action
         if not action:
             break
@@ -47,13 +49,15 @@ async def _run(fri, actions, text, context, result, progress):
         if kind == 'gene_command' and not actions.command_requested(action):
             receipt = tool_receipt(kind, {'blocked': 'The music request expired or was not requested in this conversation. Ask briefly for a fresh complete request.'})
             receipts.append(receipt)
+            await require_current_images(context, getattr(actions, 'event', None))
             try:
                 result = await fri.chat_once(text, {**context, 'actions': {}, 'action_result': receipt,
                     'action_results': list(receipts)})
-                if not result.action:
-                    return result, receipts, research
             except commands.UserFeedbackCheckFailure:
-                pass
+                result = ChatResult(reply=fallback(receipts), status='completed')
+            await require_current_images(context, getattr(actions, 'event', None))
+            if not result.action:
+                return result, receipts, research
             return ChatResult(reply=fallback(receipts), status='completed'), receipts, research
         progress['active'] = kind
         try:
@@ -65,6 +69,7 @@ async def _run(fri, actions, text, context, result, progress):
         progress['active'] = None
         receipt = tool_receipt(kind, receipt)
         receipts.append(receipt)
+        await require_current_images(context, getattr(actions, 'event', None))
         if receipt.get('clarification'):
             return ChatResult(reply=receipt['clarification']['question'], status='completed',
                               clarification=receipt['clarification']), receipts, research
@@ -75,6 +80,9 @@ async def _run(fri, actions, text, context, result, progress):
         if receipt.get('post_preview'):
             return ChatResult(reply='Post preview prepared. Nothing is sent until you click Send once.',
                 status='completed', post_preview=receipt['post_preview']), receipts, research
+        if receipt.get('social_preview'):
+            return ChatResult(reply='Preview prepared. Nothing is scheduled or published until you confirm it.',
+                status='completed', social_preview=receipt['social_preview']), receipts, research
         if kind in ('web_search', 'web_refine') and all(receipt.get(k) for k in ('query', 'answer', 'sources', 'checked_at')):
             if research:
                 receipt['sources'] = list(dict.fromkeys(receipt['sources']+research['sources']))[:8]
@@ -97,13 +105,18 @@ async def _run(fri, actions, text, context, result, progress):
             offered.pop('work_save', None)
             offered.pop('prepare_post', None)
             offered.pop('clarify', None)
+            offered.pop('reminder_prepare', None)
+            offered.pop('plan_prepare', None)
+            offered.pop('reminder_cancel', None)
         if len(seen) == MAX_STEPS:
             offered = {}
+        await require_current_images(context, getattr(actions, 'event', None))
         try:
             result = await fri.chat_once(text, {**context, 'actions': offered,
                 'action_result': receipts[-1], 'action_results': list(receipts)})
         except commands.UserFeedbackCheckFailure:
-            return ChatResult(reply=fallback(receipts), status='completed'), receipts, research
+            result = ChatResult(reply=fallback(receipts), status='completed')
+        await require_current_images(context, getattr(actions, 'event', None))
         if result.action and not offered:
             return ChatResult(reply=fallback(receipts), status='completed'), receipts, research
     if result.action:

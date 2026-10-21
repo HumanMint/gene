@@ -1,5 +1,61 @@
 # Fri's agent workspace
 
+## Images, personal reminders, and game nights
+
+Ask a specific image question while attaching up to two PNG, JPEG, or WebP still
+images, for example “fri, what does this error mean?” Each image is limited to
+4 MB and 20 million pixels. Fri uses the existing chat call to inspect those
+current-message attachments. It does not collect ambient images, inspect videos,
+GIFs, spoilers, external embeds, or referenced members’ attachments. Image text is
+untrusted evidence and never grants authority for commands, memory, or releases.
+The adapter rechecks the source before accepting the answer.
+It also rechecks images before later tool steps and after follow-up inference. A
+source change discards the stale answer and blocks further actions; actions already
+accepted retain their recorded outcomes and are not silently undone.
+
+In your verified member DM, ask naturally for a one-off reminder, such as “remind
+me tomorrow at 7 pm to update the mods.” Fri resolves the date and prepares an
+exact time, timezone, text and DM destination. **Confirm** schedules that preview;
+**Cancel reminder** cancels it. Missing AM/PM or genuinely unclear details need a
+short clarification. `FRI_TIMEZONE` supplies the clearly labeled server default,
+`America/Los_Angeles` when unset; members may name another IANA timezone. Discord
+also displays the timestamp in the viewer’s local timezone. Repeated or nonexistent
+daylight-saving times are rejected rather than silently shifted: clarify an exact
+UTC time if needed.
+The full reminder text appears in an unsuppressed embed, separate from the time and
+confirmation controls. Previews, state updates and the delivered reminder account
+for Discord’s UTF-16 limits without clipping the accepted reminder body.
+
+Each member may have five pending/scheduled reminders, due between one minute and
+30 days from preparation. Previews expire after 15 minutes; receipts and reminder
+text expire seven days after the due time. Ask “list my reminders” or “cancel my
+reminder to update the mods” to inspect or cancel work in that same DM. Reminders
+survive restarts. Delivery rechecks membership and the DM recipient, uses no model
+call, and makes one bounded HTTP attempt after a durable sending fence. A crash
+after that fence or an ambiguous response is **uncertain**, and never retried.
+Local receipts can finish reporting without sending again. Cancellation cannot
+undo a delivery already started. Privacy erasure removes reminders and outstanding
+grants; already posted Discord messages are separate. Reminders require memory to
+be enabled, and never schedule tools, music, code, deployment, or recurring jobs.
+
+In an allowed public channel, ask “help us choose Friday at 7 pm or Saturday at
+8 pm for Helldivers.” Fri prepares two to four concrete future options in that
+channel. The activity title comes from the organizer’s current message, not other
+members’ context. The organizer checks the dates and clicks **Publish card**.
+Members toggle their own availability; only the organizer can finalize one option
+or cancel. After finalization, members choose Going, Maybe, or Cannot make it.
+Availability alone is not an RSVP. Bound buttons survive restarts, duplicate
+interactions do not toggle twice, and all actions recheck current server/channel
+access. There are no pings, unsolicited DMs, or calendar integration. Limit: two
+active plans per organizer, ten per server, and 100 respondents per plan; plans
+expire one day after their latest option. Privacy erasure removes the member’s
+responses and cancels/removes their own stored plans; posted cards are separate.
+
+`tests/test_fri_images.py` and `tests/test_fri_social.py` exercise these workflows
+with fake model/Discord transports and real controller persistence, without network
+access or credentials. They do not establish live Discord delivery or actual model
+date interpretation.
+
 Discord supplies authenticated events and renders results. The conversational runner
 chooses from explicitly offered tools, can take up to four steps in one turn, and
 stops on an uncertain result or after an operational Gene action. A tool receipt is

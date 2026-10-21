@@ -212,11 +212,14 @@ def test_history_action_schema_and_runner_keep_one_refinement_and_remove_persist
         fri, _, actions, _, _, _ = setup(monkeypatch, tmp_path)
         offered = await actions.available()
         assert 'history_search' in offered
-        context = {**CONTEXT, 'actions': {**offered, 'work_save': {}, 'prepare_post': {}, 'clarify': {}}}
+        assert 'plan_prepare' in offered
+        from gene.fri_social import KINDS
+        persistent = {'work_save', 'prepare_post', 'clarify'} | KINDS
+        context = {**CONTEXT, 'actions': {**offered, **dict.fromkeys(persistent, {})}}
         calls = []
         async def chat(text, ctx):
             calls.append(ctx)
-            assert not {'work_save', 'prepare_post', 'clarify'} & set(ctx['actions'])
+            assert not persistent & set(ctx['actions'])
             if len(calls) == 1:
                 assert 'history_search' in ctx['actions']
                 return ChatResult(status='completed', action=query(cursor=ctx['action_result']['next_cursor']))

@@ -34,6 +34,7 @@ class Actions:
         self.pending = None
         self.research = None
         self.search_count = 0
+        self.image_context = {}
         self.history = HistorySearch(self)
 
     def command_requested(self, action):
@@ -122,6 +123,8 @@ class Actions:
                     'action is a listed command; argument is a song, numeric volume, or empty.'}
         from .fri_workspace import available
         actions.update(available(self))
+        from .fri_social import available as social_available
+        actions.update(social_available(self))
         if isinstance(self.event, discord.Message):
             goals = [k for k in ('play', 'volume') if k in actions.get('gene_command', {}).get('commands', {})
                      and requested(self.message, k)]
@@ -142,6 +145,8 @@ class Actions:
             'history_channels': [c for c in overview['history_channels'] if c in channels]}
 
     async def execute(self, action):
+        from .fri_images import require_current
+        await require_current(self.image_context, self.event)
         channels = await self.channels(fresh=True)
         kind = action.get('kind')
         if not channels:
@@ -150,6 +155,10 @@ class Actions:
             return {'blocked': 'Archive evidence cannot authorize another action. Ask for that action in a fresh message.'}
         if kind == 'history_search':
             return await self.history.execute(action, channels)
+        from .fri_social import KINDS as SOCIAL_KINDS
+        from .fri_social import execute as social_execute
+        if kind in SOCIAL_KINDS:
+            return await social_execute(self, action)
         from .fri_workspace import KINDS, execute
         if kind in KINDS:
             return await execute(self, action)
@@ -378,6 +387,9 @@ class Actions:
     async def valid(self):
         """Fail closed if access or source privacy changed while the model was answering."""
         try:
+            from .fri_images import unchanged
+            if not await unchanged(self.image_context, self.event):
+                return False
             channels = await self.channels(fresh=True)
             if not channels or not self.sources <= set(channels):
                 return False

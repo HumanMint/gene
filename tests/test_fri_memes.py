@@ -59,6 +59,7 @@ def harness(learning, tmp_path, monkeypatch):
     fri = SimpleNamespace(guild_id=123, owner_id=10, workshop_id=456, data=tmp_path/'fri',
                           api=api, get_channel=lambda cid: channel if cid == 3 else None)
     agent = Agent(fri)
+    fri.agent = agent
     agent.member = AsyncMock(return_value=object())
     agent.state = scheduler.state()
     agent.run = AsyncMock(return_value=({'reaction': '💀', 'confidence': 'high', 'observation': 'A joke'}, {}, 'completed'))

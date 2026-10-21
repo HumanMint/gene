@@ -3,7 +3,7 @@
 Tool receipts distinguish `completed`, `rejected`, `failed` and `uncertain`.
 A completed check is evidence only, never a new permission. A definite controller
 refusal keeps its reason. If Fri cannot finish the model reply after a tool runs,
-she returns a deterministic receipt without repeating the tool. A queued song is
+they return a deterministic receipt without repeating the tool. A queued song is
 reported as queued; an ambiguous result is never reported as success. Earlier
 successful saves remain visible if a later step fails. Conversation history keeps
 the existing neutral tool breadcrumb rather than retrieved member evidence.

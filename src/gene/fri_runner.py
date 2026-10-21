@@ -53,6 +53,9 @@ async def _run(fri, actions, text, context, result):
             if receipt.get('post_preview'):
                 return ChatResult(reply='Post preview prepared. Nothing is sent until you click Send once.',
                     status='completed', post_preview=receipt['post_preview']), receipts, research
+            if receipt.get('social_preview'):
+                return ChatResult(reply='Preview prepared. Nothing is scheduled or published until you confirm it.',
+                    status='completed', social_preview=receipt['social_preview']), receipts, research
             if kind in ('web_search', 'web_refine') and all(receipt.get(k) for k in ('query', 'answer', 'sources', 'checked_at')):
                 if research:
                     receipt['sources'] = list(dict.fromkeys(receipt['sources']+research['sources']))[:8]
@@ -68,6 +71,9 @@ async def _run(fri, actions, text, context, result):
                 offered.pop('work_save', None)
                 offered.pop('prepare_post', None)
                 offered.pop('clarify', None)
+                offered.pop('reminder_prepare', None)
+                offered.pop('plan_prepare', None)
+                offered.pop('reminder_cancel', None)
             if len(seen) == MAX_STEPS:
                 offered = {}
             result = await fri.chat_once(text, {**context, 'actions': offered,

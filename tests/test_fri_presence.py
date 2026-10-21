@@ -56,6 +56,7 @@ def harness(learning, tmp_path):
         api=api, get_channel=channels.get, status=discord.Status.online, activity=None,
         change_presence=AsyncMock())
     agent = Agent(fri)
+    fri.agent = agent
     agent.state = scheduler.state()
     agent.member = AsyncMock(return_value=object())
     agent.run = AsyncMock(return_value=({'lines': LINES}, {}, 'completed'))

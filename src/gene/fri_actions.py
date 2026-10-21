@@ -111,6 +111,8 @@ class Actions:
                     'action is a listed command; argument is a song, numeric volume, or empty.'}
         from .fri_workspace import available
         actions.update(available(self))
+        from .fri_social import available as social_available
+        actions.update(social_available(self))
         if isinstance(self.event, discord.Message):
             goals = [k for k in ('play', 'volume') if k in actions.get('gene_command', {}).get('commands', {})
                      and requested(self.message, k)]
@@ -135,6 +137,10 @@ class Actions:
         kind = action.get('kind')
         if not channels:
             return {'blocked': 'No approved channels are currently readable.'}
+        from .fri_social import KINDS as SOCIAL_KINDS
+        from .fri_social import execute as social_execute
+        if kind in SOCIAL_KINDS:
+            return await social_execute(self, action)
         from .fri_workspace import KINDS, execute
         if kind in KINDS:
             return await execute(self, action)

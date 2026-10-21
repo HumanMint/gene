@@ -176,6 +176,8 @@ def create_app(settings: Settings | None = None):
     register_repairs(app, store, settings, auth)
     from .fri_workspace_api import register as register_workspace
     register_workspace(app, store, settings, auth, chat_scope)
+    from .fri_social_api import register as register_social
+    register_social(app, store, settings, auth, chat_scope)
 
     @app.exception_handler(Conflict)
     async def conflict_handler(_, exc):

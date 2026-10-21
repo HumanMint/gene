@@ -71,9 +71,11 @@ def save(db, guild, conversation, user, revision, text, source, clarification):
     if db.execute("SELECT 1 FROM chat_turns WHERE user_id=? AND json_extract(NULLIF(source,''),'$.id')=?",
                   (user, source.id)).fetchone():
         raise ValueError('This message already has a reply')
-    # Replayed input cannot reopen a completed command's permission.
-    if db.execute('SELECT 1 FROM gene_controls WHERE user_id=? AND json_extract(payload,\'$.source.id\')=?',
-                  (user, source.id)).fetchone():
+    # Command receipts are the replay fence even when chat memory is disabled.
+    # A continuation stores the original request separately from its answer.
+    if db.execute("SELECT 1 FROM gene_controls WHERE user_id=? AND (json_extract(payload,'$.source.id')=? "
+                  "OR json_extract(payload,'$.continuation.source.id')=?)",
+                  (user, source.id, source.id)).fetchone():
         raise ValueError('This request already ran')
     body = {**value, 'source': source.model_dump(), 'request_text': text, 'revision': revision}
     db.execute('INSERT INTO chat_pending VALUES (?,?,?,?,?,?,?)',

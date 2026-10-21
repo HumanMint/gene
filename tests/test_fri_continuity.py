@@ -65,6 +65,34 @@ def test_pending_request_survives_restart_and_only_one_answer_can_enqueue(store)
         arm(restarted, {**origin(), 'source': pending['source']})
 
 
+@pytest.mark.parametrize('finished', [False, True])
+def test_consumed_origin_cannot_rearm_after_restart_with_memory_disabled(store, finished):
+    store.personal_control('20', 'disable')
+    initial = origin(revision=1)
+    pending = arm(store, initial)
+    controls = Controls(store)
+    body = answer(pending, revision=1)
+    identifier = controls.enqueue(body)['id']
+    claim = controls.poll(['play'])
+    controls.start(identifier, claim['lease'])
+    if finished:
+        controls.finish(identifier, claim['lease'], {'output': 'Track enqueued'})
+    restarted = Store(store.path)
+    context = restarted.chat_context('123', 'public:1', '20')
+    assert context['turns'] == [] and context['pending'] is None
+    assert not context['personal_memory']['enabled']
+    with patch('time.time', return_value=time.time()+4):
+        with pytest.raises(ValueError, match='already ran'):
+            arm(restarted, initial)
+        second = copy.deepcopy(body)
+        second['source']['id'] = str(int(body['source']['id'])+1)
+        with pytest.raises(ValueError):
+            Controls(restarted).enqueue(second)
+    assert Controls(restarted).poll(['play']) is None
+    with restarted.connection() as db:
+        assert db.execute('SELECT count(*) FROM gene_controls').fetchone()[0] == 1
+
+
 @pytest.mark.parametrize('change', ['user', 'channel', 'guild', 'private', 'expired', 'clear', 'disable',
                                    'cancel', 'different_action', 'argument', 'same_message', 'unrelated_turn'])
 def test_continuations_cannot_cross_scope_expiry_privacy_or_action(store, change):

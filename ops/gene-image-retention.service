@@ -10,7 +10,9 @@ UMask=0077
 NoNewPrivileges=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/srv/gene/maintenance
+# SQLite mode=ro readers still need WAL shared-memory/lock access beside the database.
+# The tool sets query_only and never opens a write connection to controller state.
+ReadWritePaths=/srv/gene/maintenance /srv/gene/data/controller
 PrivateTmp=true
 Nice=15
 IOSchedulingClass=idle

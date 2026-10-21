@@ -210,6 +210,11 @@ sudo systemctl enable --now gene-image-retention.timer
 The timer runs hourly with up to five minutes of jitter. There is no broad Docker prune or
 forced image removal. References and exact image IDs are checked again before each image;
 container/configuration changes abort the remainder. A failed delete retains retry evidence.
+The hardened service allows controller-directory access for SQLite's WAL shared-memory and
+locking files. Controller queries use `mode=ro` and `query_only`; retention does not modify
+requests, approvals, usage, conversations or release records. Do not use SQLite `immutable=1`
+or copy an active database without its WAL to work around reader access, since that could
+hide current release references.
 
 Maintainers must acquire `/srv/gene/maintenance/image-retention.lock` with `flock` before
 building, retagging or changing deployment image references, and hold it through the switch

@@ -4,6 +4,7 @@ The model may prepare work. Only a bound Discord interaction authorizes delivery
 Uncertain sends are never retried: Discord's nonce deduplication is only short-lived.
 """
 
+import hashlib
 import json
 import time
 import uuid
@@ -87,7 +88,10 @@ class Workspace:
             raise ValueError('Saving work needs a fresh Discord message')
         if not title.strip() or not body.strip() or redact(body) != body or redact(title) != title:
             raise ValueError('Work must contain text without credentials')
-        payload = json.dumps([scope, revision, work_id, version, title, body, state, request_text], sort_keys=True)
+        # Only the digest is retained. The surrounding request may contain unrelated
+        # private text or credentials even when the selected draft itself is safe.
+        payload = hashlib.sha256(json.dumps([scope, revision, work_id, version, title, body, state,
+                                             request_text], sort_keys=True).encode()).hexdigest()
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)

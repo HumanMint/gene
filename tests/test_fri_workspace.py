@@ -306,3 +306,16 @@ def test_public_saved_work_does_not_launder_ambient_context_or_title(store):
     assert done['title'] == 'my checklist' and done['state'] == 'completed'
     store.personal_control('30', 'disable')
     assert work.read(scope, own['id'])['body'] == 'my checklist'
+
+
+def test_save_idempotency_does_not_retain_surrounding_credentials(store):
+    work = Workspace(store)
+    event = source()
+    request = 'save this draft: hello friends\nMy token=synthetic_secret_12345'
+    args = (SCOPE, event, 0, '', 0, 'Intro', 'hello friends', 'open', request)
+    item = work.save(*args)
+    assert work.save(*args)['id'] == item['id']
+    with store.connection() as db:
+        payload = db.execute('SELECT payload FROM fri_work_events').fetchone()[0]
+        assert len(payload) == 64 and all(c in '0123456789abcdef' for c in payload)
+        assert 'synthetic_secret_12345' not in '\n'.join(db.iterdump())

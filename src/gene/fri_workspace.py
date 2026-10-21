@@ -137,7 +137,7 @@ class PostButton(discord.ui.DynamicItem[discord.ui.Button], template=POST_ID):
             result = await fri.api('POST', f'/workspace/posts/{self.post_id}/decide', {
                 'source': discord_source(interaction).model_dump(), 'preview_id': str(interaction.message.id),
                 'approve': self.decision == 'send'})
-            await interaction.edit_original_response(content='Post '+result['state']+'.', view=None,
+            await interaction.edit_original_response(content='post '+result['state']+'.', view=None,
                                                      allowed_mentions=NO_MENTIONS)
             if result['state'] == 'authorized':
                 await deliver_one(fri)
@@ -145,21 +145,21 @@ class PostButton(discord.ui.DynamicItem[discord.ui.Button], template=POST_ID):
                 await interaction.edit_original_response(content=delivery_text(result), view=None,
                                                          allowed_mentions=NO_MENTIONS)
         except (commands.UserFeedbackCheckFailure, discord.HTTPException, ValueError):
-            await interaction.followup.send('I couldn’t confirm that action. Ask for the saved post status before retrying.',
+            await interaction.followup.send('i couldn’t confirm that action. ask for the saved post status before retrying.',
                                              ephemeral=True, allowed_mentions=NO_MENTIONS)
 
 
 def delivery_text(post):
     if post['state'] == 'sent':
-        return f"Posted: https://discord.com/channels/{post['guild_id']}/{post['target_id']}/{post['message_id']}"
-    return ('Post '+post['state']+'. '+ ('I will not resend automatically.' if post['state'] == 'uncertain' else ''))
+        return f"posted: https://discord.com/channels/{post['guild_id']}/{post['target_id']}/{post['message_id']}"
+    return ('post '+post['state']+'. '+ ('i will not resend automatically.' if post['state'] == 'uncertain' else ''))
 
 
 async def show_preview(fri, message, post):
     if message.guild is not None or message.author.id != fri.owner_id or not isinstance(message.channel, discord.DMChannel):
         raise commands.UserFeedbackCheckFailure('Open the post preview in your owner DM.')
     if post['state'] != 'pending' or post['preview_id']:
-        await message.reply(delivery_text(post)+' Ask for a fresh preview if needed.', allowed_mentions=NO_MENTIONS)
+        await message.reply(delivery_text(post)+' ask for a fresh preview if needed.', allowed_mentions=NO_MENTIONS)
         return
     view = discord.ui.View(timeout=None)
     for decision in ('send', 'cancel'):
@@ -167,7 +167,7 @@ async def show_preview(fri, message, post):
     # Full text stays inline on mobile. No file download or clipped preview.
     embed = discord.Embed(description=discord.utils.escape_markdown(discord.utils.escape_mentions(post['body'])))
     embed.set_footer(text=f"Draft v{post['version']} · expires in 15 minutes · pings disabled")
-    preview = await message.reply(f"**Send once to <#{post['target_id']}>**\nNothing posted yet. This does not enable ambient replies there.",
+    preview = await message.reply(f"**send once to <#{post['target_id']}>**\nnothing posted yet. this does not enable ambient replies there.",
         embed=embed, view=view, mention_author=False, allowed_mentions=NO_MENTIONS)
     await fri.api('POST', f"/workspace/posts/{post['id']}/bind", {'message_id': str(preview.id)})
 

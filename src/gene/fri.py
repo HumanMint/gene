@@ -20,6 +20,7 @@ from .fri_chat import Chat, ChatResult
 from .fri_context import discord_source
 from .fri_errors import ControllerRejected
 from .fri_memory import describe_memory, memory_intent
+from .fri_notices import ReplyInProgress, WaitingNotices, notice_text
 from .fri_panel import DraftView, HomeView, authorized, card, reply, sessions
 from .fri_reports import ReportButton, report_component
 from .fri_requests import request_dm_component
@@ -62,6 +63,7 @@ class Fri(discord.Client):
         self.chat = Chat(Subscription(os.getenv('FRI_CHATGPT_AUTH', '/auth/session.json')))
         self.tree = FriTree(self)
         self.busy = set()
+        self.waiting_notices = WaitingNotices(self.busy)
         self.usage_lock = asyncio.Lock()
         self.chat_slots = asyncio.Semaphore(2)
         self.session = None
@@ -156,7 +158,7 @@ class Fri(discord.Client):
             raise commands.UserFeedbackCheckFailure(result.error or 'Fri could not complete that reply. Try again shortly.')
         return result
 
-    async def talk(self, guild_id, channel_id, user_id, text, visibility, display_name='', *, event=None, burst=()):
+    async def talk(self, guild_id, channel_id, user_id, text, visibility, display_name='', *, event=None, burst=(), inspect_images=True):
         source = discord_source(event, text, getattr(self.user, 'id', 0)).check(guild_id, f'{visibility}:{channel_id}', user_id)
         channel = self.get_channel(channel_id) if self.agent else None
         source_channel = (getattr(channel, 'parent_id', None) or channel_id) if visibility == 'public' and self.agent else self.workshop_id
@@ -174,9 +176,9 @@ class Fri(discord.Client):
             await self.api('POST', '/chat/memory/control', {**scope, 'action': intent})
             if self.agent:
                 self.agent.forget(user_id)
-            text = ('Done. I erased our saved chats and personal notes, and turned memory off. '
-                    'Say “remember me again” if you change your mind. Discord messages and backups are separate.'
-                    if intent == 'disable' else 'Memory’s back on. I’ll pick up small preferences as we talk.')
+            text = ('done. i erased our saved chats and personal notes, and turned memory off. '
+                    'say “remember me again” if you change your mind. discord messages and backups are separate.'
+                    if intent == 'disable' else 'memory’s back on. i’ll pick up small preferences as we talk.')
             return ChatResult(reply=text, status='completed')
         from .fri_pending import cancelled
         if source.kind == 'discord_message' and cancelled(text):
@@ -185,7 +187,7 @@ class Fri(discord.Client):
             if result['cancelled']:
                 return ChatResult(reply='alright, dropped that pending request.', status='completed')
         if user_id in self.busy:
-            raise commands.UserFeedbackCheckFailure('I’m still replying to you. Give me a moment.')
+            raise ReplyInProgress()
         if not 1 <= len(text) <= 4000:
             raise commands.UserFeedbackCheckFailure('Keep each message between 1 and 4000 characters.')
         self.busy.add(user_id)
@@ -202,7 +204,10 @@ class Fri(discord.Client):
                     context.update(conversation)
                 context['source'] = source.evidence()
                 context['acknowledgments_enabled'] = bool(self.agent and source.kind == 'discord_message')
-                if quick_closure(text, {**context, 'recent': self.agent.messages(channel_id) if self.agent else []}):
+                from .fri_images import select_source
+                image_source = await select_source(event) if inspect_images else None
+                if image_source is None and quick_closure(
+                        text, {**context, 'recent': self.agent.messages(channel_id) if self.agent else []}):
                     result = ChatResult(status='completed', response_kind='react', reaction='👍')
                     return await self.save_response(scope, source, text, context, result, model='local-closing')
                 if user_id == self.owner_id and guild_id == self.guild_id and usage_requested(text):
@@ -262,9 +267,10 @@ class Fri(discord.Client):
                 context['requests_enabled'] = guild_id == self.guild_id
                 context['requester_is_owner'] = user_id == self.owner_id
                 from .fri_images import attach as attach_images
-                await attach_images(context, event, text)
+                if inspect_images:
+                    await attach_images(context, event, text, source=image_source)
                 if actions:
-                    actions.image_context = {'image_sources': context.get('image_sources', [])}
+                    actions.image_context = {key: context[key] for key in ('image_sources', 'image_event') if key in context}
                 if actions and guild_id == self.guild_id:
                     recent = await self.api('POST', '/controls/recent', scope)
                     readable = await actions.channels(fresh=True)
@@ -357,7 +363,7 @@ class Fri(discord.Client):
             'notes': result.notes, 'input_tokens': 0 if model else result.counters.get('input_tokens'),
             'output_tokens': 0 if model else result.counters.get('output_tokens')})
         if saved.get('first_memory') and result.response_kind == 'reply':
-            result.reply += ('\n\n-# I kept a small preference from this. Ask “what do you remember about me?” '
+            result.reply += ('\n\n-# i kept a small preference from this. ask “what do you remember about me?” '
                              'or say “forget me” any time.')
         return result
 
@@ -375,11 +381,12 @@ class Fri(discord.Client):
             if result.settings_preview:
                 from .fri_agent import BehaviorPreview
                 view = BehaviorPreview(self.agent, **result.settings_preview)
-                await reply(self, interaction, view.content, attachments=[], view=view)
+                await reply(self, interaction, view.content, attachments=[], view=view, verbatim=True)
             else:
                 await reply(self, interaction, embed=card('Fri', result.reply), view=view)
         except commands.UserFeedbackCheckFailure as exc:
             await reply(self, interaction, str(exc), view=HomeView(self, interaction.user.id))
+        await self.waiting_notices.clear(interaction.user.id)
 
     async def on_message(self, message):
         if self.agent:
@@ -403,8 +410,12 @@ class Fri(discord.Client):
             view = DraftView(self, message.author.id, result.draft, public=True) if result.draft else None
             await message.reply(result.reply, view=view, mention_author=False, allowed_mentions=NO_MENTIONS,
                                 suppress_embeds=True)
+            await self.waiting_notices.clear(message.author.id)
+        except ReplyInProgress:
+            await self.waiting_notices.send(message)
         except commands.UserFeedbackCheckFailure as exc:
-            await message.reply(str(exc)[:1800], mention_author=False)
+            await message.reply(notice_text(str(exc))[:1800], mention_author=False, allowed_mentions=NO_MENTIONS)
+            await self.waiting_notices.clear(message.author.id)
 
     @tasks.loop(seconds=15)
     async def owner_reviews(self):

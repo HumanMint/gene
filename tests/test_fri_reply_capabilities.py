@@ -25,7 +25,7 @@ async def workflow(monkeypatch, tmp_path, connection, *, private=True, reply=Tru
     fri.api = call
     fri._connection.user = SimpleNamespace(id=99, display_name='Fri', bot=True)
     guild = None if private else SimpleNamespace(id=123, me=fri.user)
-    channel = Mock(spec=discord.DMChannel, id=999) if private else SimpleNamespace(
+    channel = Mock(spec=discord.DMChannel, id=999, history=Mock(return_value=AsyncMock())) if private else SimpleNamespace(
         id=456, guild=guild, permissions_for=lambda _: discord.Permissions.all())
     current = Mock(spec=discord.Message, id=int(source(20, public=not private).id),
         content='fri remind me about that' if private else 'fri help us choose times for that game',

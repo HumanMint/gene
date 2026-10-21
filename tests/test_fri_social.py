@@ -319,7 +319,7 @@ def test_reminder_short_clarification_through_real_fri_talk(api, tmp_path, monke
         original = Mock(spec=discord.Message, id=int(event.id), content='remind me tomorrow at 7 to update the mods',
             author=SimpleNamespace(id=10, display_name='Member'), guild=None, webhook_id=None,
             attachments=[], embeds=[], edited_at=None)
-        dm = Mock(spec=discord.DMChannel, id=999)
+        dm = Mock(spec=discord.DMChannel, id=999, history=Mock(return_value=AsyncMock()))
         original.channel = dm
         answer = Mock(spec=discord.Message, id=int(source(3).id), content='7 pm',
             author=original.author, guild=None, webhook_id=None, channel=dm, attachments=[], embeds=[], edited_at=None)
@@ -345,7 +345,8 @@ def test_reminder_short_clarification_through_real_fri_talk(api, tmp_path, monke
             elif failure == 'user':
                 answer.author = SimpleNamespace(id=11, display_name='Other member')
             elif failure == 'channel':
-                dm = Mock(spec=discord.DMChannel, id=1000, fetch_message=AsyncMock(return_value=answer))
+                dm = Mock(spec=discord.DMChannel, id=1000, fetch_message=AsyncMock(return_value=answer),
+                          history=Mock(return_value=AsyncMock()))
                 answer.channel = dm
             elif failure == 'cancel':
                 answer.content = 'cancel'

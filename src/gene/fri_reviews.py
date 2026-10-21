@@ -8,6 +8,8 @@ from redbot.core import commands
 
 from gene.reviews import REVIEW_ID, owner_dm_component
 
+from .fri_notices import notice_text
+
 LOG = logging.getLogger('fri.review')
 NO_MENTIONS = discord.AllowedMentions.none()
 
@@ -41,7 +43,7 @@ class ReviewButton(discord.ui.DynamicItem[discord.ui.Button], template=REVIEW_ID
                 'reference': self.reference, 'decision': 'reject' if self.decision == 'x' else 'approve'})
         except commands.UserFeedbackCheckFailure as exc:
             # Do not erase a newer review that might now occupy this same DM message.
-            await interaction.followup.send(str(exc)[:1500], ephemeral=True,
+            await interaction.followup.send(notice_text(str(exc))[:1500], ephemeral=True,
                                             allowed_mentions=NO_MENTIONS)
             return
         if self.decision == 'x':
@@ -52,7 +54,7 @@ class ReviewButton(discord.ui.DynamicItem[discord.ui.Button], template=REVIEW_ID
         else:
             text = (f'Approved `{self.reference}` for request `{self.job_id}`. '
                     'Deployment will run health checks and restore the previous release on failure.')
-        await interaction.edit_original_response(content=text, embed=None, view=None,
+        await interaction.edit_original_response(content=notice_text(text), embed=None, view=None,
                                                   allowed_mentions=NO_MENTIONS)
 
 

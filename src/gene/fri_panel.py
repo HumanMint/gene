@@ -7,6 +7,7 @@ import logging
 import discord
 from redbot.core import commands
 
+from .fri_notices import notice_text
 from .fri_requests import DraftView as DraftView
 from .panels import PrivatePanels, defer_panel
 from .subscription import SubscriptionError
@@ -35,13 +36,14 @@ def sessions(cog):
     return cog.private_panels
 
 
-async def reply(cog, interaction, text=None, **kwargs):
+async def reply(cog, interaction, text=None, *, verbatim=False, **kwargs):
     panels = sessions(cog)
     view = kwargs.pop('view', None) or panels.current_view(interaction) or ScopedView(cog, interaction.user.id)
-    return await panels.show(interaction, content=text, view=view, **kwargs)
+    return await panels.show(interaction, content=text if verbatim or text is None else notice_text(text), view=view, **kwargs)
 
 
 async def notice(interaction, text):
+    text = notice_text(text)
     if interaction.response.is_done():
         message = await interaction.followup.send(content=text, ephemeral=True, allowed_mentions=NO_MENTIONS, wait=True)
         await message.delete(delay=10)

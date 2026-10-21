@@ -279,9 +279,9 @@ class SocialButton(discord.ui.DynamicItem[discord.ui.Button], template=COMPONENT
             row = await fri.api('POST', route+'/read', scope)
             await interaction.edit_original_response(**presentation(self.kind, row))
             if self.kind == 'plan' and self.decision.startswith('vote'):
-                await interaction.followup.send('Your availability was updated. Click the same option again to remove it.', ephemeral=True, allowed_mentions=NO_MENTIONS)
+                await interaction.followup.send('your availability was updated. click the same option again to remove it.', ephemeral=True, allowed_mentions=NO_MENTIONS)
         except (commands.UserFeedbackCheckFailure, discord.HTTPException, ValueError, KeyError):
-            await interaction.followup.send('That action could not be confirmed. The card may have expired, access may have changed, or this action belongs to the organizer. Check current status before trying again.', ephemeral=True, allowed_mentions=NO_MENTIONS)
+            await interaction.followup.send('that action could not be confirmed. the card may have expired, access may have changed, or this action belongs to the organizer. check current status before trying again.', ephemeral=True, allowed_mentions=NO_MENTIONS)
 
 
 async def show_preview(fri, message, preview):
@@ -292,7 +292,7 @@ async def show_preview(fri, message, preview):
     if (private and (message.guild is not None or not isinstance(message.channel, discord.DMChannel))) or (not private and (not message.guild or message.guild.id != fri.guild_id or not fri.agent.allowed(message.channel))):
         raise commands.UserFeedbackCheckFailure('Use the original reminder DM or game-night channel.')
     if row['preview_id']:
-        await message.reply('That preview already exists. Use the original card, or ask for current reminder status.', allowed_mentions=NO_MENTIONS)
+        await message.reply('that preview already exists. use the original card, or ask for current reminder status.', allowed_mentions=NO_MENTIONS)
         return
     posted = await message.reply(**presentation(kind, row), mention_author=False, suppress_embeds=kind != 'reminder')
     scope = {'guild_id': str(fri.guild_id), 'user_id': str(message.author.id),

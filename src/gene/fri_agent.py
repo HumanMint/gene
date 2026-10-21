@@ -22,6 +22,7 @@ from .fri_agent_store import DEFAULTS, RANGES
 from .fri_conversation import Bursts
 from .fri_errors import ControllerRejected
 from .fri_memory import memory_intent
+from .fri_notices import ReplyInProgress, notice_text
 from .fri_panel import DraftView
 from .fri_reports import report_message
 from .fri_responses import REACTIONS
@@ -65,7 +66,7 @@ class BehaviorPreview(PagedPreview):
                 text = f"Saved settings revision {state['version']}."
             except commands.UserFeedbackCheckFailure as exc:
                 text = str(exc)[:1800]
-            await interaction.edit_original_response(content=text, embed=None, attachments=[], view=None,
+            await interaction.edit_original_response(content=notice_text(text), embed=None, attachments=[], view=None,
                                                        allowed_mentions=NO_MENTIONS)
             self.finished = True
             self.stop()
@@ -224,7 +225,7 @@ class Agent:
         if re.search(r'\b(refresh|update)\b.*\bmodels?\b', lower):
             catalog = await self.fri.chat.models()
             await self.fri.api('POST', '/chat/models/update', {**self.identity(message.author.id), 'models': catalog})
-            await message.reply('Available subscription models: '+', '.join(catalog)+'. Selected models were kept.', allowed_mentions=NO_MENTIONS)
+            await message.reply('available subscription models: '+', '.join(catalog)+'. selected models were kept.', allowed_mentions=NO_MENTIONS)
             return True
         subject = re.search(r'\b(settings?|heartbeat|personality|system prompt|learning|learn|tone|voice|sarcasm|playful|cooldown|summary|summaries|model|memes?|reactions?|status|presence)\b', lower)
         inspect = re.search(r'\b(show|list|current)\b.*\b(settings?|configuration|models?|\w+ notes|system prompt)\b|\bhow (often|far)\b', lower)
@@ -249,7 +250,7 @@ class Agent:
                 await message.reply(text[:1950], allowed_mentions=NO_MENTIONS)
             return True
         if self.control_busy:
-            await message.reply('One settings preview at a time, give me a moment.', allowed_mentions=NO_MENTIONS)
+            await message.reply('one settings preview at a time, give me a moment.', allowed_mentions=NO_MENTIONS)
             return True
         self.control_busy = True
         try:
@@ -264,18 +265,18 @@ class Agent:
                 model='gpt-6.1-sol', effort='high')
             changes = {r['key']: json.loads(r['json_value']) for r in result.get('changes', [])}
             if status != 'completed' or set(changes)-set(DEFAULTS):
-                await message.reply('I couldn’t prepare that settings change. Nothing was saved.', allowed_mentions=NO_MENTIONS)
+                await message.reply('i couldn’t prepare that settings change. nothing was saved.', allowed_mentions=NO_MENTIONS)
             elif not changes:
                 return False  # Reply through Fri's voice and evidence path, not the settings helper.
             else:
                 # The controller validates limits and version again when Apply is clicked.
                 if len(json.dumps(changes)) > 6000:
-                    await message.reply('That change is too large for one preview. Please change one behavior at a time.', allowed_mentions=NO_MENTIONS)
+                    await message.reply('that change is too large for one preview. please change one behavior at a time.', allowed_mentions=NO_MENTIONS)
                 else:
                     view = BehaviorPreview(self, changes, state['version'])
                     await message.reply(view.content, view=view, allowed_mentions=NO_MENTIONS, suppress_embeds=True)
         except (ValueError, KeyError, TypeError):
-            await message.reply('I couldn’t parse that settings preview. Nothing was saved.', allowed_mentions=NO_MENTIONS)
+            await message.reply('i couldn’t parse that settings preview. nothing was saved.', allowed_mentions=NO_MENTIONS)
         finally:
             self.control_busy = False
         return True
@@ -341,7 +342,7 @@ class Agent:
             self.bursts.add(message)
         except ValueError as exc:
             self.pending.pop(key, None)
-            await message.reply(str(exc), allowed_mentions=NO_MENTIONS, mention_author=False)
+            await message.reply(notice_text(str(exc)), allowed_mentions=NO_MENTIONS, mention_author=False)
             return
         self.pending[key] = message.id
         await asyncio.sleep(1.5)
@@ -354,28 +355,37 @@ class Agent:
         else:
             await self.respond(message, directed or text, dm)
 
-    async def respond(self, message, text, dm=False, *, burst=()):
+    async def respond(self, message, text, dm=False, *, burst=(), ambient=False):
         try:
             async with message.channel.typing():
                 result = await self.fri.talk(self.fri.guild_id if dm else message.guild.id, message.channel.id, message.author.id,
-                    text, 'private' if dm else 'public', message.author.display_name, event=message, burst=burst)
+                    text, 'private' if dm else 'public', message.author.display_name, event=message,
+                    burst=burst, inspect_images=not ambient)
+        except ReplyInProgress:
+            await self.fri.waiting_notices.send(message)
+            return
         except commands.UserFeedbackCheckFailure as exc:
-            await message.reply(str(exc)[:1800], allowed_mentions=NO_MENTIONS)
+            await message.reply(notice_text(str(exc))[:1800], allowed_mentions=NO_MENTIONS, mention_author=False)
+            await self.fri.waiting_notices.clear(message.author.id)
             return
         if result.response_kind in ('react', 'quiet'):
             if result.status == 'completed' and result.response_kind == 'react':
                 await self.acknowledge(message, result.reaction)
             # Neither outcome renews active attention or the ambient reply timer.
+            await self.fri.waiting_notices.clear(message.author.id)
             return
         if result.post_preview:
             from .fri_workspace import show_preview
             await show_preview(self.fri, message, result.post_preview)
+            await self.fri.waiting_notices.clear(message.author.id)
             return
         if result.social_preview:
             from .fri_social import show_preview
             await show_preview(self.fri, message, result.social_preview)
+            await self.fri.waiting_notices.clear(message.author.id)
             return
         if not result.reply:
+            await self.fri.waiting_notices.clear(message.author.id)
             return
         view = None
         if result.settings_preview:
@@ -391,6 +401,7 @@ class Agent:
         if result.status == 'completed':
             self.active[(message.channel.id, message.author.id)] = time.time()+(300 if result.clarification else 120)
         self.last_spoke[message.channel.id] = time.time()
+        await self.fri.waiting_notices.clear(message.author.id)
 
     async def acknowledge(self, message, emoji):
         """Only react to the triggering message, once, within the existing write scope."""
@@ -545,8 +556,12 @@ class Agent:
                     continue
                 message = await channel.fetch_message(int(selected['id']))
                 profile = await self.profile(getattr(channel, 'parent_id', None) or channel_id, message.author.id)
-                if profile['enabled']:
-                    await self.respond(message, message.content[:4000])
+                # A direct reply can start or finish while Luna/fetch/profile awaits.
+                # Background attention yields instead of producing a second reply or busy notice.
+                if (profile['enabled'] and message.author.id not in self.fri.busy and
+                        (channel_id, message.author.id) not in self.pending and
+                        time.time()-self.last_spoke.get(channel_id, 0) >= 600):
+                    await self.respond(message, message.content[:4000], ambient=True)
 
     async def investigate(self, channel, record):
         source_channel = self.fri.get_channel(channel)

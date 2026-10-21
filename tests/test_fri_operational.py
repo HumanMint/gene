@@ -129,7 +129,7 @@ def test_exact_control_works_during_cooldown_without_model_and_keeps_red_refusal
         try:
             with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock()):
                 result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
-            assert 'Normal DJ checks denied' in result.reply
+            assert 'normal dj checks denied' in result.reply
             assert 'uncertain' not in result.reply
             assert '/agent/admit' not in paths and paths.count('/controls') == 1
             with controls.store.connection() as db:

@@ -2,16 +2,31 @@
 
 ## Images, personal reminders, and game nights
 
-Ask a specific image question while attaching up to two PNG, JPEG, or WebP still
-images, for example “fri, what does this error mean?” Each image is limited to
+Attach up to two PNG, JPEG, or WebP still images while talking to Fri. Informal
+captions such as “fri is this dog a rat” or “dog or rat” during a follow-up work
+without a question mark or special image keywords. A caption can also refer to the
+immediately preceding photo-only post from that same member in the same channel,
+within 60 seconds. Fri checks that one preceding message on demand; it never scans
+back through other photos or borrows another member's image. Each image is limited to
 4 MB and 20 million pixels. Fri uses the existing chat call to inspect those
-current-message attachments. It does not collect ambient images, inspect videos,
+current-message attachments. Background attention remains text-only. It does not collect ambient images, inspect videos,
 GIFs, spoilers, external embeds, or referenced members’ attachments. Image text is
 untrusted evidence and never grants authority for commands, memory, or releases.
 The adapter rechecks the source before accepting the answer.
 It also rechecks images before later tool steps and after follow-up inference. A
 source change discards the stale answer and blocks further actions; actions already
 accepted retain their recorded outcomes and are not silently undone.
+
+Fri's canned notices use lowercase prose. Exact drafts, quoted tool output, links,
+code and Discord tokens keep their original case. A busy reply can still show
+“i’m still replying to you. give me a moment.” That temporary bot message is removed
+after the reply, error or preview is delivered, with a five-minute expiry as a
+fallback if delivery never finishes. Only Fri's own waiting notices are removed.
+Background attention rechecks ongoing and recently completed replies before speaking.
+
+`python -m gene.fri_eval --suite images` checks the selected subscription model with
+synthetic color/shape images. It records usage without writing synthetic dialogue
+into a member's Discord conversation or saved chat history.
 
 In your verified member DM, ask naturally for a one-off reminder, such as “remind
 me tomorrow at 7 pm to update the mods.” Fri resolves the date and prepares an

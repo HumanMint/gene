@@ -2,6 +2,7 @@
 
 from enum import Enum
 
+from .fri_notices import notice_text
 from .privacy import clean
 
 
@@ -45,25 +46,25 @@ def one(last):
     """Render only typed evidence, without the final model's proposed wording."""
     outcome = last['outcome']
     if outcome == Outcome.REJECTED:
-        return 'That step was rejected: '+clean(str(last['blocked']), 1200)
+        return 'that step was rejected: '+notice_text(clean(str(last['blocked']), 1200))
     if outcome == Outcome.FAILED:
-        return 'That check failed: '+clean(str(last['error']), 1200)
+        return 'that check failed: '+notice_text(clean(str(last['error']), 1200))
     if outcome == Outcome.UNCERTAIN:
-        return ('Completion is uncertain. '+clean(str(last.get('uncertain', '')), 1000)+
-                ' I have not retried it. Check its current status before sending another request.')
+        return ('completion is uncertain. '+notice_text(clean(str(last.get('uncertain', '')), 1000))+
+                ' i have not retried it. check its current status before sending another request.')
     kind = last['kind']
     if kind == 'gene_command':
-        return 'Gene returned:\n'+clean(str(last['output']), 1600)
+        return 'gene returned:\n'+clean(str(last['output']), 1600)
     if kind == 'work_save':
-        return f"Saved your work at version {last.get('version', 'confirmed')} ({last.get('state', 'saved')})."
+        return f"saved your work at version {last.get('version', 'confirmed')} ({last.get('state', 'saved')})."
     if kind == 'reminder_cancel' and last.get('state') == 'cancelled':
-        return 'Reminder cancelled.'
+        return 'reminder cancelled.'
     if kind in ('web_search', 'web_refine', 'web_sources') and last.get('answer'):
         return clean(str(last['answer']), 1700)
-    return 'That check completed, but I couldn’t finish explaining it. No action was repeated; ask for current details.'
+    return 'that check completed, but i couldn’t finish explaining it. no action was repeated; ask for current details.'
 
 
-def unrecorded(receipts, *, reason='I couldn’t save this chat record.'):
+def unrecorded(receipts, *, reason='i couldn’t save this chat record.'):
     """A failed privacy/revision write must not hide an already known side effect.
 
     Do not quote read results or controller details here: the failed write may be
@@ -72,17 +73,17 @@ def unrecorded(receipts, *, reason='I couldn’t save this chat record.'):
     lines = []
     for item in receipts:
         if item['outcome'] == Outcome.COMPLETED and item['kind'] == 'work_save':
-            lines.append(f"Your work was saved at version {item['version']}.")
+            lines.append(f"your work was saved at version {item['version']}.")
         elif item['outcome'] == Outcome.COMPLETED and item['kind'] == 'reminder_cancel':
-            lines.append('The reminder was cancelled.')
+            lines.append('the reminder was cancelled.')
     last = receipts[-1]
     if last['outcome'] == Outcome.COMPLETED:
         if last['kind'] == 'gene_command':
-            lines.append('Gene returned a confirmed command result.')
+            lines.append('gene returned a confirmed command result.')
         elif last['kind'] not in ('work_save', 'reminder_cancel'):
-            lines.append('That check completed.')
+            lines.append('that check completed.')
     else:
-        lines.append({'rejected': 'That step was rejected.', 'failed': 'That check failed.',
-                      'uncertain': 'Completion is uncertain.'}[last['outcome']])
-    lines.append(reason+' No action was repeated; check current status before repeating an action.')
+        lines.append({'rejected': 'that step was rejected.', 'failed': 'that check failed.',
+                      'uncertain': 'completion is uncertain.'}[last['outcome']])
+    lines.append(notice_text(reason)+' no action was repeated; check current status before repeating an action.')
     return '\n'.join(lines)[:1800]

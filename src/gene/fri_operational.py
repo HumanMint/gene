@@ -8,14 +8,15 @@ from redbot.core import commands
 from .fri_actions import Actions
 from .fri_chat import ChatResult
 from .fri_errors import ControllerRejected
+from .fri_notices import notice_text
 from .fri_operation_store import command
 from .fri_outcomes import fallback, receipt, unrecorded
 from .gene_controls import current_music_context, requested
 
-MENU = ('Music controls: `fri pause music`, `fri resume music`, `fri skip track`, `fri stop the music`, `fri volume 35`, '
-        '`fri queue`, `fri now playing`. Gene: `fri status`, `fri version`. '
-        'You can use these during a chat cooldown. Normal voice, DJ and server permissions still apply. '
-        'For songs, say `fri play` followed by the song, or open `/gene menu` during a cooldown.')
+MENU = ('music controls: `fri pause music`, `fri resume music`, `fri skip track`, `fri stop the music`, `fri volume 35`, '
+        '`fri queue`, `fri now playing`. gene: `fri status`, `fri version`. '
+        'you can use these during a chat cooldown. normal voice, dj and server permissions still apply. '
+        'for songs, say `fri play` followed by the song, or open `/gene menu` during a cooldown.')
 
 
 @dataclass
@@ -44,7 +45,7 @@ async def admit(fri, event, source, scope, text, context):
     if not selected and not pending:
         return Admission()
     if selected and int(scope['guild_id']) != fri.guild_id:
-        return Admission(result=ChatResult(reply='Gene controls are available in Gene’s server or your member DM.', status='completed'))
+        return Admission(result=ChatResult(reply='gene controls are available in gene’s server or your member dm.', status='completed'))
     actions = Actions(fri.agent, int(scope['user_id']), int(source.channel_id), scope['conversation_id'].startswith('public:'))
     actions.event, actions.scope, actions.revision = event, scope, context['revision']
     actions.message, actions.model, actions.effort = text, context['model'], context['effort']
@@ -54,15 +55,15 @@ async def admit(fri, event, source, scope, text, context):
     try:
         original = await event.channel.fetch_message(event.id)
     except discord.HTTPException:
-        return Admission(result=ChatResult(reply='I couldn’t verify your source message. Nothing was started; send a fresh request.', status='completed'))
+        return Admission(result=ChatResult(reply='i couldn’t verify your source message. nothing was started; send a fresh request.', status='completed'))
     if original.author.id != int(scope['user_id']) or original.webhook_id or original.content != event.content:
-        return Admission(result=ChatResult(reply='Your request changed. Send a fresh message.', status='completed'))
+        return Admission(result=ChatResult(reply='your request changed. send a fresh message.', status='completed'))
     if not selected and not await actions.pending_unchanged():
         return Admission()
     grant = await fri.api('POST', '/chat/operations/admit', {**scope, 'source': source.model_dump(),
         'revision': context['revision'], 'input': text, 'continuation': not bool(selected)})
     if not grant['allowed']:
-        return Admission(result=ChatResult(reply=grant['reason'], status='cooldown'))
+        return Admission(result=ChatResult(reply=notice_text(grant['reason']), status='cooldown'))
     if not selected:
         return Admission(continuation=True)
     if selected['action'] == 'menu':
@@ -77,5 +78,5 @@ async def admit(fri, event, source, scope, text, context):
     # Output can contain player/channel evidence. Preserve the normal fresh access fence.
     if not await actions.valid():
         return Admission(result=ChatResult(reply=unrecorded([evidence],
-            reason='Access changed before I could safely show the details.'), status='completed'), tool_receipt=evidence)
+            reason='access changed before i could safely show the details.'), status='completed'), tool_receipt=evidence)
     return Admission(result=ChatResult(reply=fallback([evidence]), status='completed'), tool_receipt=evidence)

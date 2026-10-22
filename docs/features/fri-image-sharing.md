@@ -13,7 +13,12 @@ role; usage appears under “image searches and checks.” The normal reply reta
 the conversation model and voice.
 
 One isolated planner sees only an exact excerpt of the current public image
-request. It chooses a subject tag. The provider returns up to six random,
+request. Image requests can contain paragraphs and up to 4,000 characters; the
+harness uses the complete current request, even when the action selected a shorter
+excerpt, so late visual requirements remain part of inspection. The 240-character
+web-query limit still applies to ordinary web research and saved source labels.
+No history or inferred subject is added to an image request.
+It chooses a subject tag. The provider returns up to six random,
 general-rated records. Fri considers up to three eligible, distinct posts,
 decodes each still image, and asks a tool-free vision evaluator to check relevance
 and general-audience suitability. A rejected, uncertain, or failed inspection

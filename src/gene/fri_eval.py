@@ -169,9 +169,10 @@ def ending_cases():
 
 
 async def evaluate(chat, model, effort, voice_notes='', suite='voice', *, background=None):
-    if suite == 'image-sharing':
+    if suite in ('image-sharing', 'image-sharing-detailed'):
         from .fri_image_share_eval import evaluate as image_sharing
-        async for case, result in image_sharing(chat, model, effort, voice_notes, background or {}):
+        async for case, result in image_sharing(chat, model, effort, voice_notes, background or {},
+                                                detailed=suite == 'image-sharing-detailed'):
             yield case, result
         return
     if suite == 'continuity':
@@ -258,5 +259,5 @@ async def main(suite='voice'):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis', 'settings', 'pronouns', 'foundation', 'continuity', 'endings', 'images', 'image-sharing'), default='voice')
+    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis', 'settings', 'pronouns', 'foundation', 'continuity', 'endings', 'images', 'image-sharing', 'image-sharing-detailed'), default='voice')
     asyncio.run(main(parser.parse_args().suite))

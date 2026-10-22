@@ -29,7 +29,16 @@ from tests.test_fri_actions import harness
 from tests.test_fri_social import api, source  # noqa: F401
 
 QUERY = 'share a random sfw image featuring hatsune miku from danbooru'
+DETAILED_QUERY = ("let's try another one\n\n"
+    'to represent a theoretical japanese word for gaming, can you share a link to a random sfw '
+    'image featuring hatsune miku off of danbooru but with relevant tags and context that would '
+    'be cool to "represent" the japanese word of gaming and be framed as a theoretical '
+    '"miku word of the day"')
 CDN = 'https://cdn.donmai.us/original/ab/cd/'+'a'*32+'.png'
+LINK_QUERY = ('share a random sfw image featuring hatsune miku from danbooru, with a relaxed '
+    'gaming theme, blue lighting, a controller in her hands and a visible screen in the '
+    'background. for inspiration use this original post: a good reference: '
+    'https://danbooru.donmai.us/posts/123')
 
 
 def pixels(color='red', fmt='PNG', **kwargs):
@@ -87,6 +96,27 @@ def provider(posts, *, body=None, status=200, headers=None):
         assert str(request.url) == CDN
         return httpx.Response(status, content=body or pixels(), headers=headers or {'content-type': 'image/png'})
     return httpx.MockTransport(handle), calls
+
+
+@pytest.mark.parametrize('request_text', [LINK_QUERY, 'https://example.com/'+'a'*240+' '+QUERY])
+def test_long_request_link_does_not_break_accepted_image_receipt(monkeypatch, tmp_path, request_text):
+    async def scenario():
+        from gene.fri_research import ResearchReceipt
+        fri, agent, event, actions = setup(monkeypatch, tmp_path)
+        actions.message = event.content = request_text
+        agent.run = AsyncMock(side_effect=[({'tag': 'hatsune_miku'}, {}, 'completed'),
+            ({'verdict': 'accept', 'description': 'relevant safe image'}, {}, 'completed')])
+        transport, calls = provider([post()])
+        try:
+            receipt = await actions.image_share.execute('', transport=transport)
+            assert receipt.get('image_status') == 'prepared', receipt
+            assert actions.image_share.prepared is not None and len(calls) == 2
+            assert receipt['query'] in request_text and len(receipt['query']) <= 240
+            ResearchReceipt(**{key: receipt[key] for key in ('query', 'answer', 'sources', 'checked_at')})
+            assert all(call.args[2]['request'] == request_text for call in agent.run.call_args_list)
+        finally:
+            await fri.close()
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('verdicts,expected', [(['accept'], 1), (['reject', 'accept'], 2),
@@ -264,13 +294,18 @@ def test_delivery_failure_is_truthful_and_never_retries_ambiguous_upload(mode):
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize('query,tool_query', [(QUERY, QUERY), (DETAILED_QUERY, DETAILED_QUERY),
+                                            (DETAILED_QUERY, ''),
+                                            (DETAILED_QUERY, 'image featuring hatsune miku')],
+                         ids=['short', 'full-brief', 'harness-brief', 'short-excerpt-keeps-details'])
 @pytest.mark.parametrize('fault', ['', 'final_model', 'recording', 'edit_before_send'])
-def test_complete_chat_tool_selection_persistence_and_upload(api, monkeypatch, tmp_path, fault):  # noqa: F811
+def test_complete_chat_tool_selection_persistence_and_upload(api, monkeypatch, tmp_path, fault, query, tool_query):  # noqa: F811
     from gene.fri_chat import Chat
     from tests.test_fri_chat import response_event
     async def scenario():
         client, call = api
         fri, agent, event, _ = setup(monkeypatch, tmp_path)
+        event.content = query
         event.author.display_name = 'Member'
         event.channel.typing = Mock(return_value=AsyncMock())
         async def empty_history(**kwargs):
@@ -289,8 +324,11 @@ def test_complete_chat_tool_selection_persistence_and_upload(api, monkeypatch, t
         async def find(self, query, **kwargs):
             return await real_find(self, query, transport=network)
         monkeypatch.setattr(ImageShare, 'find', find)
-        agent.run = AsyncMock(side_effect=[({'tag': 'hatsune_miku'}, {}, 'completed'),
-            ({'verdict': 'accept', 'description': 'teal-haired character'}, {}, 'completed')])
+        async def inspect(role, instruction, data, schema, **kwargs):
+            assert data['request'] == query  # Keep even the requirements after character 240.
+            return (({'verdict': 'accept', 'description': 'teal-haired character'} if kwargs.get('images')
+                     else {'tag': 'hatsune_miku'}), {}, 'completed')
+        agent.run = AsyncMock(side_effect=inspect)
         seen = []
         def respond(request):
             payload = json.loads(request.content)
@@ -298,7 +336,7 @@ def test_complete_chat_tool_selection_persistence_and_upload(api, monkeypatch, t
             if len(seen) == 1:
                 assert 'image_search' in json.loads(payload['input'][-1]['content'])['available_actions']
                 output = {'reply': '', 'request_draft': None, 'notes': [],
-                          'action': {'kind': 'image_search', 'query': QUERY}}
+                          'action': {'kind': 'image_search', 'query': tool_query}}
             else:
                 if fault == 'final_model':
                     return httpx.Response(503)
@@ -306,7 +344,7 @@ def test_complete_chat_tool_selection_persistence_and_upload(api, monkeypatch, t
             return httpx.Response(200, text='data: '+json.dumps(response_event(content=json.dumps(output)))+'\n\n')
         fri.chat = Chat(SimpleNamespace(access_token=lambda: 'test'), httpx.MockTransport(respond))
         try:
-            result = await fri.talk(123, 456, 10, QUERY, 'public', event=event)
+            result = await fri.talk(123, 456, 10, query, 'public', event=event)
             if fault == 'recording':
                 assert result.media is None
             else:
@@ -330,6 +368,39 @@ def test_complete_chat_tool_selection_persistence_and_upload(api, monkeypatch, t
             await fri.close()
     from redbot.core import commands
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('private', ['password=not-public', 'https://127.0.0.1/private',
+    'http://internal.local/admin', '<@123456789012345678>', 'sk-'+'a'*24])
+def test_full_image_brief_blocks_private_content_after_safe_excerpt(monkeypatch, tmp_path, private):
+    async def scenario():
+        fri, agent, event, a = setup(monkeypatch, tmp_path)
+        a.message = event.content = QUERY+'\n'+private
+        agent.run = AsyncMock()
+        network, calls = provider([post()])
+        try:
+            assert 'blocked' in await a.image_share.execute(QUERY, transport=network)
+            assert not calls
+            agent.run.assert_not_awaited()
+        finally:
+            await fri.close()
+    asyncio.run(scenario())
+
+
+def test_image_brief_bounds_and_ordinary_web_limits_stay_separate():
+    from gene.fri_image_request import MAX_REQUEST, image_request, receipt_query
+    from gene.fri_research import ResearchReceipt
+    from gene.web_policy import public_query
+    assert image_request('', DETAILED_QUERY) == DETAILED_QUERY
+    assert image_request('private saved context', DETAILED_QUERY) == ''
+    assert image_request('', 'a'*(MAX_REQUEST+1)) == ''
+    assert image_request(None, DETAILED_QUERY) == ''
+    assert not public_query(DETAILED_QUERY, DETAILED_QUERY)
+    assert not public_query('hello\nworld', 'hello\nworld')
+    label = receipt_query(DETAILED_QUERY)
+    assert public_query(label, DETAILED_QUERY)
+    ResearchReceipt(query=label, answer='verified image', sources=[API+'/posts/1'],
+                    checked_at=dt.datetime.now(dt.timezone.utc).isoformat())
 
 
 def test_dm_disable_cancels_prepared_image_delivery(monkeypatch, tmp_path):

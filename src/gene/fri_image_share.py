@@ -15,8 +15,8 @@ from PIL import Image, ImageOps
 from redbot.core import commands
 
 from .fri_agent_model import STRING, obj
+from .fri_image_request import image_request, receipt_query
 from .privacy import clean
-from .web_policy import public_query
 
 API = 'https://safebooru.donmai.us'
 MAX_BYTES = 4 * 1024 * 1024
@@ -48,8 +48,8 @@ def requested(text):
 def descriptor():
     return {'description': 'Find and visually inspect one SFW still artwork from Danbooru/Safebooru, '
         'then attach it to this reply with its original post link. Up to three candidates. '
-        'query must be a short EXACT excerpt of the CURRENT explicit public image request including '
-        'its subject and visual requirements. No private history or inferred subject. '
+        'Set query="" to use the complete current image request, including all visual requirements. '
+        'No private history or inferred subject. '
         'Other sites, photographs, GIFs and videos are not supported by this attachment tool. '
         'Use ordinary web_search for links from other sources; do not claim to inspect those images.'}
 
@@ -169,8 +169,9 @@ class ImageShare:
 
     async def execute(self, query, *, transport=None):
         a = self.actions
+        brief = image_request(query, a.message)
         if (self.attempted or not a.media_allowed or a.private_evidence or not isinstance(a.event, discord.Message)
-                or not public_query(query, a.message) or not requested(query)):
+                or not brief or not requested(brief)):
             return {'blocked': 'Ask for an image with its public subject in a fresh message.'}
         self.attempted = True
         self.source_text, self.source_edited = a.event.content, a.event.edited_at
@@ -178,7 +179,7 @@ class ImageShare:
             return {'blocked': 'The image request or access changed. Nothing was uploaded.'}
         try:
             async with asyncio.timeout(180):
-                return await self.find(query, transport=transport)
+                return await self.find(brief, transport=transport)
         except (httpx.HTTPError, TimeoutError, ValueError, OSError, Image.DecompressionBombError):
             return {'error': 'I couldn’t finish checking an image. Nothing was uploaded.'}
 
@@ -188,6 +189,7 @@ class ImageShare:
             model=agent.config['meme_model'], effort=agent.config['meme_effort'], **kwargs)
 
     async def find(self, query, *, transport=None):
+        label = receipt_query(query)  # Validate persistence before external work.
         plan, _, status = await self.inspect(PLAN, {'request': query}, obj({'tag': STRING}))
         tag = plan.get('tag', '')
         if status != 'completed' or not re.fullmatch(r'[a-z0-9][a-z0-9_()\-]{1,79}', tag):
@@ -224,7 +226,7 @@ class ImageShare:
                 page = f'{API}/posts/{post["id"]}'
                 artist = clean(str(post.get('tag_string_artist', '')), 100).replace('_', ' ')
                 self.prepared = PreparedImage(body, f'artwork-{post["id"]}.{extension}', page, artist, self)
-                return {'query': query, 'answer': 'Selected a relevant, visually checked SFW image. '+
+                return {'query': label, 'answer': 'Selected a relevant, visually checked SFW image. '+
                         clean(verdict.get('description', ''), 250), 'sources': [page],
                         'checked_at': dt.datetime.now(dt.timezone.utc).isoformat(),
                         'image_status': 'prepared', 'candidates_checked': attempts,

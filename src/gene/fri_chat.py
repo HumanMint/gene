@@ -9,6 +9,7 @@ import httpx
 
 from .fri_history_search import HISTORY_ACTIONS
 from .fri_history_search import valid_action as valid_history_action
+from .fri_image_request import MAX_REQUEST
 from .fri_memory import CATEGORIES
 from .fri_responses import KINDS, REACTIONS, acknowledgment_allowed, validate_response
 from .fri_social import SOCIAL_ACTIONS
@@ -89,8 +90,9 @@ web_sources with the exact retained query or "" for the latest. Never invent URL
 dated evidence, not private model reasoning.
 When image_search is offered for a requested SFW artwork, prefer it to web_search: it finds small
 still images, visually checks relevance and suitability, tries alternatives, and prepares one
-attachment with attribution. query is an exact excerpt of the current public request INCLUDING
-its subject and requirements, not just a tag. This tool currently supports Danbooru/Safebooru
+attachment with attribution. Set query="": the harness supplies the complete current image
+request, including its subject and all requirements. Do not compress it into search keywords.
+This tool currently supports Danbooru/Safebooru
 artwork only. Other images can have researched links but no claimed visual inspection or upload.
 After image_search, describe only its verified outcome briefly. Prepared means this reply will
 carry the image; never say it was already delivered. The harness supplies the actual file and link.
@@ -226,7 +228,11 @@ SCHEMA = {'type': 'object', 'properties': {
               'kind': {'type': 'string', 'enum': ['learning_overview', 'read_recent', 'run_learning', 'gene_diagnose']},
               'channel_id': {'type': 'string'}}, 'required': ['kind', 'channel_id'],
               'additionalProperties': False}, {'type': 'object', 'properties': {
-                  'kind': {'type': 'string', 'enum': ['web_search', 'web_sources', 'web_refine', 'image_search']}, 'query': {'type': 'string'}},
+                  'kind': {'type': 'string', 'enum': ['web_search', 'web_sources', 'web_refine']}, 'query': {'type': 'string'}},
+                  'required': ['kind', 'query'], 'additionalProperties': False},
+                  {'type': 'object', 'properties': {
+                  'kind': {'type': 'string', 'enum': ['image_search']},
+                  'query': {'type': 'string', 'maxLength': MAX_REQUEST}},
                   'required': ['kind', 'query'], 'additionalProperties': False},
                   {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['gene_command']},
                    'action': {'type': 'string'}, 'argument': {'type': 'string'}},
@@ -415,6 +421,7 @@ class Chat:
                                 control = isinstance(action, dict) and action.get('kind') == 'gene_command'
                                 clarify = isinstance(action, dict) and action.get('kind') == 'clarify'
                                 voice = isinstance(action, dict) and action.get('kind') == 'preview_voice'
+                                image = isinstance(action, dict) and action.get('kind') == 'image_search'
                                 parameter = 'voice_notes' if voice else ('query' if web else 'channel_id')
                                 work = isinstance(action, dict) and action.get('kind') in WORK_ACTIONS
                                 expected = {'kind', *WORK_ACTIONS[action['kind']]} if work else ({'kind', 'action', 'argument'} if control else {'kind', parameter})
@@ -430,7 +437,7 @@ class Chat:
                                 if (not isinstance(action, dict) or set(action) != expected or
                                         action['kind'] not in context.get('actions', {}) or
                                         (work and not valid_work_action(action)) or
-                                        (not clarify and not control and not work and (not isinstance(action[parameter], str) or len(action[parameter]) > (1500 if voice else 240 if web else 25))) or
+                                        (not clarify and not control and not work and (not isinstance(action[parameter], str) or len(action[parameter]) > (1500 if voice else MAX_REQUEST if image else 240 if web else 25))) or
                                         reply or draft is not None or parsed.get('notes', [])):
                                     raise ValueError('Invalid or unavailable action')
                             if (not isinstance(reply, str) or len(reply) > 1800 or

@@ -29,7 +29,7 @@ def usage_requested(text):
 
 def describe_usage(rows, *, by_model=False):
     if not rows:
-        return 'nothing recorded for Fri yet. this tracker covers Fri activity, not the whole subscription.'
+        return 'nothing recorded for fri yet. this tracker covers fri activity, not the whole subscription.'
     groups = defaultdict(lambda: [0, 0])
     missing = 0
     for row in rows:
@@ -42,7 +42,7 @@ def describe_usage(rows, *, by_model=False):
     total = sum(value[0] for value in groups.values())
     attempts = sum(value[1] for value in groups.values())
     qualifier = 'at least ' if missing else ''
-    lines = [f"Fri has logged **{qualifier}{total:,} tokens** across **{attempts:,} calls** so far:"]
+    lines = [f"fri has logged **{qualifier}{total:,} tokens** across **{attempts:,} calls** so far:"]
     ranked = sorted(groups.items(), key=lambda item: item[1][0], reverse=True)
     if len(ranked) > 6:
         rest = [sum(value[index] for _, value in ranked[6:]) for index in (0, 1)]
@@ -51,5 +51,5 @@ def describe_usage(rows, *, by_model=False):
         lines.append(f'- {name}: {tokens:,} tokens · {calls:,} calls')
     if missing:
         lines.append('some calls have missing token counts, so these totals are incomplete.')
-    lines.append("cumulative Fri activity, not your remaining plan allowance. Gene's coding usage is separate.")
+    lines.append("cumulative fri activity, not your remaining plan allowance. gene's coding usage is separate.")
     return '\n'.join(lines)

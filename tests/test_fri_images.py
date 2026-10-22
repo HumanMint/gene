@@ -27,9 +27,11 @@ def message():
         attachments=[attachment], embeds=[], edited_at=None)
 
 
-def test_explicit_image_question_is_same_model_call_and_images_are_untrusted(monkeypatch):
+@pytest.mark.parametrize('caption', ['fri what does this error mean?', 'fri is this dog a rat', 'dog or rat', 'lol'])
+def test_explicit_image_question_is_same_model_call_and_images_are_untrusted(monkeypatch, caption):
     async def scenario():
         event, context = message(), dict(CONTEXT)
+        event.content = caption
         loader = AsyncMock(return_value='data:image/png;base64,aGVsbG8=')
         monkeypatch.setattr('gene.fri_images.load_image', loader)
         await attach(context, event, event.content)
@@ -54,15 +56,16 @@ def test_explicit_image_question_is_same_model_call_and_images_are_untrusted(mon
     asyncio.run(scenario())
 
 
-def test_images_not_loaded_from_ambient_or_unsupported_posts(monkeypatch):
+def test_images_not_loaded_from_nonmessage_missing_or_unsupported_attachments(monkeypatch):
     async def scenario():
         loader = AsyncMock()
         monkeypatch.setattr('gene.fri_images.load_image', loader)
         event = message()
-        for text in ('lol', 'thanks', ''):
+        for ignored in (SimpleNamespace(attachments=event.attachments), Mock(spec=discord.Message, attachments=[])):
             context = {}
-            await attach(context, event, text)
+            await attach(context, ignored, 'dog or rat')
             assert not context
+        await attach({}, event, '')
         loader.assert_not_awaited()
         event.attachments[0].content_type = 'video/mp4'
         with pytest.raises(commands.UserFeedbackCheckFailure, match='still images'):

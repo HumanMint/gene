@@ -88,7 +88,7 @@ def test_web_to_gene_chain_is_bounded_and_requires_original_request(monkeypatch,
             else:
                 result = await fri.talk(123, 1, 20, text, 'public', event=event(user=20, channel=1, content=text))
                 assert not result.action
-                assert ('Search failed' if scenario == 'failure' else 'Track enqueued') in result.reply
+                assert ('search failed' if scenario == 'failure' else 'Track enqueued') in result.reply
             assert execute.await_count == (2 if scenario in ('requested', 'third_action') else 1)
             if execute.await_count == 2:
                 assert execute.await_args.args[0] == action

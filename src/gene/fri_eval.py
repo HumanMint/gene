@@ -9,6 +9,7 @@ from pathlib import Path
 import httpx
 
 from .fri_chat import Chat
+from .fri_image_eval import cases as image_cases
 from .subscription import Subscription, private_json
 
 
@@ -173,7 +174,7 @@ async def evaluate(chat, model, effort, voice_notes='', suite='voice'):
         async for case, result in continuity(chat, model, effort, voice_notes):
             yield case, result
         return
-    for case in {'controls': control_cases, 'diagnosis': diagnosis_cases, 'voice': cases, 'settings': settings_cases, 'pronouns': pronoun_cases, 'foundation': foundation_cases, 'endings': ending_cases}[suite]():
+    for case in {'controls': control_cases, 'diagnosis': diagnosis_cases, 'voice': cases, 'settings': settings_cases, 'pronouns': pronoun_cases, 'foundation': foundation_cases, 'endings': ending_cases, 'images': image_cases}[suite]():
         name = case.get('display_name', 'Mint')
         context = {'model': model, 'effort': effort, 'facts': [],
             'turns': case.get('turns', []), 'recent': case.get('recent', []),
@@ -184,9 +185,13 @@ async def evaluate(chat, model, effort, voice_notes='', suite='voice'):
             'display_name': name, 'speaker': {'user_id': '101', 'display_name': name},
             'source': source(name=name)}
         context['acknowledgments_enabled'] = suite == 'endings'
+        context['images'] = case.get('images', [])
         result = await chat.respond(case['text'], context)
         if 'expected_modes' in case:
             case['passed'] = result.status == 'completed' and result.response_kind in case['expected_modes']
+        if 'visual_words' in case:
+            case['passed'] = (result.status == 'completed' and result.response_kind == 'reply' and
+                              all(word in result.reply.casefold() for word in case['visual_words']))
         yield case, result
 
 
@@ -246,5 +251,5 @@ async def main(suite='voice'):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis', 'settings', 'pronouns', 'foundation', 'continuity', 'endings'), default='voice')
+    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis', 'settings', 'pronouns', 'foundation', 'continuity', 'endings', 'images'), default='voice')
     asyncio.run(main(parser.parse_args().suite))

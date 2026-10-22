@@ -34,7 +34,7 @@ def test_outcomes_distinguish_known_refusal_failure_and_uncertainty(value, outco
     if outcome == 'completed':
         assert 'Track enqueued' in text
     elif outcome == 'rejected':
-        assert 'DJ permission required' in text and 'uncertain' not in text
+        assert 'dj permission required' in text and 'uncertain' not in text
     elif outcome == 'uncertain':
         assert 'not retried' in text
 
@@ -62,9 +62,9 @@ def test_confirmed_tool_result_survives_followup_failure_without_reexecution(fai
         expected = {'rejected': 'rejected', 'transport': 'uncertain', 'active_deadline': 'uncertain'}.get(failure, 'completed')
         assert receipts[-1]['outcome'] == expected
         if expected == 'completed':
-            assert 'Saved your work at version 2' in result.reply
+            assert 'saved your work at version 2' in result.reply
         elif expected == 'rejected':
-            assert 'Saved work changed' in result.reply and 'uncertain' not in result.reply
+            assert 'saved work changed' in result.reply and 'uncertain' not in result.reply
         else:
             assert 'not retried' in result.reply
     asyncio.run(scenario())
@@ -100,11 +100,11 @@ def test_saved_work_remains_persisted_after_reply_or_recording_failure_and_resta
         try:
             result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
             if failure_stage != 'none':
-                assert 'Your work was saved at version 1.' in result.reply
+                assert 'your work was saved at version 1.' in result.reply
                 assert 'couldn’t' in result.reply
                 assert 'try again' not in result.reply.casefold()
             else:
-                assert result.reply == 'Saved your work at version 1 (open).'
+                assert result.reply == 'saved your work at version 1 (open).'
             restarted = Store(controls.store.path)
             from gene.fri_workspace_store import Workspace
             scope = {'guild_id': '123', 'user_id': '20', 'conversation_id': 'public:1'}
@@ -127,14 +127,14 @@ def test_later_failure_keeps_prior_saved_work_confirmation():
     evidence = [receipt('work_save', {'version': 3, 'state': 'open'}),
                 receipt('prepare_post', {'blocked': 'Channel access changed'})]
     result = fallback(evidence)
-    assert 'Saved your work at version 3' in result and 'Channel access changed' in result
+    assert 'saved your work at version 3' in result and 'channel access changed' in result
 
 
 @pytest.mark.parametrize('state,expected', [('cancelled', 'completed'), ('sending', 'rejected'), ('sent', 'rejected')])
 def test_reminder_cancellation_fallback_never_claims_an_inflight_send_was_cancelled(state, expected):
     evidence = receipt('reminder_cancel', {'state': state})
     assert evidence['outcome'] == expected
-    assert ('Reminder cancelled.' in fallback([evidence])) is (state == 'cancelled')
+    assert ('reminder cancelled.' in fallback([evidence])) is (state == 'cancelled')
 
 
 def test_rejected_chat_record_does_not_publish_retrieved_private_read_results(monkeypatch, tmp_path):
@@ -157,7 +157,7 @@ def test_rejected_chat_record_does_not_publish_retrieved_private_read_results(mo
         try:
             actual = event(user=20, channel=1, content='read recent chat')
             result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
-            assert 'That check completed.' in result.reply
+            assert 'that check completed.' in result.reply
             assert private_detail not in result.reply and 'trance' not in result.reply
             assert not result.draft and not result.clarification
         finally:
@@ -186,7 +186,7 @@ def test_reminder_cancel_retains_confirmed_outcome_across_combined_turn_failures
             return await call(method, path, body)
 
         fri.api = api
-        dm = Mock(spec=discord.DMChannel, id=999)
+        dm = Mock(spec=discord.DMChannel, id=999, history=Mock(return_value=AsyncMock()))
         message = Mock(spec=discord.Message, id=int(source(60).id),
             content='cancel my reminder to update the mods',
             author=SimpleNamespace(id=10, display_name='Member'), guild=None,

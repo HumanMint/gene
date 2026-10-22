@@ -7,6 +7,7 @@ import uuid
 import discord
 from redbot.core import commands
 
+from .fri_notices import notice_text
 from .previews import PagedPreview
 from .reviews import request_reference
 
@@ -90,7 +91,7 @@ class DraftView(PagedPreview):
                 text = f"Request `{job['id']}` is already {job['state'].replace('_', ' ')}. No duplicate job started."
             else:
                 text = f"Request `{job['id']}` saved. I’ve queued the owner review; coding waits for approval."
-            await interaction.edit_original_response(content=text, embed=None, attachments=[], view=None,
+            await interaction.edit_original_response(content=notice_text(text), embed=None, attachments=[], view=None,
                                                        allowed_mentions=NO_MENTIONS)
             self.finished = True
             self.stop()
@@ -106,6 +107,7 @@ class DraftView(PagedPreview):
 
     async def on_error(self, interaction, error, item):
         text = str(error) if isinstance(error, commands.UserFeedbackCheckFailure) else 'That request action did not finish. Check Requests before retrying.'
+        text = notice_text(text)
         if interaction.response.is_done():
             await interaction.followup.send(text[:1500], ephemeral=True, allowed_mentions=NO_MENTIONS)
         else:

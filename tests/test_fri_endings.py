@@ -189,6 +189,8 @@ def test_obvious_closing_avoids_model_and_records_typed_decision(monkeypatch):
 
 def delivery():
     fri = SimpleNamespace(guild_id=123, owner_id=10, workshop_id=456, user=SimpleNamespace(id=99))
+    from gene.fri_notices import WaitingNotices
+    fri.waiting_notices = WaitingNotices(set())
     agent = Agent(fri)
     agent.config['enabled'] = True
     permissions = SimpleNamespace(view_channel=True, read_message_history=True, add_reactions=True, send_messages=True)

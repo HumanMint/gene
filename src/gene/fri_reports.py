@@ -90,14 +90,14 @@ class ReportButton(discord.ui.DynamicItem[discord.ui.Button], template=REPORT_ID
             return
         await interaction.response.defer()
         if not await fri.agent.member(fri.owner_id, fresh=True):
-            await interaction.followup.send('Server access is needed to open this report.', ephemeral=True,
+            await interaction.followup.send('server access is needed to open this report.', ephemeral=True,
                                              allowed_mentions=NO_MENTIONS)
             return
         try:
             report = await fri.api('POST', f'/agent/reports/{self.report_id}/view',
                                   {'guild_id': str(fri.guild_id), 'user_id': str(fri.owner_id)})
         except commands.UserFeedbackCheckFailure:
-            await interaction.followup.send('I couldn’t load that report. It may have expired or been cleared; '
+            await interaction.followup.send('i couldn’t load that report. it may have expired or been cleared; '
                                              'if it’s recent, try again in a moment.',
                                              ephemeral=True, allowed_mentions=NO_MENTIONS)
             return

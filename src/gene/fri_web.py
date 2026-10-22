@@ -86,15 +86,27 @@ async def lookup(chat, query, model, effort, *, previous=None):
     return {'error': 'The web lookup did not return a completed answer with verified source links. Do not guess or claim a successful search.'}, counters, status
 
 
+def links_requested(text):
+    if re.search(r"\b(?:no|without|skip|omit)\s+(?:the\s+)?(?:links?|sources?|urls?|citations?)\b", text, re.I):
+        return False
+    return bool(re.search(r'\b(?:links?|urls?|sources?|citations?)\b|where did you (?:find|read|see|hear)', text, re.I))
+
+
 def cite_reply(reply, receipt, *, include_sources=False):
     """Keep normal replies uncluttered; source links are opt-in and message-bounded."""
     sources = list(dict.fromkeys(url for url in receipt.get('sources', []) if public_url(url)))[:8]
+    kept = {}
 
     def link(match):
         label = match.group(1)
         if re.fullmatch(r'(?:source|reference)\s*\d+', label, re.I):
             return ''
-        return label  # Source URLs are retained, shown only on request.
+        url = match.group(2).strip('<>')
+        if include_sources and url in sources:
+            token = f'\x00LINK{len(kept)}\x00'
+            kept[token] = (url, f'[{label}](<{url}>)')
+            return token
+        return label
 
     reply = re.sub(r'\[([^\]\n]+)\]\((<?https?://[^\s)]+>?)\)', link, reply)
     # Bare URLs are not a substitute for verified, relevant inline links.
@@ -102,10 +114,15 @@ def cite_reply(reply, receipt, *, include_sources=False):
     reply = re.sub(r'cite.*?', '', reply)
     reply = re.sub(r'(?im)^\s*(?:sources?|references?)\s*:\s*$', '', reply)
     reply = re.sub(r'(?m)^[ \t·•*-]+$', '', reply).strip(' \n·')
+    for token, (_, link) in kept.items():
+        reply = reply.replace(token, link)
+    if include_sources and kept and len(reply) <= 1800:
+        return reply  # Relevant requested inline links need no source-list footer.
     if include_sources and sources:
         shown = []
         for url in sources:
-            line = f'[{urlsplit(url).hostname[:60]}](<{url}>)'
+            label = 'view original artwork' if re.fullmatch(r'https://(?:safe|dan)booru\.donmai\.us/posts/\d+', url) else 'open '+urlsplit(url).hostname[:60]
+            line = f'[{label}](<{url}>)'
             if len('\n'.join(shown+[line])) > 1400:
                 break
             shown.append(line)

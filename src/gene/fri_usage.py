@@ -13,6 +13,7 @@ REQUEST = re.compile(
     + TAIL, re.IGNORECASE)
 
 LABELS = {'conversation': 'chat', 'web_search': 'web lookups', 'attention': 'attention checks',
+          'image_lookup': 'image searches and checks',
           'summary': 'learning summaries', 'exploration_plan': 'archive planning', 'meme': 'meme checks',
           'status': 'daily statuses',
           'investigation': 'investigations',

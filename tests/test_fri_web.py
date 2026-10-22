@@ -153,3 +153,31 @@ def test_web_reply_preserves_sources_and_keeps_only_a_neutral_receipt(monkeypatc
         assert not list((tmp_path/'usage').glob('*.json'))
         await fri.close()
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('wording', ['share a link to a random sfw image featuring hatsune miku',
+    'send me the URL for Python downloads', 'where did you find that Python release, source?'])
+def test_first_request_for_a_link_is_fulfilled_without_an_extra_sources_turn(monkeypatch, tmp_path, wording):
+    async def scenario():
+        fri, agent, _, _ = harness(monkeypatch, tmp_path)
+        agent.state['web_search_enabled'] = True
+        async def api(method, path, body=None):
+            if path == '/agent/admit':
+                return {'allowed': True}
+            if path == '/chat/context':
+                return {**CONTEXT, 'revision': 0}
+            return {'ok': True}
+        fri.api = api
+        url = 'https://safebooru.donmai.us/posts/123'
+        fri.chat.respond = AsyncMock(side_effect=[
+            ChatResult(status='completed', action={'kind': 'web_search', 'query': wording}),
+            ChatResult(status='completed', reply=f'here’s the [artwork]({url})')])
+        receipt = {'answer': 'Selected public artwork', 'sources': [url], 'checked_at': '2026-10-22T00:00:00+00:00'}
+        try:
+            with patch('gene.fri_actions.lookup', new=AsyncMock(return_value=(receipt, {}, 'completed'))):
+                result = await fri.talk(123, 1, 20, wording, 'public', event=event(user=20, channel=1, content=wording))
+            assert result.reply == f'here’s the [artwork](<{url}>)'
+            assert fri.chat.respond.await_count == 2
+        finally:
+            await fri.close()
+    asyncio.run(scenario())

@@ -139,7 +139,7 @@ class ChatUsage(BaseModel):
     effort: str = Field(max_length=20)
     status: Literal['completed', 'failed', 'incomplete', 'interrupted', 'invalid_output']
     counters: dict
-    role: Literal['conversation', 'attention', 'summary', 'exploration_plan', 'meme', 'status', 'owner_settings', 'investigation', 'history', 'web_search', 'evaluation'] = 'conversation'
+    role: Literal['conversation', 'attention', 'summary', 'exploration_plan', 'meme', 'status', 'owner_settings', 'investigation', 'history', 'web_search', 'image_lookup', 'evaluation'] = 'conversation'
 
 
 class ChatCatalog(Actor):

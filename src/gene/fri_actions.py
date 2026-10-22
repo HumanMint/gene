@@ -37,6 +37,9 @@ class Actions:
         self.research = None
         self.search_count = 0
         self.image_context = {}
+        self.media_allowed = False
+        from .fri_image_share import ImageShare
+        self.image_share = ImageShare(self)
         self.history = HistorySearch(self)
 
     def command_requested(self, action):
@@ -119,6 +122,11 @@ class Actions:
             actions['web_search'] = {'description': 'Look up current public facts with live web access and sources. '
                 'query is a short exact public question from the current message or pending web topic. '
                 'Include what the user wants to know, not just a generic keyword. The isolated researcher can rewrite queries.'}
+            from .fri_image_share import descriptor
+            from .fri_image_share import requested as image_requested
+            if (self.media_allowed and not self.private_evidence and isinstance(self.event, discord.Message)
+                    and image_requested(self.message)):
+                actions['image_search'] = descriptor()
         if self.web_research:
             actions['web_sources'] = {'description': 'Show sources from saved public research in this conversation. '
                 'query="" means latest; otherwise use an exact saved query. No new search.'}
@@ -208,6 +216,8 @@ class Actions:
         if kind == 'web_sources':
             matches = [r for r in self.web_research if not action.get('query') or r['query'] == action['query']]
             return {'kind': kind, **matches[0]} if matches else {'blocked': 'That search is no longer retained here. Ask for a fresh lookup.'}
+        if kind == 'image_search':
+            return await self.image_share.execute(action.get('query'))
         if kind == 'gene_command':
             return await self.control(action, channels)
         if kind == 'gene_diagnose':

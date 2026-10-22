@@ -404,8 +404,11 @@ class Agent:
         elif result.draft:
             if dm or message.guild.id == self.fri.guild_id:
                 view = DraftView(self.fri, message.author.id, result.draft, public=True)
-        await message.reply(view.content if result.settings_preview else result.reply[:1950], view=view, mention_author=False,
-                            allowed_mentions=NO_MENTIONS, suppress_embeds=True)
+        from .fri_image_share import send_reply
+        if result.settings_preview:
+            result.reply = view.content
+        await send_reply(message, result, view=view, mention_author=False,
+                         allowed_mentions=NO_MENTIONS, suppress_embeds=True)
         if result.status == 'completed':
             self.active[(message.channel.id, message.author.id)] = time.time()+(300 if result.clarification else 120)
         self.last_spoke[message.channel.id] = time.time()

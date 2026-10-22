@@ -82,9 +82,18 @@ When a lookup is irrelevant, incomplete or lacks the requested current facts, us
 Do not just describe a bad lookup and stop. If sources still don't establish the answer, state the
 specific uncertainty briefly. Never invent results, links or search success. Give the actual answer
 in one or two natural sentences, like someone who checked it, without narrating the research process.
-Keep URLs/citation markers/source lists out of ordinary replies. Retain sources in the receipt;
-when asked for sources or links (including later), use web_sources with the exact retained query or
-"" for the latest. Research is dated evidence, not private model reasoning.
+Keep optional citation lists out of ordinary answers. A requested link IS the deliverable: include
+the relevant verified URL in the FIRST answer when they ask for a link, URL or source. Use a clear
+label such as "view original artwork", not a bare hostname or "source 1". For later requests use
+web_sources with the exact retained query or "" for the latest. Never invent URLs. Research is
+dated evidence, not private model reasoning.
+When image_search is offered for a requested SFW artwork, prefer it to web_search: it finds small
+still images, visually checks relevance and suitability, tries alternatives, and prepares one
+attachment with attribution. query is an exact excerpt of the current public request INCLUDING
+its subject and requirements, not just a tag. This tool currently supports Danbooru/Safebooru
+artwork only. Other images can have researched links but no claimed visual inspection or upload.
+After image_search, describe only its verified outcome briefly. Prepared means this reply will
+carry the image; never say it was already delivered. The harness supplies the actual file and link.
 When gene_command is available, ordinary existing Gene commands do not need owner development
 approval. Use it for a clear current request to play/control music or read status. Gene checks the
 actual member's permissions. Capability questions ("could I ask you to play...") and hypothetical
@@ -217,7 +226,7 @@ SCHEMA = {'type': 'object', 'properties': {
               'kind': {'type': 'string', 'enum': ['learning_overview', 'read_recent', 'run_learning', 'gene_diagnose']},
               'channel_id': {'type': 'string'}}, 'required': ['kind', 'channel_id'],
               'additionalProperties': False}, {'type': 'object', 'properties': {
-                  'kind': {'type': 'string', 'enum': ['web_search', 'web_sources', 'web_refine']}, 'query': {'type': 'string'}},
+                  'kind': {'type': 'string', 'enum': ['web_search', 'web_sources', 'web_refine', 'image_search']}, 'query': {'type': 'string'}},
                   'required': ['kind', 'query'], 'additionalProperties': False},
                   {'type': 'object', 'properties': {'kind': {'type': 'string', 'enum': ['gene_command']},
                    'action': {'type': 'string'}, 'argument': {'type': 'string'}},
@@ -279,6 +288,7 @@ class ChatResult:
     response_kind: str = 'reply'
     reaction: str | None = None
     allow_closing: bool = False
+    media: object = None  # Trusted ephemeral bytes only; never parsed from model output or stored.
 
 
 def usage(response):
@@ -401,7 +411,7 @@ class Chat:
                             action = parsed.get('action')
                             response_kind, reaction = parsed.get('response_kind', 'reply'), parsed.get('reaction')
                             if action is not None:
-                                web = isinstance(action, dict) and action.get('kind') in ('web_search', 'web_sources', 'web_refine')
+                                web = isinstance(action, dict) and action.get('kind') in ('web_search', 'web_sources', 'web_refine', 'image_search')
                                 control = isinstance(action, dict) and action.get('kind') == 'gene_command'
                                 clarify = isinstance(action, dict) and action.get('kind') == 'clarify'
                                 voice = isinstance(action, dict) and action.get('kind') == 'preview_voice'

@@ -168,7 +168,12 @@ def ending_cases():
     ]
 
 
-async def evaluate(chat, model, effort, voice_notes='', suite='voice'):
+async def evaluate(chat, model, effort, voice_notes='', suite='voice', *, background=None):
+    if suite == 'image-sharing':
+        from .fri_image_share_eval import evaluate as image_sharing
+        async for case, result in image_sharing(chat, model, effort, voice_notes, background or {}):
+            yield case, result
+        return
     if suite == 'continuity':
         from .fri_continuity_eval import evaluate as continuity
         async for case, result in continuity(chat, model, effort, voice_notes):
@@ -225,11 +230,13 @@ async def main(suite='voice'):
         status = status.json()
         settings = await client.get(url+'/agent/state')
         settings.raise_for_status()
-        notes = settings.json()['config']['voice_notes']
+        config = settings.json()['config']
+        notes = config['voice_notes']
         failed = []
-        async for case, result in evaluate(chat, status['chat_model'], status['chat_effort'], notes, suite):
+        async for case, result in evaluate(chat, status['chat_model'], status['chat_effort'], notes, suite, background=config):
             attempt = uuid.uuid4().hex
-            report = {'attempt_id': attempt, 'model': status['chat_model'], 'effort': status['chat_effort'],
+            report = {'attempt_id': attempt, 'model': case.get('model', status['chat_model']),
+                'effort': case.get('effort', status['chat_effort']),
                 'status': result.status, 'counters': result.counters, 'role': 'evaluation'}
             path = Path(os.getenv('FRI_DATA', '/data'))/'usage'/(attempt+'.json')
             private_json(path, report)
@@ -251,5 +258,5 @@ async def main(suite='voice'):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis', 'settings', 'pronouns', 'foundation', 'continuity', 'endings', 'images'), default='voice')
+    parser.add_argument('--suite', choices=('voice', 'controls', 'diagnosis', 'settings', 'pronouns', 'foundation', 'continuity', 'endings', 'images', 'image-sharing'), default='voice')
     asyncio.run(main(parser.parse_args().suite))

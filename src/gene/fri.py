@@ -254,6 +254,7 @@ class Fri(discord.Client):
                     actions.continuation_only = actions.pending['goal'] if operation.continuation else None
                     actions.conversation = conversation
                     actions.private_evidence = bool(conversation.get('reply_target'))
+                    actions.media_allowed = inspect_images
                 context['actions'] = await actions.available() if actions else {}
                 if operation.continuation:
                     goal = actions.pending['goal']
@@ -335,8 +336,12 @@ class Fri(discord.Client):
                     proposal = diagnosis.get('proposed_request', '')
                     result.draft = proposal if len(proposal) >= 5 and not actions.private_evidence else None
                     if research or receipt.get('sources'):
-                        from .fri_web import cite_reply
-                        result.reply = cite_reply(result.reply, research or receipt, include_sources=action_kind == 'web_sources')
+                        from .fri_web import cite_reply, links_requested
+                        link_request = links_requested(text) or links_requested((actions.pending or {}).get('request_text', ''))
+                        result.reply = cite_reply(result.reply, research or receipt,
+                            include_sources=action_kind == 'web_sources' or (link_request and action_kind != 'image_search'))
+                    if action_kind == 'image_search' and receipt.get('image_status') == 'prepared':
+                        result.media = actions.image_share.prepared
                     return result
                 if context.get('gene_receipts') and not await actions.valid():
                     raise commands.UserFeedbackCheckFailure('Access changed during that check. Ask again for a fresh reply.')

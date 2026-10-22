@@ -13,7 +13,7 @@ from .fri_outcomes import Outcome, fallback
 from .fri_outcomes import receipt as tool_receipt
 
 MAX_STEPS = 4
-TERMINAL = {'gene_command', 'gene_diagnose', 'run_learning'}
+TERMINAL = {'gene_command', 'gene_diagnose', 'run_learning', 'image_search'}
 
 
 async def run(fri, actions, text, context, result):
@@ -83,7 +83,7 @@ async def _run(fri, actions, text, context, result, progress):
         if receipt.get('social_preview'):
             return ChatResult(reply='Preview prepared. Nothing is scheduled or published until you confirm it.',
                 status='completed', social_preview=receipt['social_preview']), receipts, research
-        if kind in ('web_search', 'web_refine') and all(receipt.get(k) for k in ('query', 'answer', 'sources', 'checked_at')):
+        if kind in ('web_search', 'web_refine', 'image_search') and all(receipt.get(k) for k in ('query', 'answer', 'sources', 'checked_at')):
             if research:
                 receipt['sources'] = list(dict.fromkeys(receipt['sources']+research['sources']))[:8]
             research = {k: receipt[k] for k in ('query', 'answer', 'sources', 'checked_at')}

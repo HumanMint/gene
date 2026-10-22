@@ -83,6 +83,16 @@ def test_explicit_sources_are_bounded_and_do_not_need_model_to_reproduce_urls():
     assert 'source 1' not in reply
 
 
+def test_requested_links_are_clear_and_only_from_verified_receipt():
+    url = 'https://safebooru.donmai.us/posts/123'
+    receipt = {'sources': [url]}
+    reply = cite_reply('here it is', receipt, include_sources=True)
+    assert f'[view original artwork](<{url}>)' in reply
+    inline = cite_reply(f'[the artwork]({url}) and [invented](https://evil.example/)', receipt, include_sources=True)
+    assert inline.count(url) == 1 and 'evil.example' not in inline
+    assert 'view original artwork' not in inline  # No redundant sources footer.
+
+
 def test_source_followup_uses_saved_receipt_and_never_runs_another_search(monkeypatch, tmp_path):
     async def scenario():
         fri, agent, _, _ = harness(monkeypatch, tmp_path)

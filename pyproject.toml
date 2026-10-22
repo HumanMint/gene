@@ -15,7 +15,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-red = ["Red-DiscordBot==3.5.24", "pip>=25,<27"]
+red = [
+    "Red-DiscordBot==3.5.24",
+    "pillow>=13,<14",
+    "pip>=25,<27",
+]
 audio = ["yt-dlp[default]==2026.8.19"]
 
 [dependency-groups]

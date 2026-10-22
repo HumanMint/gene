@@ -61,6 +61,8 @@ def one(last):
         return 'reminder cancelled.'
     if kind in ('web_search', 'web_refine', 'web_sources') and last.get('answer'):
         return clean(str(last['answer']), 1700)
+    if kind == 'image_search' and last.get('image_status') == 'prepared':
+        return 'found one that fits.'
     return 'that check completed, but i couldn’t finish explaining it. no action was repeated; ask for current details.'
 
 

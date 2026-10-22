@@ -355,14 +355,22 @@ class Agent:
         else:
             await self.respond(message, directed or text, dm)
 
+    def ambient_ready(self, channel, user):
+        return (user not in self.fri.busy and (channel, user) not in self.pending and
+                time.time()-self.last_spoke.get(channel, 0) >= 600)
+
     async def respond(self, message, text, dm=False, *, burst=(), ambient=False):
         try:
             async with message.channel.typing():
+                # Entering Discord's typing context itself awaits an HTTP request.
+                if ambient and not self.ambient_ready(message.channel.id, message.author.id):
+                    return
                 result = await self.fri.talk(self.fri.guild_id if dm else message.guild.id, message.channel.id, message.author.id,
                     text, 'private' if dm else 'public', message.author.display_name, event=message,
                     burst=burst, inspect_images=not ambient)
         except ReplyInProgress:
-            await self.fri.waiting_notices.send(message)
+            if not ambient:
+                await self.fri.waiting_notices.send(message)
             return
         except commands.UserFeedbackCheckFailure as exc:
             await message.reply(notice_text(str(exc))[:1800], allowed_mentions=NO_MENTIONS, mention_author=False)
@@ -558,9 +566,7 @@ class Agent:
                 profile = await self.profile(getattr(channel, 'parent_id', None) or channel_id, message.author.id)
                 # A direct reply can start or finish while Luna/fetch/profile awaits.
                 # Background attention yields instead of producing a second reply or busy notice.
-                if (profile['enabled'] and message.author.id not in self.fri.busy and
-                        (channel_id, message.author.id) not in self.pending and
-                        time.time()-self.last_spoke.get(channel_id, 0) >= 600):
+                if profile['enabled'] and self.ambient_ready(channel_id, message.author.id):
                     await self.respond(message, message.content[:4000], ambient=True)
 
     async def investigate(self, channel, record):

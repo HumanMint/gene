@@ -12,7 +12,8 @@ import httpx
 import pytest
 
 from gene.fri_actions import Actions
-from gene.fri_chat import Chat
+from gene.fri_chat import Chat, ChatResult
+from gene.fri_notices import ReplyInProgress
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import response_event
 from tests.test_fri_images import message
@@ -169,5 +170,64 @@ def test_ambient_attention_does_not_race_a_direct_reply(monkeypatch, tmp_path, p
             await agent.attend()
             agent.respond.assert_not_awaited()
         finally:
+            await fri.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('phase', ['answered', 'busy'])
+def test_ambient_yields_to_direct_reply_during_typing(monkeypatch, tmp_path, phase):
+    async def scenario():
+        fri, agent, channels, _ = harness(monkeypatch, tmp_path)
+        channel = channels[1]
+        entered, resume, direct_started, direct_finish = (asyncio.Event() for _ in range(4))
+        class Typing:
+            async def __aenter__(self):
+                if not entered.is_set():
+                    entered.set()
+                    await resume.wait()
+            async def __aexit__(self, *args):
+                return False
+        channel.typing = Typing
+        message = SimpleNamespace(id=100, content='fri can you help?', channel=channel,
+            guild=SimpleNamespace(id=123), author=SimpleNamespace(id=20, display_name='Member'),
+            reply=AsyncMock(return_value=SimpleNamespace(delete=AsyncMock())))
+        record = {'id': '100', 'user_id': '20', 'name': 'Member', 'text': message.content,
+                  'gene_error': False, 'at': time.time()}
+        channel.fetch_message = AsyncMock(return_value=message)
+        agent.config['proactive'] = True
+        agent.recent[1].append(record)
+        agent.context_messages = AsyncMock(return_value=[record])
+        agent.run = AsyncMock(return_value=({'action': 'reply', 'source_id': '100'}, {}, 'completed'))
+        async def talk(*args, **kwargs):
+            if 20 in fri.busy:
+                raise ReplyInProgress()
+            fri.busy.add(20)
+            direct_started.set()
+            try:
+                if phase == 'busy':
+                    await direct_finish.wait()
+                return ChatResult(status='completed', reply='answer to current request')
+            finally:
+                fri.busy.discard(20)
+        fri.talk = talk
+        ambient = asyncio.create_task(agent.attend())
+        direct = None
+        try:
+            await entered.wait()  # Attention passed its fence, typing HTTP is in flight.
+            direct = asyncio.create_task(agent.respond(message, message.content))
+            await direct_started.wait()
+            if phase == 'answered':
+                await direct
+                assert message.reply.await_count == 1
+            resume.set()
+            await ambient
+            if phase == 'answered':
+                assert message.reply.await_count == 1, 'ambient posted a duplicate answer after direct completion'
+            else:
+                assert message.reply.await_count == 0, 'ambient posted a busy notice while direct work was active'
+        finally:
+            resume.set()
+            direct_finish.set()
+            await asyncio.gather(ambient, *([direct] if direct else []), return_exceptions=True)
             await fri.close()
     asyncio.run(scenario())

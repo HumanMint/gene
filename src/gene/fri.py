@@ -473,7 +473,9 @@ class Fri(discord.Client):
 def main():
     from .logging import install_secret_filter
     install_secret_filter()
-    Fri().run(os.environ['DISCORD_TOKEN'], log_level=logging.INFO)
+    from .fri_instance import instance_lock
+    with instance_lock(os.getenv('FRI_DATA', '/data')):
+        Fri().run(os.environ['DISCORD_TOKEN'], log_level=logging.INFO)
 
 
 if __name__ == '__main__':

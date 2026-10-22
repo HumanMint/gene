@@ -11,6 +11,7 @@ from .config import Settings
 from .fri_context import ChatSource
 from .fri_conversation import SourceText
 from .fri_pending import Clarification
+from .fri_protocol import PROTOCOL, contract
 from .fri_research import ResearchReceipt
 from .store import Conflict, Store
 
@@ -159,10 +160,12 @@ def create_app(settings: Settings | None = None):
     app.state.store = store
 
     def auth(*roles):
-        def verify(authorization: str = Header(default='')):
+        def verify(authorization: str = Header(default=''), x_fri_contract: str = Header(default='')):
             if not any(getattr(settings, f'{role}_token') and hmac.compare_digest(
                     authorization, 'Bearer ' + getattr(settings, f'{role}_token')) for role in roles):
                 raise HTTPException(401, 'Invalid service credentials')
+            if x_fri_contract and x_fri_contract != PROTOCOL:
+                raise HTTPException(409, 'Unsupported Fri controller contract')
         return Depends(verify)
 
     def actor(body: Actor, owner=False):
@@ -209,6 +212,10 @@ def create_app(settings: Settings | None = None):
     def health():
         store.status()
         return {'ok': True, 'service': 'gene-controller'}
+
+    @app.get('/fri/contract', dependencies=[auth('fri')])
+    def fri_contract():
+        return contract()
 
     @app.get('/status', dependencies=[auth('runtime', 'fri')])
     def status():

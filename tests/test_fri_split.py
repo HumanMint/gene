@@ -119,6 +119,25 @@ def test_wrong_image_or_partial_state_never_stops_live_bot(tmp_path):
     assert len(calls)==2
 
 
+@pytest.mark.parametrize('interrupted_state', ['new_env', 'changed_mount', 'new_audit'])
+def test_interrupted_release_or_config_drift_cannot_become_rollback_baseline(tmp_path, interrupted_state):
+    release,store,calls=installation(tmp_path)
+    if interrupted_state == 'new_env':
+        release.env.write_bytes(release.environment('d'*40))
+    elif interrupted_state == 'changed_mount':
+        release.env.write_bytes(release.env.read_bytes().replace(b'gene_default', b'other_network'))
+    else:
+        with store.connection() as db:
+            db.execute("UPDATE settings SET value=? WHERE key='fri_active_sha'", ('d'*40,))
+    original_env=release.env.read_bytes()
+    with pytest.raises(ValueError,match='Inconsistent'):
+        release.deploy('c'*40)
+    assert len(calls)==1 and calls[0][:3]==['docker','image','inspect']
+    assert release.env.read_bytes()==original_env
+    assert json.loads(release.record.read_text())['sha']=='b'*40
+    release.healthy.assert_not_called()
+
+
 def test_gene_cog_activation_cannot_change_fri_pin_or_restart_fri(tmp_path):
     release,_,_=installation(tmp_path)
     before=release.env.read_bytes()

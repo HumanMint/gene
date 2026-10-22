@@ -117,11 +117,18 @@ class FriRelease:
         if expected != sha:
             raise ValueError('Fri image does not match the reviewed commit')
         before = json.loads(self.record.read_text()) if self.record.exists() else None
+        if before is not None and (not isinstance(before, dict)
+                or not re.fullmatch('[a-f0-9]{40}', str(before.get('sha', '')))):
+            raise ValueError('Invalid Fri release record; reconcile before continuing')
         if before and before['sha'] == sha:
             raise ValueError('This Fri release is already active')
         old_env = self.env.read_bytes() if self.env.exists() else None
-        if bool(before) != bool(old_env):
+        if (before is None) != (old_env is None):
             raise ValueError('Inconsistent Fri release state; reconcile before continuing')
+        if before and old_env != self.environment(before['sha']):
+            # A killed coordinator can leave the new env beside the previous
+            # record. Never turn that partial state into a rollback baseline.
+            raise ValueError('Inconsistent Fri release pins; reconcile before continuing')
         content = self.environment(sha)
         backup = self.root/'backups'/(str(time.time_ns())+'-'+sha)
         backup.mkdir(parents=True, mode=0o700)
@@ -134,6 +141,9 @@ class FriRelease:
         with sqlite3.connect('file:'+str(self.db)+'?mode=ro', uri=True) as db:
             if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
                 raise ValueError('Controller database needs attention')
+            active = db.execute("SELECT value FROM settings WHERE key='fri_active_sha'").fetchone()
+            if (active[0] if active else None) != (before['sha'] if before else None):
+                raise ValueError('Inconsistent controller Fri release; reconcile before continuing')
         legacy = self.config['legacy_container']
         legacy_sha = None
         if not before and legacy:

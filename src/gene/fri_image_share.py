@@ -151,6 +151,8 @@ class ImageShare:
             a.agent.state = await a.fri.api('GET', '/agent/state')
             if not a.agent.config['enabled'] or not a.agent.state.get('web_search_enabled'):
                 return False
+            if not a.public and not a.agent.config['support_dms']:
+                return False
             if not await a.agent.member(a.user, fresh=True, guild_id=a.guild):
                 return False
             if a.public and not a.agent.allowed(event.channel):

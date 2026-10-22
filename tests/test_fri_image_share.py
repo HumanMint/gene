@@ -330,3 +330,27 @@ def test_complete_chat_tool_selection_persistence_and_upload(api, monkeypatch, t
             await fri.close()
     from redbot.core import commands
     asyncio.run(scenario())
+
+
+def test_dm_disable_cancels_prepared_image_delivery(monkeypatch, tmp_path):
+    async def scenario():
+        fri, agent, event, _ = setup(monkeypatch, tmp_path)
+        event.guild = None
+        event.channel = Mock(spec=discord.DMChannel, id=999,
+                             fetch_message=AsyncMock(return_value=event))
+        a = Actions(agent, 10, 999, False)
+        a.event, a.message, a.media_allowed = event, QUERY, True
+        a.scope = {'guild_id': '123', 'user_id': '10', 'channel_id': '456', 'conversation_id': 'private:999'}
+        a.image_share.source_text, a.image_share.source_edited = QUERY, None
+        agent.config['support_dms'] = True
+        try:
+            assert await a.image_share.current()
+            media = PreparedImage(pixels(), 'artwork.png', API+'/posts/1', '', a.image_share)
+            result = ChatResult(reply='here it is', media=media)
+            agent.config['support_dms'] = False
+            await send_reply(event, result)
+            event.reply.assert_not_awaited()
+            assert not media.body and result.media is None
+        finally:
+            await fri.close()
+    asyncio.run(scenario())

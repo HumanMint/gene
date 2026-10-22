@@ -1,5 +1,10 @@
 # Operations
 
+For a new installation, start with [setup](setup.md). Fri now runs from
+[its own repository](https://github.com/HumanMint/fri); use its independent release
+coordinator and [migration boundary](fri-migration.md). Older Fri setup sections below
+describe the retained legacy installation and are not the new companion deployment path.
+
 ## Hosts and credentials
 
 The trusted checkout and service files live under `/srv/gene` on Hostinger. Docker

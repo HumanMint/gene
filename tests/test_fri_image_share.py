@@ -98,11 +98,12 @@ def provider(posts, *, body=None, status=200, headers=None):
     return httpx.MockTransport(handle), calls
 
 
-def test_long_request_link_does_not_break_accepted_image_receipt(monkeypatch, tmp_path):
+@pytest.mark.parametrize('request_text', [LINK_QUERY, 'https://example.com/'+'a'*240+' '+QUERY])
+def test_long_request_link_does_not_break_accepted_image_receipt(monkeypatch, tmp_path, request_text):
     async def scenario():
         from gene.fri_research import ResearchReceipt
         fri, agent, event, actions = setup(monkeypatch, tmp_path)
-        actions.message = event.content = LINK_QUERY
+        actions.message = event.content = request_text
         agent.run = AsyncMock(side_effect=[({'tag': 'hatsune_miku'}, {}, 'completed'),
             ({'verdict': 'accept', 'description': 'relevant safe image'}, {}, 'completed')])
         transport, calls = provider([post()])
@@ -110,9 +111,9 @@ def test_long_request_link_does_not_break_accepted_image_receipt(monkeypatch, tm
             receipt = await actions.image_share.execute('', transport=transport)
             assert receipt.get('image_status') == 'prepared', receipt
             assert actions.image_share.prepared is not None and len(calls) == 2
-            assert receipt['query'] in LINK_QUERY and len(receipt['query']) <= 240
+            assert receipt['query'] in request_text and len(receipt['query']) <= 240
             ResearchReceipt(**{key: receipt[key] for key in ('query', 'answer', 'sources', 'checked_at')})
-            assert all(call.args[2]['request'] == LINK_QUERY for call in agent.run.call_args_list)
+            assert all(call.args[2]['request'] == request_text for call in agent.run.call_args_list)
         finally:
             await fri.close()
     asyncio.run(scenario())

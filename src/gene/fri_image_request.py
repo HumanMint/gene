@@ -28,4 +28,9 @@ def receipt_query(message):
             label = line[:end].strip()
             if public_query(label, message):
                 return label
+        # Long URLs or languages without spaces can have no complete first word.
+        # A prefix is still a label, never a download address; validate it normally.
+        label = line[:240].strip()
+        if public_query(label, message):
+            return label
     raise ValueError('No public image request label')

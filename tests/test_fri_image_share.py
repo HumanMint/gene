@@ -35,6 +35,10 @@ DETAILED_QUERY = ("let's try another one\n\n"
     'be cool to "represent" the japanese word of gaming and be framed as a theoretical '
     '"miku word of the day"')
 CDN = 'https://cdn.donmai.us/original/ab/cd/'+'a'*32+'.png'
+LINK_QUERY = ('share a random sfw image featuring hatsune miku from danbooru, with a relaxed '
+    'gaming theme, blue lighting, a controller in her hands and a visible screen in the '
+    'background. for inspiration use this original post: a good reference: '
+    'https://danbooru.donmai.us/posts/123')
 
 
 def pixels(color='red', fmt='PNG', **kwargs):
@@ -92,6 +96,26 @@ def provider(posts, *, body=None, status=200, headers=None):
         assert str(request.url) == CDN
         return httpx.Response(status, content=body or pixels(), headers=headers or {'content-type': 'image/png'})
     return httpx.MockTransport(handle), calls
+
+
+def test_long_request_link_does_not_break_accepted_image_receipt(monkeypatch, tmp_path):
+    async def scenario():
+        from gene.fri_research import ResearchReceipt
+        fri, agent, event, actions = setup(monkeypatch, tmp_path)
+        actions.message = event.content = LINK_QUERY
+        agent.run = AsyncMock(side_effect=[({'tag': 'hatsune_miku'}, {}, 'completed'),
+            ({'verdict': 'accept', 'description': 'relevant safe image'}, {}, 'completed')])
+        transport, calls = provider([post()])
+        try:
+            receipt = await actions.image_share.execute('', transport=transport)
+            assert receipt.get('image_status') == 'prepared', receipt
+            assert actions.image_share.prepared is not None and len(calls) == 2
+            assert receipt['query'] in LINK_QUERY and len(receipt['query']) <= 240
+            ResearchReceipt(**{key: receipt[key] for key in ('query', 'answer', 'sources', 'checked_at')})
+            assert all(call.args[2]['request'] == LINK_QUERY for call in agent.run.call_args_list)
+        finally:
+            await fri.close()
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('verdicts,expected', [(['accept'], 1), (['reject', 'accept'], 2),

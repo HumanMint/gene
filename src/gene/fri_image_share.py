@@ -189,6 +189,7 @@ class ImageShare:
             model=agent.config['meme_model'], effort=agent.config['meme_effort'], **kwargs)
 
     async def find(self, query, *, transport=None):
+        label = receipt_query(query)  # Validate persistence before external work.
         plan, _, status = await self.inspect(PLAN, {'request': query}, obj({'tag': STRING}))
         tag = plan.get('tag', '')
         if status != 'completed' or not re.fullmatch(r'[a-z0-9][a-z0-9_()\-]{1,79}', tag):
@@ -225,7 +226,7 @@ class ImageShare:
                 page = f'{API}/posts/{post["id"]}'
                 artist = clean(str(post.get('tag_string_artist', '')), 100).replace('_', ' ')
                 self.prepared = PreparedImage(body, f'artwork-{post["id"]}.{extension}', page, artist, self)
-                return {'query': receipt_query(query), 'answer': 'Selected a relevant, visually checked SFW image. '+
+                return {'query': label, 'answer': 'Selected a relevant, visually checked SFW image. '+
                         clean(verdict.get('description', ''), 250), 'sources': [page],
                         'checked_at': dt.datetime.now(dt.timezone.utc).isoformat(),
                         'image_status': 'prepared', 'candidates_checked': attempts,

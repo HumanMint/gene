@@ -1,5 +1,7 @@
 """Keep a full current image brief separate from a short research-receipt label."""
 
+import re
+
 from .web_policy import public_query
 
 MAX_REQUEST = 4000
@@ -20,7 +22,10 @@ def receipt_query(message):
     # Receipts retain the existing bounded exact-excerpt contract. This is only a
     # lookup label: planning and visual inspection receive the COMPLETE request.
     for line in sorted(message.splitlines(), key=len, reverse=True):
-        label = line[:240].strip()
-        if public_query(label, message):
-            return label
+        # End at complete words so a public URL cannot become an invalid host.
+        ends = [part.end() for part in re.finditer(r'\S+', line) if part.end() <= 240]
+        for end in reversed(ends):
+            label = line[:end].strip()
+            if public_query(label, message):
+                return label
     raise ValueError('No public image request label')

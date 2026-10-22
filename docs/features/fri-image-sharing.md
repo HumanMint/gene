@@ -12,7 +12,7 @@ inspection use the configured meme model/effort, currently the inexpensive Luna
 role; usage appears under “image searches and checks.” The normal reply retains
 the conversation model and voice.
 
-One isolated planner sees only an exact excerpt of the current public image
+One isolated planner sees only the validated current public image
 request. Image requests can contain paragraphs and up to 4,000 characters; the
 harness uses the complete current request, even when the action selected a shorter
 excerpt, so late visual requirements remain part of inspection. The 240-character

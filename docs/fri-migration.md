@@ -26,6 +26,39 @@ and configuration for initial rollback. Future runtime fixes go to `HumanMint/fr
 controller contract fixes still go here. A later reviewed retirement can remove the
 legacy snapshot once old/new compatibility evidence is no longer needed.
 
+The additive `event-mention-chat` capability admits an explicit Discord mention in
+the configured main guild without adding the channel to any allowlist. The Fri-only
+`/chat/mentions/admit` route accepts a gateway-attested `ChatSource`, raw content and
+the harness's bot ID. A matching literal mention outside code, quotations and URLs
+can reserve the existing member public-turn allowance and obtain an opaque grant.
+The grant binds the full event, author, actual channel (including a thread), public
+conversation, privacy revision and settings version. It expires within five minutes
+of the event and is accepted only while its guild is still the configured main
+guild. Admission retries recover the same reservation; a consumed, expired
+or privacy-invalidated event cannot obtain a replacement invitation.
+
+Only `/chat/context`, `/chat/turn`, `/chat/research/start`, and
+`/chat/mentions/profiles` accept that grant. The profile route takes at most 25
+same-channel message sources, at most seven days old for explicit reply references,
+and returns only the authors' retention-enabled flags and privacy revisions. The
+runtime separately restricts nearby evidence to its short lookback. Referenced
+authors' revision changes invalidate the in-flight grant. Context and profile reads
+remain available after an idempotent single turn save for the final delivery fence.
+All pending, personal-note, workspace, social, operational, control and request
+routes keep their existing channel and owner boundaries. Lab scope stays its one
+configured testing channel, including when an explicit mention is present.
+
+Outside configured chat scope, context exposes no stored notes, turns, shared facts
+or pending actions. Research permits and receipts require a public query from the
+current mention itself; earlier configured-scope pending questions and permits
+cannot authorize mention research. A saved mention turn contains neutral input/output
+placeholders and the source event, without raw request, surrounding context, derived output,
+personal notes, burst text or clarification state. The normal bounded public-web
+receipts remain retrievable in that member's exact conversation; opt-out suppresses
+all turn and receipt retention. Erasure, clear and preference changes invalidate
+in-flight writes and reads. The authenticated harness attests Discord events and
+current access; the controller does not independently fetch Discord messages.
+
 Pure contracts are copied into Fri at extraction. Changes to shared provenance,
 command grammar, request hashes, settings schema or component IDs require integration
 checks against both sides. A breaking change must introduce a new supported protocol,

@@ -143,12 +143,12 @@ def save_turn(store, body):
                 raise HTTPException(409, 'This mention event already completed a different reply')
             return {'ok': True, 'first_memory': False}
         if body.web_receipt:
-            from .fri_research import authorized_receipt
             from .web_policy import public_query
             receipt = body.web_receipt.model_dump()
-            if not (public_query(receipt['query'], body.input) or authorized_receipt(db, body.guild_id,
-                    body.conversation_id, body.user_id, body.revision, body.source, receipt['query'])):
-                raise ValueError('Research has no matching public request for this turn')
+            # A permit created while this channel was configured can derive
+            # from a pending older question. Mention authority is narrower.
+            if not public_query(receipt['query'], body.input):
+                raise ValueError('Research needs a public topic from this mention request')
         db.execute('UPDATE mention_grants SET turn_hash=? WHERE token=?', (fingerprint, body.mention_grant))
         db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
                    (body.guild_id, body.conversation_id, body.user_id, body.source.id))

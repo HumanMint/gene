@@ -49,7 +49,9 @@ def start(store, guild, conversation, user, revision, source, text, query, *, me
         row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
         if revision != (row[0] if row else 0):
             raise ValueError('Conversation changed before research started')
-        pending = read(db, guild, conversation, user, revision)
+        # A mention invitation never inherits authority from a channel's older
+        # configured-scope clarification, even if the same database row remains.
+        pending = None if mention else read(db, guild, conversation, user, revision)
         valid = research_query(query, text, pending) == query
         if pending and pending.get('goal') == 'web' and '; clarification: ' in query:
             valid = research_query(query.split('; clarification: ', 1)[1], text, pending) == query

@@ -274,6 +274,34 @@ def test_public_research_uses_exact_event_and_cannot_continue_after_turn(h):
     assert post(h, '/chat/research/start', research).status_code == 409
 
 
+@pytest.mark.parametrize('prior_permit', [False, True])
+def test_mention_research_cannot_reuse_pending_topic_from_former_configured_scope(h, prior_permit):
+    original = source(channel='456', age=2)
+    normal = {'guild_id': '123', 'user_id': '20', 'channel_id': '456', 'conversation_id': 'public:456',
+              'source': original}
+    assert post(h, '/chat/turn', turn(normal, input='weather in Seoul', reply='For which day?',
+        clarification={'goal': 'web', 'topic': 'weather in Seoul', 'question': 'For which day?'})).status_code == 200
+    current = source(channel='456')
+    if prior_permit:
+        # A normal-scope pending clarification may already have authorized this
+        # event before the channel was removed. That permit cannot survive into
+        # the narrower mention-only authority.
+        assert post(h, '/chat/research/start', {**normal, 'source': current, 'revision': 0,
+            'input': 'hello', 'query': 'weather in Seoul'}).status_code == 200
+    restricted = replace(h.settings, workshop_channel_id='')
+    h.client = TestClient(create_app(restricted))
+    _, scope, _ = invited(h, source=current, content='<@99> hello')
+    assert post(h, '/chat/context', scope).json()['pending'] is None
+    research = post(h, '/chat/research/start', {**scope, 'revision': 0, 'input': 'hello',
+                                              'query': 'weather in Seoul'})
+    receipt = {'query': 'weather in Seoul', 'answer': 'Clear today.',
+               'sources': ['https://example.org/weather'], 'checked_at': '2026-10-23T00:00:00+00:00'}
+    saved = post(h, '/chat/turn', turn(scope, input='hello', web_receipt=receipt))
+    assert (research.status_code, saved.status_code) == (400, 400)
+    with h.store.connection() as db:
+        assert db.execute('SELECT count(*) FROM web_research').fetchone()[0] == 0
+
+
 def test_existing_lab_scope_stays_exact_and_no_mention_invitation_expands_it(h):
     settings = replace(h.settings, agent_channels='456')
     client = TestClient(create_app(settings))

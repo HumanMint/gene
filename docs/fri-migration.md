@@ -48,7 +48,9 @@ routes keep their existing channel and owner boundaries. Lab scope stays its one
 configured testing channel, including when an explicit mention is present.
 
 Outside configured chat scope, context exposes no stored notes, turns, shared facts
-or pending actions. A saved mention turn contains neutral input/output placeholders
+or pending actions. Research permits and receipts require a public query from the
+current mention itself; earlier configured-scope pending questions and permits
+cannot authorize mention research. A saved mention turn contains neutral input/output placeholders
 and the source event, without raw request, surrounding context, derived output,
 personal notes, burst text or clarification state. The normal bounded public-web
 receipts remain retrievable in that member's exact conversation; opt-out suppresses

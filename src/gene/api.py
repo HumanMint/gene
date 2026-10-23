@@ -329,6 +329,7 @@ def create_app(settings: Settings | None = None):
     @app.post('/chat/context', dependencies=[auth('fri')])
     def chat_context(body: ChatScope):
         if body.mention_grant:
+            actor(body)
             from .fri_mentions import context
             return context(store, body)
         chat_scope(body)
@@ -353,6 +354,7 @@ def create_app(settings: Settings | None = None):
     @app.post('/chat/turn', dependencies=[auth('fri')])
     def chat_turn(body: ChatTurn):
         if body.mention_grant:
+            actor(body)
             from .fri_mentions import save_turn
             return save_turn(store, body)
         chat_scope(body)
@@ -365,7 +367,9 @@ def create_app(settings: Settings | None = None):
 
     @app.post('/chat/research/start', dependencies=[auth('fri')])
     def research_start(body: ResearchStart):
-        if not body.mention_grant:
+        if body.mention_grant:
+            actor(body)
+        else:
             chat_scope(body)
         from .fri_research import start
         return start(store, body.guild_id, body.conversation_id, body.user_id, body.revision,

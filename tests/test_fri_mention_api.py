@@ -311,3 +311,13 @@ def test_existing_lab_scope_stays_exact_and_no_mention_invitation_expands_it(h):
     scope = {'guild_id': '999', 'user_id': '20', 'channel_id': '111', 'conversation_id': 'public:111'}
     assert client.post('/chat/context', headers=headers('fri'), json=scope).status_code == 200
     assert client.post('/chat/context', headers=headers('fri'), json={**scope, 'channel_id': '112'}).status_code == 403
+
+
+def test_grant_cannot_outlive_controller_main_guild_configuration(h):
+    _, scope, _ = invited(h, content='<@99> weather in Seoul')
+    h.client = TestClient(create_app(replace(h.settings, guild_id='1000')))
+    for path, body in [('/chat/context', scope), ('/chat/mentions/profiles', {**scope, 'evidence': []}),
+                       ('/chat/turn', turn(scope, input='weather in Seoul')),
+                       ('/chat/research/start', {**scope, 'revision': 0, 'input': 'weather in Seoul',
+                                                'query': 'weather in Seoul'})]:
+        assert post(h, path, body).status_code == 403, path

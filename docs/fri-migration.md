@@ -33,7 +33,8 @@ the harness's bot ID. A matching literal mention outside code, quotations and UR
 can reserve the existing member public-turn allowance and obtain an opaque grant.
 The grant binds the full event, author, actual channel (including a thread), public
 conversation, privacy revision and settings version. It expires within five minutes
-of the event. Admission retries recover the same reservation; a consumed, expired
+of the event and is accepted only while its guild is still the configured main
+guild. Admission retries recover the same reservation; a consumed, expired
 or privacy-invalidated event cannot obtain a replacement invitation.
 
 Only `/chat/context`, `/chat/turn`, `/chat/research/start`, and
@@ -50,8 +51,8 @@ configured testing channel, including when an explicit mention is present.
 Outside configured chat scope, context exposes no stored notes, turns, shared facts
 or pending actions. Research permits and receipts require a public query from the
 current mention itself; earlier configured-scope pending questions and permits
-cannot authorize mention research. A saved mention turn contains neutral input/output placeholders
-and the source event, without raw request, surrounding context, derived output,
+cannot authorize mention research. A saved mention turn contains neutral input/output
+placeholders and the source event, without raw request, surrounding context, derived output,
 personal notes, burst text or clarification state. The normal bounded public-web
 receipts remain retrievable in that member's exact conversation; opt-out suppresses
 all turn and receipt retention. Erasure, clear and preference changes invalidate

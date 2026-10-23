@@ -216,6 +216,8 @@ def register(app, store, settings, auth):
 
     @app.post('/chat/mentions/profiles', dependencies=[auth('fri')])
     def profiles(body: Profiles):
+        if not settings.guild_id or body.guild_id != settings.guild_id:
+            raise HTTPException(403, 'Mention invitations are available only in Fri\'s main server')
         with store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             row = check(db, body)

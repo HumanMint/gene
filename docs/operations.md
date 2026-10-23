@@ -316,6 +316,15 @@ Maintainer control-plane updates build a versioned runtime image and set
 cog releases preserve that trusted image setting. Retain the previous image and source
 for rollback; do not overwrite the `bootstrap` image tag with a new control plane.
 
+Release archives may be unpacked under a private service umask. Normalize only the
+verified Git source to readable files and traversable directories before building;
+keep staging, logs, backups, credentials and state private. The runtime and worker
+images retain root ownership of checked-in code while making `/app/src`, `/app/cogs`
+and worker `/app/tests` readable by UID 10001. Before fencing workers or switching
+services, run an isolated image import check as UID 10001, with no network,
+credentials or state mounts, and verify the candidate controller contract. Image
+revision labels alone do not establish that the runtime can import its source.
+
 Maintainer merge checks include a fresh-context independent review of the candidate,
 then offline reproductions and regressions for confirmed issues. Record the reviewed
 SHA, functional outcomes, and limits separately from the overall test count. Deployment

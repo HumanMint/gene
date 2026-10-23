@@ -9,6 +9,9 @@ RUN uv sync --frozen --extra red --no-dev
 ENV PATH="/app/.venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN useradd --uid 10001 --create-home gene
 COPY cogs ./cogs
+# Private release staging can give source directories restrictive modes. Keep
+# checked-in code root-owned and readable by the unprivileged runtime user.
+RUN chmod -R a+rX /app/src /app/cogs
 USER 10001:10001
 CMD ["gene-controller"]
 
@@ -25,6 +28,7 @@ RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/
 RUN uv sync --frozen --extra red
 COPY tests ./tests
 COPY AGENTS.md ./
+RUN chmod -R a+rX /app/tests
 RUN git config --system --add safe.directory /workspace
 USER 10001:10001
 CMD ["codex", "--version"]

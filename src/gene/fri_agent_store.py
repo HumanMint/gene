@@ -167,31 +167,35 @@ class AgentStore:
         return self.state()
 
     def admit(self, user, space, guild=None):
+        with self.store.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            return self.admit_in(db, user, space, guild)
+
+    def admit_in(self, db, user, space, guild=None):
+        """Reserve the same member allowance within an event admission transaction."""
         if space not in ('dm', 'public'):
             raise ValueError('Invalid conversation space')
         limit_key = space+'_turns'
         if guild and guild != self.settings.guild_id:
             space += ':'+guild
         now = time.time()
-        with self.store.connection() as db:
-            db.execute('BEGIN IMMEDIATE')
-            config = self.config(db)
-            row = db.execute('SELECT * FROM agent_sessions WHERE user_id=? AND space=?', (user, space)).fetchone()
-            if row and row['until'] > now:
-                return {'allowed': False, 'notice': False, 'until': row['until']}
-            if user == self.settings.owner_id or not config['enabled']:
-                return {'allowed': True}
-            started, turns = (row['started'], row['turns']) if row else (now, 0)
-            if now-started > 1800 or (row and row['until']):
-                started, turns = now, 0
-            until = 0
-            if turns >= config[limit_key]:
-                until = now + random.SystemRandom().randint(config['cooldown_min_minutes']*60,
-                                                             config['cooldown_max_minutes']*60)
-            db.execute('INSERT INTO agent_sessions VALUES (?,?,?,?,?) ON CONFLICT(user_id,space) '
-                       'DO UPDATE SET started=excluded.started,turns=excluded.turns,until=excluded.until',
-                       (user, space, started, turns+1, until))
-            return {'allowed': not until, 'notice': bool(until), 'until': until}
+        config = self.config(db)
+        row = db.execute('SELECT * FROM agent_sessions WHERE user_id=? AND space=?', (user, space)).fetchone()
+        if row and row['until'] > now:
+            return {'allowed': False, 'notice': False, 'until': row['until']}
+        if user == self.settings.owner_id or not config['enabled']:
+            return {'allowed': True}
+        started, turns = (row['started'], row['turns']) if row else (now, 0)
+        if now-started > 1800 or (row and row['until']):
+            started, turns = now, 0
+        until = 0
+        if turns >= config[limit_key]:
+            until = now + random.SystemRandom().randint(config['cooldown_min_minutes']*60,
+                                                         config['cooldown_max_minutes']*60)
+        db.execute('INSERT INTO agent_sessions VALUES (?,?,?,?,?) ON CONFLICT(user_id,space) '
+                   'DO UPDATE SET started=excluded.started,turns=excluded.turns,until=excluded.until',
+                   (user, space, started, turns+1, until))
+        return {'allowed': not until, 'notice': bool(until), 'until': until}
 
     def claim(self, manual=False):
         now = time.time()

@@ -37,6 +37,8 @@ class Store:
             initialize_social(db)
             from .fri_pending import initialize as initialize_pending
             initialize_pending(db)
+            from .fri_mentions import initialize as initialize_mentions
+            initialize_mentions(db)
             db.executescript('''
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -172,6 +174,7 @@ class Store:
             db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
             db.execute('DELETE FROM web_requests WHERE created<?', (time.time()-600,))
+            db.execute('DELETE FROM mention_grants WHERE expires<?', (time.time()-600,))
             return {
                 'paused': self._setting(db, 'paused') == 'true',
                 'active_sha': self._setting(db, 'active_sha'),

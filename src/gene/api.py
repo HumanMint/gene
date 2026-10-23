@@ -91,6 +91,8 @@ class ModelCatalog(BaseModel):
 class ChatScope(Actor):
     channel_id: str
     conversation_id: str = Field(pattern=r'^(private|public):[0-9]{1,25}$')
+    mention_grant: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
+    source: ChatSource | None = None
 
 
 class ChatTurn(ChatScope):
@@ -175,6 +177,8 @@ def create_app(settings: Settings | None = None):
             raise HTTPException(403, 'Only Gene\'s configured owner can do this')
 
     def chat_scope(body):
+        if getattr(body, 'mention_grant', None):
+            raise HTTPException(403, 'Mention invitations do not authorize this action')
         if not settings.chat_channel_allowed(body.guild_id, body.channel_id):
             raise HTTPException(403, 'Use Fri in a configured channel')
         if body.guild_id != settings.guild_id and body.conversation_id != 'public:'+settings.test_channel_id:
@@ -192,6 +196,8 @@ def create_app(settings: Settings | None = None):
     register_operations(app, store, settings, auth, chat_scope)
     from .fri_social_api import register as register_social
     register_social(app, store, settings, auth, chat_scope)
+    from .fri_mentions import register as register_mentions
+    register_mentions(app, store, settings, auth)
 
     @app.exception_handler(Conflict)
     async def conflict_handler(_, exc):
@@ -322,6 +328,9 @@ def create_app(settings: Settings | None = None):
 
     @app.post('/chat/context', dependencies=[auth('fri')])
     def chat_context(body: ChatScope):
+        if body.mention_grant:
+            from .fri_mentions import context
+            return context(store, body)
         chat_scope(body)
         return store.chat_context(body.guild_id, body.conversation_id, body.user_id)
 
@@ -343,6 +352,9 @@ def create_app(settings: Settings | None = None):
 
     @app.post('/chat/turn', dependencies=[auth('fri')])
     def chat_turn(body: ChatTurn):
+        if body.mention_grant:
+            from .fri_mentions import save_turn
+            return save_turn(store, body)
         chat_scope(body)
         return store.save_chat(body.guild_id, body.conversation_id, body.user_id, body.revision, body.input,
                               body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes,
@@ -353,10 +365,11 @@ def create_app(settings: Settings | None = None):
 
     @app.post('/chat/research/start', dependencies=[auth('fri')])
     def research_start(body: ResearchStart):
-        chat_scope(body)
+        if not body.mention_grant:
+            chat_scope(body)
         from .fri_research import start
         return start(store, body.guild_id, body.conversation_id, body.user_id, body.revision,
-                     body.source.model_dump(), body.input, body.query)
+                     body.source.model_dump(), body.input, body.query, mention=body if body.mention_grant else None)
 
     @app.post('/chat/memory/control', dependencies=[auth('fri')])
     def personal_control(body: PersonalControl):

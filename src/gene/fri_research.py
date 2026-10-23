@@ -34,7 +34,7 @@ def initialize(db):
                'PRIMARY KEY(guild_id,channel_id,user_id,source_id))')
 
 
-def start(store, guild, conversation, user, revision, source, text, query):
+def start(store, guild, conversation, user, revision, source, text, query, *, mention=None):
     """A receipt permit for one genuine turn; never a command permission."""
     from .fri_context import ChatSource
     from .fri_pending import read, research_query
@@ -43,6 +43,9 @@ def start(store, guild, conversation, user, revision, source, text, query):
         raise ValueError('Research needs a fresh request')
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
+        if mention:
+            from .fri_mentions import check
+            check(db, mention, write=True, text=text)
         row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
         if revision != (row[0] if row else 0):
             raise ValueError('Conversation changed before research started')

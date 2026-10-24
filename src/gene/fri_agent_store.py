@@ -160,6 +160,7 @@ class AgentStore:
                         raise ValueError('Use low, medium, or high effort for background work')
                 elif not isinstance(value, str) or len(value) > 1500 or clean(value, 1500) != value:
                     raise ValueError('Behavior notes must be at most 1500 characters without secrets')
+            was_checking = config['enabled'] and config['reply_check_enabled']
             config.update(changes)
             if config['cooldown_min_minutes'] > config['cooldown_max_minutes']:
                 raise ValueError('Minimum cooldown cannot exceed maximum')
@@ -167,8 +168,9 @@ class AgentStore:
             self.put(db, 'version', version+1)
             if config['enabled'] and not self.get(db, 'started', 0):
                 self.put(db, 'started', time.time())
-            if changes.get('reply_check_enabled') is True:
-                self.put(db, 'reply_check_cursor', time.time())  # Never review turns from before enablement.
+            if config['enabled'] and config['reply_check_enabled'] and not was_checking:
+                from .fri_reply_checks import start as start_reply_checks
+                start_reply_checks(db, self.put)
             if {'learning_first_minutes', 'learning_later_minutes'} & set(changes):
                 # A later explicit owner schedule change supersedes the temporary cadence.
                 self.put(db, 'learning_window', None)

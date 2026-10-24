@@ -1,7 +1,8 @@
-"""Reply checks keep abstract findings about unhappy follow-ups, never chat text or who said it."""
+"""Reply checks keep labelled findings about unhappy follow-ups, never chat text or who said it."""
 
 import json
 import sqlite3
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,9 +16,7 @@ from tests.test_api import headers
 from tests.test_fri_endings import source
 
 ASH = {'user_id': '30', 'revision': 0}
-FINDING = {'category': 'wrong_info', 'severity': 'high',
-           'issue': 'gave a wrong release date for a game and stuck with it',
-           'fix': 'check current sources before stating dates'}
+FINDING = {'category': 'wrong_info', 'severity': 'high', 'topic': 'games', 'fix': 'verify_facts'}
 
 
 @pytest.fixture
@@ -29,6 +28,9 @@ def setup(tmp_path):
     store.update_chat_models(['gpt-6-luna', 'gpt-6.1-sol'])
     agent = AgentStore(store, settings)
     agent.update({'enabled': True, 'reply_check_enabled': True}, 0, '10')
+    with store.connection() as db:  # As if checks were switched on yesterday.
+        agent.put(db, 'reply_check_since', time.time()-86400)
+        agent.put(db, 'reply_check_cursor', None)
     return store, agent, fri_reply_checks.ReplyChecks(agent), settings
 
 
@@ -67,11 +69,6 @@ def findings(store):
 
 def test_follow_up_pairs_are_offered_without_identities(setup):
     store, agent, checks, _ = setup
-    with store.connection() as db:  # Turns from before enablement are never offered.
-        agent.put(db, 'reply_check_cursor', None)
-    exchange(store)
-    assert checks.claim() is None
-    due(agent)
     later = exchange(store, user='21')
     claim = checks.claim()
     assert [pair['id'] for pair in claim['pairs']] == [str(later)]
@@ -80,6 +77,23 @@ def test_follow_up_pairs_are_offered_without_identities(setup):
     assert pair['earlier'] == {'member': 'when does the new zelda come out', 'fri': 'it comes out in march'}
     assert pair['later']['member'] == 'no it was delayed, that date is wrong'
     assert '21' not in json.dumps(claim) and claim['model'] == 'gpt-6-luna' and claim['effort'] == 'low'
+
+
+def test_neither_turn_from_before_checks_started_is_offered(setup):
+    store, agent, checks, _ = setup
+    save(store, 'when does the new zelda come out', verbatim=True)
+    agent.update({'enabled': False}, 1, '10')  # Restarting either switch moves the boundary.
+    agent.update({'enabled': True}, 2, '10')
+    save(store, 'no that date is wrong', verbatim=True)  # Its earlier half predates the restart.
+    assert checks.claim() is None
+    with store.connection() as db:
+        since = agent.get(db, 'reply_check_since')
+    agent.update({'reply_check_minutes': 60}, 3, '10')  # Other changes keep it.
+    due(agent)
+    later = exchange(store, user='21', gap=0)
+    assert [pair['id'] for pair in checks.claim()['pairs']] == [str(later)]
+    with store.connection() as db:
+        assert agent.get(db, 'reply_check_since') == since
 
 
 def test_only_real_follow_ups_to_fri_replies_qualify(setup):
@@ -97,29 +111,31 @@ def test_only_real_follow_ups_to_fri_replies_qualify(setup):
     assert len(checks.claim()['pairs']) == 1
 
 
-def test_abstract_findings_are_kept_and_quotes_links_and_ids_are_not(setup):
-    store, agent, checks, _ = setup
+def test_findings_are_fixed_labels_and_free_text_is_never_kept(setup):
+    store, agent, checks, settings = setup
     exchange(store)
     claim = checks.claim()
     assert flag(checks, claim) == {'kept': 1, 'pairs': 1}
     row, = findings(store)
-    assert (row['category'], row['severity'], row['space'], row['issue']) == (
-        'wrong_info', 'high', 'public', FINDING['issue'])
-    for issue in ('member said no it was delayed, that date is wrong', 'see https://example.com',
-                  'told <@12345678901234567> off', 'ignored @ash', 'wrong id 1234567890'):
-        due(agent)
-        exchange(store, user='60')
-        assert flag(checks, checks.claim(), issue=issue)['kept'] == 0
+    assert {key: row[key] for key in ('category', 'severity', 'topic', 'fix', 'space')} == {**FINDING, 'space': 'public'}
+    assert set(row) == {'id', 'at', 'turn_at', 'user_id', 'revision', 'provenance', 'space', *FINDING}
     due(agent)
     exchange(store, user='70')
     claim = checks.claim()
     pair = claim['pairs'][0]['id']
-    result = checks.finish(claim['id'], [{**FINDING, 'pair_id': pair}, {**FINDING, 'pair_id': pair},
-                                         {**FINDING, 'pair_id': '999'}, {**FINDING, 'pair_id': pair, 'category': 'made_up'}],
-                           'completed')
+    made_up = [{**FINDING, 'pair_id': pair, key: 'alice has the flu'} for key in FINDING]
+    result = checks.finish(claim['id'], [*made_up, {**FINDING, 'pair_id': '999'}, {**FINDING, 'pair_id': pair},
+                                         {**FINDING, 'pair_id': pair}], 'completed')
     assert result['kept'] == 1
     with pytest.raises(ValueError):
         checks.finish(claim['id'], [], 'completed')
+    due(agent)
+    exchange(store, user='80')
+    client, claim = TestClient(create_app(settings)), checks.claim()
+    body = {'findings': [{**FINDING, 'pair_id': claim['pairs'][0]['id'], 'issue': 'alice said the date was wrong'}],
+            'status': 'completed'}
+    assert client.post(f"/agent/reply-checks/{claim['id']}/finish", headers=headers('fri'), json=body).json()['kept'] == 1
+    assert 'alice' not in json.dumps(findings(store))
 
 
 @pytest.mark.parametrize('erase', ['disable', 'erase_user', 'clear_chats', 'enable'])
@@ -170,42 +186,102 @@ def test_failed_checks_retry_then_skip_and_refund_the_allowance(setup):
     assert checks.claim() is None and findings(store) == []
 
 
+def test_a_retry_is_the_same_batch_and_new_turns_get_their_own_attempts(setup):
+    store, agent, checks, _ = setup
+    first = exchange(store)
+    claim = checks.claim()
+    checks.finish(claim['id'], [], 'failed')
+    second = exchange(store, user='21')
+    for _ in range(2):  # Two more tries for the first batch alone, then it's skipped.
+        due(agent)
+        claim = checks.claim()
+        assert [pair['id'] for pair in claim['pairs']] == [str(first)]
+        checks.finish(claim['id'], [], 'failed')
+    due(agent)
+    claim = checks.claim()
+    assert [pair['id'] for pair in claim['pairs']] == [str(second)]
+    checks.finish(claim['id'], [], 'failed')
+    due(agent)
+    assert [pair['id'] for pair in checks.claim()['pairs']] == [str(second)]
+
+
+def test_equal_timestamps_are_neither_skipped_nor_repeated(setup, monkeypatch):
+    store, agent, checks, _ = setup
+    monkeypatch.setattr(fri_reply_checks, 'BATCH', 1)
+    turns = [exchange(store, user=user) for user in ('20', '21', '22')]
+    with store.connection() as db:
+        db.execute(f"UPDATE chat_turns SET at=(SELECT max(at) FROM chat_turns) WHERE id IN ({','.join('?'*3)})", turns)
+    seen = []
+    for _ in range(4):
+        due(agent)
+        claim = checks.claim()
+        if claim:
+            seen += [pair['id'] for pair in claim['pairs']]
+            checks.finish(claim['id'], [], 'completed')
+    assert seen == [str(turn) for turn in turns]
+
+
 def test_daily_allowance_and_interrupted_claims(setup, monkeypatch):
     store, agent, checks, _ = setup
     agent.update({'reply_check_daily_pairs': 10}, 1, '10')
     for user in range(12):
         exchange(store, user=str(100+user))
-    assert len(checks.claim()['pairs']) == 10
+    first = [pair['id'] for pair in checks.claim()['pairs']]
+    assert len(first) == 10
     due(agent)
     assert checks.claim() is None  # One claim at a time.
     clock = fri_reply_checks.time.time()
     monkeypatch.setattr(fri_reply_checks.time, 'time', lambda: clock+601)
     due(agent)
-    assert len(checks.claim()['pairs']) == 10  # The interrupted batch is retried within the allowance.
+    assert [pair['id'] for pair in checks.claim()['pairs']] == first  # Retried within the allowance.
     with store.connection() as db:
         run = db.execute('SELECT status,pairs FROM fri_reply_check_runs').fetchone()
         assert tuple(run) == ('interrupted', 10)
 
 
-def test_overview_and_export_never_name_members_channels_or_messages(setup, tmp_path):
-    store, agent, checks, settings = setup
-    exchange(store, conversation='public:777777')
+def test_old_findings_expire_with_housekeeping_even_while_checks_are_off(setup):
+    store, agent, checks, _ = setup
+    exchange(store)
     flag(checks, checks.claim())
+    agent.update({'reply_check_enabled': False}, 1, '10')
+    with store.connection() as db:
+        db.execute('UPDATE fri_reply_findings SET at=at-?', (fri_reply_checks.RETENTION+60,))
+        db.execute('UPDATE fri_reply_check_runs SET at=at-?', (fri_reply_checks.RETENTION+60,))
+    store.status()
+    with store.connection() as db:
+        assert findings(store) == [] and not db.execute('SELECT 1 FROM fri_reply_check_runs').fetchone()
+
+
+def test_overview_and_export_count_everything_and_name_nobody(setup):
+    store, agent, checks, settings = setup
+    topics = fri_reply_checks.TOPICS[:7]
+    for index, topic in enumerate(topics):
+        due(agent)
+        exchange(store, user=str(200+index), conversation='public:777777')
+        flag(checks, checks.claim(), topic=topic, severity='low' if index else 'high')
     overview = checks.overview()
-    assert overview['flagged'] == 1 and overview['categories'] == {'wrong_info': 1} and overview['checked_pairs'] == 1
+    assert (overview['flagged'], overview['checked_pairs'], overview['categories']) == (7, 7, {'wrong_info': 7})
+    assert overview['severities'] == {'low': 6, 'high': 1} and len(overview['themes']) == 5
+    assert overview['themes'][0] == {'category': 'wrong_info', 'topic': 'games', 'fix': 'verify_facts',
+                                     'count': 1, 'score': 3, 'severities': {'high': 1},
+                                     'last_day': time.strftime('%Y-%m-%d', time.gmtime())}
     exported = fri_reply_checks.export(settings.db, 7)
+    assert exported['flagged'] == 7 and {theme['topic'] for theme in exported['themes']} == set(topics)
     text = json.dumps(exported)
-    assert exported['findings'][0]['issue'] == FINDING['issue']
-    assert not any(value in text for value in ('777777', '"20"', 'zelda', 'delayed'))
+    assert not any(value in text for value in ('777777', '"200"', 'zelda', 'delayed'))
     fri_reply_checks.purge(settings.db)
     with sqlite3.connect(settings.db) as db:
         assert not db.execute("SELECT 1 FROM sqlite_master WHERE name='fri_reply_findings'").fetchone()
+        config = json.loads(db.execute("SELECT value FROM agent_state WHERE key='config'").fetchone()[0])
+        assert config['enabled'] and not any(key.startswith('reply_check') for key in config)
+        assert not db.execute("SELECT 1 FROM agent_state WHERE key LIKE '%reply_check%'").fetchone()
 
 
 def test_api_is_service_authenticated_and_overview_is_owner_only(tmp_path):
     settings = Settings(tmp_path/'api.db', 'guild', 'owner', 'runtime-'+'x'*32, 'worker-'+'x'*32,
                         'deploy-'+'x'*32, workshop_channel_id='workshop', fri_token='fri-'+'x'*32)
     client = TestClient(create_app(settings))
+    assert 'reply-checks' in client.get('/fri/contract', headers=headers('fri')).json()['capabilities']
     assert client.post('/agent/reply-checks/claim', headers=headers('runtime')).status_code == 401
     assert client.post('/agent/reply-checks/claim', headers=headers('fri')).json() is None
     owner, member = {'guild_id': 'guild', 'user_id': 'owner'}, {'guild_id': 'guild', 'user_id': 'member'}

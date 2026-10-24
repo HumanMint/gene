@@ -192,6 +192,8 @@ class Store:
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
             db.execute('DELETE FROM web_requests WHERE created<?', (time.time()-600,))
             db.execute('DELETE FROM mention_grants WHERE expires<?', (time.time()-600,))
+            from .fri_reply_checks import prune as prune_reply_checks
+            prune_reply_checks(db)
             return {
                 'paused': self._setting(db, 'paused') == 'true',
                 'active_sha': self._setting(db, 'active_sha'),

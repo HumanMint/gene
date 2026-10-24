@@ -773,31 +773,39 @@ to Fri's conversation model.
 Off by default. The owner turns them on through the normal settings preview
 (`reply_check_enabled`); `reply_check_private` adds DMs and private panel conversations,
 `reply_check_minutes` (10–720, default 30) and `reply_check_daily_pairs` (10–400, default 120)
-bound cost, and `reply_check_model`/`reply_check_effort` default to Luna/low.
+bound cost, and `reply_check_model`/`reply_check_effort` default to Luna/low. The controller
+advertises the `reply-checks` capability; Fri only runs checks against a controller that does.
 
 The controller offers Fri pairs from saved turns in the main server: Fri's verbatim reply, then the
-same member's next turn in that conversation within 15 minutes. Turns saved before reply checks were
-switched on, reactions, breadcrumbs, unattributed turns and members whose privacy revision moved are
-never offered. Each message is cut to 600 characters, and the offered pairs carry no member, channel
-or message identifiers. Fri's model returns only clear cases of a member being unhappy with the reply
-(a correction, a re-ask, an ignored request, a failed action, frustration aimed at Fri), as a category,
-a severity and two short abstract sentences. The controller rereads both turns before keeping one: a
-pruned or erased turn, a privacy change since the claim, or a description that quotes five words in a
-row, links, mentions or carries a long number drops the finding. Failed batches retry twice and are then
+same member's next turn in that conversation within 15 minutes. Both turns must come after reply checks
+were last switched on (turning either `enabled` or `reply_check_enabled` back on moves that boundary).
+Reactions, breadcrumbs, unattributed turns and members whose privacy revision moved are never offered.
+Turns are walked in `(at, id)` order, so equal timestamps are neither skipped nor repeated. Each message
+is cut to 600 characters, and the offered pairs carry no member, channel or message identifiers. Fri
+claims a batch only once its background model slot is free.
+
+Fri's model returns only clear cases of a member being unhappy with the reply (a correction, a re-ask,
+an ignored request, a failed action, frustration aimed at Fri), as four labels from fixed lists:
+category, severity, topic and suggested fix. No model text is accepted or stored. The controller
+rereads both turns before keeping a finding: a pruned or erased turn or a privacy change since the
+claim drops it. A failed batch is retried as the same batch twice, while newer turns wait, and is then
 skipped.
 
 Findings live 30 days in `fri_reply_findings` with the member and provenance revisions, so any
 privacy change by the member or anyone the pair drew on deletes them, and reads re-check the fence.
-The owner can ask Fri for a summary (“show reply checks”). Maintainers read the anonymized digest on
-the host without starting anything:
+Expiry runs with the controller health check, whether or not checks are on. The owner can ask Fri for
+a summary in DMs (“show reply checks”). Maintainers read the anonymized digest on the host without
+starting anything:
 
 ```bash
 sudo /srv/gene/venv/bin/python -m gene.fri_reply_checks export /srv/gene/data/controller/gene.sqlite3 7
 ```
 
-It prints categories, severities, day-precision dates and the abstract descriptions only. Before
-rolling the controller back to a release without reply checks, stop it and run
-`python -m gene.fri_reply_checks purge <database>`, because older releases can't erase findings.
+It prints exact totals by category, severity and space, and recurring themes (category, topic, fix)
+ranked by severity-weighted count with the last day seen. Before rolling the controller back to a
+release without reply checks, stop it and run `python -m gene.fri_reply_checks purge <database>`:
+older releases can't erase findings, and purge also removes the `reply_check_*` settings and state so
+Fri stops asking for checks.
 
 ## Conversational Gene controls
 

@@ -144,21 +144,62 @@ def test_pending_clarification_shaped_by_another_member_follows_their_privacy(st
     assert store.chat_context('123', 'public:1', '20')['pending'] is None
 
 
-def test_summary_carries_its_authors_revisions(store, tmp_path):
+def summary_agent(store, tmp_path, revisions='{"30": 0, "20": 0}'):
     import time
 
     from gene.config import Settings
     from gene.fri_agent_store import AgentStore
-    settings = Settings(tmp_path/'unused.sqlite3', '123', 'owner', 'r'*40, 'w'*40, 'd'*40)
-    agent = AgentStore(store, settings)
+    agent = AgentStore(store, Settings(tmp_path/'unused.sqlite3', '123', 'owner', 'r'*40, 'w'*40, 'd'*40))
     with store.connection() as db:
-        db.execute('INSERT INTO agent_summaries VALUES (?,?,?,?)', ('1', 'ash is moving to denver', '["30", "20"]',
-                                                                     time.time()))
+        db.execute('INSERT INTO agent_summaries(channel_id,body,authors,at,revisions) VALUES (?,?,?,?,?)',
+                   ('1', 'ash is moving to denver', '["20", "30"]', time.time(), revisions))
+    return agent
+
+
+def test_summary_carries_the_revisions_it_was_made_from(store, tmp_path):
+    agent = summary_agent(store, tmp_path)
     context = agent.context('1', '20')
     assert context['summary'] and context['summary_provenance'] == [ASH]
     store.personal_control('30', 'disable')
-    assert agent.context('1', '20') | {'historical_topics': []} == {
-        'summary': '', 'summary_provenance': [], 'historical_topics': [], 'enabled': True, 'revision': 0}
+    assert agent.context('1', '20')['summary'] == ''
+
+
+@pytest.mark.parametrize('change', ['clear_chats', 'enable', 'legacy'])
+def test_summary_fails_closed_after_any_author_revision_change(store, tmp_path, change):
+    agent = summary_agent(store, tmp_path, '{}' if change == 'legacy' else '{"30": 0, "20": 0}')
+    if change == 'clear_chats':
+        store.clear_chats('30')
+    elif change == 'enable':
+        store.personal_control('30', 'enable')  # Revision moves without an eager delete.
+    context = agent.context('1', '20')
+    assert context['summary'] == '' and context['summary_provenance'] == []
+    with store.connection() as db:
+        assert not db.execute('SELECT COUNT(*) FROM agent_summaries').fetchone()[0]
+
+
+def test_consumed_clarification_keeps_no_assistant_question(store):
+    import json
+
+    from gene.control_store import Controls, initialize
+    from tests.test_gene_controls import control_body
+    store.save_chat('123', 'public:1', '20', 0, 'fri play music', 'before or after ash moves to denver?',
+                    'model', 'high', source=source(age=30, channel='1'),
+                    clarification={'goal': 'play', 'topic': '', 'question': 'before or after ash moves to denver?'},
+                    provenance=[ASH])
+    pending = store.chat_context('123', 'public:1', '20')['pending']
+    controls = Controls(store)
+    controls.enqueue(control_body(request_text='blind melon no rain', argument='blind melon no rain',
+                                  continuation_id=pending['source']['id']))
+    store.personal_control('30', 'disable')
+    with store.connection() as db:
+        payload = json.loads(db.execute('SELECT payload FROM gene_controls').fetchone()[0])
+        assert set(payload['continuation']) == {'goal', 'source', 'request_text', 'revision'}
+        assert 'denver' not in str(controls.poll(['play']))
+        # Rows written before this change are scrubbed on startup.
+        payload['continuation']['question'] = 'ash is moving to denver'
+        db.execute('UPDATE gene_controls SET payload=?', (json.dumps(payload),))
+        initialize(db)
+        assert 'denver' not in db.execute('SELECT payload FROM gene_controls').fetchone()[0]
 
 
 def test_fri_message_sources_resolve_or_fail_closed(store, client):

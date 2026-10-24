@@ -790,6 +790,9 @@ class Store:
             db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
             self._drop_dependents(db, user_id)
+            for row in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
+                if user_id in json.loads(row['authors']):
+                    db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (row['channel_id'],))
             db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM web_requests WHERE user_id=?', (user_id,))
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))

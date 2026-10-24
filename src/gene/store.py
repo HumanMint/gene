@@ -680,16 +680,21 @@ class Store:
                        (user, text, 'erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
 
     @staticmethod
-    def _drop_dependents(db, user_id):
-        # Other members' turns built from this member's messages must not outlive their erasure.
+    def advance_revision(db, user_id):
+        """Every privacy change (erasure, memory on/off, cleared chats, edited notes) moves the revision.
+
+        Other members' turns, pending questions and requests built from this member's earlier words
+        go with it, so nothing derived outlives the change.
+        """
         db.execute("DELETE FROM chat_turns WHERE id IN (SELECT t.id FROM chat_turns t, json_each(t.provenance) p "
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
         db.execute("DELETE FROM chat_pending WHERE EXISTS (SELECT 1 FROM json_each(chat_pending.body, '$.provenance') p "
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
-        # So are requests submitted from drafts that drew on them.
         Store._erase_jobs(db, db.execute("SELECT j.id,j.proposal FROM jobs j, json_each(j.provenance) p "
                                          "WHERE json_extract(p.value, '$.user_id')=?", (user_id,)).fetchall(),
-                          '[Request withdrawn: someone it drew on erased their data]')
+                          '[Request withdrawn: someone it drew on changed their privacy settings]')
+        db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
+                   'DO UPDATE SET revision=revision+1', (user_id,))
 
     def downgrade_turn_provenance(self):
         """Before starting a controller without turn-provenance, which can't erase derived state."""
@@ -811,7 +816,6 @@ class Store:
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_note_removals WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
-                self._drop_dependents(db, user_id)
                 db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM web_requests WHERE user_id=?', (user_id,))
                 db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
@@ -822,15 +826,13 @@ class Store:
                 # conservatively; already delivered Discord messages are separate.
                 db.execute('DELETE FROM agent_reports')
             # Invalidate even an in-flight reply that began before memory was toggled.
-            db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
-                       'DO UPDATE SET revision=revision+1', (user_id,))
+            self.advance_revision(db, user_id)
 
     def clear_chats(self, user_id):
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
-            self._drop_dependents(db, user_id)
             for row in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
                 if user_id in json.loads(row['authors']):
                     db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (row['channel_id'],))
@@ -839,8 +841,7 @@ class Store:
             db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM web_requests WHERE user_id=?', (user_id,))
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
-            db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
-                       'DO UPDATE SET revision=revision+1', (user_id,))
+            self.advance_revision(db, user_id)
 
     def chat_models(self):
         with self.connection() as db:

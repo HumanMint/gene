@@ -102,8 +102,8 @@ Provenance also reaches what follow-ups inherit:
 - Saved turns record the speaker's revision. A Fri message resolves only while that revision is
   unchanged, and rows without it fail closed.
 - `/requests` accepts a chat draft's `provenance` and the requester's `revision`, and checks both
-  in the creating transaction. Erasure, forget-me and clear-chats withdraw dependent requests the
-  same way erasure withdraws a member's own: unfinished ones are rejected and the stored text is
+  in the creating transaction. Every privacy change (erasure, memory on or off, cleared chats,
+  edited notes) withdraws dependent requests the same way erasure withdraws a member's own: unfinished ones are rejected and the stored text is
   replaced. A running build loses its lease, so the worker can't write its summary back; the worker
   then deletes that job's transcript and checkout.
 - **Unattributed history.** A turn counts as attributed only when it was saved with a provenance

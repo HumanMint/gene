@@ -277,17 +277,25 @@ def test_request_checks_draft_provenance_when_it_is_created(store, client):
                        json={**payload, 'provenance': [{'user_id': '30', 'revision': 1}]}).status_code == 200
 
 
-@pytest.mark.parametrize('erase', ['disable', 'erase_user', 'clear_chats'])
-def test_erasure_withdraws_requests_submitted_from_derived_drafts(store, erase):
+@pytest.mark.parametrize('erase', ['disable', 'enable', 'erase_user', 'clear_chats', 'note_removal'])
+def test_any_privacy_change_withdraws_requests_submitted_from_derived_drafts(store, erase):
+    from gene.fri_memory_store import edit, entries
+    text = 'I like A Change of Heart'
+    store.save_chat('123', 'public:1', '30', 0, text, 'noted', 'model', 'high', source=source(user='30', channel='1'),
+                    notes=[{'category': 'music', 'evidence': text}], provenance=[])
     derived, own = job(store), job(store, source_id='fri-draft:own', provenance=())
-    if erase == 'disable':
-        store.personal_control('30', 'disable')
+    if erase in ('disable', 'enable'):
+        store.personal_control('30', erase)
+    elif erase == 'note_removal':
+        note = entries(store, '123', 'public:1', '30')['entries'][0]
+        edit(store, '123', 'public:1', '30', note['id'], 0,
+             {**source(user='30', channel='1'), 'kind': 'discord_interaction'}, 'remove')
     else:
         getattr(store, erase)('30')
     with store.connection() as db:
         rows = {row['id']: dict(row) for row in db.execute('SELECT id,user_id,body,state,provenance FROM jobs')}
     assert rows[derived['id']] == {'id': derived['id'], 'user_id': '20', 'state': 'rejected', 'provenance': '[]',
-                                   'body': '[Request withdrawn: someone it drew on erased their data]'}
+                                   'body': '[Request withdrawn: someone it drew on changed their privacy settings]'}
     assert rows[own['id']]['body'] == 'Add a moving checklist because ash moves'
     assert rows[own['id']]['state'] == 'awaiting_owner'
 

@@ -123,9 +123,11 @@ The legacy companion sends no provenance and is unaffected.
 
 `chat_context` also returns `requests`: up to five of the speaker's own requests that are still open
 or settled within the last week, with id, kind, state and timestamps. Only the requester and the
-owner see request text in the panel, so a `title` is included only in the member's DM and never
-for a draft that drew on other members' words. With memory off the list is empty. Older companions
-ignore the field.
+owner see request text in the panel, so a `title` is included only in the member's DM and only for
+a request known to hold just their own words: submitted with an empty provenance list. Requests
+saved before this release or by an older companion are unattributed and never show a title.
+Withdrawal refreshes `updated`, so a withdrawn request stays listed for a week. With memory off
+the list is empty. Older companions ignore the field.
 
 ## Release and recovery
 

@@ -2,6 +2,8 @@
 
 import time
 
+from tests.test_api import headers
+
 ASH = {'user_id': '30', 'revision': 0}
 
 
@@ -46,3 +48,23 @@ def test_erased_requests_are_not_attributed_to_anyone(store):
     store.erase_user('20')
     store.personal_control('20', 'enable')
     assert requests(store) == []
+
+
+def test_requests_without_known_attribution_never_show_a_title(store, client):
+    legacy = store.request('123', '20', 'legacy', '', 'Quote what ash said in a feature')  # No provenance sent.
+    assert 'title' not in requests(store)[0] and requests(store)[0]['id'] == legacy['id']
+    payload = {'guild_id': 'guild', 'user_id': 'member', 'source_id': 'panel-1', 'source_url': '',
+               'body': 'Add a modpack checklist', 'channel_id': 'workshop'}
+    assert client.post('/requests', headers=headers('fri'), json=payload).status_code == 200
+    assert client.post('/requests', headers=headers('fri'), json={**payload, 'source_id': 'panel-2', 'provenance': []}).status_code == 200
+    with client.app.state.store.connection() as db:
+        assert [row[0] for row in db.execute('SELECT attributed FROM jobs ORDER BY created')] == [0, 1]
+
+
+def test_a_request_withdrawn_today_stays_listed_even_if_it_was_old(store):
+    old = submit(store, provenance=[ASH])
+    with store.connection() as db:
+        db.execute('UPDATE jobs SET created=?,updated=? WHERE id=?', (time.time()-8*86400, time.time()-8*86400, old['id']))
+    store.personal_control('30', 'disable')  # Withdrawn now: it should still say so for a week.
+    listed = requests(store)
+    assert [(row['id'], row['state']) for row in listed] == [(old['id'], 'rejected')]

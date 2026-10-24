@@ -121,6 +121,10 @@ class Store:
             if 'provenance' not in columns:
                 # Other members whose messages shaped a submitted draft, with the revision seen.
                 db.execute("ALTER TABLE jobs ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]'")
+            if 'attributed' not in columns:
+                # Submitted with a provenance list. Older requests may quote anyone with no record of whom.
+                db.execute('ALTER TABLE jobs ADD COLUMN attributed INTEGER NOT NULL DEFAULT 0')
+            db.execute('CREATE INDEX IF NOT EXISTS jobs_requester ON jobs(guild_id, user_id, updated)')
             if 'source' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
                 db.execute("ALTER TABLE chat_turns ADD COLUMN source TEXT NOT NULL DEFAULT ''")
             from .fri_memory_store import initialize as initialize_personal_notes
@@ -221,8 +225,10 @@ class Store:
             db.execute('UPDATE settings SET value=? WHERE key="active_sha"', (sha,))
             self._audit(db, 'installer', 'bootstrap', sha)
 
-    def request(self, guild_id: str, user_id: str, source_id: str, source_url: str, body: str, provenance=(),
+    def request(self, guild_id: str, user_id: str, source_id: str, source_url: str, body: str, provenance=None,
                 revision=None):
+        # None: a companion that doesn't track sources. A list, even empty, is complete attribution.
+        attributed = provenance is not None
         body = clean(body)
         if len(body) < 5:
             raise ValueError('Describe the request in at least five characters')
@@ -234,7 +240,7 @@ class Store:
             # Checked in the creating transaction: an erasure can't slip in after the companion's fence.
             if revision is not None and self._privacy_state(db, user_id)[0] != revision:
                 raise Conflict('Your privacy settings changed while this draft was open. Draft it again.')
-            provenance = self._checked_provenance(db, user_id, provenance)
+            provenance = self._checked_provenance(db, user_id, provenance or ())
             pending = db.execute('SELECT count(*) FROM jobs WHERE user_id=? AND state IN '
                                  '("awaiting_owner","queued","building","review","approved","deploying")',
                                  (user_id,)).fetchone()[0]
@@ -242,9 +248,9 @@ class Store:
                 raise Conflict('You already have three open requests; finish one first')
             job_id = uuid.uuid4().hex[:12]
             now = time.time()
-            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,created,updated,state,provenance) '
-                       'VALUES (?,?,?,?,?,?,?,?,"awaiting_owner",?)',
-                       (job_id, guild_id, user_id, source_id, source_url, body, now, now, json.dumps(provenance)))
+            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,created,updated,state,provenance,'
+                       'attributed) VALUES (?,?,?,?,?,?,?,?,"awaiting_owner",?,?)',
+                       (job_id, guild_id, user_id, source_id, source_url, body, now, now, json.dumps(provenance), attributed))
             self._audit(db, user_id, 'request', job_id)
             return self._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
 
@@ -605,11 +611,36 @@ class Store:
             from .fri_pending import read as read_pending
             pending = read_pending(db, guild_id, channel_id, user_id, revision[0] if revision else 0)
             return {'pending': pending, 'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
+                    'requests': self._own_requests(db, guild_id, channel_id, user_id) if profile['enabled'] else [],
                     'web_research': [json.loads(row[0]) for row in db.execute(
                         'SELECT receipt FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY id DESC LIMIT 3',
                         (guild_id, channel_id, user_id))],
                     'personal_memory': profile,
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
+
+    @staticmethod
+    def _own_requests(db, guild_id, conversation, user_id):
+        """The member's open or recently settled requests, so Fri knows what they're waiting on.
+
+        Only the requester and the owner see request text in the panel, so titles appear only in
+        the member's private conversation, and only for requests known to hold just their own words.
+        Open requests come first: settled ones never crowd out what the member is still waiting on.
+        """
+        rows = db.execute("SELECT id,kind,state,created,updated,body,provenance,attributed,source_id FROM jobs "
+                          "WHERE guild_id=? AND user_id=? AND (state IN ('awaiting_owner','queued','building','review',"
+                          "'approved','deploying') OR updated>?) ORDER BY state IN ('awaiting_owner','queued','building',"
+                          "'review','approved','deploying') DESC, updated DESC LIMIT 5",
+                          (guild_id, user_id, time.time()-7*86400))
+        requests = []
+        for row in rows:
+            item = {key: row[key] for key in ('id', 'kind', 'state', 'created', 'updated')}
+            if row['source_id'].startswith('erased:'):
+                # Its text was removed after a privacy change: not the owner's decision, and no title.
+                item['withdrawn'] = True
+            elif conversation.startswith('private:') and row['attributed'] and row['provenance'] == '[]':
+                item['title'] = clean((row['body'] or '').strip().split('\n')[0], 100)
+            requests.append(item)
+        return requests
 
     @staticmethod
     def _privacy_state(db, user_id):
@@ -671,13 +702,13 @@ class Store:
             if proposal:
                 proposal['summary'] = text
                 proposal.pop('repair_verification', None)
-            db.execute('UPDATE jobs SET user_id=COALESCE(?,user_id),body=?,provenance="[]",'
+            db.execute('UPDATE jobs SET user_id=COALESCE(?,user_id),body=?,provenance="[]",updated=?,'
                        'source_url="",source_id=?,result="",proposal=?,'
                        'lease=CASE WHEN state="building" THEN NULL ELSE lease END,'
                        'progress=CASE WHEN state="building" THEN NULL ELSE progress END,'
                        'state=CASE WHEN state IN ("awaiting_owner","queued","building","review","approved") '
                        'THEN "rejected" ELSE state END WHERE id=?',
-                       (user, text, 'erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
+                       (user, text, time.time(), 'erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
 
     @staticmethod
     def advance_revision(db, user_id):

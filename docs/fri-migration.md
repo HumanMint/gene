@@ -119,6 +119,18 @@ Provenance also reaches what follow-ups inherit:
 
 The legacy companion sends no provenance and is unaffected.
 
+## Member requests in context
+
+`chat_context` also returns `requests`: up to five of the speaker's own requests that are still open
+or settled within the last week, open ones first, with id, kind, state and timestamps. Only the
+requester and the owner see request text in the panel, so a `title` is included only in the member's
+private conversation (DM or `/fri` panel) and only for a request known to hold just their own words:
+submitted with an empty provenance list. Requests saved before this release or by an older companion
+are unattributed and never show a title. A request whose text was withdrawn after a privacy change
+carries `withdrawn: true` and no title, so its `rejected` state isn't mistaken for the owner's
+decision. Withdrawal refreshes `updated`, so it stays listed for a week. With memory off the list is
+empty. Older companions ignore the field.
+
 ## Release and recovery
 
 The trusted coordinator is `python -m gene.fri_release <full-reviewed-fri-sha>`.

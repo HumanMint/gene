@@ -101,5 +101,5 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
         # reminder confirmation. Global erasure follows its separate erase path.
         from .fri_social_store import Social
         Social.preserve_confirmed(db, user, revision)
-        db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) DO UPDATE SET revision=revision+1', (user,))
+        store.advance_revision(db, user)
     return entries(store, guild, conversation, user)

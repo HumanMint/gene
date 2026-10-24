@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import hmac
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Settings
 from .fri_context import ChatSource
@@ -21,11 +21,20 @@ class Actor(BaseModel):
     user_id: str
 
 
+class TurnSource(BaseModel):
+    """Another member whose message shaped this reply, and the privacy revision Fri observed."""
+    model_config = ConfigDict(extra='forbid')
+    user_id: str = Field(pattern=r'^[0-9]{1,25}$')
+    revision: int = Field(ge=0)
+
+
 class Request(Actor):
     source_id: str = Field(min_length=1, max_length=100)
     source_url: str = Field(max_length=200)
     body: str = Field(min_length=5, max_length=6000)
     channel_id: str
+    provenance: list[TurnSource] = Field(default_factory=list, max_length=200)
+    revision: int | None = Field(default=None, ge=0)  # The requester's, when submitted from a chat draft.
 
 
 class Approval(Actor):
@@ -111,6 +120,16 @@ class ChatTurn(ChatScope):
     output_tokens: int | None = Field(default=None, ge=0)
     notes: list[dict] = Field(default_factory=list, max_length=3)
     burst: list[SourceText] = Field(default_factory=list, max_length=5)
+    # Omitted only by a legacy companion: its saved replies are then marked unattributed.
+    provenance: Annotated[list[TurnSource], Field(max_length=200)] | None = None
+    reply_message_id: str | None = Field(default=None, pattern=r'^[0-9]{1,25}$')
+    verbatim: bool = False  # The saved reply is what Discord showed, not a neutral breadcrumb.
+
+
+class MessageSources(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    guild_id: str = Field(pattern=r'^[0-9]{1,25}$')
+    message_ids: list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]] = Field(min_length=1, max_length=10)
 
 
 class ResearchStart(ChatScope):
@@ -249,7 +268,8 @@ def create_app(settings: Settings | None = None):
         if body.channel_id not in {settings.workshop_channel_id, *settings.agent_channels.split(',')} or not body.channel_id:
             raise HTTPException(403, 'Use Gene\'s configured workshop channel')
         return public_job(store.request(body.guild_id, body.user_id, body.source_id,
-                                        body.source_url, body.body))
+                                        body.source_url, body.body,
+                                        [item.model_dump() for item in body.provenance], body.revision))
 
     @app.post('/requests/{job_id}/approve', dependencies=[auth('fri')])
     def approve(job_id: str, body: Approval):
@@ -363,7 +383,21 @@ def create_app(settings: Settings | None = None):
                               body.source.model_dump(), body.web_receipt.model_dump() if body.web_receipt else None,
                               body.clarification.model_dump() if body.clarification else None,
                               response_kind=body.response_kind, reaction=body.reaction, allow_closing=body.allow_closing,
-                              burst=[row.model_dump() for row in body.burst])
+                              burst=[row.model_dump() for row in body.burst],
+                              provenance=None if body.provenance is None else [row.model_dump() for row in body.provenance],
+                              reply_message_id=body.reply_message_id, verbatim=body.verbatim)
+
+    @app.post('/chat/turn/check', dependencies=[auth('fri')])
+    def chat_turn_check(body: ChatTurn):
+        # Fri checks before delivering and saves only after delivery succeeds.
+        if body.mention_grant:
+            raise HTTPException(400, 'Invitation turns are fenced by their mention grant')
+        chat_scope(body)
+        return store.check_chat(body.user_id, body.revision, [row.model_dump() for row in body.provenance or []])
+
+    @app.post('/chat/messages/sources', dependencies=[auth('fri')])
+    def chat_message_sources(body: MessageSources):
+        return {'messages': store.message_sources(body.guild_id, body.message_ids)}
 
     @app.post('/chat/research/start', dependencies=[auth('fri')])
     def research_start(body: ResearchStart):

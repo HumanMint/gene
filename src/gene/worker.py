@@ -5,10 +5,13 @@ import fcntl
 import json
 import logging
 import os
+import shutil
 import subprocess
 import time
 import uuid
 from pathlib import Path
+
+import httpx
 
 from .client import ControllerClient
 from .models import discover_models
@@ -234,8 +237,14 @@ class Worker:
             self.process(job)
         except Exception as exc:
             LOG.error('Request %s failed (%s)', job['id'], type(exc).__name__)
-            self.api.post(f'/worker/{job["id"]}/finish',
-                          {'lease': job['lease'], 'error': clean(str(exc), 1000)})
+            try:
+                self.api.post(f'/worker/{job["id"]}/finish',
+                              {'lease': job['lease'], 'error': clean(str(exc), 1000)})
+            except httpx.HTTPStatusError as status:
+                if status.response.status_code != 409:
+                    raise
+                # Withdrawn while building, e.g. after an erasure: keep no transcript or checkout.
+                shutil.rmtree(self.root / job['id'], ignore_errors=True)
         return True
 
 

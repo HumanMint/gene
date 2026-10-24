@@ -20,6 +20,21 @@ def initialize(db):
         CREATE TABLE IF NOT EXISTS gene_runtime_health (id INTEGER PRIMARY KEY, at REAL, body TEXT);
         CREATE TABLE IF NOT EXISTS gene_control_origins (id TEXT PRIMARY KEY, created REAL NOT NULL);
     ''')
+    # Older rows copied the whole clarification, including an assistant question that could
+    # quote another member. Keep only the member-authored authorization fields.
+    for row in db.execute('''SELECT id,payload FROM gene_controls WHERE payload LIKE '%"continuation"%' ''').fetchall():
+        payload = json.loads(row[1])
+        if isinstance(payload.get('continuation'), dict):
+            payload['continuation'] = continuation_fields(payload['continuation'])
+            db.execute('UPDATE gene_controls SET payload=? WHERE id=?', (json.dumps(payload), row[0]))
+
+
+CONTINUATION_FIELDS = ('goal', 'source', 'request_text', 'revision', 'burst')
+
+
+def continuation_fields(pending):
+    """What the runtime needs to authorize a continuation; never the assistant's question."""
+    return {key: pending[key] for key in CONTINUATION_FIELDS if key in pending}
 
 
 def source_key(guild, source_id):
@@ -76,8 +91,8 @@ class Controls:
             if payload.get('guild_id') != guild or payload.get('conversation_id') != conversation:
                 continue
             receipts.append({'at': row['created'], 'action': payload['action'], 'argument': payload['argument'],
-                'state': row['state'], 'channel_id': payload['target_channel_id'],
-                'result': self._result(row)})
+                'grounded': bool(payload.get('grounded')), 'state': row['state'],
+                'channel_id': payload['target_channel_id'], 'result': self._result(row)})
             if receipts[-1]['result'].get('output'):
                 receipts[-1]['result']['output'] = receipts[-1]['result']['output'][:1000]
             if len(receipts) == 3:
@@ -118,7 +133,7 @@ class Controls:
                     raise ValueError('Ask to play a song, or answer the current song question in this conversation')
                 if source_used(db, body['guild_id'], pending['source']['id']):
                     raise ValueError('This request was already handled')
-                body['continuation'] = pending
+                body['continuation'] = continuation_fields(pending)
             if db.execute('SELECT 1 FROM gene_controls WHERE user_id=? AND created>?', (body['user_id'], time.time()-3)).fetchone():
                 raise ValueError('Give Gene a moment before another action')
             db.execute('INSERT INTO gene_controls(id,user_id,created,state,payload) VALUES (?,?,?,?,?)',

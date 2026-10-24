@@ -71,3 +71,36 @@ def test_no_change_preserves_agent_explanation_without_publication(tmp_path, mon
     assert 'maintainer change' in finish['error']
     assert 'proposal' not in finish
     assert not any(call.args[1] == 'push' for call in git.call_args_list)
+
+
+@pytest.mark.parametrize(('status', 'kept'), [(409, False), (500, True)])
+def test_a_withdrawn_build_leaves_no_transcript_or_checkout(tmp_path, monkeypatch, status, kept):
+    import httpx
+    worker = Worker.__new__(Worker)
+    worker.root, worker.auth = tmp_path, tmp_path / 'private-auth'
+    (worker.auth).mkdir()
+    (worker.auth / 'auth.json').write_text('{}')
+    job = {'id': 'job', 'lease': 'lease'}
+
+    def post(path, data=None):
+        if path == '/worker/models/state':
+            return {'refresh_pending': False}
+        if path == '/worker/claim':
+            return job
+        response = httpx.Response(status, request=httpx.Request('POST', 'http://controller' + path))
+        raise httpx.HTTPStatusError('refused', request=response.request, response=response)
+
+    def process(claimed):
+        (tmp_path / 'job').mkdir()
+        (tmp_path / 'job/events.jsonl').write_text('the request text')
+        raise httpx.HTTPStatusError('lease changed', request=httpx.Request('POST', 'http://controller'),
+                                    response=httpx.Response(409, request=httpx.Request('POST', 'http://controller')))
+
+    worker.api = Mock(post=Mock(side_effect=post))
+    monkeypatch.setattr(worker, 'process', process)
+    if kept:
+        with pytest.raises(httpx.HTTPStatusError):
+            worker.tick()
+    else:
+        assert worker.tick() is True
+    assert (tmp_path / 'job').exists() is kept

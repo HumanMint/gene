@@ -118,6 +118,9 @@ class Store:
             for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref', 'progress'):
                 if name not in columns:
                     db.execute(f'ALTER TABLE jobs ADD COLUMN {name} TEXT')
+            if 'provenance' not in columns:
+                # Other members whose messages shaped a submitted draft, with the revision seen.
+                db.execute("ALTER TABLE jobs ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]'")
             if 'source' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
                 db.execute("ALTER TABLE chat_turns ADD COLUMN source TEXT NOT NULL DEFAULT ''")
             from .fri_memory_store import initialize as initialize_personal_notes
@@ -131,6 +134,20 @@ class Store:
                 db.execute('ALTER TABLE chat_turns ADD COLUMN reaction TEXT')
             if 'allow_closing' not in columns:
                 db.execute('ALTER TABLE chat_turns ADD COLUMN allow_closing INTEGER NOT NULL DEFAULT 0')
+            if 'provenance' not in columns:
+                # Other members whose messages shaped a saved reply, with the privacy revision seen.
+                db.execute("ALTER TABLE chat_turns ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]'")
+            if 'reply_message_id' not in columns:
+                # Fri's delivered Discord message, so later references resolve to these sources.
+                db.execute('ALTER TABLE chat_turns ADD COLUMN reply_message_id TEXT')
+                db.execute('ALTER TABLE chat_turns ADD COLUMN verbatim INTEGER NOT NULL DEFAULT 0')
+            if 'speaker_revision' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
+                # The speaker's revision when saved; references fail closed once it moves.
+                db.execute('ALTER TABLE chat_turns ADD COLUMN speaker_revision INTEGER')
+            if 'attributed' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
+                # Saved with a provenance list. Older turns, and any a legacy companion writes, may quote
+                # other members with no record of whom, so capable companions withhold their replies.
+                db.execute('ALTER TABLE chat_turns ADD COLUMN attributed INTEGER NOT NULL DEFAULT 0')
             # Existing queued requests have never received intake approval. Fail closed
             # during migration; completed/running jobs and release approvals retain their history.
             db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
@@ -204,7 +221,8 @@ class Store:
             db.execute('UPDATE settings SET value=? WHERE key="active_sha"', (sha,))
             self._audit(db, 'installer', 'bootstrap', sha)
 
-    def request(self, guild_id: str, user_id: str, source_id: str, source_url: str, body: str):
+    def request(self, guild_id: str, user_id: str, source_id: str, source_url: str, body: str, provenance=(),
+                revision=None):
         body = clean(body)
         if len(body) < 5:
             raise ValueError('Describe the request in at least five characters')
@@ -213,6 +231,10 @@ class Store:
             existing = db.execute('SELECT * FROM jobs WHERE source_id=?', (source_id,)).fetchone()
             if existing:
                 return self._job(existing)
+            # Checked in the creating transaction: an erasure can't slip in after the companion's fence.
+            if revision is not None and self._privacy_state(db, user_id)[0] != revision:
+                raise Conflict('Your privacy settings changed while this draft was open. Draft it again.')
+            provenance = self._checked_provenance(db, user_id, provenance)
             pending = db.execute('SELECT count(*) FROM jobs WHERE user_id=? AND state IN '
                                  '("awaiting_owner","queued","building","review","approved","deploying")',
                                  (user_id,)).fetchone()[0]
@@ -220,9 +242,9 @@ class Store:
                 raise Conflict('You already have three open requests; finish one first')
             job_id = uuid.uuid4().hex[:12]
             now = time.time()
-            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,created,updated,state) '
-                       'VALUES (?,?,?,?,?,?,?,?,"awaiting_owner")',
-                       (job_id, guild_id, user_id, source_id, source_url, body, now, now))
+            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,created,updated,state,provenance) '
+                       'VALUES (?,?,?,?,?,?,?,?,"awaiting_owner",?)',
+                       (job_id, guild_id, user_id, source_id, source_url, body, now, now, json.dumps(provenance)))
             self._audit(db, user_id, 'request', job_id)
             return self._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
 
@@ -551,18 +573,8 @@ class Store:
         self.personal_control(user_id, 'disable')
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            rows = db.execute('SELECT id,proposal FROM jobs WHERE user_id=?', (user_id,)).fetchall()
-            for row in rows:
-                proposal = json.loads(row['proposal']) if row['proposal'] else None
-                if proposal:
-                    proposal['summary'] = '[User request erased]'
-                    proposal.pop('repair_verification', None)
-                db.execute('UPDATE jobs SET user_id="deleted",body="[User request erased]",'
-                           'source_url="",source_id=?,result="",proposal=?,'
-                           'state=CASE WHEN state IN ("awaiting_owner","queued","review","approved") '
-                           'OR (kind="repair" AND state="building") THEN "rejected" '
-                           'ELSE state END WHERE id=?',
-                           ('erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
+            self._erase_jobs(db, db.execute('SELECT id,proposal FROM jobs WHERE user_id=?', (user_id,)).fetchall(),
+                             '[User request erased]', 'deleted')
             db.execute('DELETE FROM memories WHERE approved_by=?', (user_id,))
             db.execute('UPDATE audit SET actor="deleted" WHERE actor=?', (user_id,))
             db.execute('UPDATE jobs SET approved_by="deleted" WHERE approved_by=?', (user_id,))
@@ -576,10 +588,14 @@ class Store:
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             turns = [dict(row) for row in db.execute(
-                'SELECT input,reply,source,at,response_kind,reaction,allow_closing,burst FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
+                'SELECT id,input,reply,source,at,response_kind,reaction,allow_closing,burst,provenance,attributed '
+                'FROM chat_turns '
+                'WHERE guild_id=? AND channel_id=? AND user_id=? '
                 'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
+            turns = self._current_turns(db, turns)
             for turn in turns:
                 turn['burst'] = json.loads(turn['burst'])
+                turn['attributed'] = bool(turn['attributed'])
                 source = turn.pop('source')
                 recorded = turn.pop('at')
                 turn['source'] = ChatSource.model_validate_json(source).evidence() if source else {
@@ -595,9 +611,116 @@ class Store:
                     'personal_memory': profile,
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
 
+    @staticmethod
+    def _privacy_state(db, user_id):
+        row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
+        enabled = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
+        return (row[0] if row else 0), (bool(enabled[0]) if enabled else True)
+
+    def _checked_provenance(self, db, speaker, provenance):
+        """Fail closed if any referenced member's privacy changed after the reply's context was read."""
+        seen = {}
+        for item in provenance:
+            user, revision = str(item['user_id']), int(item['revision'])
+            if user == speaker:
+                continue  # The speaker's own revision is already checked for the whole turn.
+            if seen.setdefault(user, revision) != revision:
+                raise ValueError('Conflicting provenance revisions')
+        for user, revision in seen.items():
+            if self._privacy_state(db, user) != (revision, True):
+                raise Conflict('Someone in that context changed their privacy settings. Ask again for a fresh reply.')
+        return [{'user_id': user, 'revision': revision} for user, revision in sorted(seen.items())]
+
+    def _current_turns(self, db, turns):
+        """Drop turns derived from members whose privacy revision changed or who turned memory off."""
+        kept = []
+        for turn in turns:
+            turn['provenance'] = json.loads(turn['provenance'] or '[]')
+            if all(self._privacy_state(db, s['user_id']) == (s['revision'], True) for s in turn['provenance']):
+                kept.append(turn)
+            else:
+                db.execute('DELETE FROM chat_turns WHERE id=?', (turn['id'],))
+        for turn in kept:
+            turn.pop('id')  # Provenance stays: replies built on this history inherit it.
+        return kept
+
+    def message_sources(self, guild_id, message_ids):
+        """Resolve Fri's delivered messages to the members they drew on, for later references."""
+        found = {}
+        with self.connection() as db:
+            for message_id in message_ids:
+                row = db.execute('SELECT user_id,provenance,verbatim,speaker_revision FROM chat_turns WHERE guild_id=? '
+                                 'AND reply_message_id=?', (guild_id, message_id)).fetchone()
+                if not row or row['speaker_revision'] is None:
+                    continue
+                sources = json.loads(row['provenance'] or '[]') + [
+                    {'user_id': row['user_id'], 'revision': row['speaker_revision']}]
+                if not all(self._privacy_state(db, s['user_id']) == (s['revision'], True) for s in sources):
+                    continue  # Includes the original speaker: never relabel an old reply.
+                found[message_id] = {'verbatim': bool(row['verbatim']), 'provenance': sources}
+        return found
+
+    @staticmethod
+    def _erase_jobs(db, rows, text, user=None):
+        """Withdraw requests' content: unfinished ones are rejected, history keeps only the shell.
+
+        A running build loses its lease, so the worker can't write its summary back afterwards.
+        """
+        for row in rows:
+            proposal = json.loads(row['proposal']) if row['proposal'] else None
+            if proposal:
+                proposal['summary'] = text
+                proposal.pop('repair_verification', None)
+            db.execute('UPDATE jobs SET user_id=COALESCE(?,user_id),body=?,provenance="[]",'
+                       'source_url="",source_id=?,result="",proposal=?,'
+                       'lease=CASE WHEN state="building" THEN NULL ELSE lease END,'
+                       'progress=CASE WHEN state="building" THEN NULL ELSE progress END,'
+                       'state=CASE WHEN state IN ("awaiting_owner","queued","building","review","approved") '
+                       'THEN "rejected" ELSE state END WHERE id=?',
+                       (user, text, 'erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
+
+    @staticmethod
+    def advance_revision(db, user_id):
+        """Every privacy change (erasure, memory on/off, cleared chats, edited notes) moves the revision.
+
+        Other members' turns, pending questions and requests built from this member's earlier words
+        go with it, so nothing derived outlives the change.
+        """
+        db.execute("DELETE FROM chat_turns WHERE id IN (SELECT t.id FROM chat_turns t, json_each(t.provenance) p "
+                   "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
+        db.execute("DELETE FROM chat_pending WHERE EXISTS (SELECT 1 FROM json_each(chat_pending.body, '$.provenance') p "
+                   "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
+        Store._erase_jobs(db, db.execute("SELECT j.id,j.proposal FROM jobs j, json_each(j.provenance) p "
+                                         "WHERE json_extract(p.value, '$.user_id')=?", (user_id,)).fetchall(),
+                          '[Request withdrawn: someone it drew on changed their privacy settings]')
+        db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
+                   'DO UPDATE SET revision=revision+1', (user_id,))
+
+    def downgrade_turn_provenance(self):
+        """Before starting a controller without turn-provenance, which can't erase derived state."""
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute("DELETE FROM chat_turns WHERE provenance <> '[]'")
+            db.execute("DELETE FROM chat_pending WHERE json_array_length(json_extract(body, '$.provenance')) > 0")
+            self._erase_jobs(db, db.execute("SELECT id,proposal FROM jobs WHERE provenance <> '[]'").fetchall(),
+                             '[Request withdrawn before a controller downgrade]')
+            # The older controller writes summaries positionally.
+            db.execute('ALTER TABLE agent_summaries DROP COLUMN revisions')
+
+    def check_chat(self, user_id, revision, provenance=()):
+        """The save's privacy fence without writing: run before a reply is delivered."""
+        with self.connection() as db:
+            if self._privacy_state(db, user_id)[0] != revision:
+                raise Conflict('This conversation was cleared while Fri was replying. Start again.')
+            self._checked_provenance(db, user_id, provenance)
+            return {'ok': True}
+
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
-                  *, response_kind='reply', reaction=None, allow_closing=False, burst=()):
+                  *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=None,
+                  reply_message_id=None, verbatim=False):
+        # None: a legacy companion that doesn't track sources. A list, even empty, is complete attribution.
+        attributed = provenance is not None
         from .fri_responses import validate_response
         validate_response(response_kind, reply, reaction, notes=notes)
         if allow_closing and (response_kind != 'reply' or clarification):
@@ -616,6 +739,7 @@ class Store:
             current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             if revision != (current[0] if current else 0):
                 raise Conflict('This conversation was cleared while Fri was replying. Start again.')
+            provenance = self._checked_provenance(db, user_id, provenance or ())
             from .fri_pending import read as read_pending
             from .fri_pending import save as save_pending
             if response_kind != 'reply' and read_pending(db, guild_id, channel_id, user_id, revision):
@@ -630,7 +754,8 @@ class Store:
                 db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
                            (guild_id, channel_id, user_id, source.id))
             if response_kind == 'reply':
-                save_pending(db, guild_id, channel_id, user_id, revision, text, source, clarification)
+                save_pending(db, guild_id, channel_id, user_id, revision, text, source, clarification,
+                             provenance if attributed else None)
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             if not profile['enabled']:
                 return {'ok': True, 'first_memory': False}
@@ -651,9 +776,12 @@ class Store:
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
                        (guild_id, channel_id, user_id, guild_id, channel_id, user_id, MAX_NOTES))
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
-                       'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
+                       'reply_message_id,verbatim,speaker_revision,attributed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
-                        time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind, reaction, allow_closing, json.dumps(burst)))
+                        time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind,
+                        reaction, allow_closing, json.dumps(burst), json.dumps(provenance), reply_message_id,
+                        bool(verbatim), revision, attributed))
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',
@@ -698,19 +826,22 @@ class Store:
                 # conservatively; already delivered Discord messages are separate.
                 db.execute('DELETE FROM agent_reports')
             # Invalidate even an in-flight reply that began before memory was toggled.
-            db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
-                       'DO UPDATE SET revision=revision+1', (user_id,))
+            self.advance_revision(db, user_id)
 
     def clear_chats(self, user_id):
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
+            for row in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
+                if user_id in json.loads(row['authors']):
+                    db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (row['channel_id'],))
+            # Learning reports can quote several members; remove retained and queued copies, as disable does.
+            db.execute('DELETE FROM agent_reports')
             db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM web_requests WHERE user_id=?', (user_id,))
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
-            db.execute('INSERT INTO chat_revisions VALUES (?,1) ON CONFLICT(user_id) '
-                       'DO UPDATE SET revision=revision+1', (user_id,))
+            self.advance_revision(db, user_id)
 
     def chat_models(self):
         with self.connection() as db:

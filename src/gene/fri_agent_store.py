@@ -61,6 +61,9 @@ def initialize(db):
             turns INTEGER NOT NULL, until REAL NOT NULL, PRIMARY KEY(user_id,space));
         CREATE TABLE IF NOT EXISTS agent_usage_roles (attempt_id TEXT PRIMARY KEY, role TEXT NOT NULL);
     ''')
+    if 'revisions' not in {row[1] for row in db.execute('PRAGMA table_info(agent_summaries)')}:
+        # Authors' privacy revisions observed when the summary was made; older rows fail closed.
+        db.execute("ALTER TABLE agent_summaries ADD COLUMN revisions TEXT NOT NULL DEFAULT '{}'")
 
 
 class AgentStore:
@@ -325,9 +328,11 @@ class AgentStore:
                 summary = ''
             # Any opt-out/revision change invalidates the entire derived summary.
             if summary and accepted and len(accepted) == len(records) and mode != 'explore':
-                db.execute('INSERT INTO agent_summaries VALUES (?,?,?,?) ON CONFLICT(channel_id) '
-                           'DO UPDATE SET body=excluded.body,authors=excluded.authors,at=excluded.at',
-                           (claim['channel_id'], summary, json.dumps(sorted({r['user_id'] for r in accepted.values()})), now))
+                db.execute('INSERT INTO agent_summaries(channel_id,body,authors,at,revisions) VALUES (?,?,?,?,?) '
+                           'ON CONFLICT(channel_id) DO UPDATE SET body=excluded.body,authors=excluded.authors,'
+                           'at=excluded.at,revisions=excluded.revisions',
+                           (claim['channel_id'], summary, json.dumps(sorted({r['user_id'] for r in accepted.values()})), now,
+                            json.dumps({r['user_id']: r['revision'] for r in accepted.values()}, sort_keys=True)))
             cursors = self.get(db, 'cursors', {})
             discoveries = []
             already_checked = 0
@@ -416,9 +421,10 @@ class AgentStore:
                 report['body'] = report['body'].replace('Untrusted summary:', 'Conversation summary:')
                 channel = re.search(r'Channel: <#(\d+)>', report['body'])
                 report['channel_id'] = channel[1] if channel else None
-            summaries = [dict(r) for r in db.execute(
-                'SELECT channel_id,body,at FROM agent_summaries WHERE at>? ORDER BY at DESC LIMIT 5',
-                (now-2*86400,)) if r['channel_id'] in self.settings.agent_history_channels.split(',')]
+            summaries = [{k: r[k] for k in ('channel_id', 'body', 'at')} for r in db.execute(
+                'SELECT channel_id,body,at,authors,revisions FROM agent_summaries WHERE at>? ORDER BY at DESC LIMIT 5',
+                (now-2*86400,)) if r['channel_id'] in self.settings.agent_history_channels.split(',')
+                and self._summary_current(db, r)]  # The same revision fence as ordinary context.
             return {'reports': reports, 'summaries': summaries,
                     'historical_notes': [dict(channel_id=c, **n) for c in self.settings.agent_history_channels.split(',')
                                          for n in historical_notes(db, c)][:20],
@@ -434,13 +440,28 @@ class AgentStore:
     def context(self, channel, user, guild=None):
         guild = guild or self.settings.guild_id
         with self.store.connection() as db:
-            row = db.execute('SELECT body FROM agent_summaries WHERE channel_id=? AND at>?',
+            row = db.execute('SELECT body,authors,revisions FROM agent_summaries WHERE channel_id=? AND at>?',
                              (channel, time.time()-2*86400)).fetchone()
+            if row and not self._summary_current(db, row):
+                db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (channel,))
+                row = None
             profile = self.store._personal_context(db, guild, 'public:'+channel, user)
             rev = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
-            return {'summary': row[0] if row and profile['enabled'] and guild == self.settings.guild_id else '',
+            summary = row[0] if row and profile['enabled'] and guild == self.settings.guild_id else ''
+            revisions = json.loads(row['revisions']) if summary else {}
+            return {'summary': summary,
+                    # Replies built from the summary inherit its authors at the revisions it was made from.
+                    'summary_provenance': [{'user_id': author, 'revision': revision}
+                                           for author, revision in sorted(revisions.items()) if author != str(user)],
                     'historical_topics': historical_notes(db, channel, user) if profile['enabled'] and guild == self.settings.guild_id else [],
                     'enabled': profile['enabled'], 'revision': rev[0] if rev else 0}
+
+    def _summary_current(self, db, row):
+        """A summary is shown only while every author still has the revision it was made from."""
+        revisions = json.loads(row['revisions'] or '{}')
+        if not revisions or set(revisions) != set(json.loads(row['authors'])):
+            return False
+        return all(self.store._privacy_state(db, author) == (revision, True) for author, revision in revisions.items())
 
     def reports(self):
         with self.store.connection() as db:

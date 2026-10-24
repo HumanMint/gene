@@ -65,6 +65,60 @@ checks against both sides. A breaking change must introduce a new supported prot
 not silently reinterpret `gene-fri/1`. Settings revisions and Gene cog SHAs are not
 protocol versions.
 
+## Turn provenance
+
+The additive `turn-provenance` capability makes the controller enforce erasure for saved replies
+built from other members' messages.
+
+- **Provenance on save.** `/chat/turn` accepts optional `provenance`: the other members whose
+  messages shaped the reply, each with the privacy revision the companion observed. The save fails
+  closed if any listed member's revision moved or their memory is off.
+- **Erasure.** `personal_control('disable')`, `erase_user` and `clear_chats` delete other
+  members' dependent turns. `chat_context` also drops any turn whose sources' revisions changed.
+- **Pre-delivery check.** `/chat/turn/check` applies the same speaker-revision and provenance fence
+  without writing. The companion calls it immediately before delivering and saves only after
+  Discord accepts the reply, so the save is no longer the only fence and an undelivered reply is
+  never stored as said. Mention-grant turns keep their own fences and placeholder storage.
+
+Provenance also reaches what follow-ups inherit:
+
+- `chat_context` returns each turn's provenance.
+- Pending clarifications store their turn's provenance, are deleted by erasure, and are dropped
+  when a source revision moves.
+- Agent context returns `summary_provenance`: the summary authors' current revisions.
+- Saved turns record Fri's delivered `reply_message_id` and whether the stored reply is
+  `verbatim`. `/chat/messages/sources` resolves referenced Fri messages to their current sources
+  plus the original speaker, and omits any whose sources changed or that kept only a breadcrumb,
+  so the companion fails closed.
+- At most 200 provenance entries are accepted.
+- Channel summaries record each author's observed revision. A summary is shown only while every
+  author still has it, rows without revisions fail closed, `clear_chats` removes the author's
+  summaries, and `summary_provenance` carries the observed revisions.
+- A consumed clarification copies only member-authored authorization fields into the Gene control
+  (goal, source, request text, revision, burst marker), never the assistant's question. Older rows
+  are scrubbed on startup.
+- The learning overview applies the same summary revision fence, and `clear_chats` removes learning
+  reports and their delivery queue.
+- Saved turns record the speaker's revision. A Fri message resolves only while that revision is
+  unchanged, and rows without it fail closed.
+- `/requests` accepts a chat draft's `provenance` and the requester's `revision`, and checks both
+  in the creating transaction. Every privacy change (erasure, memory on or off, cleared chats,
+  edited notes) withdraws dependent requests the same way erasure withdraws a member's own: unfinished ones are rejected and the stored text is
+  replaced. A running build loses its lease, so the worker can't write its summary back; the worker
+  then deletes that job's transcript and checkout.
+- **Unattributed history.** A turn counts as attributed only when it was saved with a provenance
+  list, even an empty one. Turns saved before this release, and any a legacy companion saves later
+  (during rollout or after a Fri-only rollback), may quote other members with no record of whom.
+  `chat_context` marks them `attributed: false`, and capable companions withhold their replies.
+  Pending questions saved without provenance carry no `provenance` key. Command receipts say whether
+  the companion `grounded` the argument in the member's own words.
+- **Not yet covered:** repair requests Fri files after noticing a Gene error quote Gene's raw error
+  text, which can include a member's command. `gene_diagnose` reads them back through
+  `previous_repairs`. Chat replies built from that read keep only a breadcrumb, but the stored
+  repair text isn't attributed or erased yet. It needs a follow-up.
+
+The legacy companion sends no provenance and is unaffected.
+
 ## Release and recovery
 
 The trusted coordinator is `python -m gene.fri_release <full-reviewed-fri-sha>`.
@@ -84,6 +138,21 @@ rollback changes only code/configuration and uses current state. It never restor
 stale database, erasure revision, approval, sent receipt or rotating auth session.
 Failed first cutover restores the legacy process; failed subsequent release restores
 the previous compatible independent image. A failed recovery needs maintainer attention.
+
+Rolling the controller back below `turn-provenance` needs one extra step, because an older
+controller cannot erase state derived from other members. First roll Fri back to a release that
+does not require the capability. Then, with the controller stopped and backed up, run this from the
+current release, in the controller environment, before starting the older controller:
+
+```sh
+python -m gene.provenance_downgrade "$GENE_DB"
+```
+
+It deletes saved turns and pending questions that carry provenance, withdraws requests submitted
+from derived drafts, and drops `agent_summaries.revisions`, which the older controller's positional
+summary insert can't handle. This loses only continuity and those derived requests. The speaker's
+own turns stay. Rolling back Fri alone needs no cleanup: the newer controller keeps enforcing
+provenance on everything already saved.
 
 The complete `/srv/gene/data/fri` and `/srv/gene/secrets/fri-chatgpt` directories stay
 in place initially. Identity, read/write allowlists, memory, pending controls/reviews,

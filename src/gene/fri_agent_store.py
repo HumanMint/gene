@@ -26,6 +26,8 @@ DEFAULTS = {
     'status_rotation_minutes': 360,
     'dm_turns': 8, 'public_turns': 20, 'cooldown_min_minutes': 10,
     'cooldown_max_minutes': 20, 'voice_notes': '', 'attention_notes': '', 'learning_notes': '',
+    'reply_check_enabled': False, 'reply_check_private': False, 'reply_check_model': 'gpt-6-luna',
+    'reply_check_effort': 'low', 'reply_check_minutes': 30, 'reply_check_daily_pairs': 120,
 }
 RANGES = {'heartbeat_seconds': (60, 1800), 'learning_first_minutes': (15, 360),
           'learning_later_minutes': (60, 1440), 'history_days': (1, 14),
@@ -35,7 +37,8 @@ RANGES = {'heartbeat_seconds': (60, 1800), 'learning_first_minutes': (15, 360),
           'meme_daily_reactions': (0, 8),
           'status_rotation_minutes': (60, 720),
           'dm_turns': (3, 30), 'public_turns': (5, 60),
-          'cooldown_min_minutes': (10, 20), 'cooldown_max_minutes': (10, 20)}
+          'cooldown_min_minutes': (10, 20), 'cooldown_max_minutes': (10, 20),
+          'reply_check_minutes': (10, 720), 'reply_check_daily_pairs': (10, 400)}
 
 
 def snowflake_floor(timestamp):
@@ -47,6 +50,8 @@ def initialize(db):
     initialize_exploration(db)
     from .fri_operation_store import initialize as initialize_operations
     initialize_operations(db)
+    from .fri_reply_checks import initialize as initialize_reply_checks
+    initialize_reply_checks(db)
     db.executescript('''
         CREATE TABLE IF NOT EXISTS agent_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS agent_reports (
@@ -162,6 +167,8 @@ class AgentStore:
             self.put(db, 'version', version+1)
             if config['enabled'] and not self.get(db, 'started', 0):
                 self.put(db, 'started', time.time())
+            if changes.get('reply_check_enabled') is True:
+                self.put(db, 'reply_check_cursor', time.time())  # Never review turns from before enablement.
             if {'learning_first_minutes', 'learning_later_minutes'} & set(changes):
                 # A later explicit owner schedule change supersedes the temporary cadence.
                 self.put(db, 'learning_window', None)

@@ -768,6 +768,37 @@ still binds every release to an exact SHA. No shell or Docker credentials are ex
 to Fri's conversation model.
 
 
+### Reply checks
+
+Off by default. The owner turns them on through the normal settings preview
+(`reply_check_enabled`); `reply_check_private` adds DMs and private panel conversations,
+`reply_check_minutes` (10–720, default 30) and `reply_check_daily_pairs` (10–400, default 120)
+bound cost, and `reply_check_model`/`reply_check_effort` default to Luna/low.
+
+The controller offers Fri pairs from saved turns in the main server: Fri's verbatim reply, then the
+same member's next turn in that conversation within 15 minutes. Turns saved before reply checks were
+switched on, reactions, breadcrumbs, unattributed turns and members whose privacy revision moved are
+never offered. Each message is cut to 600 characters, and the offered pairs carry no member, channel
+or message identifiers. Fri's model returns only clear cases of a member being unhappy with the reply
+(a correction, a re-ask, an ignored request, a failed action, frustration aimed at Fri), as a category,
+a severity and two short abstract sentences. The controller rereads both turns before keeping one: a
+pruned or erased turn, a privacy change since the claim, or a description that quotes five words in a
+row, links, mentions or carries a long number drops the finding. Failed batches retry twice and are then
+skipped.
+
+Findings live 30 days in `fri_reply_findings` with the member and provenance revisions, so any
+privacy change by the member or anyone the pair drew on deletes them, and reads re-check the fence.
+The owner can ask Fri for a summary (“show reply checks”). Maintainers read the anonymized digest on
+the host without starting anything:
+
+```bash
+sudo /srv/gene/venv/bin/python -m gene.fri_reply_checks export /srv/gene/data/controller/gene.sqlite3 7
+```
+
+It prints categories, severities, day-precision dates and the abstract descriptions only. Before
+rolling the controller back to a release without reply checks, stop it and run
+`python -m gene.fri_reply_checks purge <database>`, because older releases can't erase findings.
+
 ## Conversational Gene controls
 
 Fri can use `play`, `pause`, `resume`, `skip`, `stop`, `volume` (0–100), `queue`,

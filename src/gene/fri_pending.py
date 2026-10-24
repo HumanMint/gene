@@ -50,11 +50,27 @@ def answer_text(text, bot_id=''):
     return ' '.join(addressed_content(text, bot_id).split())
 
 
+def _current(db, sources):
+    for item in sources:
+        row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (item['user_id'],)).fetchone()
+        enabled = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (item['user_id'],)).fetchone()
+        if (row[0] if row else 0) != item['revision'] or (enabled is not None and not enabled[0]):
+            return False
+    return True
+
+
 def read(db, guild, conversation, user, revision):
     db.execute('DELETE FROM chat_pending WHERE created<?', (time.time()-TTL,))
     row = db.execute('SELECT * FROM chat_pending WHERE guild_id=? AND conversation_id=? AND user_id=? '
                      'AND revision=?', (guild, conversation, user, revision)).fetchone()
-    return json.loads(row['body']) if row else None
+    if not row:
+        return None
+    body = json.loads(row['body'])
+    # A question shaped by another member's words goes when their privacy changes.
+    if not _current(db, body.get('provenance', [])):
+        clear(db, guild, conversation, user)
+        return None
+    return body
 
 
 def clear(db, guild, conversation, user):
@@ -80,7 +96,7 @@ def cancel(store, guild, conversation, user, text, source):
         return {'cancelled': True}
 
 
-def save(db, guild, conversation, user, revision, text, source, clarification):
+def save(db, guild, conversation, user, revision, text, source, clarification, provenance=()):
     clear(db, guild, conversation, user)
     if not clarification:
         return
@@ -100,7 +116,8 @@ def save(db, guild, conversation, user, revision, text, source, clarification):
         raise ValueError('This message already has a reply')
     if source_used(db, guild, source.id):
         raise ValueError('This request was already handled')
-    body = {**value, 'source': source.model_dump(), 'request_text': text, 'revision': revision}
+    body = {**value, 'source': source.model_dump(), 'request_text': text, 'revision': revision,
+            'provenance': list(provenance)}
     db.execute('INSERT INTO chat_pending VALUES (?,?,?,?,?,?,?)',
                (guild, conversation, user, source.id, source.timestamp().timestamp(), revision, json.dumps(body)))
 

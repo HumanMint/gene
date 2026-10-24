@@ -434,11 +434,16 @@ class AgentStore:
     def context(self, channel, user, guild=None):
         guild = guild or self.settings.guild_id
         with self.store.connection() as db:
-            row = db.execute('SELECT body FROM agent_summaries WHERE channel_id=? AND at>?',
+            row = db.execute('SELECT body,authors FROM agent_summaries WHERE channel_id=? AND at>?',
                              (channel, time.time()-2*86400)).fetchone()
             profile = self.store._personal_context(db, guild, 'public:'+channel, user)
             rev = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
-            return {'summary': row[0] if row and profile['enabled'] and guild == self.settings.guild_id else '',
+            summary = row[0] if row and profile['enabled'] and guild == self.settings.guild_id else ''
+            authors = json.loads(row['authors']) if summary else []
+            return {'summary': summary,
+                    # Replies built from the summary inherit its authors, so their erasure reaches them.
+                    'summary_provenance': [{'user_id': author, 'revision': self.store._privacy_state(db, author)[0]}
+                                           for author in sorted(authors) if author != str(user)],
                     'historical_topics': historical_notes(db, channel, user) if profile['enabled'] and guild == self.settings.guild_id else [],
                     'enabled': profile['enabled'], 'revision': rev[0] if rev else 0}
 

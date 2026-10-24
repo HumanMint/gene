@@ -11,9 +11,10 @@ from tests.test_fri_endings import source
 ASH = {'user_id': '30', 'revision': 0}
 
 
-def save(store, user='20', conversation='public:1', reply='ash said denver', provenance=(), revision=0):
+def save(store, user='20', conversation='public:1', reply='ash said denver', provenance=(), revision=0, **extra):
     return store.save_chat('123', conversation, user, revision, 'where is ash moving', reply, 'model', 'high',
-                           source=source(user=user, channel=conversation.split(':')[1]), provenance=provenance)
+                           source=extra.pop('source', None) or source(user=user, channel=conversation.split(':')[1]),
+                           provenance=provenance, **extra)
 
 
 def replies(store, user='20', conversation='public:1'):
@@ -76,7 +77,7 @@ def test_api_accepts_and_validates_provenance(client):
             'source': source(guild='guild'), 'model': 'model', 'effort': 'high', 'provenance': [ASH]}
     assert client.post('/chat/turn', headers=headers('fri'), json=body).status_code == 200
     for invalid in ([{'user_id': 'ash', 'revision': 0}], [{'user_id': '30', 'revision': -1}],
-                    [{**ASH, 'extra': True}], [ASH] * 41):
+                    [{**ASH, 'extra': True}], [ASH] * 201):
         assert client.post('/chat/turn', headers=headers('fri'), json={**body, 'provenance': invalid}).status_code == 422
     assert client.post('/chat/context', headers=headers('fri'), json=scope).json()['turns'][-1]['reply'] == 'ash said denver'
 
@@ -114,3 +115,65 @@ def test_check_applies_the_save_fence_without_writing(store, client):
     assert client.post('/chat/turn/check', headers=headers('fri'),
                        json={**body, 'mention_grant': 'a' * 64}).status_code == 400
     assert not client.post('/chat/context', headers=headers('fri'), json=scope).json()['turns']
+
+
+def test_returned_turns_keep_provenance_for_follow_ups(store):
+    save(store, provenance=[ASH])
+    turn = store.chat_context('123', 'public:1', '20')['turns'][-1]
+    assert turn['provenance'] == [ASH]  # A follow-up built on this answer inherits Ash.
+
+
+def test_pending_clarification_shaped_by_another_member_follows_their_privacy(store):
+    question = {'goal': 'web', 'question': 'before or after ash moves to denver?', 'topic': 'how are the lakers doing'}
+    def arm():
+        store.save_chat('123', 'public:1', '20', 0, 'fri how are the lakers doing', question['question'], 'model',
+                        'high', source=source(channel='1'), clarification=question, provenance=[ASH])
+    arm()
+    pending = store.chat_context('123', 'public:1', '20')['pending']
+    assert pending['question'] == question['question'] and pending['provenance'] == [ASH]
+    store.personal_control('30', 'disable')  # Eager: Ash's erasure removes the derived question.
+    assert store.chat_context('123', 'public:1', '20')['pending'] is None
+    store.personal_control('30', 'enable')
+    with store.connection() as db:  # Lazy: a revision change hides an existing one.
+        store._checked_provenance(db, '20', [{'user_id': '30', 'revision': 2}])
+    store.save_chat('123', 'public:1', '20', 0, 'fri how are the lakers doing', question['question'], 'model',
+                    'high', source=source(channel='1'), clarification=question,
+                    provenance=[{'user_id': '30', 'revision': 2}])
+    with store.connection() as db:
+        db.execute('UPDATE chat_revisions SET revision=revision+1 WHERE user_id=?', ('30',))
+    assert store.chat_context('123', 'public:1', '20')['pending'] is None
+
+
+def test_summary_carries_its_authors_revisions(store, tmp_path):
+    import time
+
+    from gene.config import Settings
+    from gene.fri_agent_store import AgentStore
+    settings = Settings(tmp_path/'unused.sqlite3', '123', 'owner', 'r'*40, 'w'*40, 'd'*40)
+    agent = AgentStore(store, settings)
+    with store.connection() as db:
+        db.execute('INSERT INTO agent_summaries VALUES (?,?,?,?)', ('1', 'ash is moving to denver', '["30", "20"]',
+                                                                     time.time()))
+    context = agent.context('1', '20')
+    assert context['summary'] and context['summary_provenance'] == [ASH]
+    store.personal_control('30', 'disable')
+    assert agent.context('1', '20') | {'historical_topics': []} == {
+        'summary': '', 'summary_provenance': [], 'historical_topics': [], 'enabled': True, 'revision': 0}
+
+
+def test_fri_message_sources_resolve_or_fail_closed(store, client):
+    save(store, provenance=[ASH], reply_message_id='555', verbatim=True)
+    save(store, reply='Earlier check: read_recent. Fetch current evidence.', reply_message_id='556', verbatim=False)
+    found = store.message_sources('123', ['555', '556', '557'])
+    assert found['555'] == {'verbatim': True, 'provenance': [ASH, {'user_id': '20', 'revision': 0}]}
+    assert found['556']['verbatim'] is False and '557' not in found
+    store.personal_control('30', 'disable')
+    assert '555' not in store.message_sources('123', ['555'])  # Removed with Ash's erasure.
+    store.personal_control('20', 'disable')
+    assert store.message_sources('123', ['556']) == {}  # The speaker turned memory off.
+    body = {'guild_id': '123', 'message_ids': ['555']}
+    assert client.post('/chat/messages/sources', headers=headers('fri'), json=body).json() == {'messages': {}}
+    assert client.post('/chat/messages/sources', headers=headers('runtime'), json=body).status_code == 401
+    for invalid in ({'guild_id': '123', 'message_ids': []}, {'guild_id': '123', 'message_ids': ['x']},
+                    {'guild_id': '123', 'message_ids': ['1'] * 11}, {**body, 'extra': 1}):
+        assert client.post('/chat/messages/sources', headers=headers('fri'), json=invalid).status_code == 422

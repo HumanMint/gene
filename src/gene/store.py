@@ -134,6 +134,10 @@ class Store:
             if 'provenance' not in columns:
                 # Other members whose messages shaped a saved reply, with the privacy revision seen.
                 db.execute("ALTER TABLE chat_turns ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]'")
+            if 'reply_message_id' not in columns:
+                # Fri's delivered Discord message, so later references resolve to these sources.
+                db.execute('ALTER TABLE chat_turns ADD COLUMN reply_message_id TEXT')
+                db.execute('ALTER TABLE chat_turns ADD COLUMN verbatim INTEGER NOT NULL DEFAULT 0')
             # Existing queued requests have never received intake approval. Fail closed
             # during migration; completed/running jobs and release approvals retain their history.
             db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
@@ -624,19 +628,40 @@ class Store:
         """Drop turns derived from members whose privacy revision changed or who turned memory off."""
         kept = []
         for turn in turns:
-            sources = json.loads(turn.pop('provenance') or '[]')
-            if all(self._privacy_state(db, s['user_id']) == (s['revision'], True) for s in sources):
+            turn['provenance'] = json.loads(turn['provenance'] or '[]')
+            if all(self._privacy_state(db, s['user_id']) == (s['revision'], True) for s in turn['provenance']):
                 kept.append(turn)
             else:
                 db.execute('DELETE FROM chat_turns WHERE id=?', (turn['id'],))
         for turn in kept:
-            turn.pop('id')
+            turn.pop('id')  # Provenance stays: replies built on this history inherit it.
         return kept
+
+    def message_sources(self, guild_id, message_ids):
+        """Resolve Fri's delivered messages to the members they drew on, for later references."""
+        found = {}
+        with self.connection() as db:
+            for message_id in message_ids:
+                row = db.execute('SELECT user_id,provenance,verbatim FROM chat_turns WHERE guild_id=? '
+                                 'AND reply_message_id=?', (guild_id, message_id)).fetchone()
+                if not row:
+                    continue
+                sources = json.loads(row['provenance'] or '[]')
+                if not all(self._privacy_state(db, s['user_id']) == (s['revision'], True) for s in sources):
+                    continue
+                speaker = self._privacy_state(db, row['user_id'])
+                if not speaker[1]:
+                    continue
+                found[message_id] = {'verbatim': bool(row['verbatim']), 'provenance': sources + [
+                    {'user_id': row['user_id'], 'revision': speaker[0]}]}
+        return found
 
     @staticmethod
     def _drop_dependents(db, user_id):
         # Other members' turns built from this member's messages must not outlive their erasure.
         db.execute("DELETE FROM chat_turns WHERE id IN (SELECT t.id FROM chat_turns t, json_each(t.provenance) p "
+                   "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
+        db.execute("DELETE FROM chat_pending WHERE EXISTS (SELECT 1 FROM json_each(chat_pending.body, '$.provenance') p "
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
 
     def check_chat(self, user_id, revision, provenance=()):
@@ -649,7 +674,8 @@ class Store:
 
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
-                  *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=()):
+                  *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=(),
+                  reply_message_id=None, verbatim=False):
         from .fri_responses import validate_response
         validate_response(response_kind, reply, reaction, notes=notes)
         if allow_closing and (response_kind != 'reply' or clarification):
@@ -683,7 +709,7 @@ class Store:
                 db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
                            (guild_id, channel_id, user_id, source.id))
             if response_kind == 'reply':
-                save_pending(db, guild_id, channel_id, user_id, revision, text, source, clarification)
+                save_pending(db, guild_id, channel_id, user_id, revision, text, source, clarification, provenance)
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             if not profile['enabled']:
                 return {'ok': True, 'first_memory': False}
@@ -704,11 +730,12 @@ class Store:
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
                        (guild_id, channel_id, user_id, guild_id, channel_id, user_id, MAX_NOTES))
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
-                       'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance) '
-                       'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
+                       'reply_message_id,verbatim) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
                         time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind,
-                        reaction, allow_closing, json.dumps(burst), json.dumps(provenance)))
+                        reaction, allow_closing, json.dumps(burst), json.dumps(provenance), reply_message_id,
+                        bool(verbatim)))
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',

@@ -124,6 +124,19 @@ stale database, erasure revision, approval, sent receipt or rotating auth sessio
 Failed first cutover restores the legacy process; failed subsequent release restores
 the previous compatible independent image. A failed recovery needs maintainer attention.
 
+Rolling the controller back below `turn-provenance` needs one extra step, because an older
+controller cannot erase turns derived from other members. First roll Fri back to a release that
+does not require the capability. Then, with the controller stopped and after its backup, delete
+the derived state before starting the older controller:
+
+```sql
+DELETE FROM chat_turns WHERE provenance <> '[]';
+DELETE FROM chat_pending WHERE json_array_length(json_extract(body, '$.provenance')) > 0;
+```
+
+This loses only continuity. The speaker's own turns stay. Rolling back Fri alone needs no
+cleanup: the newer controller keeps enforcing provenance on everything already saved.
+
 The complete `/srv/gene/data/fri` and `/srv/gene/secrets/fri-chatgpt` directories stay
 in place initially. Identity, read/write allowlists, memory, pending controls/reviews,
 reminders, reports and persistent buttons remain unchanged. See Fri's operations

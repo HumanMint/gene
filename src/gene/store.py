@@ -138,6 +138,9 @@ class Store:
                 # Fri's delivered Discord message, so later references resolve to these sources.
                 db.execute('ALTER TABLE chat_turns ADD COLUMN reply_message_id TEXT')
                 db.execute('ALTER TABLE chat_turns ADD COLUMN verbatim INTEGER NOT NULL DEFAULT 0')
+            if 'speaker_revision' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
+                # The speaker's revision when saved; references fail closed once it moves.
+                db.execute('ALTER TABLE chat_turns ADD COLUMN speaker_revision INTEGER')
             # Existing queued requests have never received intake approval. Fail closed
             # during migration; completed/running jobs and release approvals retain their history.
             db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
@@ -642,18 +645,15 @@ class Store:
         found = {}
         with self.connection() as db:
             for message_id in message_ids:
-                row = db.execute('SELECT user_id,provenance,verbatim FROM chat_turns WHERE guild_id=? '
+                row = db.execute('SELECT user_id,provenance,verbatim,speaker_revision FROM chat_turns WHERE guild_id=? '
                                  'AND reply_message_id=?', (guild_id, message_id)).fetchone()
-                if not row:
+                if not row or row['speaker_revision'] is None:
                     continue
-                sources = json.loads(row['provenance'] or '[]')
+                sources = json.loads(row['provenance'] or '[]') + [
+                    {'user_id': row['user_id'], 'revision': row['speaker_revision']}]
                 if not all(self._privacy_state(db, s['user_id']) == (s['revision'], True) for s in sources):
-                    continue
-                speaker = self._privacy_state(db, row['user_id'])
-                if not speaker[1]:
-                    continue
-                found[message_id] = {'verbatim': bool(row['verbatim']), 'provenance': sources + [
-                    {'user_id': row['user_id'], 'revision': speaker[0]}]}
+                    continue  # Includes the original speaker: never relabel an old reply.
+                found[message_id] = {'verbatim': bool(row['verbatim']), 'provenance': sources}
         return found
 
     @staticmethod
@@ -731,11 +731,11 @@ class Store:
                        (guild_id, channel_id, user_id, guild_id, channel_id, user_id, MAX_NOTES))
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
                        'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
-                       'reply_message_id,verbatim) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       'reply_message_id,verbatim,speaker_revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
                         time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind,
                         reaction, allow_closing, json.dumps(burst), json.dumps(provenance), reply_message_id,
-                        bool(verbatim)))
+                        bool(verbatim), revision))
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',
@@ -793,6 +793,8 @@ class Store:
             for row in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
                 if user_id in json.loads(row['authors']):
                     db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (row['channel_id'],))
+            # Learning reports can quote several members; remove retained and queued copies, as disable does.
+            db.execute('DELETE FROM agent_reports')
             db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM web_requests WHERE user_id=?', (user_id,))
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))

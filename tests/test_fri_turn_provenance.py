@@ -218,3 +218,39 @@ def test_fri_message_sources_resolve_or_fail_closed(store, client):
     for invalid in ({'guild_id': '123', 'message_ids': []}, {'guild_id': '123', 'message_ids': ['x']},
                     {'guild_id': '123', 'message_ids': ['1'] * 11}, {**body, 'extra': 1}):
         assert client.post('/chat/messages/sources', headers=headers('fri'), json=invalid).status_code == 422
+
+
+def test_learning_overview_applies_the_summary_revision_fence(store, tmp_path):
+    from gene.config import Settings
+    from gene.fri_agent_store import AgentStore
+    agent = summary_agent(store, tmp_path)
+    agent.settings = Settings(tmp_path/'unused.sqlite3', '123', 'owner', 'r'*40, 'w'*40, 'd'*40,
+                              agent_history_channels='1')
+    assert [s['body'] for s in agent.overview()['summaries']] == ['ash is moving to denver']
+    store.personal_control('30', 'enable')  # Revision moves without an eager delete.
+    assert AgentStore(store, agent.settings).overview()['summaries'] == []
+
+
+def test_clear_chats_removes_learning_reports_and_their_delivery_queue(store, tmp_path):
+    import time
+
+    from gene.config import Settings
+    from gene.fri_agent_store import AgentStore
+    agent = AgentStore(store, Settings(tmp_path/'unused.sqlite3', '123', 'owner', 'r'*40, 'w'*40, 'd'*40))
+    with store.connection() as db:
+        db.execute('INSERT INTO agent_reports(id,at,body,delivered) VALUES (?,?,?,0)',
+                   ('r1', time.time(), 'Untrusted summary: ash is moving to denver'))
+    assert agent.reports()
+    store.clear_chats('30')
+    assert agent.reports() == [] and agent.overview()['reports'] == []
+
+
+def test_fri_message_sources_never_relabel_the_original_speaker(store):
+    save(store, provenance=[ASH], reply_message_id='555', verbatim=True)
+    assert store.message_sources('123', ['555'])['555']['provenance'][-1] == {'user_id': '20', 'revision': 0}
+    store.personal_control('20', 'enable')  # The speaker's revision moves: the old reply no longer resolves.
+    assert store.message_sources('123', ['555']) == {}
+    with store.connection() as db:  # Rows saved before speaker revisions were recorded fail closed.
+        db.execute("UPDATE chat_turns SET speaker_revision=NULL, provenance='[]'")
+        db.execute("UPDATE chat_revisions SET revision=0 WHERE user_id='20'")
+    assert store.message_sources('123', ['555']) == {}

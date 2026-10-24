@@ -421,9 +421,10 @@ class AgentStore:
                 report['body'] = report['body'].replace('Untrusted summary:', 'Conversation summary:')
                 channel = re.search(r'Channel: <#(\d+)>', report['body'])
                 report['channel_id'] = channel[1] if channel else None
-            summaries = [dict(r) for r in db.execute(
-                'SELECT channel_id,body,at FROM agent_summaries WHERE at>? ORDER BY at DESC LIMIT 5',
-                (now-2*86400,)) if r['channel_id'] in self.settings.agent_history_channels.split(',')]
+            summaries = [{k: r[k] for k in ('channel_id', 'body', 'at')} for r in db.execute(
+                'SELECT channel_id,body,at,authors,revisions FROM agent_summaries WHERE at>? ORDER BY at DESC LIMIT 5',
+                (now-2*86400,)) if r['channel_id'] in self.settings.agent_history_channels.split(',')
+                and self._summary_current(db, r)]  # The same revision fence as ordinary context.
             return {'reports': reports, 'summaries': summaries,
                     'historical_notes': [dict(channel_id=c, **n) for c in self.settings.agent_history_channels.split(',')
                                          for n in historical_notes(db, c)][:20],

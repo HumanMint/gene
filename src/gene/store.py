@@ -118,6 +118,9 @@ class Store:
             for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref', 'progress'):
                 if name not in columns:
                     db.execute(f'ALTER TABLE jobs ADD COLUMN {name} TEXT')
+            if 'provenance' not in columns:
+                # Other members whose messages shaped a submitted draft, with the revision seen.
+                db.execute("ALTER TABLE jobs ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]'")
             if 'source' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
                 db.execute("ALTER TABLE chat_turns ADD COLUMN source TEXT NOT NULL DEFAULT ''")
             from .fri_memory_store import initialize as initialize_personal_notes
@@ -214,7 +217,7 @@ class Store:
             db.execute('UPDATE settings SET value=? WHERE key="active_sha"', (sha,))
             self._audit(db, 'installer', 'bootstrap', sha)
 
-    def request(self, guild_id: str, user_id: str, source_id: str, source_url: str, body: str):
+    def request(self, guild_id: str, user_id: str, source_id: str, source_url: str, body: str, provenance=()):
         body = clean(body)
         if len(body) < 5:
             raise ValueError('Describe the request in at least five characters')
@@ -223,6 +226,8 @@ class Store:
             existing = db.execute('SELECT * FROM jobs WHERE source_id=?', (source_id,)).fetchone()
             if existing:
                 return self._job(existing)
+            # Checked in the creating transaction: an erasure can't slip in after the companion's fence.
+            provenance = self._checked_provenance(db, user_id, provenance)
             pending = db.execute('SELECT count(*) FROM jobs WHERE user_id=? AND state IN '
                                  '("awaiting_owner","queued","building","review","approved","deploying")',
                                  (user_id,)).fetchone()[0]
@@ -230,9 +235,9 @@ class Store:
                 raise Conflict('You already have three open requests; finish one first')
             job_id = uuid.uuid4().hex[:12]
             now = time.time()
-            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,created,updated,state) '
-                       'VALUES (?,?,?,?,?,?,?,?,"awaiting_owner")',
-                       (job_id, guild_id, user_id, source_id, source_url, body, now, now))
+            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,created,updated,state,provenance) '
+                       'VALUES (?,?,?,?,?,?,?,?,"awaiting_owner",?)',
+                       (job_id, guild_id, user_id, source_id, source_url, body, now, now, json.dumps(provenance)))
             self._audit(db, user_id, 'request', job_id)
             return self._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
 
@@ -561,18 +566,8 @@ class Store:
         self.personal_control(user_id, 'disable')
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            rows = db.execute('SELECT id,proposal FROM jobs WHERE user_id=?', (user_id,)).fetchall()
-            for row in rows:
-                proposal = json.loads(row['proposal']) if row['proposal'] else None
-                if proposal:
-                    proposal['summary'] = '[User request erased]'
-                    proposal.pop('repair_verification', None)
-                db.execute('UPDATE jobs SET user_id="deleted",body="[User request erased]",'
-                           'source_url="",source_id=?,result="",proposal=?,'
-                           'state=CASE WHEN state IN ("awaiting_owner","queued","review","approved") '
-                           'OR (kind="repair" AND state="building") THEN "rejected" '
-                           'ELSE state END WHERE id=?',
-                           ('erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
+            self._erase_jobs(db, db.execute('SELECT id,proposal FROM jobs WHERE user_id=?', (user_id,)).fetchall(),
+                             '[User request erased]', 'deleted')
             db.execute('DELETE FROM memories WHERE approved_by=?', (user_id,))
             db.execute('UPDATE audit SET actor="deleted" WHERE actor=?', (user_id,))
             db.execute('UPDATE jobs SET approved_by="deleted" WHERE approved_by=?', (user_id,))
@@ -657,12 +652,42 @@ class Store:
         return found
 
     @staticmethod
+    def _erase_jobs(db, rows, text, user=None):
+        """Withdraw requests' content: unfinished ones are rejected, history keeps only the shell."""
+        for row in rows:
+            proposal = json.loads(row['proposal']) if row['proposal'] else None
+            if proposal:
+                proposal['summary'] = text
+                proposal.pop('repair_verification', None)
+            db.execute('UPDATE jobs SET user_id=COALESCE(?,user_id),body=?,provenance="[]",'
+                       'source_url="",source_id=?,result="",proposal=?,'
+                       'state=CASE WHEN state IN ("awaiting_owner","queued","review","approved") '
+                       'OR (kind="repair" AND state="building") THEN "rejected" '
+                       'ELSE state END WHERE id=?',
+                       (user, text, 'erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
+
+    @staticmethod
     def _drop_dependents(db, user_id):
         # Other members' turns built from this member's messages must not outlive their erasure.
         db.execute("DELETE FROM chat_turns WHERE id IN (SELECT t.id FROM chat_turns t, json_each(t.provenance) p "
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
         db.execute("DELETE FROM chat_pending WHERE EXISTS (SELECT 1 FROM json_each(chat_pending.body, '$.provenance') p "
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
+        # So are requests submitted from drafts that drew on them.
+        Store._erase_jobs(db, db.execute("SELECT j.id,j.proposal FROM jobs j, json_each(j.provenance) p "
+                                         "WHERE json_extract(p.value, '$.user_id')=?", (user_id,)).fetchall(),
+                          '[Request withdrawn: someone it drew on erased their data]')
+
+    def downgrade_turn_provenance(self):
+        """Before starting a controller without turn-provenance, which can't erase derived state."""
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute("DELETE FROM chat_turns WHERE provenance <> '[]'")
+            db.execute("DELETE FROM chat_pending WHERE json_array_length(json_extract(body, '$.provenance')) > 0")
+            self._erase_jobs(db, db.execute("SELECT id,proposal FROM jobs WHERE provenance <> '[]'").fetchall(),
+                             '[Request withdrawn before a controller downgrade]')
+            # The older controller writes summaries positionally.
+            db.execute('ALTER TABLE agent_summaries DROP COLUMN revisions')
 
     def check_chat(self, user_id, revision, provenance=()):
         """The save's privacy fence without writing: run before a reply is delivered."""

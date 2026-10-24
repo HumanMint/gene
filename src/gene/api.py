@@ -21,11 +21,19 @@ class Actor(BaseModel):
     user_id: str
 
 
+class TurnSource(BaseModel):
+    """Another member whose message shaped this reply, and the privacy revision Fri observed."""
+    model_config = ConfigDict(extra='forbid')
+    user_id: str = Field(pattern=r'^[0-9]{1,25}$')
+    revision: int = Field(ge=0)
+
+
 class Request(Actor):
     source_id: str = Field(min_length=1, max_length=100)
     source_url: str = Field(max_length=200)
     body: str = Field(min_length=5, max_length=6000)
     channel_id: str
+    provenance: list[TurnSource] = Field(default_factory=list, max_length=200)
 
 
 class Approval(Actor):
@@ -93,13 +101,6 @@ class ChatScope(Actor):
     conversation_id: str = Field(pattern=r'^(private|public):[0-9]{1,25}$')
     mention_grant: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
     source: ChatSource | None = None
-
-
-class TurnSource(BaseModel):
-    """Another member whose message shaped this reply, and the privacy revision Fri observed."""
-    model_config = ConfigDict(extra='forbid')
-    user_id: str = Field(pattern=r'^[0-9]{1,25}$')
-    revision: int = Field(ge=0)
 
 
 class ChatTurn(ChatScope):
@@ -265,7 +266,8 @@ def create_app(settings: Settings | None = None):
         if body.channel_id not in {settings.workshop_channel_id, *settings.agent_channels.split(',')} or not body.channel_id:
             raise HTTPException(403, 'Use Gene\'s configured workshop channel')
         return public_job(store.request(body.guild_id, body.user_id, body.source_id,
-                                        body.source_url, body.body))
+                                        body.source_url, body.body,
+                                        [item.model_dump() for item in body.provenance]))
 
     @app.post('/requests/{job_id}/approve', dependencies=[auth('fri')])
     def approve(job_id: str, body: Approval):

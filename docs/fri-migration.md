@@ -101,6 +101,9 @@ Provenance also reaches what follow-ups inherit:
   reports and their delivery queue.
 - Saved turns record the speaker's revision. A Fri message resolves only while that revision is
   unchanged, and rows without it fail closed.
+- `/requests` accepts the draft's `provenance` and checks it in the creating transaction. Erasure,
+  forget-me and clear-chats withdraw dependent requests the same way erasure withdraws a member's own:
+  unfinished ones are rejected and the stored text is replaced.
 
 The legacy companion sends no provenance and is unaffected.
 
@@ -125,17 +128,19 @@ Failed first cutover restores the legacy process; failed subsequent release rest
 the previous compatible independent image. A failed recovery needs maintainer attention.
 
 Rolling the controller back below `turn-provenance` needs one extra step, because an older
-controller cannot erase turns derived from other members. First roll Fri back to a release that
-does not require the capability. Then, with the controller stopped and after its backup, delete
-the derived state before starting the older controller:
+controller cannot erase state derived from other members. First roll Fri back to a release that
+does not require the capability. Then, with the controller stopped and backed up, run this from the
+current release, in the controller environment, before starting the older controller:
 
-```sql
-DELETE FROM chat_turns WHERE provenance <> '[]';
-DELETE FROM chat_pending WHERE json_array_length(json_extract(body, '$.provenance')) > 0;
+```sh
+python -m gene.provenance_downgrade "$GENE_DB"
 ```
 
-This loses only continuity. The speaker's own turns stay. Rolling back Fri alone needs no
-cleanup: the newer controller keeps enforcing provenance on everything already saved.
+It deletes saved turns and pending questions that carry provenance, withdraws requests submitted
+from derived drafts, and drops `agent_summaries.revisions`, which the older controller's positional
+summary insert can't handle. This loses only continuity and those derived requests. The speaker's
+own turns stay. Rolling back Fri alone needs no cleanup: the newer controller keeps enforcing
+provenance on everything already saved.
 
 The complete `/srv/gene/data/fri` and `/srv/gene/secrets/fri-chatgpt` directories stay
 in place initially. Identity, read/write allowlists, memory, pending controls/reviews,

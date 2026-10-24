@@ -254,3 +254,53 @@ def test_fri_message_sources_never_relabel_the_original_speaker(store):
         db.execute("UPDATE chat_turns SET speaker_revision=NULL, provenance='[]'")
         db.execute("UPDATE chat_revisions SET revision=0 WHERE user_id='20'")
     assert store.message_sources('123', ['555']) == {}
+
+
+def job(store, user_id='20', source_id='fri-draft:1', provenance=(ASH,)):
+    return store.request('123', user_id, source_id, '', 'Add a moving checklist because ash moves', list(provenance))
+
+
+def test_request_checks_draft_provenance_when_it_is_created(store, client):
+    store.personal_control('30', 'enable')  # Revision moved after the draft was checked.
+    with pytest.raises(Conflict):
+        job(store)
+    client.app.state.store.personal_control('30', 'enable')
+    payload = {'guild_id': 'guild', 'user_id': 'member', 'source_id': 'fri-draft:2', 'source_url': '',
+               'body': 'Add a moving checklist', 'channel_id': 'workshop', 'provenance': [ASH]}
+    assert client.post('/requests', headers=headers('fri'), json=payload).status_code == 409
+    for invalid in ([{'user_id': 'ash', 'revision': 0}], [ASH] * 201):
+        assert client.post('/requests', headers=headers('fri'), json={**payload, 'provenance': invalid}).status_code == 422
+    assert client.post('/requests', headers=headers('fri'),
+                       json={**payload, 'provenance': [{'user_id': '30', 'revision': 1}]}).status_code == 200
+
+
+@pytest.mark.parametrize('erase', ['disable', 'erase_user', 'clear_chats'])
+def test_erasure_withdraws_requests_submitted_from_derived_drafts(store, erase):
+    derived, own = job(store), job(store, source_id='fri-draft:own', provenance=())
+    if erase == 'disable':
+        store.personal_control('30', 'disable')
+    else:
+        getattr(store, erase)('30')
+    with store.connection() as db:
+        rows = {row['id']: dict(row) for row in db.execute('SELECT id,user_id,body,state,provenance FROM jobs')}
+    assert rows[derived['id']] == {'id': derived['id'], 'user_id': '20', 'state': 'rejected', 'provenance': '[]',
+                                   'body': '[Request withdrawn: someone it drew on erased their data]'}
+    assert rows[own['id']]['body'] == 'Add a moving checklist because ash moves'
+    assert rows[own['id']]['state'] == 'awaiting_owner'
+
+
+def test_downgrade_removes_derived_state_and_restores_the_legacy_summary_schema(store, tmp_path):
+    from gene.provenance_downgrade import main
+    save(store, provenance=[ASH])
+    save(store, reply='my own answer')
+    derived = job(store)
+    summary_agent(store, tmp_path)
+    main([str(store.path)])
+    assert replies(store) == ['my own answer']
+    with store.connection() as db:
+        assert db.execute('SELECT body FROM jobs WHERE id=?', (derived['id'],)).fetchone()[0].startswith('[Request withdrawn')
+        assert 'revisions' not in {row['name'] for row in db.execute('PRAGMA table_info(agent_summaries)')}
+        # The exact insert the controller before turn-provenance uses.
+        db.execute('INSERT INTO agent_summaries VALUES (?,?,?,?) ON CONFLICT(channel_id) '
+                   'DO UPDATE SET body=excluded.body,authors=excluded.authors,at=excluded.at',
+                   ('1', 'safe summary', '["20"]', 0))

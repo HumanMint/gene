@@ -80,6 +80,18 @@ built from other members' messages.
   Discord accepts the reply, so the save is no longer the only fence and an undelivered reply is
   never stored as said. Mention-grant turns keep their own fences and placeholder storage.
 
+Provenance also reaches what follow-ups inherit:
+
+- `chat_context` returns each turn's provenance.
+- Pending clarifications store their turn's provenance, are deleted by erasure, and are dropped
+  when a source revision moves.
+- Agent context returns `summary_provenance`: the summary authors' current revisions.
+- Saved turns record Fri's delivered `reply_message_id` and whether the stored reply is
+  `verbatim`. `/chat/messages/sources` resolves referenced Fri messages to their current sources
+  plus the original speaker, and omits any whose sources changed or that kept only a breadcrumb,
+  so the companion fails closed.
+- At most 200 provenance entries are accepted.
+
 The legacy companion sends no provenance and is unaffected.
 
 ## Release and recovery

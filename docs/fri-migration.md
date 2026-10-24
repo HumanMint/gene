@@ -101,9 +101,15 @@ Provenance also reaches what follow-ups inherit:
   reports and their delivery queue.
 - Saved turns record the speaker's revision. A Fri message resolves only while that revision is
   unchanged, and rows without it fail closed.
-- `/requests` accepts the draft's `provenance` and checks it in the creating transaction. Erasure,
-  forget-me and clear-chats withdraw dependent requests the same way erasure withdraws a member's own:
-  unfinished ones are rejected and the stored text is replaced.
+- `/requests` accepts a chat draft's `provenance` and the requester's `revision`, and checks both
+  in the creating transaction. Erasure, forget-me and clear-chats withdraw dependent requests the
+  same way erasure withdraws a member's own: unfinished ones are rejected and the stored text is
+  replaced. A running build loses its lease, so the worker can't write its summary back; the worker
+  then deletes that job's transcript and checkout.
+- **Not yet covered:** repair requests Fri files after noticing a Gene error quote Gene's raw error
+  text, which can include a member's command. `gene_diagnose` reads them back through
+  `previous_repairs`. Chat replies built from that read keep only a breadcrumb, but the stored
+  repair text isn't attributed or erased yet. It needs a follow-up.
 
 The legacy companion sends no provenance and is unaffected.
 

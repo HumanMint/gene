@@ -217,7 +217,8 @@ class Store:
             db.execute('UPDATE settings SET value=? WHERE key="active_sha"', (sha,))
             self._audit(db, 'installer', 'bootstrap', sha)
 
-    def request(self, guild_id: str, user_id: str, source_id: str, source_url: str, body: str, provenance=()):
+    def request(self, guild_id: str, user_id: str, source_id: str, source_url: str, body: str, provenance=(),
+                revision=None):
         body = clean(body)
         if len(body) < 5:
             raise ValueError('Describe the request in at least five characters')
@@ -227,6 +228,8 @@ class Store:
             if existing:
                 return self._job(existing)
             # Checked in the creating transaction: an erasure can't slip in after the companion's fence.
+            if revision is not None and self._privacy_state(db, user_id)[0] != revision:
+                raise Conflict('Your privacy settings changed while this draft was open. Draft it again.')
             provenance = self._checked_provenance(db, user_id, provenance)
             pending = db.execute('SELECT count(*) FROM jobs WHERE user_id=? AND state IN '
                                  '("awaiting_owner","queued","building","review","approved","deploying")',
@@ -653,7 +656,10 @@ class Store:
 
     @staticmethod
     def _erase_jobs(db, rows, text, user=None):
-        """Withdraw requests' content: unfinished ones are rejected, history keeps only the shell."""
+        """Withdraw requests' content: unfinished ones are rejected, history keeps only the shell.
+
+        A running build loses its lease, so the worker can't write its summary back afterwards.
+        """
         for row in rows:
             proposal = json.loads(row['proposal']) if row['proposal'] else None
             if proposal:
@@ -661,9 +667,10 @@ class Store:
                 proposal.pop('repair_verification', None)
             db.execute('UPDATE jobs SET user_id=COALESCE(?,user_id),body=?,provenance="[]",'
                        'source_url="",source_id=?,result="",proposal=?,'
-                       'state=CASE WHEN state IN ("awaiting_owner","queued","review","approved") '
-                       'OR (kind="repair" AND state="building") THEN "rejected" '
-                       'ELSE state END WHERE id=?',
+                       'lease=CASE WHEN state="building" THEN NULL ELSE lease END,'
+                       'progress=CASE WHEN state="building" THEN NULL ELSE progress END,'
+                       'state=CASE WHEN state IN ("awaiting_owner","queued","building","review","approved") '
+                       'THEN "rejected" ELSE state END WHERE id=?',
                        (user, text, 'erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
 
     @staticmethod

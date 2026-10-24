@@ -256,8 +256,9 @@ def test_fri_message_sources_never_relabel_the_original_speaker(store):
     assert store.message_sources('123', ['555']) == {}
 
 
-def job(store, user_id='20', source_id='fri-draft:1', provenance=(ASH,)):
-    return store.request('123', user_id, source_id, '', 'Add a moving checklist because ash moves', list(provenance))
+def job(store, user_id='20', source_id='fri-draft:1', provenance=(ASH,), revision=None):
+    return store.request('123', user_id, source_id, '', 'Add a moving checklist because ash moves', list(provenance),
+                         revision)
 
 
 def test_request_checks_draft_provenance_when_it_is_created(store, client):
@@ -304,3 +305,34 @@ def test_downgrade_removes_derived_state_and_restores_the_legacy_summary_schema(
         db.execute('INSERT INTO agent_summaries VALUES (?,?,?,?) ON CONFLICT(channel_id) '
                    'DO UPDATE SET body=excluded.body,authors=excluded.authors,at=excluded.at',
                    ('1', 'safe summary', '["20"]', 0))
+
+
+@pytest.mark.parametrize('erase', ['dependent', 'own'])
+def test_erasure_stops_a_running_build_from_writing_back(store, erase):
+    from gene.reviews import request_reference
+    store.set_paused(False, 'owner')
+    created = job(store)
+    store.review_decision(created['id'], 'intake', request_reference(created), 'approve', 'owner')
+    running = store.claim()
+    assert running['id'] == created['id']
+    store.clear_chats('30') if erase == 'dependent' else store.erase_user('20')
+    stopped = store.get(created['id'])
+    assert stopped['state'] == 'rejected' and stopped['lease'] is None
+    with pytest.raises(Conflict):
+        store.heartbeat(created['id'], running['lease'])
+    with pytest.raises(Conflict):
+        store.finish_build(created['id'], running['lease'], {'sha': 'b'*40, 'base_sha': 'a'*40,
+                           'branch': 'codex/request', 'tests_passed': True, 'summary': 'ash moves to denver'})
+    assert 'denver' not in str(store.get(created['id']))
+
+
+def test_request_checks_the_requesters_own_revision_when_created(store, client):
+    store.personal_control('20', 'disable')  # Erased after Fri's fence passed.
+    with pytest.raises(Conflict):
+        job(store, provenance=(), source_id='fri-draft:own', revision=0)
+    assert job(store, provenance=(), source_id='fri-draft:own', revision=1)['state'] == 'awaiting_owner'
+    assert job(store, provenance=(), source_id='panel:legacy')['state'] == 'awaiting_owner'  # Explicit requests.
+    payload = {'guild_id': 'guild', 'user_id': 'member', 'source_id': 'fri-draft:3', 'source_url': '',
+               'body': 'Add a moving checklist', 'channel_id': 'workshop', 'revision': 1}
+    assert client.post('/requests', headers=headers('fri'), json=payload).status_code == 409
+    assert client.post('/requests', headers=headers('fri'), json={**payload, 'revision': 0}).status_code == 200

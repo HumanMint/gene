@@ -34,6 +34,7 @@ class Request(Actor):
     body: str = Field(min_length=5, max_length=6000)
     channel_id: str
     provenance: list[TurnSource] = Field(default_factory=list, max_length=200)
+    revision: int | None = Field(default=None, ge=0)  # The requester's, when submitted from a chat draft.
 
 
 class Approval(Actor):
@@ -267,7 +268,7 @@ def create_app(settings: Settings | None = None):
             raise HTTPException(403, 'Use Gene\'s configured workshop channel')
         return public_job(store.request(body.guild_id, body.user_id, body.source_id,
                                         body.source_url, body.body,
-                                        [item.model_dump() for item in body.provenance]))
+                                        [item.model_dump() for item in body.provenance], body.revision))
 
     @app.post('/requests/{job_id}/approve', dependencies=[auth('fri')])
     def approve(job_id: str, body: Approval):

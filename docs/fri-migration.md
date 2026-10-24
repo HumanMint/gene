@@ -91,6 +91,12 @@ Provenance also reaches what follow-ups inherit:
   plus the original speaker, and omits any whose sources changed or that kept only a breadcrumb,
   so the companion fails closed.
 - At most 200 provenance entries are accepted.
+- Channel summaries record each author's observed revision. A summary is shown only while every
+  author still has it, rows without revisions fail closed, `clear_chats` removes the author's
+  summaries, and `summary_provenance` carries the observed revisions.
+- A consumed clarification copies only member-authored authorization fields into the Gene control
+  (goal, source, request text, revision, burst marker), never the assistant's question. Older rows
+  are scrubbed on startup.
 
 The legacy companion sends no provenance and is unaffected.
 

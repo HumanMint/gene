@@ -623,15 +623,21 @@ class Store:
         """The member's open or recently settled requests, so Fri knows what they're waiting on.
 
         Only the requester and the owner see request text in the panel, so titles appear only in
-        the member's DM, and only for requests known to hold just their own words.
+        the member's private conversation, and only for requests known to hold just their own words.
+        Open requests come first: settled ones never crowd out what the member is still waiting on.
         """
-        rows = db.execute("SELECT id,kind,state,created,updated,body,provenance,attributed FROM jobs WHERE guild_id=? AND user_id=? "
-                          "AND (state IN ('awaiting_owner','queued','building','review','approved','deploying') "
-                          "OR updated>?) ORDER BY updated DESC LIMIT 5", (guild_id, user_id, time.time()-7*86400))
+        rows = db.execute("SELECT id,kind,state,created,updated,body,provenance,attributed,source_id FROM jobs "
+                          "WHERE guild_id=? AND user_id=? AND (state IN ('awaiting_owner','queued','building','review',"
+                          "'approved','deploying') OR updated>?) ORDER BY state IN ('awaiting_owner','queued','building',"
+                          "'review','approved','deploying') DESC, updated DESC LIMIT 5",
+                          (guild_id, user_id, time.time()-7*86400))
         requests = []
         for row in rows:
             item = {key: row[key] for key in ('id', 'kind', 'state', 'created', 'updated')}
-            if conversation.startswith('private:') and row['attributed'] and row['provenance'] == '[]':
+            if row['source_id'].startswith('erased:'):
+                # Its text was removed after a privacy change: not the owner's decision, and no title.
+                item['withdrawn'] = True
+            elif conversation.startswith('private:') and row['attributed'] and row['provenance'] == '[]':
                 item['title'] = clean((row['body'] or '').strip().split('\n')[0], 100)
             requests.append(item)
         return requests

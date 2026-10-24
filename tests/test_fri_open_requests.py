@@ -67,4 +67,26 @@ def test_a_request_withdrawn_today_stays_listed_even_if_it_was_old(store):
         db.execute('UPDATE jobs SET created=?,updated=? WHERE id=?', (time.time()-8*86400, time.time()-8*86400, old['id']))
     store.personal_control('30', 'disable')  # Withdrawn now: it should still say so for a week.
     listed = requests(store)
-    assert [(row['id'], row['state']) for row in listed] == [(old['id'], 'rejected')]
+    assert [(row['id'], row['state'], row.get('withdrawn')) for row in listed] == [(old['id'], 'rejected', True)]
+    assert 'title' not in listed[0]  # The placeholder isn't the member's words.
+
+
+def test_an_owner_rejection_is_not_marked_withdrawn(store):
+    job = submit(store)
+    with store.connection() as db:
+        db.execute("UPDATE jobs SET state='rejected',updated=? WHERE id=?", (time.time(), job['id']))
+    listed = requests(store)
+    assert listed[0]['state'] == 'rejected' and 'withdrawn' not in listed[0]
+    assert listed[0]['title'] == 'Add a modpack checklist'
+
+
+def test_settled_requests_never_crowd_out_open_ones(store):
+    waiting = submit(store)
+    with store.connection() as db:
+        db.execute('UPDATE jobs SET updated=? WHERE id=?', (time.time()-3*86400, waiting['id']))
+        for number in range(5):
+            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,created,updated,state) '
+                       "VALUES (?,'123','20',?,'','Settled request body',?,?,'deployed')",
+                       (f'settled{number}', f'settled-{number}', time.time(), time.time()))
+    listed = requests(store)
+    assert len(listed) == 5 and listed[0]['id'] == waiting['id']

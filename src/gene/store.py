@@ -131,6 +131,9 @@ class Store:
                 db.execute('ALTER TABLE chat_turns ADD COLUMN reaction TEXT')
             if 'allow_closing' not in columns:
                 db.execute('ALTER TABLE chat_turns ADD COLUMN allow_closing INTEGER NOT NULL DEFAULT 0')
+            if 'provenance' not in columns:
+                # Other members whose messages shaped a saved reply, with the privacy revision seen.
+                db.execute("ALTER TABLE chat_turns ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]'")
             # Existing queued requests have never received intake approval. Fail closed
             # during migration; completed/running jobs and release approvals retain their history.
             db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
@@ -576,8 +579,10 @@ class Store:
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             turns = [dict(row) for row in db.execute(
-                'SELECT input,reply,source,at,response_kind,reaction,allow_closing,burst FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
+                'SELECT id,input,reply,source,at,response_kind,reaction,allow_closing,burst,provenance FROM chat_turns '
+                'WHERE guild_id=? AND channel_id=? AND user_id=? '
                 'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
+            turns = self._current_turns(db, turns)
             for turn in turns:
                 turn['burst'] = json.loads(turn['burst'])
                 source = turn.pop('source')
@@ -595,9 +600,48 @@ class Store:
                     'personal_memory': profile,
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
 
+    @staticmethod
+    def _privacy_state(db, user_id):
+        row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
+        enabled = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
+        return (row[0] if row else 0), (bool(enabled[0]) if enabled else True)
+
+    def _checked_provenance(self, db, speaker, provenance):
+        """Fail closed if any referenced member's privacy changed after the reply's context was read."""
+        seen = {}
+        for item in provenance:
+            user, revision = str(item['user_id']), int(item['revision'])
+            if user == speaker:
+                continue  # The speaker's own revision is already checked for the whole turn.
+            if seen.setdefault(user, revision) != revision:
+                raise ValueError('Conflicting provenance revisions')
+        for user, revision in seen.items():
+            if self._privacy_state(db, user) != (revision, True):
+                raise Conflict('Someone in that context changed their privacy settings. Ask again for a fresh reply.')
+        return [{'user_id': user, 'revision': revision} for user, revision in sorted(seen.items())]
+
+    def _current_turns(self, db, turns):
+        """Drop turns derived from members whose privacy revision changed or who turned memory off."""
+        kept = []
+        for turn in turns:
+            sources = json.loads(turn.pop('provenance') or '[]')
+            if all(self._privacy_state(db, s['user_id']) == (s['revision'], True) for s in sources):
+                kept.append(turn)
+            else:
+                db.execute('DELETE FROM chat_turns WHERE id=?', (turn['id'],))
+        for turn in kept:
+            turn.pop('id')
+        return kept
+
+    @staticmethod
+    def _drop_dependents(db, user_id):
+        # Other members' turns built from this member's messages must not outlive their erasure.
+        db.execute("DELETE FROM chat_turns WHERE id IN (SELECT t.id FROM chat_turns t, json_each(t.provenance) p "
+                   "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
+
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
-                  *, response_kind='reply', reaction=None, allow_closing=False, burst=()):
+                  *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=()):
         from .fri_responses import validate_response
         validate_response(response_kind, reply, reaction, notes=notes)
         if allow_closing and (response_kind != 'reply' or clarification):
@@ -616,6 +660,7 @@ class Store:
             current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             if revision != (current[0] if current else 0):
                 raise Conflict('This conversation was cleared while Fri was replying. Start again.')
+            provenance = self._checked_provenance(db, user_id, provenance)
             from .fri_pending import read as read_pending
             from .fri_pending import save as save_pending
             if response_kind != 'reply' and read_pending(db, guild_id, channel_id, user_id, revision):
@@ -651,9 +696,11 @@ class Store:
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
                        (guild_id, channel_id, user_id, guild_id, channel_id, user_id, MAX_NOTES))
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
-                       'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance) '
+                       'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
-                        time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind, reaction, allow_closing, json.dumps(burst)))
+                        time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind,
+                        reaction, allow_closing, json.dumps(burst), json.dumps(provenance)))
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',
@@ -688,6 +735,7 @@ class Store:
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_note_removals WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
+                self._drop_dependents(db, user_id)
                 db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM web_requests WHERE user_id=?', (user_id,))
                 db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
@@ -706,6 +754,7 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
+            self._drop_dependents(db, user_id)
             db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
             db.execute('DELETE FROM web_requests WHERE user_id=?', (user_id,))
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))

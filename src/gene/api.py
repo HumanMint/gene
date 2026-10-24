@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .config import Settings
 from .fri_context import ChatSource
@@ -95,6 +95,13 @@ class ChatScope(Actor):
     source: ChatSource | None = None
 
 
+class TurnSource(BaseModel):
+    """Another member whose message shaped this reply, and the privacy revision Fri observed."""
+    model_config = ConfigDict(extra='forbid')
+    user_id: str = Field(pattern=r'^[0-9]{1,25}$')
+    revision: int = Field(ge=0)
+
+
 class ChatTurn(ChatScope):
     source: ChatSource
     web_receipt: ResearchReceipt | None = None
@@ -111,6 +118,7 @@ class ChatTurn(ChatScope):
     output_tokens: int | None = Field(default=None, ge=0)
     notes: list[dict] = Field(default_factory=list, max_length=3)
     burst: list[SourceText] = Field(default_factory=list, max_length=5)
+    provenance: list[TurnSource] = Field(default_factory=list, max_length=40)
 
 
 class ResearchStart(ChatScope):
@@ -363,7 +371,8 @@ def create_app(settings: Settings | None = None):
                               body.source.model_dump(), body.web_receipt.model_dump() if body.web_receipt else None,
                               body.clarification.model_dump() if body.clarification else None,
                               response_kind=body.response_kind, reaction=body.reaction, allow_closing=body.allow_closing,
-                              burst=[row.model_dump() for row in body.burst])
+                              burst=[row.model_dump() for row in body.burst],
+                              provenance=[row.model_dump() for row in body.provenance])
 
     @app.post('/chat/research/start', dependencies=[auth('fri')])
     def research_start(body: ResearchStart):

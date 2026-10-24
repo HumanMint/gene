@@ -69,14 +69,14 @@ def findings(store):
 
 def test_follow_up_pairs_are_offered_without_identities(setup):
     store, agent, checks, _ = setup
-    later = exchange(store, user='21')
+    later = exchange(store, user='424242')
     claim = checks.claim()
     assert [pair['id'] for pair in claim['pairs']] == [str(later)]
     pair = claim['pairs'][0]
     assert set(pair) == {'id', 'gap_seconds', 'earlier', 'later'} and 55 <= pair['gap_seconds'] <= 65
     assert pair['earlier'] == {'member': 'when does the new zelda come out', 'fri': 'it comes out in march'}
     assert pair['later']['member'] == 'no it was delayed, that date is wrong'
-    assert '21' not in json.dumps(claim) and claim['model'] == 'gpt-6-luna' and claim['effort'] == 'low'
+    assert '424242' not in json.dumps(claim) and claim['model'] == 'gpt-6-luna' and claim['effort'] == 'low'
 
 
 def test_neither_turn_from_before_checks_started_is_offered(setup):

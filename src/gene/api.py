@@ -374,6 +374,14 @@ def create_app(settings: Settings | None = None):
                               burst=[row.model_dump() for row in body.burst],
                               provenance=[row.model_dump() for row in body.provenance])
 
+    @app.post('/chat/turn/check', dependencies=[auth('fri')])
+    def chat_turn_check(body: ChatTurn):
+        # Fri checks before delivering and saves only after delivery succeeds.
+        if body.mention_grant:
+            raise HTTPException(400, 'Invitation turns are fenced by their mention grant')
+        chat_scope(body)
+        return store.check_chat(body.user_id, body.revision, [row.model_dump() for row in body.provenance])
+
     @app.post('/chat/research/start', dependencies=[auth('fri')])
     def research_start(body: ResearchStart):
         if body.mention_grant:

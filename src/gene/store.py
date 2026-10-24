@@ -639,6 +639,14 @@ class Store:
         db.execute("DELETE FROM chat_turns WHERE id IN (SELECT t.id FROM chat_turns t, json_each(t.provenance) p "
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
 
+    def check_chat(self, user_id, revision, provenance=()):
+        """The save's privacy fence without writing: run before a reply is delivered."""
+        with self.connection() as db:
+            if self._privacy_state(db, user_id)[0] != revision:
+                raise Conflict('This conversation was cleared while Fri was replying. Start again.')
+            self._checked_provenance(db, user_id, provenance)
+            return {'ok': True}
+
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
                   *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=()):

@@ -94,3 +94,23 @@ def test_existing_databases_gain_the_provenance_column(tmp_path):
     with store.connection() as db:
         assert 'provenance' in {row['name'] for row in db.execute('PRAGMA table_info(chat_turns)')}
     assert replies(store) == ['old answer']
+
+
+def test_check_applies_the_save_fence_without_writing(store, client):
+    assert store.check_chat('20', 0, [ASH]) == {'ok': True}
+    store.personal_control('30', 'disable')
+    with pytest.raises(Conflict):
+        store.check_chat('20', 0, [ASH])
+    store.personal_control('20', 'enable')
+    with pytest.raises(Conflict):
+        store.check_chat('20', 0)
+    assert replies(store) == []
+    scope = {'guild_id': 'guild', 'channel_id': 'workshop', 'conversation_id': 'public:456', 'user_id': '20'}
+    body = {**scope, 'revision': 0, 'input': 'where is ash moving', 'reply': 'ash said denver',
+            'source': source(guild='guild'), 'model': 'model', 'effort': 'high', 'provenance': [ASH]}
+    assert client.post('/chat/turn/check', headers=headers('fri'), json=body).json() == {'ok': True}
+    assert client.post('/chat/turn/check', headers=headers('runtime'), json=body).status_code == 401
+    assert client.post('/chat/turn/check', headers=headers('fri'), json={**body, 'revision': 1}).status_code == 409
+    assert client.post('/chat/turn/check', headers=headers('fri'),
+                       json={**body, 'mention_grant': 'a' * 64}).status_code == 400
+    assert not client.post('/chat/context', headers=headers('fri'), json=scope).json()['turns']

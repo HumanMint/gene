@@ -119,6 +119,14 @@ Provenance also reaches what follow-ups inherit:
 
 The legacy companion sends no provenance and is unaffected.
 
+## Member requests in context
+
+`chat_context` also returns `requests`: up to five of the speaker's own requests that are still open
+or settled within the last week, with id, kind, state and timestamps. Only the requester and the
+owner see request text in the panel, so a `title` is included only in the member's DM and never
+for a draft that drew on other members' words. With memory off the list is empty. Older companions
+ignore the field.
+
 ## Release and recovery
 
 The trusted coordinator is `python -m gene.fri_release <full-reviewed-fri-sha>`.

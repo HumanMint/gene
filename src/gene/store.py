@@ -605,11 +605,30 @@ class Store:
             from .fri_pending import read as read_pending
             pending = read_pending(db, guild_id, channel_id, user_id, revision[0] if revision else 0)
             return {'pending': pending, 'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
+                    'requests': self._own_requests(db, guild_id, channel_id, user_id) if profile['enabled'] else [],
                     'web_research': [json.loads(row[0]) for row in db.execute(
                         'SELECT receipt FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY id DESC LIMIT 3',
                         (guild_id, channel_id, user_id))],
                     'personal_memory': profile,
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
+
+    @staticmethod
+    def _own_requests(db, guild_id, conversation, user_id):
+        """The member's open or recently settled requests, so Fri knows what they're waiting on.
+
+        Only the requester and the owner see request text in the panel, so titles appear only in
+        the member's DM, and never for a draft that drew on other members' words.
+        """
+        rows = db.execute("SELECT id,kind,state,created,updated,body,provenance FROM jobs WHERE guild_id=? AND user_id=? "
+                          "AND (state IN ('awaiting_owner','queued','building','review','approved','deploying') "
+                          "OR updated>?) ORDER BY updated DESC LIMIT 5", (guild_id, user_id, time.time()-7*86400))
+        requests = []
+        for row in rows:
+            item = {key: row[key] for key in ('id', 'kind', 'state', 'created', 'updated')}
+            if conversation.startswith('private:') and row['provenance'] == '[]':
+                item['title'] = clean((row['body'] or '').strip().split('\n')[0], 100)
+            requests.append(item)
+        return requests
 
     @staticmethod
     def _privacy_state(db, user_id):

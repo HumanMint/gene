@@ -65,6 +65,23 @@ checks against both sides. A breaking change must introduce a new supported prot
 not silently reinterpret `gene-fri/1`. Settings revisions and Gene cog SHAs are not
 protocol versions.
 
+## Turn provenance
+
+The additive `turn-provenance` capability makes the controller enforce erasure for saved replies
+built from other members' messages.
+
+- **Provenance on save.** `/chat/turn` accepts optional `provenance`: the other members whose
+  messages shaped the reply, each with the privacy revision the companion observed. The save fails
+  closed if any listed member's revision moved or their memory is off.
+- **Erasure.** `personal_control('disable')`, `erase_user` and `clear_chats` delete other
+  members' dependent turns. `chat_context` also drops any turn whose sources' revisions changed.
+- **Pre-delivery check.** `/chat/turn/check` applies the same speaker-revision and provenance fence
+  without writing. The companion calls it immediately before delivering and saves only after
+  Discord accepts the reply, so the save is no longer the only fence and an undelivered reply is
+  never stored as said. Mention-grant turns keep their own fences and placeholder storage.
+
+The legacy companion sends no provenance and is unaffected.
+
 ## Release and recovery
 
 The trusted coordinator is `python -m gene.fri_release <full-reviewed-fri-sha>`.

@@ -1,5 +1,6 @@
 """Reply checks keep labelled findings about unhappy follow-ups, never chat text or who said it."""
 
+import dataclasses
 import json
 import sqlite3
 import time
@@ -23,7 +24,7 @@ FINDING = {'category': 'wrong_info', 'severity': 'high', 'topic': 'games', 'fix'
 def setup(tmp_path):
     settings = Settings(tmp_path/'gene.db', '123', '10', 'runtime-'+'x'*32, 'worker-'+'x'*32,
                         'deploy-'+'x'*32, workshop_channel_id='456', fri_token='fri-'+'x'*32,
-                        agent_channels='1,2')
+                        agent_channels='1,2,777777')
     store = Store(settings.db)
     store.update_chat_models(['gpt-6-luna', 'gpt-6.1-sol'])
     agent = AgentStore(store, settings)
@@ -109,6 +110,53 @@ def test_only_real_follow_ups_to_fri_replies_qualify(setup):
     due(agent)
     exchange(store, conversation='private:9')
     assert len(checks.claim()['pairs']) == 1
+
+
+def test_only_conversations_fri_may_chat_in_now_are_checked(setup):
+    store, agent, checks, settings = setup
+    exchange(store, conversation='public:3')  # Not a configured channel (or a thread under one).
+    assert checks.claim() is None
+    due(agent)
+    exchange(store, conversation='public:2')
+    claim = checks.claim()
+    narrowed = dataclasses.replace(settings, agent_channels='1')  # Restarted without channel 2.
+    restarted = fri_reply_checks.ReplyChecks(AgentStore(store, narrowed))
+    assert restarted.finish(claim['id'], [{**FINDING, 'pair_id': claim['pairs'][0]['id']}], 'completed')['kept'] == 0
+
+
+def test_a_reused_turn_id_does_not_stand_in_for_the_checked_turn(setup):
+    store, agent, checks, _ = setup
+    later = exchange(store)
+    claim = checks.claim()
+    with store.connection() as db:  # Pruned, then the id handed to someone else's newer turn.
+        db.execute("UPDATE chat_turns SET user_id='99', at=at+5 WHERE id=?", (later,))
+    assert flag(checks, claim)['kept'] == 0
+
+
+def test_a_retry_cut_short_by_the_allowance_keeps_the_rest_of_its_attempts(setup, monkeypatch):
+    store, agent, checks, _ = setup
+    agent.update({'reply_check_daily_pairs': 30}, 1, '10')
+    for user in range(20):
+        exchange(store, user=str(100+user))
+    sent = {}
+
+    def claim():
+        due(agent)
+        claim = checks.claim()
+        for pair in claim['pairs'] if claim else ():
+            sent[pair['id']] = sent.get(pair['id'], 0)+1
+        return claim
+    checks.finish(claim()['id'], [], 'failed')
+    retry = claim()
+    assert len(retry['pairs']) == 10  # Only 10 left in today's allowance.
+    checks.finish(retry['id'], [], 'completed')
+    clock = fri_reply_checks.time.time()
+    monkeypatch.setattr(fri_reply_checks.time, 'time', lambda: clock+86400)
+    for _ in range(2):  # The other 10 already failed once: two more tries, not three.
+        rest = claim()
+        assert len(rest['pairs']) == 10
+        checks.finish(rest['id'], [], 'failed')
+    assert claim() is None and sorted(sent.values()) == [2]*10+[3]*10
 
 
 def test_findings_are_fixed_labels_and_free_text_is_never_kept(setup):

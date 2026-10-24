@@ -108,12 +108,16 @@ def settle(db, claim, status, now, flagged=0):
     """
     get, put = _state()
     put(db, 'reply_check_claim', None)
-    attempts = claim['attempts']+1
-    if status == 'completed' or attempts >= ATTEMPTS:
+    # A retry cut short by the allowance still owns the rest of the failed batch and its attempts.
+    end, attempts = max(claim['through'], claim['until'] or claim['through']), claim['attempts']+1
+    if status == 'completed':
         put(db, 'reply_check_cursor', max(get(db, 'reply_check_cursor') or claim['through'], claim['through']))
+        put(db, 'reply_check_retry', {'through': end, 'attempts': claim['attempts']} if end > claim['through'] else None)
+    elif attempts >= ATTEMPTS:
+        put(db, 'reply_check_cursor', max(get(db, 'reply_check_cursor') or end, end))
         put(db, 'reply_check_retry', None)
     else:
-        put(db, 'reply_check_retry', {'through': claim['through'], 'attempts': attempts})
+        put(db, 'reply_check_retry', {'through': end, 'attempts': attempts})
     db.execute('INSERT OR IGNORE INTO fri_reply_check_runs VALUES (?,?,?,?,?,?,?)',
                (claim['id'], now, claim['offered'], flagged, status, claim['model'], claim['effort']))
 
@@ -178,6 +182,13 @@ class ReplyChecks:
     def __init__(self, agent):
         self.agent, self.store, self.settings = agent, agent.store, agent.settings
 
+    def _in_scope(self, conversation):
+        """Only conversations Fri may chat in right now. Turns don't record a thread's parent channel,
+        so a thread counts only if it is configured itself; private chats ride on the workshop."""
+        space, channel = conversation.split(':', 1)
+        return self.settings.chat_channel_allowed(
+            self.settings.guild_id, self.settings.workshop_channel_id if space == 'private' else channel)
+
     def _pairs(self, db, after, since, config, limit, until=None):
         """Fri's verbatim reply followed by the same member's next turn in that conversation.
 
@@ -195,7 +206,8 @@ class ReplyChecks:
             if len(pairs) >= limit:
                 break
             through = [later['at'], later['id']]
-            if not later['channel_id'].startswith(spaces) or not later['attributed'] or not later['input'].strip():
+            if (not later['channel_id'].startswith(spaces) or not self._in_scope(later['channel_id']) or
+                    not later['attributed'] or not later['input'].strip()):
                 continue
             earlier = db.execute('SELECT * FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                                  'AND (at<? OR (at=? AND id<?)) ORDER BY at DESC, id DESC LIMIT 1',
@@ -214,6 +226,7 @@ class ReplyChecks:
                 continue
             pairs.append({'id': str(later['id']), 'earlier_id': earlier['id'], 'user_id': later['user_id'],
                           'revision': revision, 'provenance': provenance, 'turn_at': later['at'],
+                          'earlier_at': earlier['at'], 'conversation': later['channel_id'],
                           'space': later['channel_id'].split(':')[0],
                           'gap_seconds': int(later['at']-earlier['at']),
                           'earlier': {'member': neutral(earlier['input']), 'fri': neutral(earlier['reply'])},
@@ -259,10 +272,11 @@ class ReplyChecks:
             budget['used'] += len(pairs)
             put(db, 'reply_check_budget', budget)
             claim = {'id': uuid.uuid4().hex, 'at': now, 'through': through, 'offered': len(pairs),
-                     'attempts': retry['attempts'] if retry else 0,
+                     'attempts': retry['attempts'] if retry else 0, 'until': retry and retry['through'],
                      'model': config['reply_check_model'], 'effort': config['reply_check_effort'],
                      'pairs': [{key: pair[key] for key in ('id', 'earlier_id', 'user_id', 'revision', 'provenance',
-                                                           'turn_at', 'space')} for pair in pairs]}
+                                                           'turn_at', 'earlier_at', 'conversation', 'space')}
+                               for pair in pairs]}
             put(db, 'reply_check_claim', claim)
             return {'id': claim['id'], 'model': claim['model'], 'effort': claim['effort'],
                     'pairs': [{key: pair[key] for key in ('id', 'gap_seconds', 'earlier', 'later')} for pair in pairs]}
@@ -282,14 +296,17 @@ class ReplyChecks:
             for finding in findings if keep else ():
                 pair = pairs.get(finding['pair_id'])
                 if (not pair or finding['pair_id'] in seen or pair['space'] not in spaces or
+                        not self._in_scope(pair['conversation']) or pair['earlier_at'] < since or
                         any(finding[key] not in allowed for key, allowed in LABELS.items())):
                     continue
                 seen.add(finding['pair_id'])
-                # Re-read both turns: a pruned or erased turn takes its finding with it.
-                turns, first = db.execute('SELECT count(*), min(at) FROM chat_turns WHERE id IN (?,?)',
-                                          (pair['earlier_id'], int(pair['id']))).fetchone()
-                if turns != 2 or first < since or not current(db, pair['user_id'], pair['revision'],
-                                                              pair['provenance']):
+                # Re-read both turns: a pruned or erased turn takes its finding with it, and a reused id
+                # from someone else's later turn doesn't stand in for it.
+                turns = db.execute('SELECT count(*) FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
+                                   'AND ((id=? AND at=?) OR (id=? AND at=?))',
+                                   (self.settings.guild_id, pair['conversation'], pair['user_id'], pair['earlier_id'],
+                                    pair['earlier_at'], int(pair['id']), pair['turn_at'])).fetchone()[0]
+                if turns != 2 or not current(db, pair['user_id'], pair['revision'], pair['provenance']):
                     continue
                 db.execute('INSERT INTO fri_reply_findings(at,turn_at,user_id,revision,provenance,space,category,'
                            'severity,topic,fix) VALUES (?,?,?,?,?,?,?,?,?,?)',

@@ -780,7 +780,10 @@ The controller offers Fri pairs from saved turns in the main server: Fri's verba
 same member's next turn in that conversation within 15 minutes. Both turns must come after reply checks
 were last switched on (turning either `enabled` or `reply_check_enabled` back on moves that boundary and
 drops any batch claimed before it).
-Reactions, breadcrumbs, unattributed turns and members whose privacy revision moved are never offered.
+Only conversations Fri may chat in right now qualify: a public conversation in a channel listed in
+`FRI_CHANNEL_IDS` (turns don't record a thread's parent, so threads under a configured channel are
+skipped) or, with `reply_check_private`, a private one while the workshop is configured. Reactions,
+breadcrumbs, unattributed turns and members whose privacy revision moved are never offered.
 Turns are walked in `(at, id)` order, so equal timestamps are neither skipped nor repeated. Each message
 is cut to 600 characters with Discord mentions, channel and role links, emoji ids, message links and long
 numbers replaced by neutral placeholders, and the offered pairs carry no member, channel or message
@@ -789,11 +792,13 @@ identifiers. Fri claims a batch only once its background model slot is free.
 Fri's model returns only clear cases of a member being unhappy with the reply (a correction, a re-ask,
 an ignored request, a failed action, frustration aimed at Fri), as four labels from fixed lists:
 category, severity, topic and suggested fix. No model text is accepted or stored. The controller
-rereads both turns and applies the current settings before keeping a finding: a pruned or erased turn,
+rereads both turns (matching id, time, member and conversation, so a reused id doesn't stand in) and
+applies the current settings and channel scope before keeping a finding: a pruned or erased turn,
 a privacy change since the claim, checks or `enabled` turned off, or private checks turned off for a
 private pair drops it. A privacy change also removes the member's pairs from a pending batch, and a
 batch Fri abandons is settled as interrupted by housekeeping after ten minutes. A failed batch is
-retried as the same batch twice, while newer turns wait, and is then skipped. Every model call counts
+retried as the same batch twice, while newer turns wait, and is then skipped; a retry the allowance
+cuts short keeps the rest of the batch and its attempt count. Every model call counts
 against the daily allowance, retries included; nothing is refunded.
 
 Findings live 30 days in `fri_reply_findings` with the member and provenance revisions, so any

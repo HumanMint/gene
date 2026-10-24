@@ -106,6 +106,12 @@ Provenance also reaches what follow-ups inherit:
   same way erasure withdraws a member's own: unfinished ones are rejected and the stored text is
   replaced. A running build loses its lease, so the worker can't write its summary back; the worker
   then deletes that job's transcript and checkout.
+- **Unattributed history.** A turn counts as attributed only when it was saved with a provenance
+  list, even an empty one. Turns saved before this release, and any a legacy companion saves later
+  (during rollout or after a Fri-only rollback), may quote other members with no record of whom.
+  `chat_context` marks them `attributed: false`, and capable companions withhold their replies.
+  Pending questions saved without provenance carry no `provenance` key. Command receipts say whether
+  the companion `grounded` the argument in the member's own words.
 - **Not yet covered:** repair requests Fri files after noticing a Gene error quote Gene's raw error
   text, which can include a member's command. `gene_diagnose` reads them back through
   `previous_repairs`. Chat replies built from that read keep only a breadcrumb, but the stored

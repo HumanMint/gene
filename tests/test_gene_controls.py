@@ -190,3 +190,19 @@ def test_dm_target_cannot_fall_back_to_workshop_or_an_arbitrary_channel(controls
     body['source'].update(guild_id=None, channel_id='999')
     for channel in ('456', '1', '', '999'):
         assert client.post('/controls', headers=headers('fri'), json={**body, 'target_channel_id': channel}).status_code == 403
+
+
+
+def test_receipts_say_whether_the_companion_grounded_the_argument(controls_api):
+    client, controls = controls_api
+    legacy = control_body()
+    grounded = control_body(grounded=True)
+    grounded['source'] = {**grounded['source'], 'id': str(int(legacy['source']['id'])+1)}
+    scope = {k: legacy[k] for k in ('guild_id', 'user_id', 'channel_id', 'conversation_id')}
+    assert client.post('/controls', headers=headers('fri'), json=legacy).status_code == 200
+    with controls.store.connection() as db:
+        db.execute('UPDATE gene_controls SET created=created-10')  # Past the rapid-repeat guard.
+    assert client.post('/controls', headers=headers('fri'), json=grounded).status_code == 200
+    rows = client.post('/controls/recent', headers=headers('fri'), json=scope).json()['receipts']
+    # A legacy companion's argument may quote anyone; a capable one kept it to the member's words.
+    assert [row['grounded'] for row in rows] == [True, False]

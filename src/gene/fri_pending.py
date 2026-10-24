@@ -96,7 +96,7 @@ def cancel(store, guild, conversation, user, text, source):
         return {'cancelled': True}
 
 
-def save(db, guild, conversation, user, revision, text, source, clarification, provenance=()):
+def save(db, guild, conversation, user, revision, text, source, clarification, provenance=None):
     clear(db, guild, conversation, user)
     if not clarification:
         return
@@ -116,8 +116,9 @@ def save(db, guild, conversation, user, revision, text, source, clarification, p
         raise ValueError('This message already has a reply')
     if source_used(db, guild, source.id):
         raise ValueError('This request was already handled')
-    body = {**value, 'source': source.model_dump(), 'request_text': text, 'revision': revision,
-            'provenance': list(provenance)}
+    body = {**value, 'source': source.model_dump(), 'request_text': text, 'revision': revision}
+    if provenance is not None:  # Without it, a capable companion treats the question as unattributed.
+        body['provenance'] = list(provenance)
     db.execute('INSERT INTO chat_pending VALUES (?,?,?,?,?,?,?)',
                (guild, conversation, user, source.id, source.timestamp().timestamp(), revision, json.dumps(body)))
 

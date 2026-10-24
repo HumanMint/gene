@@ -120,7 +120,8 @@ class ChatTurn(ChatScope):
     output_tokens: int | None = Field(default=None, ge=0)
     notes: list[dict] = Field(default_factory=list, max_length=3)
     burst: list[SourceText] = Field(default_factory=list, max_length=5)
-    provenance: list[TurnSource] = Field(default_factory=list, max_length=200)
+    # Omitted only by a legacy companion: its saved replies are then marked unattributed.
+    provenance: Annotated[list[TurnSource], Field(max_length=200)] | None = None
     reply_message_id: str | None = Field(default=None, pattern=r'^[0-9]{1,25}$')
     verbatim: bool = False  # The saved reply is what Discord showed, not a neutral breadcrumb.
 
@@ -383,7 +384,7 @@ def create_app(settings: Settings | None = None):
                               body.clarification.model_dump() if body.clarification else None,
                               response_kind=body.response_kind, reaction=body.reaction, allow_closing=body.allow_closing,
                               burst=[row.model_dump() for row in body.burst],
-                              provenance=[row.model_dump() for row in body.provenance],
+                              provenance=None if body.provenance is None else [row.model_dump() for row in body.provenance],
                               reply_message_id=body.reply_message_id, verbatim=body.verbatim)
 
     @app.post('/chat/turn/check', dependencies=[auth('fri')])
@@ -392,7 +393,7 @@ def create_app(settings: Settings | None = None):
         if body.mention_grant:
             raise HTTPException(400, 'Invitation turns are fenced by their mention grant')
         chat_scope(body)
-        return store.check_chat(body.user_id, body.revision, [row.model_dump() for row in body.provenance])
+        return store.check_chat(body.user_id, body.revision, [row.model_dump() for row in body.provenance or []])
 
     @app.post('/chat/messages/sources', dependencies=[auth('fri')])
     def chat_message_sources(body: MessageSources):

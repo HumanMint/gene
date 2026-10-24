@@ -25,6 +25,7 @@ class Control(Scope):
     continuation_id: str = Field(default='', pattern=r'^(?:[0-9]{1,25})?$')
     addressed_bot_id: str = Field(default='', pattern=r'^(?:[0-9]{1,25})?$')
     burst_origin: SourceText | None = None
+    grounded: bool = False  # The companion kept the argument to the member's own words.
 
 
 class Poll(BaseModel):

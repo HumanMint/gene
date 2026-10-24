@@ -91,8 +91,8 @@ class Controls:
             if payload.get('guild_id') != guild or payload.get('conversation_id') != conversation:
                 continue
             receipts.append({'at': row['created'], 'action': payload['action'], 'argument': payload['argument'],
-                'state': row['state'], 'channel_id': payload['target_channel_id'],
-                'result': self._result(row)})
+                'grounded': bool(payload.get('grounded')), 'state': row['state'],
+                'channel_id': payload['target_channel_id'], 'result': self._result(row)})
             if receipts[-1]['result'].get('output'):
                 receipts[-1]['result']['output'] = receipts[-1]['result']['output'][:1000]
             if len(receipts) == 3:

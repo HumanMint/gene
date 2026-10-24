@@ -95,6 +95,8 @@ def test_existing_databases_gain_the_provenance_column(tmp_path):
     with store.connection() as db:
         assert 'provenance' in {row['name'] for row in db.execute('PRAGMA table_info(chat_turns)')}
     assert replies(store) == ['old answer']
+    # It may quote other members with no record of whom: never treat it as fully attributed.
+    assert store.chat_context('123', 'public:1', '20')['turns'][0]['attributed'] is False
 
 
 def test_check_applies_the_save_fence_without_writing(store, client):
@@ -336,3 +338,27 @@ def test_request_checks_the_requesters_own_revision_when_created(store, client):
                'body': 'Add a moving checklist', 'channel_id': 'workshop', 'revision': 1}
     assert client.post('/requests', headers=headers('fri'), json=payload).status_code == 409
     assert client.post('/requests', headers=headers('fri'), json={**payload, 'revision': 0}).status_code == 200
+
+
+
+def test_turns_saved_without_provenance_are_marked_unattributed(store, client):
+    save(store, reply='legacy companion reply', provenance=None)
+    save(store, reply='capable reply', provenance=[])
+    assert [(turn['reply'], turn['attributed']) for turn in store.chat_context('123', 'public:1', '20')['turns']] == [
+        ('legacy companion reply', False), ('capable reply', True)]
+    scope = {'guild_id': 'guild', 'channel_id': 'workshop', 'conversation_id': 'public:456', 'user_id': '20'}
+    body = {**scope, 'revision': 0, 'input': 'where is ash moving', 'reply': 'ash said denver',
+            'source': source(guild='guild'), 'model': 'model', 'effort': 'high'}
+    assert client.post('/chat/turn', headers=headers('fri'), json=body).status_code == 200
+    assert client.post('/chat/turn/check', headers=headers('fri'), json=body).json() == {'ok': True}
+    body['source'] = source(guild='guild', age=1)
+    assert client.post('/chat/turn', headers=headers('fri'), json={**body, 'provenance': []}).status_code == 200
+    turns = client.post('/chat/context', headers=headers('fri'), json=scope).json()['turns']
+    assert [turn['attributed'] for turn in turns] == [False, True]
+
+
+def test_pending_question_from_a_legacy_companion_carries_no_provenance(store):
+    question = {'goal': 'web', 'question': 'before or after ash moves to denver?', 'topic': 'how are the lakers doing'}
+    store.save_chat('123', 'public:1', '20', 0, 'fri how are the lakers doing', question['question'], 'model',
+                    'high', source=source(channel='1'), clarification=question)
+    assert 'provenance' not in store.chat_context('123', 'public:1', '20')['pending']

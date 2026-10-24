@@ -97,6 +97,10 @@ Provenance also reaches what follow-ups inherit:
 - A consumed clarification copies only member-authored authorization fields into the Gene control
   (goal, source, request text, revision, burst marker), never the assistant's question. Older rows
   are scrubbed on startup.
+- The learning overview applies the same summary revision fence, and `clear_chats` removes learning
+  reports and their delivery queue.
+- Saved turns record the speaker's revision. A Fri message resolves only while that revision is
+  unchanged, and rows without it fail closed.
 
 The legacy companion sends no provenance and is unaffected.
 

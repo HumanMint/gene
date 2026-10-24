@@ -32,8 +32,14 @@ FOLLOW_UP = 900  # A member's next turn this soon after Fri's reply is read as a
 BATCH = 20
 SCAN = 200
 ATTEMPTS = 3
+CLAIM_TIMEOUT = 600
 RETENTION = 30*86400
 TEXT = 600  # Per-message characters a model sees.
+# Discord markup and ids a reader could resolve to an account, channel or message.
+MARKUP = ((re.compile(r'<@!?\d+>'), '@someone'), (re.compile(r'<@&\d+>'), '@role'), (re.compile(r'<#\d+>'), '#channel'),
+          (re.compile(r'</([\w -]+):\d+>'), r'/\1'), (re.compile(r'<a?:(\w+):\d+>'), r':\1:'),
+          (re.compile(r'https?://(?:[\w-]+\.)?discord(?:app)?\.com/channels/[\w@/]+', re.I), '[discord link]'),
+          (re.compile(r'\d{15,}'), '[id]'))
 STATE = ('reply_check_since', 'reply_check_cursor', 'reply_check_retry', 'reply_check_claim',
          'reply_check_budget', 'next_reply_check')
 
@@ -50,10 +56,19 @@ def initialize(db):
     ''')
 
 
+def _state():
+    from .fri_agent_store import AgentStore
+    return AgentStore.get, AgentStore.put
+
+
 def prune(db):
     """Housekeeping with the controller health check, so expiry doesn't wait for checks to run."""
-    db.execute('DELETE FROM fri_reply_findings WHERE at<?', (time.time()-RETENTION,))
-    db.execute('DELETE FROM fri_reply_check_runs WHERE at<?', (time.time()-RETENTION,))
+    now = time.time()
+    db.execute('DELETE FROM fri_reply_findings WHERE at<?', (now-RETENTION,))
+    db.execute('DELETE FROM fri_reply_check_runs WHERE at<?', (now-RETENTION,))
+    claim = _state()[0](db, 'reply_check_claim')
+    if claim and now-claim['at'] >= CLAIM_TIMEOUT:  # Abandoned, e.g. Fri stopped mid-check.
+        settle(db, claim, 'interrupted', now)
 
 
 def start(db, put):
@@ -62,13 +77,45 @@ def start(db, put):
     put(db, 'reply_check_since', now)
     put(db, 'reply_check_cursor', [now, 0])
     put(db, 'reply_check_retry', None)
+    put(db, 'reply_check_claim', None)  # A batch claimed before the restart can't finish into it.
 
 
 def erase(db, user_id):
-    """Findings go with any privacy change of the member, or of anyone their pair drew on."""
+    """Findings and any pending pair go with a privacy change of the member, or of anyone a pair drew on."""
     db.execute("DELETE FROM fri_reply_findings WHERE user_id=? OR EXISTS (SELECT 1 FROM "
                "json_each(fri_reply_findings.provenance) p WHERE json_extract(p.value, '$.user_id')=?)",
                (user_id, user_id))
+    get, put = _state()
+    claim = get(db, 'reply_check_claim')
+    if claim:
+        pairs = [pair for pair in claim['pairs'] if pair['user_id'] != user_id and
+                 all(item['user_id'] != user_id for item in pair['provenance'])]
+        if len(pairs) != len(claim['pairs']):
+            put(db, 'reply_check_claim', {**claim, 'pairs': pairs})
+
+
+def neutral(text):
+    """What a model may read of a message: the words, not who or where they point at."""
+    for pattern, replacement in MARKUP:
+        text = pattern.sub(replacement, text)
+    return text[:TEXT]
+
+
+def settle(db, claim, status, now, flagged=0):
+    """Advance past a finished batch; a failed one is retried as the same batch, then skipped.
+
+    The allowance is never refunded: every model call counts, whatever happens to its turns.
+    """
+    get, put = _state()
+    put(db, 'reply_check_claim', None)
+    attempts = claim['attempts']+1
+    if status == 'completed' or attempts >= ATTEMPTS:
+        put(db, 'reply_check_cursor', max(get(db, 'reply_check_cursor') or claim['through'], claim['through']))
+        put(db, 'reply_check_retry', None)
+    else:
+        put(db, 'reply_check_retry', {'through': claim['through'], 'attempts': attempts})
+    db.execute('INSERT OR IGNORE INTO fri_reply_check_runs VALUES (?,?,?,?,?,?,?)',
+               (claim['id'], now, claim['offered'], flagged, status, claim['model'], claim['effort']))
 
 
 def current(db, user_id, revision, provenance):
@@ -169,9 +216,9 @@ class ReplyChecks:
                           'revision': revision, 'provenance': provenance, 'turn_at': later['at'],
                           'space': later['channel_id'].split(':')[0],
                           'gap_seconds': int(later['at']-earlier['at']),
-                          'earlier': {'member': earlier['input'][:TEXT], 'fri': earlier['reply'][:TEXT]},
-                          'later': {'member': later['input'][:TEXT],
-                                    'fri': later['reply'][:TEXT] if later['verbatim'] else ''}})
+                          'earlier': {'member': neutral(earlier['input']), 'fri': neutral(earlier['reply'])},
+                          'later': {'member': neutral(later['input']),
+                                    'fri': neutral(later['reply']) if later['verbatim'] else ''}})
         if until and len(pairs) < limit:
             through = max(through, until)  # Everything up to the failed batch's end was re-examined.
         return pairs, through, len(rows) < SCAN and len(pairs) < limit
@@ -186,9 +233,9 @@ class ReplyChecks:
                 return None
             pending = get(db, 'reply_check_claim')
             if pending:
-                if now-pending['at'] < 600:
+                if now-pending['at'] < CLAIM_TIMEOUT:
                     return None
-                self._settle(db, pending, 'interrupted', now)
+                settle(db, pending, 'interrupted', now)
             if now < get(db, 'next_reply_check', 0):
                 return None
             day = int(now//86400)
@@ -211,7 +258,7 @@ class ReplyChecks:
                 return None
             budget['used'] += len(pairs)
             put(db, 'reply_check_budget', budget)
-            claim = {'id': uuid.uuid4().hex, 'at': now, 'through': through,
+            claim = {'id': uuid.uuid4().hex, 'at': now, 'through': through, 'offered': len(pairs),
                      'attempts': retry['attempts'] if retry else 0,
                      'model': config['reply_check_model'], 'effort': config['reply_check_effort'],
                      'pairs': [{key: pair[key] for key in ('id', 'earlier_id', 'user_id', 'revision', 'provenance',
@@ -220,22 +267,6 @@ class ReplyChecks:
             return {'id': claim['id'], 'model': claim['model'], 'effort': claim['effort'],
                     'pairs': [{key: pair[key] for key in ('id', 'gap_seconds', 'earlier', 'later')} for pair in pairs]}
 
-    def _settle(self, db, claim, status, now, flagged=0):
-        """Advance past a finished batch; a failed one is retried as the same batch, then skipped."""
-        get, put = self.agent.get, self.agent.put
-        put(db, 'reply_check_claim', None)
-        attempts = claim['attempts']+1
-        if status == 'completed' or attempts >= ATTEMPTS:
-            put(db, 'reply_check_cursor', max(get(db, 'reply_check_cursor') or claim['through'], claim['through']))
-            put(db, 'reply_check_retry', None)
-        else:
-            put(db, 'reply_check_retry', {'through': claim['through'], 'attempts': attempts})
-            budget = get(db, 'reply_check_budget', {})
-            if budget.get('day') == int(claim['at']//86400):
-                put(db, 'reply_check_budget', {**budget, 'used': max(0, budget['used']-len(claim['pairs']))})
-        db.execute('INSERT OR IGNORE INTO fri_reply_check_runs VALUES (?,?,?,?,?,?,?)',
-                   (claim['id'], now, len(claim['pairs']), flagged, status, claim['model'], claim['effort']))
-
     def finish(self, claim_id, findings, status):
         now = time.time()
         with self.store.connection() as db:
@@ -243,25 +274,30 @@ class ReplyChecks:
             claim = self.agent.get(db, 'reply_check_claim')
             if not claim or claim['id'] != claim_id:
                 raise ValueError('Reply check expired or already completed')
+            # Today's settings decide what is kept, not the ones the batch was claimed under.
+            config, since = self.agent.config(db), self.agent.get(db, 'reply_check_since')
+            spaces = ('public', 'private') if config['reply_check_private'] else ('public',)
+            keep = status == 'completed' and config['enabled'] and config['reply_check_enabled'] and since is not None
             pairs, kept, seen = {pair['id']: pair for pair in claim['pairs']}, 0, set()
-            for finding in findings if status == 'completed' else ():
+            for finding in findings if keep else ():
                 pair = pairs.get(finding['pair_id'])
-                if (not pair or finding['pair_id'] in seen or
+                if (not pair or finding['pair_id'] in seen or pair['space'] not in spaces or
                         any(finding[key] not in allowed for key, allowed in LABELS.items())):
                     continue
                 seen.add(finding['pair_id'])
                 # Re-read both turns: a pruned or erased turn takes its finding with it.
-                turns = db.execute('SELECT count(*) FROM chat_turns WHERE id IN (?,?)',
-                                   (pair['earlier_id'], int(pair['id']))).fetchone()[0]
-                if turns != 2 or not current(db, pair['user_id'], pair['revision'], pair['provenance']):
+                turns, first = db.execute('SELECT count(*), min(at) FROM chat_turns WHERE id IN (?,?)',
+                                          (pair['earlier_id'], int(pair['id']))).fetchone()
+                if turns != 2 or first < since or not current(db, pair['user_id'], pair['revision'],
+                                                              pair['provenance']):
                     continue
                 db.execute('INSERT INTO fri_reply_findings(at,turn_at,user_id,revision,provenance,space,category,'
                            'severity,topic,fix) VALUES (?,?,?,?,?,?,?,?,?,?)',
                            (now, pair['turn_at'], pair['user_id'], pair['revision'], json.dumps(pair['provenance']),
                             pair['space'], *(finding[key] for key in LABELS)))
                 kept += 1
-            self._settle(db, claim, status, now, kept)
-            return {'kept': kept, 'pairs': len(pairs)}
+            settle(db, claim, status, now, kept)
+            return {'kept': kept, 'pairs': claim['offered']}
 
     def overview(self, days=7):
         """Owner-only. Exact totals; the top themes only, to keep the DM short."""

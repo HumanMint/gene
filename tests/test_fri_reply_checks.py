@@ -170,7 +170,7 @@ def test_revision_change_hides_findings_and_privacy_change_mid_check_drops_them(
     assert flag(checks, claim)['kept'] == 0
 
 
-def test_failed_checks_retry_then_skip_and_refund_the_allowance(setup):
+def test_failed_checks_retry_then_skip_and_every_attempt_counts(setup):
     store, agent, checks, _ = setup
     exchange(store)
     claim = checks.claim()
@@ -180,8 +180,8 @@ def test_failed_checks_retry_then_skip_and_refund_the_allowance(setup):
             claim = checks.claim()
             assert claim and len(claim['pairs']) == 1
         checks.finish(claim['id'], [{**FINDING, 'pair_id': claim['pairs'][0]['id']}], 'failed')
-        with store.connection() as db:  # Retries are free; the skipped batch keeps its allowance.
-            assert agent.get(db, 'reply_check_budget')['used'] == (attempt == 2)
+        with store.connection() as db:  # Every model call spends allowance, retries included.
+            assert agent.get(db, 'reply_check_budget')['used'] == attempt+1
     due(agent)
     assert checks.claim() is None and findings(store) == []
 
@@ -221,6 +221,69 @@ def test_equal_timestamps_are_neither_skipped_nor_repeated(setup, monkeypatch):
     assert seen == [str(turn) for turn in turns]
 
 
+def test_model_input_has_no_discord_markup_or_ids(setup):
+    store, agent, checks, _ = setup
+    save(store, 'is <@123456789012345678> right about <#234567890123456789>?', verbatim=True, ago=60,
+         reply='ask <@!345678901234567890> :<a:pog:456789012345678901>')
+    save(store, 'no, see https://discord.com/channels/123/567890123456789012/678901234567890123 or 789012345678901234',
+         'my bad', verbatim=True)
+    pair, = checks.claim()['pairs']
+    assert pair['earlier'] == {'member': 'is @someone right about #channel?', 'fri': 'ask @someone ::pog:'}
+    assert pair['later']['member'] == 'no, see [discord link] or [id]'
+
+
+def test_pending_batches_forget_erased_members_and_expire_without_fri(setup):
+    store, agent, checks, _ = setup
+    exchange(store)
+    exchange(store, user='40', earlier_provenance=[ASH])
+    assert len(checks.claim()['pairs']) == 2
+    store.clear_chats('20')
+    store.personal_control('30', 'disable')  # Someone the second pair drew on.
+    with store.connection() as db:
+        assert agent.get(db, 'reply_check_claim')['pairs'] == []
+    agent.update({'reply_check_enabled': False}, 1, '10')  # Fri never comes back to finish it.
+    with store.connection() as db:
+        claim = agent.get(db, 'reply_check_claim')
+        agent.put(db, 'reply_check_claim', {**claim, 'at': claim['at']-fri_reply_checks.CLAIM_TIMEOUT})
+    store.status()
+    with store.connection() as db:
+        assert agent.get(db, 'reply_check_claim') is None
+        assert db.execute('SELECT status FROM fri_reply_check_runs').fetchone()[0] == 'interrupted'
+
+
+def test_a_batch_only_keeps_what_current_settings_allow(setup):
+    store, agent, checks, _ = setup
+    exchange(store)
+    claim = checks.claim()
+    agent.update({'reply_check_enabled': False}, 1, '10')
+    agent.update({'reply_check_enabled': True}, 2, '10')
+    with pytest.raises(ValueError):  # Restarting drops a batch claimed before it.
+        flag(checks, claim)
+    agent.update({'reply_check_private': True}, 3, '10')
+    due(agent)
+    exchange(store, conversation='private:9', gap=0)
+    claim = checks.claim()
+    agent.update({'reply_check_private': False}, 4, '10')
+    assert flag(checks, claim)['kept'] == 0
+    due(agent)
+    exchange(store, user='21', gap=0)
+    claim = checks.claim()
+    agent.update({'enabled': False}, 5, '10')
+    assert flag(checks, claim)['kept'] == 0 and findings(store) == []
+
+
+def test_turns_that_vanish_before_a_retry_still_cost_their_call(setup):
+    store, agent, checks, _ = setup
+    exchange(store)
+    claim = checks.claim()
+    checks.finish(claim['id'], [], 'invalid_output')
+    store.clear_chats('20')
+    due(agent)
+    assert checks.claim() is None
+    with store.connection() as db:
+        assert agent.get(db, 'reply_check_budget')['used'] == 1
+
+
 def test_daily_allowance_and_interrupted_claims(setup, monkeypatch):
     store, agent, checks, _ = setup
     agent.update({'reply_check_daily_pairs': 10}, 1, '10')
@@ -233,10 +296,13 @@ def test_daily_allowance_and_interrupted_claims(setup, monkeypatch):
     clock = fri_reply_checks.time.time()
     monkeypatch.setattr(fri_reply_checks.time, 'time', lambda: clock+601)
     due(agent)
-    assert [pair['id'] for pair in checks.claim()['pairs']] == first  # Retried within the allowance.
+    assert checks.claim() is None  # The interrupted call spent today's allowance.
     with store.connection() as db:
         run = db.execute('SELECT status,pairs FROM fri_reply_check_runs').fetchone()
         assert tuple(run) == ('interrupted', 10)
+    monkeypatch.setattr(fri_reply_checks.time, 'time', lambda: clock+86400)
+    due(agent)
+    assert [pair['id'] for pair in checks.claim()['pairs']] == first  # Retried tomorrow.
 
 
 def test_old_findings_expire_with_housekeeping_even_while_checks_are_off(setup):
@@ -291,5 +357,7 @@ def test_api_is_service_authenticated_and_overview_is_owner_only(tmp_path):
     assert client.post('/agent/reply-checks/'+'a'*32+'/finish', headers=headers('fri'), json=body).status_code == 400
     assert client.post('/agent/reply-checks/nope/finish', headers=headers('fri'), json=body).status_code == 404
     usage = {'attempt_id': 'b'*32, 'model': 'gpt-6-luna', 'effort': 'low', 'status': 'completed',
-             'counters': {}, 'role': 'reply_check'}
+             'counters': {}, 'role': 'attention', 'purpose': 'reply_check'}
     assert client.post('/chat/usage/report', headers=headers('fri'), json=usage).status_code == 200
+    with sqlite3.connect(settings.db) as db:
+        assert db.execute('SELECT role FROM agent_usage_roles').fetchone() == ('reply_check',)

@@ -163,6 +163,9 @@ class ChatUsage(BaseModel):
     status: Literal['completed', 'failed', 'incomplete', 'interrupted', 'invalid_output']
     counters: dict
     role: Literal['conversation', 'attention', 'summary', 'exploration_plan', 'meme', 'status', 'owner_settings', 'investigation', 'history', 'web_search', 'image_lookup', 'evaluation', 'reply_check'] = 'conversation'
+    # Narrows a role for reporting. Older controllers ignore it and count the role, so a receipt
+    # queued before a rollback still delivers.
+    purpose: Literal['reply_check'] | None = None
 
 
 class ChatCatalog(Actor):
@@ -432,7 +435,8 @@ def create_app(settings: Settings | None = None):
 
     @app.post('/chat/usage/report', dependencies=[auth('fri')])
     def chat_usage_report(body: ChatUsage):
-        store.add_chat_usage(body.attempt_id, body.model, body.effort, body.status, body.counters, body.role)
+        store.add_chat_usage(body.attempt_id, body.model, body.effort, body.status, body.counters,
+                             body.purpose or body.role)
         return {'ok': True}
 
     @app.post('/chat/usage', dependencies=[auth('fri')])

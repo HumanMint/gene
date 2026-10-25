@@ -41,6 +41,12 @@ die() {
 mark() { echo "$1" >> "$JOURNAL"; sync "$JOURNAL"; }
 has() { [[ -f $JOURNAL ]] && grep -qx -- "$1" "$JOURNAL"; }
 need() { local step; for step in "$@"; do has "$step" || die "phase needs '$step' first"; done; }
+has_module() {  # module docker-run-words...: true when the image has the module; a probe that fails to run stops the phase
+  local module=$1 found; shift
+  found=$("$@" python -c 'import importlib.util, sys; print("yes" if importlib.util.find_spec(sys.argv[1]) else "no")' "$module") ||
+    die "could not check the image for $module"
+  case $found in yes) return 0 ;; no) return 1 ;; *) die "could not check the image for $module" ;; esac
+}
 owns_pause() {  # This release paused development and has not unpaused it since.
   [[ -f $JOURNAL && $({ grep -x -e intent:pause -e done:unpause "$JOURNAL" || true; } | tail -n 1) == intent:pause ]]
 }
@@ -722,7 +728,7 @@ assert isinstance(job, dict) and job.get("id"), job
 print("old code wrote a request on the migrated schema:", job["state"])'
     "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c "$start" new
     "${run[@]}" "$new" python -m gene.fri_reply_checks purge /data/downgrade.sqlite3
-    if "${run[@]}" "$new" python -c 'import gene.profile_downgrade' 2>/dev/null; then
+    if has_module gene.profile_downgrade "${run[@]}" "$new"; then
       # A profile removal on the copy, so the downgrade must keep it in every configured channel. Without
       # the channels in controller.env it refuses, which a rollback must not find out halfway through.
       "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c '
@@ -955,7 +961,7 @@ rollback_gene() {
                --security-opt no-new-privileges:true --env-file "$ROOT/secrets/controller.env"
                -v "$ROOT/data/controller:/data" "$(jget "$MANIFEST" new.runtime.id)")
     "${run[@]}" python -m gene.fri_reply_checks purge /data/gene.sqlite3
-    if "${run[@]}" python -c 'import gene.profile_downgrade' 2>/dev/null; then
+    if has_module gene.profile_downgrade "${run[@]}"; then
       "${run[@]}" python -m gene.profile_downgrade /data/gene.sqlite3
     fi
     mark done:downgrade

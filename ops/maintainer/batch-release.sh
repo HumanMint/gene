@@ -91,7 +91,11 @@ db_owner() {  # uid:gid of the controller DB; its directory must agree, since SQ
   echo "$owner"
 }
 
-repair_sidecars() {  # gene.fri_release opens the DB as root; give any journal file it created back to the owner
+repair_sidecars() {
+  # gene.fri_release opens the DB as root. SQLite normally hands new journal files to the DB owner,
+  # but a build without that would leave root-owned ones the owner-run helpers can't open, so every
+  # DB access first gives them back. The read-only phases leave them alone and fail visibly instead.
+  [[ $PHASE == baseline || $PHASE == status ]] && return 0
   local owner file
   owner=$(db_owner)
   for file in "$DB-wal" "$DB-shm" "$DB-journal"; do
@@ -108,6 +112,7 @@ db_image() {  # The old runtime image exists before, during and after the switch
 
 db_py() {  # args: Python on stdin, as the DB owner, with only the controller data dir mounted at /data
   local owner image
+  repair_sidecars
   owner=$(db_owner); image=$(db_image)
   docker run -i --rm --network none --user "$owner" --read-only --tmpfs /tmp --cap-drop ALL \
     --security-opt no-new-privileges:true -v "$ROOT/data/controller:/data" "$image" python - "$@"
@@ -115,6 +120,7 @@ db_py() {  # args: Python on stdin, as the DB owner, with only the controller da
 
 db_copy() {  # dir name: an online copy of the live DB at dir/name, made as the DB owner into a dir they own
   local owner image
+  repair_sidecars
   owner=$(db_owner); image=$(db_image)
   [[ $(stat -c %u:%g "$1") == "$owner" ]] || die "$1 is not owned by the database owner"
   docker run -i --rm --network none --user "$owner" --read-only --tmpfs /tmp --cap-drop ALL \
@@ -480,6 +486,16 @@ PY
 }
 du_bytes() { du -sb "$1" | cut -f1; }
 
+same_filesystem() {  # Every move during the switch and its rollback must be an atomic rename, never a copy.
+  python3 - "$STAGE" "$ROOT/releases" "$ROOT/backups" "$ROOT" "$ROOT/source" <<'PY'
+import os, sys
+devices = {path: os.stat(path).st_dev for path in sys.argv[1:]}
+if len(set(devices.values())) != 1:
+    sys.exit('staging, releases, backups and the source tree must share one filesystem, so the switch only renames: '
+             + ', '.join(f'{path}={device}' for path, device in devices.items()))
+PY
+}
+
 check_manifest() {  # Every phase after baseline runs against the same G, F and images.
   [[ -f $MANIFEST ]] || die 'no manifest; run baseline'
   [[ $(jget "$MANIFEST" gene) == "$G" && $(jget "$MANIFEST" fri) == "$F" ]] || die 'manifest is for a different G/F'
@@ -570,7 +586,7 @@ stage() {
   gene_tar=$(stat -c %s "$STAGE/gene.tar")
   tars=$(( gene_tar + $(stat -c %s "$STAGE/fri.tar") ))
   mkdir -p "$ROOT/backups" "$ROOT/releases" "$FRI_ROOT/backups"
-  # The cogs move to releases/ and the new tree to source/; a different filesystem means a copy.
+  same_filesystem
   disk_admission "docker=$(docker info -f '{{.DockerRootDir}}'):$images" \
     "staging=$STAGE:$(( 2*tars + 2*db_size ))" \
     "gene_backup=$ROOT/backups:$(( db_size + red_size + source_size ))" \
@@ -742,6 +758,7 @@ gene() {
   verify old
   [[ ! -e $ROOT/releases/$G ]] || die "$ROOT/releases/$G appeared after staging"
   [[ $(tree_hash "$STAGE/cogs-ready") == "$(jget "$MANIFEST" cogs)" ]] || die 'staged cogs changed'
+  same_filesystem
   gene_disk
   quiet "$WAIT_WINDOW"
   verify old  # The wait can be long; the backup must describe the release it backs up.
@@ -759,6 +776,7 @@ gene() {
   mark gene_attempted
   SWITCHING=1
   trap on_gene_error ERR
+  same_filesystem
   gene_disk
   mark intent:cogs
   mv "$STAGE/cogs-ready" "$ROOT/releases/$G"
@@ -824,24 +842,26 @@ sys.exit(0 if (s['settings'].get('fri_active_sha') in (None, old_f) and s['fri_c
 PY
 }
 
+lock_fri() {  # gene.fri_release's own lock, held until this process exits, so no coordinator runs meanwhile
+  exec 9>> "$FRI_ROOT/release.lock"
+  flock -n 9 || die 'a Fri release holds its lock; let it finish, then repeat rollback-gene'
+}
+
 restore_old_fri() {
-  # Before any Gene downgrade, the Fri that ran against the old controller must be back. This puts
-  # the pre-switch pins and record back byte for byte under gene.fri_release's own lock, so it also
-  # reconciles an interrupted Fri release, and it needs no healthy controller.
+  # Called with the Fri lock held. Before any Gene downgrade, the Fri that ran against the old
+  # controller must be back. This puts the pre-switch pins and record back byte for byte, so it
+  # also reconciles an interrupted Fri release, and it needs no healthy controller.
   if old_fri_pinned; then log "Fri $OLD_F is pinned and running; its health is checked once Gene is restored"; return 0; fi
   local B
   B=$(backup_dir)
   log "restoring Fri $OLD_F from the switch backup"
   mark intent:fri_restore
-  exec 9>> "$FRI_ROOT/release.lock"
-  flock -n 9 || die 'a Fri release holds its lock; let it finish, then repeat rollback-gene'
   restore_file "$B/fri-release.env" "$FRI_ROOT/release.env"
   fri_compose stop runtime
   ! container_running "$FRI" || die 'Fri did not stop'
   restore_file "$B/fri-release.json" "$FRI_ROOT/release.json"
   set_fri_active "$OLD_F"
   fri_compose up -d --no-deps --force-recreate runtime
-  exec 9>&-
   old_fri_pinned || die 'Fri restore finished but its state does not match the old release'
   mark fri_restored
 }
@@ -855,11 +875,15 @@ rollback_gene() {
   prev=$(jget "$BASELINE" settings.previous_sha)
   old_id=$(jget "$MANIFEST" old.runtime.id)
   owner=$(db_owner)
+  repair_sidecars
   log 'rollback: check that live state is built from the recorded releases'
   pair_check
-  repair_sidecars
   log 'rollback: fence development'
   fence
+  lock_fri
+  # The fence can wait for work that finishes a deployment, so check again with nothing left running.
+  log 'rollback: check again with development fenced and Fri releases locked out'
+  pair_check
   log 'rollback: Fri first'
   restore_old_fri
   if has intent:start_new && ! has done:downgrade; then
@@ -930,13 +954,14 @@ fri() {
 
 evals() {
   need fri_switched; check_manifest
-  local suite
+  local suite failed=()
   for suite in requests sass controls; do
     log "eval suite $suite"
     if docker exec "$FRI" python -m fri.fri_eval --suite "$suite" > "$STAGE/eval-$suite.jsonl" 2>&1; then
       echo "suite $suite passed"
     else
       echo "suite $suite FAILED"
+      failed+=("$suite")
     fi
     python3 - "$STAGE/eval-$suite.jsonl" <<'PY'
 import json, sys
@@ -958,6 +983,7 @@ stages = (health.get('agent_heartbeat') or {}).get('stages') or {}
 failing = {name: stage.get('error') for name, stage in stages.items() if stage.get('error')}  # exception class names
 print('  stages:', sorted(stages), '| failing:', failing or 'none', '| rejected usage receipts:', health.get('rejected_usage'))
 PY
+  (( ${#failed[@]} == 0 )) || die "eval suites failed: ${failed[*]}; decide with the owner whether to roll back"
 }
 
 verify_off() {
@@ -989,18 +1015,29 @@ import json, os, sys, time
 path, sha, previous, fri, fri_previous, backup = sys.argv[1:7]
 result = {'sha': sha, 'previous': previous, 'success': True, 'recovered': False, 'backup': backup,
           'fri_sha': fri, 'fri_previous': fri_previous}
-try:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-except FileExistsError:
+def matches():
     existing = json.load(open(path))
     if {k: existing.get(k) for k in result} != result:
         sys.exit(path+' already exists with a different result')
     print('result already written')
+if os.path.exists(path):
+    matches()
     sys.exit(0)
-with os.fdopen(fd, 'w') as out:
+# Written in full beside the final name, then linked into place: the final name never holds a
+# partial file, and link() refuses to replace one that appeared meanwhile.
+temporary = path+'.tmp'
+with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as out:
     json.dump(result | {'at': time.time()}, out)
     out.flush()
     os.fsync(out.fileno())
+try:
+    os.link(temporary, path)
+except FileExistsError:
+    matches()
+os.unlink(temporary)
+directory = os.open(os.path.dirname(path), os.O_RDONLY)
+os.fsync(directory)
+os.close(directory)
 PY
 }
 

@@ -6,7 +6,7 @@ stops and starts the runtime through docker compose, and on a failed health chec
 the previous pins itself. MOCK_FRI_FAIL=<sha> fails the health check; MOCK_FRI_CRASH=<sha>
 dies right after starting the new runtime, before the record and the DB are written.
 """
-import json, os, sqlite3, subprocess, sys, time
+import fcntl, json, os, sqlite3, subprocess, sys, time
 
 ROOT, FRI = os.environ['BATCH_ROOT'], os.environ['BATCH_FRI_ROOT']
 assert sys.argv[1:3] == ['-m', 'gene.fri_release'], sys.argv
@@ -39,6 +39,9 @@ def audit(outcome, active):
         db.execute('INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value', ('fri_active_sha', active))
 
 
+# The same lock gene.fri_release takes for its whole run.
+lock = open(FRI+'/release.lock', 'a')
+fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 label = subprocess.run(['docker', 'image', 'inspect', '-f', '{{index .Config.Labels "org.opencontainers.image.revision"}}',
                         'fri-runtime:'+sha], capture_output=True, text=True, check=True).stdout.strip()
 assert label == sha, 'label'

@@ -1,2 +1,4 @@
 #!/usr/bin/env bash
+# Tests can arm $MOCK/on-sleep: it runs once, at the script's next sleep.
+if [[ -x $MOCK/on-sleep ]]; then mv "$MOCK/on-sleep" "$MOCK/on-sleep.ran"; "$MOCK/on-sleep.ran"; fi
 /bin/sleep 0.02

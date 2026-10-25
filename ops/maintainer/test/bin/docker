@@ -248,6 +248,9 @@ elif args[0] == 'exec':
     rest = [a for a in args[1:] if a != '-i']
     if rest[0] != 'fri-runtime-1' or rest[1:4] != ['python', '-m', 'fri.fri_eval'] or not st['containers']['fri-runtime-1']['running']:
         refuse('exec '+' '.join(rest))
+    if rest[5:6] == [os.environ.get('MOCK_EVAL_FAIL')]:
+        print(json.dumps({'case': 'mock_case', 'status': 'completed', 'response_kind': 'reply', 'passed': False, 'reply': 'meh'}))
+        sys.exit(1)
     print(json.dumps({'case': 'mock_case', 'status': 'completed', 'response_kind': 'reply', 'passed': True, 'reply': 'ok'}))
 else:
     refuse(' '.join(args))

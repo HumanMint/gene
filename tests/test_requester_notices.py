@@ -145,3 +145,34 @@ def test_reports_from_member_dms_keep_their_dm_link(store):
     assert request(store, body)['accepted']
     job = store.claim()
     assert job['source_url'].startswith('https://discord.com/channels/@me/77/')
+
+
+def test_a_feature_labelled_like_a_repair_does_not_qualify(store):
+    job = store.request('123', '20', 'repair:123456', 'https://discord.com/channels/123/1/123456',
+                        'Add a brand new command please')
+    from tests.conftest import request_reference
+    store.review_decision(job['id'], 'intake', request_reference(job), 'approve', 'owner')
+    built = store.claim()
+    store.finish_build(built['id'], built['lease'], {'sha': 'b'*40, 'base_sha': built['base_sha'],
+                       'branch': 'codex/new', 'tests_passed': True, 'summary': 'New command'})
+    store.approve(job['id'], 'b'*40, 'owner')
+    deploying = store.claim_deploy()
+    store.finish_deploy(deploying['id'], deploying['lease'], True, 'Release checks passed.')
+    assert store.get(job['id'])['state'] == 'deployed'
+    with pytest.raises(Conflict, match='Only a shipped repair'):
+        claim(store, job['id'], 'owner')  # Repair intake never recorded it.
+
+
+def test_an_erasure_after_an_old_rollback_does_not_block_a_newer_repair(store):
+    feature = proposed(store, sha='c'*40, source='message-9')
+    store.approve(feature['id'], 'c'*40, 'owner')
+    deploying = store.claim_deploy()
+    store.finish_deploy(deploying['id'], deploying['lease'], True, 'Release checks passed.')
+    rollback = store.rollback('123', 'owner')
+    deploying = store.claim_deploy()
+    store.finish_deploy(deploying['id'], deploying['lease'], True, 'Rolled back.')
+    assert store.get(rollback['id'])['state'] == 'deployed'
+    job = shipped(store)
+    store.erase_user('owner')  # Touches the old rollback's updated time.
+    assert store.get(rollback['id'])['updated'] > store.get(job['id'])['updated']
+    assert claim(store, job['id'], 'owner')['job']['id'] == job['id']

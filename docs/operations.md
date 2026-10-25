@@ -1014,7 +1014,7 @@ Pressing it sends one fixed reply to the member's report, in its channel or DM, 
 off and no request text. The controller keeps a mark per job (`requester_notices`), so a
 second press, a restart or a redelivered DM never replies twice. A reply Discord refused can be
 tried again. One that may have posted (a timeout, a server error, a crash mid-send) is never
-retried. Only deployed jobs that started as a member's repair report qualify, including ones the
+retried. Only deployed jobs that repair intake recorded for a member's report qualify, including ones the
 owner finished after the automatic checks handed them over. Those now get the same status DMs
 (approved, deploying, deployed) as other requests, since they carry no intake approval. An erased report, or a rollback
 deployed after the repair, refuses the reply. Older controllers lack the table and the

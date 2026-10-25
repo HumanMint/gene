@@ -22,11 +22,15 @@ def claim(store, job_id, actor):
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
         job = store._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
-        if (job['state'] != 'deployed' or not job['source_id'].startswith('repair:') or
+        # Started by repair intake, not merely labelled like it; shipped by the deployer, which dates it.
+        shipped = db.execute('SELECT d.at FROM deployments d JOIN repair_jobs r ON r.job_id=d.job_id '
+                             'WHERE d.job_id=? AND d.state="deployed"', (job_id,)).fetchone()
+        if (job['state'] != 'deployed' or not shipped or not job['source_id'].startswith('repair:') or
                 not job['source_url'] or not job['approved_sha']):
             raise Conflict('Only a shipped repair whose report is still on record can reply to its reporter')
-        if db.execute('SELECT 1 FROM jobs WHERE kind="rollback" AND state="deployed" AND updated>?',
-                      (job['updated'],)).fetchone():
+        # Deployment times, not jobs.updated: an erasure touches a job's updated time long after it ran.
+        if db.execute('SELECT 1 FROM deployments d JOIN jobs j ON j.id=d.job_id WHERE j.kind="rollback" '
+                      'AND d.state="deployed" AND d.at>?', (shipped['at'],)).fetchone():
             raise Conflict('A rollback ran after this repair shipped, so the fix may not be live')
         row = db.execute('SELECT state FROM requester_notices WHERE job_id=?', (job_id,)).fetchone()
         if row and row['state'] == 'sent':

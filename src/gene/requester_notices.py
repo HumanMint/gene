@@ -2,7 +2,9 @@
 
 The controller keeps the mark, so a second tap, a restart or a redelivered DM never replies twice.
 Only a deployed repair a member reported, even one the owner finished after its automatic checks
-handed it over, qualifies while its report is still on record: an erased request has no source left.
+handed it over, qualifies while its report is still on record (an erased request has no source left)
+and its commit is still the live release. Fri claims only after its Discord reads, right before it
+sends, so this claim is the send-time check.
 """
 
 import time
@@ -32,6 +34,8 @@ def claim(store, job_id, actor):
         if db.execute('SELECT 1 FROM deployments d JOIN jobs j ON j.id=d.job_id WHERE j.kind="rollback" '
                       'AND d.state="deployed" AND d.at>?', (shipped['at'],)).fetchone():
             raise Conflict('A rollback ran after this repair shipped, so the fix may not be live')
+        if store._setting(db, 'active_sha') != job['approved_sha']:
+            raise Conflict('A newer release is live now, so this repair is not what the reporter is running')
         row = db.execute('SELECT state FROM requester_notices WHERE job_id=?', (job_id,)).fetchone()
         if row and row['state'] == 'sent':
             raise Conflict('The reporter was already told')

@@ -122,10 +122,11 @@ def test_routes_are_owner_only_and_the_capability_is_optional(tmp_path):
     claimed = client.post(route, headers=headers('fri'), json={'guild_id': '123', 'user_id': 'owner'})
     assert claimed.status_code == 200 and claimed.json()['job']['user_id'] == '20'
     lease = claimed.json()['lease']
+    owner = {'guild_id': '123', 'user_id': 'owner'}
     assert client.post(route+'/finish', headers=headers('fri'),
-                       json={'lease': lease, 'state': 'posted'}).status_code == 422
+                       json={**owner, 'lease': lease, 'state': 'posted'}).status_code == 422
     assert client.post(route+'/finish', headers=headers('fri'),
-                       json={'lease': lease, 'state': 'sent', 'message_id': '42'}).json() == {'ok': True}
+                       json={**owner, 'lease': lease, 'state': 'sent', 'message_id': '42'}).json() == {'ok': True}
     again = client.post(route, headers=headers('fri'), json={'guild_id': '123', 'user_id': 'owner'})
     assert again.status_code == 409 and 'already told' in again.json()['detail']
     advertised = contract()
@@ -176,3 +177,47 @@ def test_an_erasure_after_an_old_rollback_does_not_block_a_newer_repair(store):
     store.erase_user('owner')  # Touches the old rollback's updated time.
     assert store.get(rollback['id'])['updated'] > store.get(job['id'])['updated']
     assert claim(store, job['id'], 'owner')['job']['id'] == job['id']
+
+
+def test_a_newer_release_before_the_tap_stops_the_reply(store):
+    job = shipped(store)
+    feature = proposed(store, sha='c'*40, source='message-9')
+    store.approve(feature['id'], 'c'*40, 'owner')
+    deploying = store.claim_deploy()
+    store.finish_deploy(deploying['id'], deploying['lease'], True, 'Release checks passed.')
+    assert store.status()['active_sha'] == 'c'*40
+    with pytest.raises(Conflict, match='newer release'):
+        claim(store, job['id'], 'owner')  # "Fixed now" may not hold for what's running.
+    with store.connection() as db:
+        assert db.execute('SELECT count(*) FROM requester_notices').fetchone()[0] == 0
+
+
+def test_recording_the_reply_is_the_owners_on_this_server(tmp_path):
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    from gene.api import create_app
+    from gene.config import Settings
+    from gene.store import Store
+    settings = Settings(Path(tmp_path/'api.sqlite3'), '123', 'owner', 'runtime-'+'x'*32, 'worker-'+'x'*32,
+                        'deploy-'+'x'*32, workshop_channel_id='1', fri_token='fri-'+'x'*32)
+    client = TestClient(create_app(settings))
+    store = Store(settings.db)
+    store.bootstrap('a'*40)
+    store.set_paused(False, 'owner')
+    store.update_models([{'id': 'gpt-6-astra', 'name': 'GPT-6 Astra', 'efforts': ['high'], 'default_effort': 'high'}])
+    store.select_model('gpt-6-astra', 'high', 'owner')
+    job = shipped(store)
+    route = f"/requests/{job['id']}/requester-notice"
+    owner = {'guild_id': '123', 'user_id': 'owner'}
+    lease = client.post(route, headers=headers('fri'), json=owner).json()['lease']
+    for scope in ({'guild_id': '999', 'user_id': '20'}, {'guild_id': '999', 'user_id': 'owner'},
+                  {'guild_id': '123', 'user_id': '20'}):
+        refused = client.post(route+'/finish', headers=headers('fri'), json={**scope, 'lease': lease, 'state': 'failed'})
+        assert refused.status_code == 403
+    assert client.post(route+'/finish', headers=headers('fri'), json={'lease': lease, 'state': 'failed'}).status_code == 422
+    again = client.post(route, headers=headers('fri'), json=owner)
+    assert again.status_code == 409 and 'may already' in again.json()['detail']  # Still the first claim's.
+    assert client.post(route+'/finish', headers=headers('fri'),
+                       json={**owner, 'lease': lease, 'state': 'sent', 'message_id': '42'}).json() == {'ok': True}

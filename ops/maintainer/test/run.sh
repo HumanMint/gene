@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# Offline checks of batch-release.sh: FRI_REPO=<fri checkout> ops/maintainer/test/run.sh
-# Each test builds a fresh mock host under a temp dir; outputs stay in it for inspection.
-set -u
+# Offline checks of batch-release.sh: FRI_REPO=<fri checkout> ops/maintainer/test/run.sh [t_name ...]
+# Each test builds a fresh mock host under a temp dir and asserts every phase's exit code and the
+# resulting state. Tests run in parallel; outputs stay in the temp dir for inspection.
+set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-BASE=$(mktemp -d)
-for t in t_success t_health_fail t_quiet_mid t_fri_fail t_after_resume t_crash; do
-  echo "######## $t"
-  bash "$HERE/$t.sh" "$BASE/$t" 2>&1 | grep -v '^---- \(baseline\|stage\|rehearse\|drain\)$'
+BASE=$(mktemp -d); chmod 755 "$BASE"
+export OLD_SRC=$BASE/old-src
+tests=("$@"); (( ${#tests[@]} )) || mapfile -t tests < <(cd "$HERE" && find . -maxdepth 1 -name 't_*.sh' | sed 's|^\./||; s/\.sh$//' | sort)
+MOCK=$BASE/prime . "$HERE/env.sh"  # Exports the old code once for every test.
+for t in "${tests[@]}"; do bash "$HERE/$t.sh" "$BASE/$t" > "$BASE/$t.log" 2>&1 & done
+wait
+failures=()
+for t in "${tests[@]}"; do
+  echo "######## $t"; cat "$BASE/$t.log"
+  tail -n 1 "$BASE/$t.log" | grep -qx 'RESULT: PASS' || failures+=("$t")
 done
 echo "outputs in $BASE"
+if (( ${#failures[@]} )); then echo "FAILED: ${failures[*]}"; exit 1; fi
+echo "ALL ${#tests[@]} PASSED"

@@ -17,6 +17,9 @@ from .reviews import pending_notice, pending_review, request_reference
 SHA = re.compile(r'^[a-f0-9]{40}$')
 ELSEWHERE_SECONDS = 12 * 3600  # A member's exchanges elsewhere in the server, for picking a topic back up.
 ELSEWHERE_TURNS = 2
+LOOP_ITEMS = 5  # Of each kind of open loop in a conversation.
+LOOP_SETTLED_SECONDS = 86400  # A reminder that went out (or didn't) stays visible for a day.
+LOOP_UNDERWAY_SECONDS = 3 * 3600  # A game night stays visible while it's probably still on.
 
 
 class Conflict(ValueError):
@@ -623,6 +626,8 @@ class Store:
                     'elsewhere': self._elsewhere(db, guild_id, channel_id, user_id)
                     if profiles and profile['enabled'] else [],
                     'requests': self._own_requests(db, guild_id, channel_id, user_id) if profile['enabled'] else [],
+                    'loops': self._open_loops(db, guild_id, channel_id, user_id, revision[0] if revision else 0)
+                    if profile['enabled'] else {'reminders': [], 'saved_work': [], 'game_nights': []},
                     'web_research': [json.loads(row[0]) for row in db.execute(
                         'SELECT receipt FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY id DESC LIMIT 3',
                         (guild_id, channel_id, user_id))],
@@ -674,6 +679,50 @@ class Store:
                 item['title'] = clean((row['body'] or '').strip().split('\n')[0], 100)
             requests.append(item)
         return requests
+
+    @staticmethod
+    def _open_loops(db, guild_id, conversation, user_id, revision):
+        """The member's own unfinished things that belong to this conversation, so Fri knows them without a tool.
+
+        Each shows only where the member already sees it: reminders in the DM they were made in, saved work in
+        its own conversation, and game-night cards they organized in the channel the card is in. Nothing here
+        crosses into another conversation, and nothing holds another member's words or choices.
+        """
+        from .fri_social_store import ACTIVE, Social
+        from .fri_workspace_store import Workspace
+        Social.prune(db)
+        Workspace.prune(db)
+        now = time.time()
+        kind, _, place = conversation.partition(':')
+        reminders = []
+        if kind == 'private':
+            for row in db.execute(
+                    f"SELECT body,due,local_time,timezone,state,revision FROM fri_reminders WHERE guild_id=? AND user_id=? "
+                    f"AND dm_id=? AND (state IN ({','.join('?'*len(ACTIVE))}) OR (state IN ('sent','failed','uncertain') "
+                    f"AND due>?)) ORDER BY state IN ({','.join('?'*len(ACTIVE))}) DESC, due LIMIT ?",
+                    (guild_id, user_id, place, *ACTIVE, now-LOOP_SETTLED_SECONDS, *ACTIVE, LOOP_ITEMS)):
+                state = row['state']
+                # Confirming and delivering both check the privacy revision: a change since then means it never goes out.
+                if state in ('pending', 'scheduled', 'claimed') and row['revision'] != revision:
+                    state = 'will_not_send'
+                reminders.append({'text': row['body'], 'due': row['due'], 'local_time': row['local_time'],
+                                  'timezone': row['timezone'], 'state': state})
+        saved_work = [dict(row) for row in db.execute(
+            "SELECT title,updated FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND state='open' "
+            'ORDER BY updated DESC LIMIT ?', (guild_id, user_id, conversation, LOOP_ITEMS))]
+        game_nights = []
+        if kind == 'public':
+            for row in db.execute("SELECT id FROM fri_plans WHERE guild_id=? AND user_id=? AND channel_id=? AND state IN "
+                                  "('pending','open','finalized') ORDER BY created DESC", (guild_id, user_id, place)).fetchall():
+                plan = Social.plan_row(db, row['id'])
+                chosen = plan['slots'][plan['selected']] if plan['state'] == 'finalized' else None
+                if (chosen if chosen is not None else max(plan['slots'])) < now-LOOP_UNDERWAY_SECONDS:
+                    continue  # It already happened.
+                # The card's own counts, which everyone in the channel sees; never who chose what.
+                game_nights.append({'title': plan['title'], 'state': plan['state'], 'timezone': plan['timezone'],
+                                    'options': plan['slots'], 'available': plan['available'], 'chosen': chosen,
+                                    'rsvps': plan['rsvps'] if chosen is not None else None})
+        return {'reminders': reminders, 'saved_work': saved_work, 'game_nights': game_nights[:LOOP_ITEMS]}
 
     @staticmethod
     def _privacy_state(db, user_id):

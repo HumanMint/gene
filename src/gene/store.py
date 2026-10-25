@@ -638,16 +638,18 @@ class Store:
         on them inherits it and goes when that person erases.
         """
         since = time.time()-ELSEWHERE_SECONDS
+        # A member keeps a few exchanges per conversation, so every candidate is read before the latest are picked.
         turns = [dict(row) for row in db.execute(
             "SELECT id,channel_id AS conversation_id,input,at,provenance,source FROM chat_turns "
             "WHERE guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND channel_id<>? "
-            "AND response_kind='reply' AND attributed=1 AND at>? ORDER BY id DESC LIMIT ?",
-            (guild_id, user_id, conversation, since, ELSEWHERE_TURNS))][::-1]
+            "AND response_kind='reply' AND attributed=1 AND at>? ORDER BY id",
+            (guild_id, user_id, conversation, since))]
         for turn in turns:  # When the member said it, not when the reply was saved.
             if turn['source']:
                 turn['at'] = min(turn['at'], ChatSource.model_validate_json(turn['source']).timestamp().timestamp())
+        turns = self._current_turns(db, [turn for turn in turns if turn['at'] > since])
         return [{key: turn[key] for key in ('conversation_id', 'input', 'at', 'provenance')}
-                for turn in self._current_turns(db, [turn for turn in turns if turn['at'] > since])]
+                for turn in sorted(turns, key=lambda turn: turn['at'])[-ELSEWHERE_TURNS:]]
 
     @staticmethod
     def _own_requests(db, guild_id, conversation, user_id):
@@ -941,15 +943,16 @@ class Store:
                 db.execute('DELETE FROM personal_notes WHERE id=?', (note_id,))
         row = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
         # With profiles, each note says whose words were in view when it was learned: a reply built on it
-        # inherits them, as a reply built on an exchange does. An older Fri gets the notes as before.
+        # inherits them, as a reply built on an exchange does. An older Fri can't carry that, so it gets
+        # only the notes that drew on no one else.
         return {'enabled': bool(row[0]) if row else True,
                 'notes': [{'category': r['category'], 'evidence': r['evidence'],
                            'scope': 'server' if scope == SERVER else 'here',
                            **({'provenance': json.loads(r['provenance'])} if profiles else {})}
                           for scope in ((SERVER, channel_id) if profiles else (channel_id,)) for r in db.execute(
                               'SELECT category,evidence,provenance FROM personal_notes WHERE guild_id=? AND '
-                              'channel_id=? AND user_id=? ORDER BY at DESC LIMIT ?',
-                              (guild_id, scope, user_id, limit(scope)))]}
+                              "channel_id=? AND user_id=? AND (? OR provenance='[]') ORDER BY at DESC LIMIT ?",
+                              (guild_id, scope, user_id, profiles, limit(scope)))]}
 
     def personal_control(self, user_id, action):
         if action not in ('disable', 'enable'):

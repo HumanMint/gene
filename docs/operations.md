@@ -372,7 +372,9 @@ do all notes saved before member profiles. Fri also sees the member's own latest
 from other everyone-readable channels in the past twelve hours, without its replies there, since a
 reply can draw on a note that stays in its own conversation; private conversations never reach
 another conversation. A Fri that doesn't ask for profiles (an older release) gets only the current
-conversation's notes, as before, so its lists stay within the bounds it was built for. Users and
+conversation's notes, as before, so its lists stay within the bounds it was built for, and none
+that was learned while another member's words were in view, since it can't carry their provenance
+into a reply. Users and
 guilds stay separate. The attention adapter additionally
 keeps a 15-minute, 30-message RAM buffer per configured channel and bounded recent-history
 summaries as described below; it does not import an unrestricted server archive.

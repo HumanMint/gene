@@ -203,6 +203,20 @@ def test_elsewhere_counts_from_when_the_member_said_it(store):
     assert store.chat_context('123', 'public:1', '20')['elsewhere'][0]['at'] <= time.time()
 
 
+def test_elsewhere_picks_the_latest_by_when_the_member_said_it(store):
+    for conversation, text, age, provenance in (('public:2', 'twenty seconds ago', 20, []),
+                                                ('public:3', 'ten seconds ago', 10, []),
+                                                ('public:4', 'forty seconds ago', 40, []),
+                                                ('public:6', 'twelve hours ago', 12*3600+600, []),
+                                                ('public:7', 'about ash', 5, [ASH])):
+        store.save_chat('123', conversation, '20', 0, text, 'ok', 'model', 'high', audience='server',
+                        source=source(age=age, user='20', channel=conversation.split(':')[1]), provenance=provenance)
+    with store.connection() as db:  # A revision change without an eager delete.
+        db.execute("INSERT INTO chat_revisions VALUES ('30',1)")
+    # Saved last isn't said last, and what can't be shown never takes a place.
+    assert elsewhere(store, 'public:1') == [('public:2', 'twenty seconds ago'), ('public:3', 'ten seconds ago')]
+
+
 def test_memory_off_hides_and_forget_me_erases_every_scope(store):
     say(store)
     say(store, 'I like private jazz', 'music', conversation='private:9', audience='conversation')
@@ -394,6 +408,16 @@ def test_an_older_fri_gets_only_this_conversations_notes(store):
     profile_note = next(row for row in entries(store, '123', 'private:9', '20')['entries'] if row['scope'] == 'server')
     with pytest.raises(ValueError, match='no longer available'):
         edit(store, '123', 'private:9', '20', profile_note['id'], 0, private_source(), 'remove', profiles=False)
+
+
+def test_an_older_fri_never_gets_a_note_that_drew_on_someone_else(store):
+    for text, provenance in (('ash said: I like Minecraft modpacks', [ASH]), ('I like chess', [])):
+        store.save_chat('123', 'public:5', '20', 0, text, 'noted', 'model', 'high', audience='conversation',
+                        notes=[{'category': 'games', 'evidence': text.removeprefix('ash said: ')}],
+                        source=source(user='20', channel='5'), provenance=provenance)
+    # It can't carry provenance into a reply, so a reply built on the note would outlive ash's erasure.
+    assert notes(store, 'public:5', profiles=False) == [('here', 'I like chess')]
+    assert notes(store, 'public:5') == [('here', 'I like chess'), ('here', 'I like Minecraft modpacks')]
 
 
 def test_context_and_lists_ask_for_profiles(controls_api):  # noqa: F811

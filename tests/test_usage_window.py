@@ -30,6 +30,8 @@ def test_a_window_keeps_only_attempts_recorded_since_then(client):
     assert recent['meme']['input_tokens'] == 7
     assert usage(client, since=9_001).json() == []
     assert usage(client, since=None).json() == everything
+    assert all(row['since'] == 5_000 for row in recent.values())  # What Fri checks before naming a window.
+    assert not any('since' in row for row in everything)
 
 
 def test_a_window_is_validated_and_stays_owner_only(client):

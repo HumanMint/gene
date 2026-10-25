@@ -500,9 +500,13 @@ class AgentStore:
             db.execute('UPDATE agent_reports SET delivered=1 WHERE id=?', (report_id,))
 
     def usage(self, since=None):
-        """Totals per role, model and effort; since (Unix seconds) keeps only attempts recorded from then on."""
+        """Totals per role, model and effort; since (Unix seconds) keeps only attempts recorded from then on.
+
+        Each windowed row carries the since it applied: a controller from before windows ignores the field,
+        so Fri labels a report as windowed only when every row says so."""
+        marked = {} if since is None else {'since': since}
         with self.store.connection() as db:
-            return [dict(r) for r in db.execute('SELECT coalesce(r.role,"conversation") AS role,u.model,u.effort,'
+            return [{**dict(r), **marked} for r in db.execute('SELECT coalesce(r.role,"conversation") AS role,u.model,u.effort,'
                 'count(*) AS attempts,sum(u.input_tokens) AS input_tokens,sum(u.output_tokens) AS output_tokens,'
                 'sum(u.input_tokens IS NULL OR u.output_tokens IS NULL) AS unknown_attempts,'
                 'sum(u.reasoning_output_tokens) AS reasoning_tokens,sum(u.cached_input_tokens) AS cached_tokens '

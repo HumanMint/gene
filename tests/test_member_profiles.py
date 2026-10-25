@@ -191,6 +191,18 @@ def test_private_lists_everything_and_public_lists_what_it_can_see(store):
     assert [row['scope'] for row in entries(store, '123', 'public:5', '20')['entries']] == ['server', 'public:5']
 
 
+@pytest.mark.parametrize('scope', ['server', 'public:5'])
+def test_new_words_typed_in_a_dm_stay_in_the_dm(store, scope):
+    say(store, 'I like chess', conversation='public:5' if scope == 'public:5' else 'public:1',
+        audience='server' if scope == 'server' else 'conversation')
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    assert note['scope'] == scope
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'replace', 'I prefer quiet conversations')
+    for conversation in ('public:1', 'public:2', 'public:5'):
+        assert 'quiet conversations' not in str(store.chat_context('123', conversation, '20', True))
+    assert notes(store, 'private:9') == [('here', 'I prefer quiet conversations')]
+
+
 def private_source():
     return {**control_source(), 'channel_id': '9'}
 
@@ -202,15 +214,16 @@ def test_editing_a_profile_note_from_a_dm_clears_every_conversation(store):
     say(store, 'not this member', None, conversation='public:2', user='30')
     note = entries(store, '123', 'private:9', '20')['entries'][0]
     result = edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'replace', 'I prefer Terraria')
+    # Words typed in a DM stay there: the edit takes the note out of the profile.
     assert [(row['scope'], row['evidence'], row['origin']) for row in result['entries']] == [
-        ('server', 'I prefer Terraria', 'public:1')]
+        ('private:9', 'I prefer Terraria', None)]
     with store.connection() as db:
         assert db.execute("SELECT count(*) FROM chat_turns WHERE user_id='20'").fetchone()[0] == 0
         assert db.execute("SELECT count(*) FROM chat_turns WHERE user_id='30'").fetchone()[0] == 1
         # The removal fence is the profile's, so older text can't re-learn it there.
         assert db.execute('SELECT channel_id FROM personal_note_removals').fetchone()[0] == 'server'
     say(store, 'I like Minecraft again', revision=1)  # A fresh disclosure after the edit is kept.
-    assert len(notes(store, 'public:3')) == 2
+    assert notes(store, 'public:3') == [('server', 'I like Minecraft again')]
 
 
 def test_editing_another_conversations_note_clears_only_that_conversation(store):

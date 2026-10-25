@@ -383,7 +383,8 @@ re-enables it. These controls run without inference and invalidate in-flight rep
 data cannot be written back. **Forget my chats** clears recent turns while retaining personal notes.
 Anonymous usage counts survive erasure. Personal notes are never shared with the development worker.
 **My memory** edits or removes an individual entry without inference; in a DM it covers every
-note, in any scope. Changes are revision-fenced, clear stale recent context and research receipts
+note, in any scope. Edited wording is kept in the conversation it was typed in, so a profile or
+channel note edited from a DM leaves the profile and stays in that DM. Changes are revision-fenced, clear stale recent context and research receipts
 (every conversation in the server for a profile note), and prevent historical learning from restoring
 the removed disclosure: nothing the member said there before the change becomes a note, archive
 observation or channel summary, and a message or outside @mention sent before it but answered after

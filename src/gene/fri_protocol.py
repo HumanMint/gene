@@ -3,11 +3,12 @@
 PROTOCOL = 'gene-fri/1'
 CAPABILITIES = ('scoped-context', 'gene-controls', 'owner-reviews', 'privacy-revisions',
                 'workspace-outbox', 'social-outbox', 'research-receipts', 'agent-learning',
-                'event-mention-chat', 'turn-provenance', 'reply-checks')
+                'event-mention-chat', 'turn-provenance')
+OPTIONAL = ('reply-checks', 'member-profiles')  # Advertised; a controller without them is still compatible.
 
 
 def contract():
-    return {'protocol': PROTOCOL, 'capabilities': list(CAPABILITIES),
+    return {'protocol': PROTOCOL, 'capabilities': list(CAPABILITIES+OPTIONAL),
             'deployment_authority': 'gene-controller'}
 
 

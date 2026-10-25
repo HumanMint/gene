@@ -13,6 +13,8 @@ run() {  # expected_rc phase [lines of output to show]
   RUNS=$(( RUNS + 1 )); out=$MOCK/out-$RUNS-$phase
   echo "---- $phase"
   bash "$S" "$phase" "$G" "$F" > "$out" 2>&1 || rc=$?
+  # A killed run's children keep the batch lock until they exit, and the next phase would rightly refuse.
+  (( rc != 137 )) || flock "$BATCH_ROOT/batch-release.lock" true
   (( lines == 0 )) || tail -n "$lines" "$out"
   [[ $rc == "$want" ]] || { tail -n 15 "$out"; fail "$phase exited $rc, expected $want"; }
 }

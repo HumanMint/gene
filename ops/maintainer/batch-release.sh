@@ -1198,7 +1198,7 @@ PY
 }
 
 no_rollback() {
-  if has intent:rollback; then die 'a rollback has started; repeat rollback-gene until it finishes, then resume-old'; fi
+  if has intent:rollback; then die "a rollback has started; repeat $(gene_changes && echo rollback-gene || echo rollback-fri) until it finishes, then resume-old"; fi
 }
 
 resume() {
@@ -1236,14 +1236,48 @@ resume_old() {
   has resumed_old || mark resumed_old
 }
 
+fri_pair_check() {  # rollback-fri only reconciles a live Fri built from the recorded old and new releases.
+  python3 - "$(state)" "$MANIFEST" "$(backup_dir)" "$FRI_ROOT" "$F" "$OLD_F" <<'PY'
+import json, sys
+s, manifest = json.loads(sys.argv[1]), json.load(open(sys.argv[2]))
+B, fri_root, F, OLD_F = sys.argv[3:7]
+def read(path):  # compared only, never printed
+    try:
+        with open(path, 'rb') as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return None
+saved = {name: read(B+'/'+name) for name in ('fri-release.env', 'fri-release.json')}
+if None in saved.values():
+    sys.exit('the Fri backup in '+B+' is incomplete')
+try:
+    record = json.loads(read(fri_root+'/release.json') or b'null')
+except ValueError:
+    record = None
+checks = {
+    'fri release.env': read(fri_root+'/release.env') in (saved['fri-release.env'], saved['fri-release.env'].replace(OLD_F.encode(), F.encode())),
+    'fri release.json': (read(fri_root+'/release.json') == saved['fri-release.json']
+                         or (isinstance(record, dict) and record.get('sha') == F and record.get('previous') == OLD_F)),
+    'fri_active_sha': s['settings'].get('fri_active_sha') in (None, OLD_F, F),
+    'fri image': s['fri_container']['image'] in (manifest['old']['fri']['id'], manifest['new']['fri']['id'], 'none'),
+}
+bad = [k for k, v in checks.items() if not v]
+if bad:
+    sys.exit('live Fri is outside the recorded old/new pair ('+', '.join(bad)+'); reconcile by hand, nothing was changed')
+print('live Fri is built from the recorded old and new releases')
+PY
+}
+
 rollback_fri() {
   # A release that leaves Gene alone: putting the old Fri back is the whole rollback. It reconciles from
   # actual state through the backup the fri phase took, so it is safe to repeat.
   gene_changes && die 'this release changes Gene; rollback-gene puts the old Fri back first'
   need fri_backup; check_manifest
+  fri_pair_check
   has intent:rollback || mark intent:rollback
   fence
   lock_fri
+  fri_pair_check  # The fence can wait for a deployment that lands a third Fri.
   restore_old_fri
   probe_fri "$OLD_F" "$(jget "$MANIFEST" old.fri.id)"
   verify old

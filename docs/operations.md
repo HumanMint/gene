@@ -384,7 +384,8 @@ data cannot be written back. **Forget my chats** clears recent turns while retai
 Anonymous usage counts survive erasure. Personal notes are never shared with the development worker.
 **My memory** edits or removes an individual entry without inference; in a DM it covers every
 note, in any scope. An edited note keeps its place: the new wording shows wherever the note did, as
-the list labels it. Changes are revision-fenced, clear stale recent context and research receipts
+the list labels it. A note learned while other members' words were in view keeps their provenance, like
+the turn that saved it, and goes when any of them erases or changes their privacy settings. Changes are revision-fenced, clear stale recent context and research receipts
 (every conversation in the server for a profile note), and prevent historical learning from restoring
 the removed disclosure: nothing the member said there before the change becomes a note, archive
 observation or channel summary, and a message or outside @mention sent before it but answered after

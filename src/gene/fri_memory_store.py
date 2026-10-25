@@ -31,6 +31,9 @@ def initialize(db):
     if 'origin' not in {row[1] for row in db.execute('PRAGMA table_info(personal_notes)')}:
         # Where a profile note was said, shown only to its member. Conversation notes stay where they are.
         db.execute('ALTER TABLE personal_notes ADD COLUMN origin TEXT')
+    if 'provenance' not in {row[1] for row in db.execute('PRAGMA table_info(personal_notes)')}:
+        # Other members whose words the saving turn drew on: a member's message can quote someone else.
+        db.execute("ALTER TABLE personal_notes ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]'")
     db.execute('CREATE TABLE IF NOT EXISTS personal_note_removals (guild_id TEXT,channel_id TEXT,'
                'user_id TEXT,digest TEXT,at REAL,PRIMARY KEY(guild_id,channel_id,user_id,digest))')
 
@@ -70,15 +73,17 @@ def fences():
     return [digest(category, '') for category in CATEGORIES]
 
 
-def save(db, guild, scope, user, note, at, origin=None):
+def save(db, guild, scope, user, note, at, origin=None, provenance=()):
+    """provenance: other members whose words the saving turn drew on; their privacy changes remove the note."""
     category, evidence = note
     cutoff = removed(db, guild, scope, user)
     if at < time.time()-TTL or (cutoff is not None and at <= cutoff):
         return False
-    updated = db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at,origin) '
-        'VALUES (?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category,evidence) '
-        'DO UPDATE SET at=excluded.at,origin=excluded.origin WHERE excluded.at>personal_notes.at',
-        (guild, scope, user, category, evidence, at, origin))
+    updated = db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at,origin,provenance) '
+        'VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category,evidence) '
+        'DO UPDATE SET at=excluded.at,origin=excluded.origin,provenance=excluded.provenance '
+        'WHERE excluded.at>personal_notes.at',
+        (guild, scope, user, category, evidence, at, origin, json.dumps(list(provenance))))
     db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? AND category=? '
         'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
         'AND category=? ORDER BY at DESC,id DESC LIMIT ?)',

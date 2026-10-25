@@ -637,13 +637,17 @@ class Store:
         Provenance stays with each one: the member's words can repeat someone else's, so a reply built
         on them inherits it and goes when that person erases.
         """
+        since = time.time()-ELSEWHERE_SECONDS
         turns = [dict(row) for row in db.execute(
-            "SELECT id,channel_id AS conversation_id,input,at,provenance FROM chat_turns "
+            "SELECT id,channel_id AS conversation_id,input,at,provenance,source FROM chat_turns "
             "WHERE guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND channel_id<>? "
             "AND response_kind='reply' AND attributed=1 AND at>? ORDER BY id DESC LIMIT ?",
-            (guild_id, user_id, conversation, time.time()-ELSEWHERE_SECONDS, ELSEWHERE_TURNS))][::-1]
+            (guild_id, user_id, conversation, since, ELSEWHERE_TURNS))][::-1]
+        for turn in turns:  # When the member said it, not when the reply was saved.
+            if turn['source']:
+                turn['at'] = min(turn['at'], ChatSource.model_validate_json(turn['source']).timestamp().timestamp())
         return [{key: turn[key] for key in ('conversation_id', 'input', 'at', 'provenance')}
-                for turn in self._current_turns(db, turns)]
+                for turn in self._current_turns(db, [turn for turn in turns if turn['at'] > since])]
 
     @staticmethod
     def _own_requests(db, guild_id, conversation, user_id):
@@ -741,12 +745,14 @@ class Store:
     def advance_revision(db, user_id):
         """Every privacy change (erasure, memory on/off, cleared chats, edited notes) moves the revision.
 
-        Other members' turns, pending questions and requests built from this member's earlier words
-        go with it, so nothing derived outlives the change.
+        Other members' turns, notes, pending questions and requests built from this member's earlier
+        words go with it, so nothing derived outlives the change.
         """
         db.execute("DELETE FROM chat_turns WHERE id IN (SELECT t.id FROM chat_turns t, json_each(t.provenance) p "
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
         db.execute("DELETE FROM chat_pending WHERE EXISTS (SELECT 1 FROM json_each(chat_pending.body, '$.provenance') p "
+                   "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
+        db.execute("DELETE FROM personal_notes WHERE EXISTS (SELECT 1 FROM json_each(personal_notes.provenance) p "
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
         from .fri_reply_checks import erase as erase_reply_findings
         erase_reply_findings(db, user_id)
@@ -895,7 +901,7 @@ class Store:
                 note = personal_note(candidate, text)
                 if note:
                     saved += save_note(db, guild_id, scope, user_id, note, time.time(),
-                                       channel_id if scope == SERVER else None)
+                                       channel_id if scope == SERVER else None, provenance or ())
             db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
@@ -928,6 +934,11 @@ class Store:
         wide = fences()
         db.execute(f'DELETE FROM personal_note_removals WHERE at<? AND (at<? OR digest NOT IN ({",".join("?"*len(wide))}))',
                    (time.time() - TTL, time.time() - HORIZON, *wide))
+        # A note learned while other members' words were in view goes when any of them changes their privacy.
+        for note_id, provenance in db.execute("SELECT id,provenance FROM personal_notes WHERE guild_id=? AND "
+                                              "user_id=? AND provenance<>'[]'", (guild_id, user_id)).fetchall():
+            if any(Store._privacy_state(db, s['user_id']) != (s['revision'], True) for s in json.loads(provenance)):
+                db.execute('DELETE FROM personal_notes WHERE id=?', (note_id,))
         row = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
         return {'enabled': bool(row[0]) if row else True,
                 'notes': [{**dict(r), 'scope': 'server' if scope == SERVER else 'here'}

@@ -155,6 +155,33 @@ def test_elsewhere_drops_turns_built_on_someone_who_changed_their_privacy(store)
         assert db.execute("SELECT count(*) FROM chat_turns WHERE input='about ash'").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize('change', ['erase', 'clear', 'revision'])
+def test_a_note_quoting_another_member_goes_with_their_privacy_change(store, change):
+    for text, provenance in (('ash said: I like Minecraft modpacks', [ASH]), ('I like chess', [])):
+        store.save_chat('123', 'public:1', '20', 0, text, 'noted', 'model', 'high', audience='server',
+                        notes=[{'category': 'games', 'evidence': text.removeprefix('ash said: ')}],
+                        source=source(user='20', channel='1'), provenance=provenance)
+    assert notes(store, 'public:2') == [('server', 'I like chess'), ('server', 'I like Minecraft modpacks')]
+    if change == 'erase':
+        store.erase_user('30')
+    elif change == 'clear':
+        store.clear_chats('30')
+    else:
+        with store.connection() as db:  # A revision change without an eager delete.
+            db.execute("INSERT INTO chat_revisions VALUES ('30',1)")
+    assert notes(store, 'public:2') == [('server', 'I like chess')]
+    with store.connection() as db:
+        assert db.execute("SELECT count(*) FROM personal_notes WHERE evidence LIKE '%Minecraft%'").fetchone()[0] == 0
+
+
+def test_elsewhere_counts_from_when_the_member_said_it(store):
+    store.save_chat('123', 'public:2', '20', 0, 'a message from twelve hours ago', 'ok', 'model', 'high',
+                    audience='server', source=source(age=12*3600+600, user='20', channel='2'), provenance=[])
+    say(store, 'a fresh one', None, conversation='public:3')
+    assert elsewhere(store, 'public:1') == [('public:3', 'a fresh one')]
+    assert store.chat_context('123', 'public:1', '20')['elsewhere'][0]['at'] <= time.time()
+
+
 def test_memory_off_hides_and_forget_me_erases_every_scope(store):
     say(store)
     say(store, 'I like private jazz', 'music', conversation='private:9', audience='conversation')

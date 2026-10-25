@@ -184,7 +184,7 @@ Discord id, it changes nothing and exits with an error. It works on the database
 applies this release's migrations: a database that never had member profiles is left as it was, and
 when rolling back below both `member-profiles` and `turn-provenance` the two commands can run in
 either order without one undoing the other. An older controller's channel summaries and archive observations don't check
-removals, as before member profiles. Conversation notes and exchanges are kept. Rolling back Fri
+removals, and it doesn't remove a note when a member it quoted erases, as before member profiles. Conversation notes and exchanges are kept. Rolling back Fri
 alone needs no cleanup: an older Fri saves nothing to profiles and doesn't ask for them, so the
 controller shows it only each conversation's own notes. Profile notes stay stored, unseen, until a
 newer Fri returns or they expire; "forget me" still erases them.

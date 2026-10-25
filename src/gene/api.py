@@ -66,6 +66,11 @@ class ReviewDelivery(Lease):
     message_id: str = Field(default='', pattern=r'^[0-9]*$')
 
 
+class RequesterNoticeResult(Lease):
+    state: Literal['sent', 'failed', 'uncertain']
+    message_id: str = Field(default='', pattern=r'^[0-9]{0,25}$')
+
+
 class Progress(Lease):
     progress: Literal['', 'Coding', 'Testing', 'Repairing tests', 'Publishing proposal',
                       'Verifying fault', 'Independent review'] = ''
@@ -311,6 +316,21 @@ def create_app(settings: Settings | None = None):
     @app.post('/reviews/{job_id}/delivered', dependencies=[auth('fri')])
     def review_delivered(job_id: str, body: ReviewDelivery):
         store.finish_review_notice(job_id, body.lease, body.channel_id, body.message_id)
+        return {'ok': True}
+
+    @app.post('/requests/{job_id}/requester-notice', dependencies=[auth('fri')])
+    def requester_notice(job_id: str, body: Actor):
+        """The owner's tap on a shipped repair's DM: one reply to the member who reported it."""
+        actor(body, owner=True)
+        if store.get(job_id)['guild_id'] != settings.guild_id:
+            raise HTTPException(403, 'Request belongs to a different server')
+        from .requester_notices import claim
+        return claim(store, job_id, body.user_id)
+
+    @app.post('/requests/{job_id}/requester-notice/finish', dependencies=[auth('fri')])
+    def requester_notice_finish(job_id: str, body: RequesterNoticeResult):
+        from .requester_notices import finish
+        finish(store, job_id, body.lease, body.state, body.message_id)
         return {'ok': True}
 
     @app.post('/requests/{job_id}/reject', dependencies=[auth('fri')])

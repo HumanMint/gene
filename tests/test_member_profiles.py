@@ -498,7 +498,7 @@ def test_fri_learns_when_a_member_last_edited_their_memory(store, tmp_path):
     assert before <= agent.context('2', '20')['removed_at'] <= time.time()
 
 
-def test_a_refused_downgrade_leaves_an_older_database_untouched(tmp_path):
+def test_a_downgrade_never_upgrades_an_older_database(tmp_path, capsys):
     path = tmp_path/'old.sqlite3'
     Store(path)
     with sqlite3.connect(path) as db:
@@ -507,11 +507,30 @@ def test_a_refused_downgrade_leaves_an_older_database_untouched(tmp_path):
         schema = db.execute('SELECT group_concat(sql) FROM sqlite_master').fetchone()[0]
     with pytest.raises(SystemExit, match='Nothing changed. Channels are Discord channel ids'):
         downgrade([str(path), '--channels', 'public:7'])
+    downgrade([str(path), '--channels', '7'])
+    assert 'never had member profiles' in capsys.readouterr().out
     with sqlite3.connect(path) as db:
         assert db.execute('SELECT group_concat(sql) FROM sqlite_master').fetchone()[0] == schema
     with pytest.raises(SystemExit, match='Nothing changed. .* is not a readable controller database'):
         downgrade([str(tmp_path/'missing.sqlite3'), '--channels', '7'])
     assert not (tmp_path/'missing.sqlite3').exists()
+
+
+@pytest.mark.parametrize('order', [('provenance', 'profiles'), ('profiles', 'provenance')])
+def test_rolling_back_below_both_capabilities_works_in_either_order(store, order):
+    from gene.provenance_downgrade import main as provenance_downgrade
+    say(store)
+    with store.connection() as db:
+        db.execute("INSERT INTO agent_summaries(channel_id,body,authors,at,revisions) VALUES ('4','x','[]',0,'{}')")
+    for step in order:
+        (provenance_downgrade if step == 'provenance' else downgrade)([str(store.path)])
+    with sqlite3.connect(store.path) as db:
+        assert db.execute("SELECT count(*) FROM personal_notes WHERE channel_id='server'").fetchone()[0] == 0
+        assert {row[0] for row in db.execute('SELECT audience FROM chat_turns')} <= {'conversation'}
+        # The exact insert the controller before turn-provenance uses.
+        db.execute('INSERT INTO agent_summaries VALUES (?,?,?,?) ON CONFLICT(channel_id) '
+                   'DO UPDATE SET body=excluded.body,authors=excluded.authors,at=excluded.at',
+                   ('1', 'safe summary', '["20"]', 0))
 
 
 def test_a_retried_mention_save_answers_as_the_first_did(h):  # noqa: F811

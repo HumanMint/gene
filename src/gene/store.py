@@ -782,34 +782,43 @@ class Store:
         return None
 
     def downgrade_member_profiles(self, channels=()):
+        with self.connection() as db:
+            return self.downgrade_profiles(db, channels)
+
+    @staticmethod
+    def downgrade_profiles(db, channels):
         """Before starting a controller without member profiles, which could neither show nor edit them.
 
         An older controller checks removal fences only in the conversation it writes to, so each profile
         removal is copied to every public conversation it could learn into: the channels given (the
         configured chat and learning channels) and every one this database knows. A removed preference
         stays removed. Without the channels a channel never learned in yet would be missed, so it refuses.
+        It changes the database as it is and never migrates it, so it composes with other downgrades.
+        False when the database never had member profiles.
         """
-        with self.connection() as db:
-            db.execute('BEGIN IMMEDIATE')
-            if refusal := self.downgrade_refusal(db, channels):
-                raise ValueError(refusal)
-            known = {row[0] for row in db.execute(
-                "SELECT channel_id FROM personal_notes UNION SELECT channel_id FROM personal_note_removals "
-                "UNION SELECT channel_id FROM chat_turns UNION SELECT 'public:'||channel_id FROM agent_summaries")}
-            from .fri_agent_store import AgentStore
-            known |= {'public:'+str(c) for c in [*channels, *AgentStore.get(db, 'cursors', {})]}
-            known = sorted(c for c in known if re.fullmatch(r'public:[0-9]{1,25}', c))
-            fences = db.execute("SELECT guild_id,user_id,digest,at FROM personal_note_removals "
-                                "WHERE channel_id='server'").fetchall()
-            for guild, user, digest, at in fences:
-                for conversation in known:
-                    db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) '
-                               'ON CONFLICT(guild_id,channel_id,user_id,digest) '
-                               'DO UPDATE SET at=max(at,excluded.at)', (guild, conversation, user, digest, at))
-            db.execute("DELETE FROM personal_notes WHERE channel_id='server'")
-            db.execute("DELETE FROM personal_note_removals WHERE channel_id='server'")
-            # An older controller ignores the audience, so these stay in the conversation they were said in.
-            db.execute("UPDATE chat_turns SET audience='conversation'")
+        db.execute('BEGIN IMMEDIATE')
+        if refusal := Store.downgrade_refusal(db, channels):
+            raise ValueError(refusal)
+        if 'audience' not in {row[1] for row in db.execute('PRAGMA table_info(chat_turns)')}:
+            return False
+        known = {row[0] for row in db.execute(
+            "SELECT channel_id FROM personal_notes UNION SELECT channel_id FROM personal_note_removals "
+            "UNION SELECT channel_id FROM chat_turns UNION SELECT 'public:'||channel_id FROM agent_summaries")}
+        from .fri_agent_store import AgentStore
+        known |= {'public:'+str(c) for c in [*channels, *AgentStore.get(db, 'cursors', {})]}
+        known = sorted(c for c in known if re.fullmatch(r'public:[0-9]{1,25}', c))
+        fences = db.execute("SELECT guild_id,user_id,digest,at FROM personal_note_removals "
+                            "WHERE channel_id='server'").fetchall()
+        for guild, user, digest, at in fences:
+            for conversation in known:
+                db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) '
+                           'ON CONFLICT(guild_id,channel_id,user_id,digest) '
+                           'DO UPDATE SET at=max(at,excluded.at)', (guild, conversation, user, digest, at))
+        db.execute("DELETE FROM personal_notes WHERE channel_id='server'")
+        db.execute("DELETE FROM personal_note_removals WHERE channel_id='server'")
+        # An older controller ignores the audience, so these stay in the conversation they were said in.
+        db.execute("UPDATE chat_turns SET audience='conversation'")
+        return True
 
     def check_chat(self, user_id, revision, provenance=()):
         """The save's privacy fence without writing: run before a reply is delivered."""

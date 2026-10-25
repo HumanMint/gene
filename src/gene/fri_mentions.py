@@ -141,7 +141,10 @@ def save_turn(store, body):
         if row['turn_hash']:
             if row['turn_hash'] != fingerprint:
                 raise HTTPException(409, 'This mention event already completed a different reply')
-            return {'ok': True, 'first_memory': False}
+            # A retry answers as the first save did. A breadcrumb gone since (pruned or erased) reads as not kept.
+            kept = db.execute('SELECT 1 FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? AND source=?',
+                              (body.guild_id, body.conversation_id, body.user_id, row['source'])).fetchone()
+            return {'ok': True, 'first_memory': False, **({} if kept else {'kept': False})}
         if body.web_receipt:
             from .web_policy import public_query
             receipt = body.web_receipt.model_dump()
@@ -152,8 +155,10 @@ def save_turn(store, body):
         db.execute('UPDATE mention_grants SET turn_hash=? WHERE token=?', (fingerprint, body.mention_grant))
         db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
                    (body.guild_id, body.conversation_id, body.user_id, body.source.id))
-        if not store._personal_context(db, body.guild_id, body.conversation_id, body.user_id)['enabled']:
-            return {'ok': True, 'first_memory': False}
+        from .fri_memory_store import predates
+        if (not store._personal_context(db, body.guild_id, body.conversation_id, body.user_id)['enabled'] or
+                predates(db, body.guild_id, body.conversation_id, body.user_id, body.source)):
+            return {'ok': True, 'first_memory': False, 'kept': False}  # The grant is used; nothing stays.
         if body.web_receipt:
             db.execute('INSERT INTO web_research(guild_id,user_id,channel_id,created,receipt) VALUES (?,?,?,?,?)',
                        (body.guild_id, body.user_id, body.conversation_id, time.time(),

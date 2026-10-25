@@ -166,6 +166,32 @@ summary insert can't handle. This loses only continuity and those derived reques
 own turns stay. Rolling back Fri alone needs no cleanup: the newer controller keeps enforcing
 provenance on everything already saved.
 
+Rolling the controller back below `member-profiles` also needs one step, because an older
+controller can neither show nor edit profile notes. With the controller stopped and backed up,
+run this from the current release, in the controller's environment (it reads `FRI_CHANNEL_IDS`
+and `FRI_HISTORY_CHANNEL_IDS`; `--channels 1,2,3` adds more), before starting the older controller:
+
+```sh
+python -m gene.profile_downgrade "$GENE_DB"
+```
+
+It deletes profile notes and marks every saved exchange as staying in the conversation it was said
+in. An older controller checks a removal only in the channel it learns into, so each profile
+removal is first copied to every configured channel and every public conversation the database
+knows: an older controller then saves no note, in any category, from a member's messages before
+their removal. If profile removals exist and no channels are given, or a channel isn't a numeric
+Discord id, it changes nothing and exits with an error. It works on the database as it is and never
+applies this release's migrations: a database that never had member profiles is left as it was, and
+when rolling back below both `member-profiles` and `turn-provenance` the two commands can run in
+either order without one undoing the other. An older controller's channel summaries and archive observations don't check
+removals, and it doesn't remove a note when a member it quoted erases, as before member profiles. Conversation notes and exchanges are kept. Rolling back Fri
+alone needs no cleanup: an older Fri saves nothing to profiles and doesn't ask for them, so the
+controller shows it only each conversation's own notes, leaving out any that quote another member.
+Notes saved before this release keep no provenance (it's unknown, not empty), so they stay in the
+conversation where they were said, as before, and an erasure doesn't reach one that quoted someone.
+Profile notes stay stored, unseen, until a
+newer Fri returns or they expire; "forget me" still erases them.
+
 The complete `/srv/gene/data/fri` and `/srv/gene/secrets/fri-chatgpt` directories stay
 in place initially. Identity, read/write allowlists, memory, pending controls/reviews,
 reminders, reports and persistent buttons remain unchanged. See Fri's operations

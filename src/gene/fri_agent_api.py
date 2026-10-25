@@ -100,7 +100,7 @@ def register(app, store, settings, auth, actor):
             if not history and not settings.meme_channel_allowed(body.guild_id, body.channel_id):
                 raise HTTPException(403, 'Channel is outside Fri scope')
             profile = agent.context(body.channel_id, body.user_id, body.guild_id)
-            return {key: profile[key] for key in ('enabled', 'revision')}
+            return {key: profile[key] for key in ('enabled', 'revision', 'removed_at')}
         return agent.context(body.channel_id, body.user_id, body.guild_id)
 
     @app.post('/agent/learning/claim', dependencies=[auth('fri')])

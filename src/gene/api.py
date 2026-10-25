@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .config import Settings
 from .fri_context import ChatSource
@@ -103,6 +103,8 @@ class ChatScope(Actor):
     conversation_id: str = Field(pattern=r'^(private|public):[0-9]{1,25}$')
     mention_grant: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
     source: ChatSource | None = None
+    # Sent by a Fri that understands member profiles. An older Fri gets this conversation's notes only.
+    profiles: bool = False
 
 
 class ChatTurn(ChatScope):
@@ -125,6 +127,17 @@ class ChatTurn(ChatScope):
     provenance: Annotated[list[TurnSource], Field(max_length=200)] | None = None
     reply_message_id: str | None = Field(default=None, pattern=r'^[0-9]{1,25}$')
     verbatim: bool = False  # The saved reply is what Discord showed, not a neutral breadcrumb.
+    # server: said where everyone in the server could read it, so it may reach the member's profile
+    # and their other conversations. Only Fri can tell, from Discord's permissions at the time.
+    audience: Literal['server', 'conversation'] = 'conversation'
+
+    @model_validator(mode='after')
+    def private_stays_private(self):
+        if self.audience == 'server' and (self.mention_grant or not self.conversation_id.startswith('public:')):
+            raise ValueError('Only an everyone-readable server conversation can reach the member profile')
+        if self.audience == 'server' and self.provenance is None:
+            raise ValueError('A turn that reaches the member profile needs to say whose words it drew on')
+        return self
 
 
 class MessageSources(BaseModel):
@@ -358,7 +371,7 @@ def create_app(settings: Settings | None = None):
             from .fri_mentions import context
             return context(store, body)
         chat_scope(body)
-        return store.chat_context(body.guild_id, body.conversation_id, body.user_id)
+        return store.chat_context(body.guild_id, body.conversation_id, body.user_id, body.profiles)
 
     @app.post('/chat/pending', dependencies=[auth('fri')])
     def chat_pending(body: ChatScope):
@@ -390,7 +403,7 @@ def create_app(settings: Settings | None = None):
                               response_kind=body.response_kind, reaction=body.reaction, allow_closing=body.allow_closing,
                               burst=[row.model_dump() for row in body.burst],
                               provenance=None if body.provenance is None else [row.model_dump() for row in body.provenance],
-                              reply_message_id=body.reply_message_id, verbatim=body.verbatim)
+                              reply_message_id=body.reply_message_id, verbatim=body.verbatim, audience=body.audience)
 
     @app.post('/chat/turn/check', dependencies=[auth('fri')])
     def chat_turn_check(body: ChatTurn):
@@ -424,14 +437,14 @@ def create_app(settings: Settings | None = None):
     def personal_notes(body: ChatScope):
         chat_scope(body)
         from .fri_memory_store import entries
-        return entries(store, body.guild_id, body.conversation_id, body.user_id)
+        return entries(store, body.guild_id, body.conversation_id, body.user_id, body.profiles)
 
     @app.post('/chat/memory/notes/{identifier}', dependencies=[auth('fri')])
     def edit_personal_note(identifier: int, body: PersonalNoteEdit):
         chat_scope(body)
         from .fri_memory_store import edit
         return edit(store, body.guild_id, body.conversation_id, body.user_id, identifier,
-                    body.revision, body.source.model_dump(), body.action, body.evidence)
+                    body.revision, body.source.model_dump(), body.action, body.evidence, profiles=body.profiles)
 
     @app.post('/chat/usage/report', dependencies=[auth('fri')])
     def chat_usage_report(body: ChatUsage):

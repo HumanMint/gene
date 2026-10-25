@@ -1,0 +1,106 @@
+#!/usr/bin/env python3
+"""Mock docker for offline tests of batch-release.sh. State lives in $MOCK/docker.json."""
+import json, os, re, subprocess, sys, time, uuid
+M = os.environ['MOCK']
+STATE = M+'/docker.json'
+ROOT = os.environ['BATCH_ROOT']
+GENE_PY = os.environ['GENE_PY']
+args = sys.argv[1:]
+with open(M+'/docker.log', 'a') as log:
+    log.write(' '.join(args)+'\n')
+st = json.load(open(STATE))
+def save():
+    json.dump(st, open(STATE, 'w'))
+def fmt_image(fmt, tag):
+    img = st['images'].get(tag)
+    if not img:
+        sys.exit('No such image: '+tag)
+    if '.Id' in fmt: return img['id']
+    if 'revision' in fmt: return img['label']
+    if '.Size' in fmt: return str(img['size'])
+def heartbeat():
+    now = time.time()
+    for name, path in (('gene-red-1', ROOT+'/data/red/gene-health.json'), ('fri-runtime-1', ROOT+'/data/fri/fri-health.json')):
+        c = st['containers'].get(name)
+        if c and c['running'] and os.path.exists(path):
+            h = json.load(open(path))
+            if not c.get('stale'):
+                h['at'] = now
+            json.dump(h, open(path, 'w'))
+if args[:2] == ['image', 'inspect']:
+    print(fmt_image(args[3], args[4])); sys.exit()
+if args[0] == 'inspect':
+    fmt, name = args[2], args[3]
+    c = st['containers'].get(name)
+    if not c:
+        sys.exit(1)
+    heartbeat()
+    if '.State.Running' in fmt: print('true' if c['running'] else 'false')
+    elif '.State.Health' in fmt: print(c['health'] if c['running'] else 'unhealthy')
+    elif '.Image' in fmt: print(c['image'])
+    sys.exit()
+if args[0] == 'info':
+    print(M+'/docker'); sys.exit()
+if args[0] == 'build':
+    tag = args[args.index('-t')+1]
+    label = None
+    for i, a in enumerate(args):
+        if a == '--label': label = args[i+1].split('=', 1)[1]
+        if a == '--build-arg': label = args[i+1].split('=', 1)[1]
+    st['images'][tag] = {'id': 'sha256:'+uuid.uuid4().hex, 'label': label, 'size': 1000}
+    save(); print(st['images'][tag]['id']); sys.exit()
+if args[0] == 'compose':
+    envfile = args[args.index('--env-file')+1]
+    env = dict(l.split('=', 1) for l in open(envfile).read().splitlines() if '=' in l)
+    if 'stop' in args:
+        names = args[args.index('stop')+1:]
+        for n in names:
+            st['containers']['gene-'+n+'-1']['running'] = False
+        save(); sys.exit()
+    if 'up' in args:
+        names = [a for a in args[args.index('up')+1:] if not a.startswith('-')]
+        image = st['images'][env['GENE_RUNTIME_IMAGE']]['id']
+        sha = env['GENE_RELEASE_SHA']
+        broken = os.environ.get('MOCK_BROKEN_SHA') == sha
+        for n in names:
+            st['containers']['gene-'+n+'-1'] = {'image': image, 'running': True, 'health': 'healthy'}
+        h = json.load(open(ROOT+'/data/red/gene-health.json'))
+        h.update(sha=sha, at=time.time(), guild_connected=not broken, controls_running=True)
+        json.dump(h, open(ROOT+'/data/red/gene-health.json', 'w'))
+        save(); sys.exit()
+if args[0] == 'exec':
+    rest = [a for a in args[1:] if a != '-i']
+    name = rest[0]
+    c = st['containers'].get(name)
+    if not c or not c['running']:
+        sys.exit('container not running: '+name)
+    if name == 'gene-controller-1':
+        script = sys.stdin.read().replace('/data/gene.sqlite3', ROOT+'/data/controller/gene.sqlite3')
+        r = subprocess.run([GENE_PY, '-c', script, *rest[3:]])
+        sys.exit(r.returncode)
+    if name == 'fri-runtime-1':
+        print(json.dumps({'case': 'mock_case', 'status': 'completed', 'response_kind': 'reply', 'passed': True, 'reply': 'ok'}))
+        sys.exit()
+if args[0] == 'run':
+    text = ' '.join(args)
+    if 'container:gene-audio-node-1' in text:
+        sys.stdin.read()
+        players = int(os.environ.get('MOCK_PLAYERS', '0'))
+        seq = os.environ.get('MOCK_PLAYERS_SEQ')
+        if seq:
+            count_file = M+'/player-calls'
+            n = int(open(count_file).read()) if os.path.exists(count_file) else 0
+            open(count_file, 'w').write(str(n+1))
+            values = seq.split(',')
+            players = int(values[min(n, len(values)-1)])
+        print(json.dumps({'players': players, 'playing': int(os.environ.get('MOCK_PLAYING', '0'))}))
+        sys.exit()
+    if '/fri/contract' in text:
+        print(json.dumps({'protocol': 'gene-fri/1', 'capabilities': [], 'deployment_authority': 'gene-controller'})); sys.exit()
+    if 'import gene.profile_downgrade' in text:
+        sys.exit(1)
+    if 'fri_reply_checks purge' in text:
+        with open(M+'/purges', 'a') as out: out.write(text+'\n')
+        print('purged'); sys.exit()
+    print('mock run ok'); sys.exit()
+sys.exit('mock docker: unhandled '+' '.join(args))

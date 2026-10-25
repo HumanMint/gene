@@ -100,7 +100,7 @@ repair_sidecars() {
   owner=$(db_owner)
   for file in "$DB-wal" "$DB-shm" "$DB-journal"; do
     if [[ -e $file && $(stat -c %u:%g "$file") != "$owner" ]]; then
-      log "giving ${file##*/} back to the database owner"
+      log "giving ${file##*/} back to the database owner" >&2
       chown "$owner" "$file"
     fi
   done
@@ -486,13 +486,38 @@ PY
 }
 du_bytes() { du -sb "$1" | cut -f1; }
 
-same_filesystem() {  # Every move during the switch and its rollback must be an atomic rename, never a copy.
-  python3 - "$STAGE" "$ROOT/releases" "$ROOT/backups" "$ROOT" "$ROOT/source" <<'PY'
+rename_tree() {  # src dst: a single rename(2) that fails rather than copying; dst must not exist
+  python3 - "$1" "$2" <<'PY'
 import os, sys
-devices = {path: os.stat(path).st_dev for path in sys.argv[1:]}
-if len(set(devices.values())) != 1:
-    sys.exit('staging, releases, backups and the source tree must share one filesystem, so the switch only renames: '
-             + ', '.join(f'{path}={device}' for path, device in devices.items()))
+src, dst = sys.argv[1:3]
+if os.path.lexists(dst):
+    sys.exit(dst+' already exists')
+os.rename(src, dst)
+PY
+}
+
+rename_preflight() {  # backup_dir: walk a probe dir through every directory the switch moves trees between
+  # Equal device numbers are not enough: a bind mount shares them and still refuses rename(2).
+  python3 - "$ROOT" "$STAGE" "$ROOT/releases" "$ROOT" "$1" <<'PY'
+import os, sys, uuid
+root, stage, *hops = sys.argv[1:]
+if os.path.ismount(os.path.join(root, 'source')):
+    sys.exit(root+'/source is a mount point, so the switch cannot rename it')
+name = '.rename-probe-'+uuid.uuid4().hex
+here = os.path.join(stage, name)
+os.mkdir(here, 0o700)
+try:
+    for directory in hops + [stage]:
+        target = os.path.join(directory, name)
+        try:
+            os.rename(here, target)
+        except OSError as error:
+            sys.exit(f'cannot rename {here} to {target} ({error.strerror}); the switch needs plain renames '
+                     'between staging, releases/, the backups dir and the source tree')
+        here = target
+finally:
+    os.rmdir(here)
+print('switch moves are plain renames')
 PY
 }
 
@@ -586,7 +611,7 @@ stage() {
   gene_tar=$(stat -c %s "$STAGE/gene.tar")
   tars=$(( gene_tar + $(stat -c %s "$STAGE/fri.tar") ))
   mkdir -p "$ROOT/backups" "$ROOT/releases" "$FRI_ROOT/backups"
-  same_filesystem
+  rename_preflight "$ROOT/backups"
   disk_admission "docker=$(docker info -f '{{.DockerRootDir}}'):$images" \
     "staging=$STAGE:$(( 2*tars + 2*db_size ))" \
     "gene_backup=$ROOT/backups:$(( db_size + red_size + source_size ))" \
@@ -701,21 +726,32 @@ print("old code wrote a request on the migrated schema:", job["state"])'
   mark rehearsed
 }
 
+state_value() {  # dotted.key of a fresh state read; use it in an assignment, so a failed read stops the phase
+  local snapshot
+  snapshot=$(state)
+  jget <(echo "$snapshot") "$1"
+}
+
 fence() {  # Pause new work, let current work finish, then stop the worker and deployer.
   # Checked against the live setting every time, so a fence after resume pauses again. The intent
   # line is the ownership record: resume unpauses only while the latest pause in the journal is ours.
-  if [[ $(jget <(state) settings.paused) != true ]]; then
+  local paused busy waited=0
+  paused=$(state_value settings.paused)
+  [[ $paused == true || $paused == false ]] || die "unexpected paused setting: $paused"
+  if [[ $paused == false ]]; then
     mark intent:pause
     set_paused true
   fi
-  local waited=0
-  until [[ $(jget <(state) busy_jobs) == 0 && ! -e $ROOT/deploy-result.json ]]; do
+  while true; do
+    busy=$(state_value busy_jobs)
+    [[ $busy == 0 && ! -e $ROOT/deploy-result.json ]] && break
     (( waited < WAIT_WINDOW )) || die 'work is still building or deploying after 30 minutes; development stays paused'
     log 'waiting for current work to finish'; sleep 30; waited=$(( waited + 30 ))
   done
   systemctl stop gene-worker gene-deployer
   if systemctl is-active -q gene-worker || systemctl is-active -q gene-deployer; then die 'worker or deployer still active'; fi
-  [[ $(jget <(state) busy_jobs) == 0 ]] || die 'a job started while stopping the units'
+  busy=$(state_value busy_jobs)
+  [[ $busy == 0 ]] || die 'a job started while stopping the units'
   [[ ! -e $ROOT/deploy-result.json ]] || die 'a deployment receipt appeared'
   log 'development fenced: paused, idle, worker and deployer stopped'
 }
@@ -758,7 +794,7 @@ gene() {
   verify old
   [[ ! -e $ROOT/releases/$G ]] || die "$ROOT/releases/$G appeared after staging"
   [[ $(tree_hash "$STAGE/cogs-ready") == "$(jget "$MANIFEST" cogs)" ]] || die 'staged cogs changed'
-  same_filesystem
+  rename_preflight "$ROOT/backups"
   gene_disk
   quiet "$WAIT_WINDOW"
   verify old  # The wait can be long; the backup must describe the release it backs up.
@@ -772,22 +808,22 @@ gene() {
   cp -p "$FRI_ROOT/release.env" "$B/fri-release.env"
   cp -p "$FRI_ROOT/release.json" "$B/fri-release.json"
   mset backup "$B"
+  rename_preflight "$B"
   # Nothing has changed yet. From here on every failure rolls back from this complete backup.
   mark gene_attempted
   SWITCHING=1
   trap on_gene_error ERR
-  same_filesystem
   gene_disk
   mark intent:cogs
-  mv "$STAGE/cogs-ready" "$ROOT/releases/$G"
+  rename_tree "$STAGE/cogs-ready" "$ROOT/releases/$G"
   quiet 0  # A fresh player snapshot right before Red stops.
   mark intent:red_stop
   compose_gene stop red
   ! container_running "$RED" || die 'Red did not stop'
   tar -C "$ROOT/data" -czf "$B/red.tar.gz" red
   mark intent:source_swap
-  mv "$ROOT/source" "$B/installed-source"
-  mv "$STAGE/gene-src" "$ROOT/source"
+  rename_tree "$ROOT/source" "$B/installed-source"
+  rename_tree "$STAGE/gene-src" "$ROOT/source"
   mark intent:env
   cp -p "$ROOT/release.env" "$ROOT/release.env.tmp"
   printf 'GENE_RELEASE_SHA=%s\nGENE_ROOT=%s\nGENE_RUNTIME_IMAGE=gene-runtime:%s\n' "$G" "$ROOT" "$G" > "$ROOT/release.env.tmp"
@@ -907,11 +943,11 @@ rollback_gene() {
   if [[ -f $ROOT/source/.release-sha && $(cat "$ROOT/source/.release-sha") == "$G" ]]; then
     local failed=$B/failed-source
     [[ ! -e $failed ]] || failed=$B/failed-source-$(date +%s%N)
-    mv "$ROOT/source" "$failed"
+    rename_tree "$ROOT/source" "$failed"
   fi
   if [[ ! -e $ROOT/source ]]; then
     [[ -d $B/installed-source ]] || die 'neither the new nor the old source is in place; operator recovery required'
-    mv "$B/installed-source" "$ROOT/source"
+    rename_tree "$B/installed-source" "$ROOT/source"
   fi
   [[ -d $ROOT/source && ! -f $ROOT/source/.release-sha ]] || die 'old source not in place'
   log 'rollback: old controller and Red'
@@ -1011,7 +1047,7 @@ resume_services() {  # gene_sha
 
 write_result() {  # The deployer's receipt for this release; a repeat accepts the same receipt.
   python3 - "$ROOT/maintainer-$G-result.json" "$G" "$OLD_G" "$F" "$OLD_F" "$(backup_dir)" <<'PY'
-import json, os, sys, time
+import json, os, sys, tempfile, time
 path, sha, previous, fri, fri_previous, backup = sys.argv[1:7]
 result = {'sha': sha, 'previous': previous, 'success': True, 'recovered': False, 'backup': backup,
           'fri_sha': fri, 'fri_previous': fri_previous}
@@ -1023,18 +1059,20 @@ def matches():
 if os.path.exists(path):
     matches()
     sys.exit(0)
-# Written in full beside the final name, then linked into place: the final name never holds a
-# partial file, and link() refuses to replace one that appeared meanwhile.
-temporary = path+'.tmp'
-with open(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as out:
-    json.dump(result | {'at': time.time()}, out)
-    out.flush()
-    os.fsync(out.fileno())
+# Written in full to this writer's own temporary beside the final name, then linked into place:
+# the final name never holds a partial file, and link() refuses to replace one that appeared meanwhile.
+fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=os.path.basename(path)+'.')
 try:
-    os.link(temporary, path)
-except FileExistsError:
-    matches()
-os.unlink(temporary)
+    with os.fdopen(fd, 'w') as out:
+        json.dump(result | {'at': time.time()}, out)
+        out.flush()
+        os.fsync(out.fileno())
+    try:
+        os.link(temporary, path)
+    except FileExistsError:
+        matches()
+finally:
+    os.unlink(temporary)
 directory = os.open(os.path.dirname(path), os.O_RDONLY)
 os.fsync(directory)
 os.close(directory)
@@ -1077,6 +1115,14 @@ cleanup() {
   log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); all images"
 }
 
+batch_lock() {
+  # Host-wide. Children inherit the descriptor, so a command a killed batch shell left running (a
+  # compose up, a coordinator, a DB helper) keeps the lock until it ends, and nothing races it.
+  exec 8>> "$ROOT/batch-release.lock"
+  flock -n 8 || die "another batch-release command, or one a killed run left behind, still is running; find it with: fuser -v $ROOT/batch-release.lock"
+}
+
+[[ $PHASE == status ]] || batch_lock
 case $PHASE in
   baseline) baseline ;;
   stage) stage ;;

@@ -189,6 +189,10 @@ def compose(rest):
         save()
         return 0
     tag, sha = resolve(values['GENE_RUNTIME_IMAGE']), values['GENE_RELEASE_SHA']
+    if os.environ.get('MOCK_SLOW_UP') and sha != OLD_G:  # A slow up that can outlive a killed batch shell.
+        open(M+'/up-started', 'w').close()
+        time.sleep(float(os.environ['MOCK_SLOW_UP']))
+        st.update(json.load(open(STATE)))
     image = st['images'][tag]['id']
     owner = '%d:%d' % (os.stat(ROOT+'/data/controller').st_uid, os.stat(ROOT+'/data/controller').st_gid)
     for s in services:
@@ -208,6 +212,8 @@ def compose(rest):
             json.dump(h, open(ROOT+'/data/red/gene-health.json', 'w'))
         st['containers'][names[s]] = {'image': image, 'running': True, 'health': health}
     save()
+    if os.environ.get('MOCK_SLOW_UP'):
+        open(M+'/up-finished', 'w').close()
     return 0
 
 

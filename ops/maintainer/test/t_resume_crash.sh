@@ -5,11 +5,11 @@
 . "$(dirname "$0")/common.sh"
 release
 RESULT=$BATCH_ROOT/maintainer-$G-result.json
-rm "$RESULT"; echo '{"sha": "partial' > "$RESULT.tmp"
+rm "$RESULT"; echo '{"sha": "partial' > "$RESULT.stray"  # an earlier writer's own temporary
 sed -i '/^resumed$/d' "$JOURNAL"
 run 0 resume 1
 python3 -c 'import json, sys; assert json.load(open(sys.argv[1]))["sha"] == sys.argv[2]' "$RESULT" "$G" || fail 'result file not valid'
-[[ ! -e $RESULT.tmp ]] || fail 'temporary result left behind'
+[[ $(find "$BATCH_ROOT" -maxdepth 1 -name "maintainer-$G-result.json.*" ! -name '*.stray' | wc -l) == 0 ]] || fail 'temporary result left behind'
 sed -i '/^resumed$/d' "$JOURNAL"
 run 0 resume 1
 journal_has resumed

@@ -10,11 +10,13 @@ from pathlib import Path
 
 from .fri_agent_store import initialize
 from .fri_context import ChatSource
-from .fri_memory import MAX_NOTES, TTL, personal_note
+from .fri_memory import TTL, personal_note
 from .privacy import clean
 from .reviews import pending_notice, pending_review, request_reference
 
 SHA = re.compile(r'^[a-f0-9]{40}$')
+ELSEWHERE_SECONDS = 12 * 3600  # A member's exchanges elsewhere in the server, for picking a topic back up.
+ELSEWHERE_TURNS = 2
 
 
 class Conflict(ValueError):
@@ -152,6 +154,10 @@ class Store:
                 # Saved with a provenance list. Older turns, and any a legacy companion writes, may quote
                 # other members with no record of whom, so capable companions withhold their replies.
                 db.execute('ALTER TABLE chat_turns ADD COLUMN attributed INTEGER NOT NULL DEFAULT 0')
+            if 'audience' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
+                # server: said where everyone in the server could read it, so the member's other
+                # conversations there may see it. Everything saved before stays where it was said.
+                db.execute("ALTER TABLE chat_turns ADD COLUMN audience TEXT NOT NULL DEFAULT 'conversation'")
             # Existing queued requests have never received intake approval. Fail closed
             # during migration; completed/running jobs and release approvals retain their history.
             db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
@@ -611,12 +617,25 @@ class Store:
             from .fri_pending import read as read_pending
             pending = read_pending(db, guild_id, channel_id, user_id, revision[0] if revision else 0)
             return {'pending': pending, 'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
+                    'elsewhere': self._elsewhere(db, guild_id, channel_id, user_id) if profile['enabled'] else [],
                     'requests': self._own_requests(db, guild_id, channel_id, user_id) if profile['enabled'] else [],
                     'web_research': [json.loads(row[0]) for row in db.execute(
                         'SELECT receipt FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY id DESC LIMIT 3',
                         (guild_id, channel_id, user_id))],
                     'personal_memory': profile,
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
+
+    def _elsewhere(self, db, guild_id, conversation, user_id):
+        """The member's latest exchanges in the server's other everyone-readable conversations.
+
+        Never a private conversation's: those stay where they were said.
+        """
+        turns = [dict(row) for row in db.execute(
+            "SELECT id,channel_id AS conversation_id,input,reply,at,provenance FROM chat_turns "
+            "WHERE guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND channel_id<>? "
+            "AND response_kind='reply' AND attributed=1 AND at>? ORDER BY id DESC LIMIT ?",
+            (guild_id, user_id, conversation, time.time()-ELSEWHERE_SECONDS, ELSEWHERE_TURNS))][::-1]
+        return self._current_turns(db, turns)
 
     @staticmethod
     def _own_requests(db, guild_id, conversation, user_id):
@@ -738,6 +757,15 @@ class Store:
             # The older controller writes summaries positionally.
             db.execute('ALTER TABLE agent_summaries DROP COLUMN revisions')
 
+    def downgrade_member_profiles(self):
+        """Before starting a controller without member profiles, which could neither show nor edit them."""
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            db.execute("DELETE FROM personal_notes WHERE channel_id='server'")
+            db.execute("DELETE FROM personal_note_removals WHERE channel_id='server'")
+            # An older controller ignores the audience, so these stay in the conversation they were said in.
+            db.execute("UPDATE chat_turns SET audience='conversation'")
+
     def check_chat(self, user_id, revision, provenance=()):
         """The save's privacy fence without writing: run before a reply is delivered."""
         with self.connection() as db:
@@ -749,9 +777,11 @@ class Store:
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
                   *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=None,
-                  reply_message_id=None, verbatim=False):
+                  reply_message_id=None, verbatim=False, audience='conversation'):
         # None: a legacy companion that doesn't track sources. A list, even empty, is complete attribution.
         attributed = provenance is not None
+        if audience not in ('server', 'conversation') or (audience == 'server' and not channel_id.startswith('public:')):
+            raise ValueError('Only an everyone-readable server conversation can reach the member profile')
         from .fri_responses import validate_response
         validate_response(response_kind, reply, reaction, notes=notes)
         if allow_closing and (response_kind != 'reply' or clarification):
@@ -796,38 +826,48 @@ class Store:
                 db.execute('DELETE FROM web_research WHERE guild_id=? AND user_id=? AND channel_id=? '
                            'AND id NOT IN (SELECT id FROM web_research WHERE guild_id=? AND user_id=? AND channel_id=? ORDER BY id DESC LIMIT 3)',
                            (guild_id, user_id, channel_id, guild_id, user_id, channel_id))
+            from .fri_memory_store import SERVER, limit
+            from .fri_memory_store import save as save_note
+            scope = SERVER if audience == 'server' else channel_id
+            first = not db.execute('SELECT 1 FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=?',
+                                   (guild_id, scope, user_id)).fetchone()
             saved = 0
             for candidate in list(notes)[:3]:
                 note = personal_note(candidate, text)
                 if note:
-                    from .fri_memory_store import save
-                    saved += save(db, guild_id, channel_id, user_id, note, time.time())
+                    saved += save_note(db, guild_id, scope, user_id, note, time.time(),
+                                       channel_id if scope == SERVER else None)
             db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
-                       (guild_id, channel_id, user_id, guild_id, channel_id, user_id, MAX_NOTES))
+                       (guild_id, scope, user_id, guild_id, scope, user_id, limit(scope)))
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
                        'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
-                       'reply_message_id,verbatim,speaker_revision,attributed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       'reply_message_id,verbatim,speaker_revision,attributed,audience) '
+                       'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
                         time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind,
                         reaction, allow_closing, json.dumps(burst), json.dumps(provenance), reply_message_id,
-                        bool(verbatim), revision, attributed))
+                        bool(verbatim), revision, attributed, audience))
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',
                        (guild_id, channel_id, user_id, guild_id, channel_id, user_id))
-            return {'ok': True, 'first_memory': bool(saved and not profile['notes'])}
+            return {'ok': True, 'first_memory': bool(saved and first),
+                    'memory_scope': 'server' if scope == SERVER else 'conversation'}
 
     @staticmethod
     def _personal_context(db, guild_id, channel_id, user_id):
+        """The member's profile and this conversation's own notes: never another conversation's."""
+        from .fri_memory_store import SERVER, limit
         db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
         db.execute('DELETE FROM personal_note_removals WHERE at<?', (time.time() - TTL,))
         row = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
         return {'enabled': bool(row[0]) if row else True,
-                'notes': [dict(r) for r in db.execute('SELECT category,evidence FROM personal_notes '
-                    'WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY at DESC LIMIT ?',
-                    (guild_id, channel_id, user_id, MAX_NOTES))]}
+                'notes': [{**dict(r), 'scope': 'server' if scope == SERVER else 'here'}
+                          for scope in (SERVER, channel_id) for r in db.execute(
+                              'SELECT category,evidence FROM personal_notes WHERE guild_id=? AND channel_id=? '
+                              'AND user_id=? ORDER BY at DESC LIMIT ?', (guild_id, scope, user_id, limit(scope)))]}
 
     def personal_control(self, user_id, action):
         if action not in ('disable', 'enable'):

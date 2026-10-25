@@ -361,19 +361,27 @@ uv run --no-sync python scripts/import_history.py --delete-evidence
 ```
 
 Shared memory consists of explicit owner-approved facts and operational request/release records.
-Fri retains six exchanges per person and conversation for seven days, plus up to ten short
-personal notes for 90 days. The notes are exact, validated self-disclosures for nickname, games,
-music, hobbies, or conversation style, with at most three separate entries per category. Public/private
-conversations, channels, users, and guilds stay separate. The attention adapter additionally
+Fri retains six exchanges per person and conversation for seven days, plus short personal notes for
+90 days. The notes are exact, validated self-disclosures for nickname, games, music, hobbies, or
+conversation style, with at most three separate entries per category. Each member has one server
+profile (up to fifteen notes) for what they told Fri in a channel everyone in the server can read;
+Fri decides that from Discord's permissions when it saves, and the profile appears in every
+conversation with that member in the server, including their DMs. Notes said in a DM, the private
+/fri panel, a restricted channel or a private thread stay in that conversation (up to ten each), as
+do all notes saved before member profiles. Fri also sees the member's latest two exchanges from
+other everyone-readable channels in the past twelve hours; private conversations never reach
+another conversation. Users and guilds stay separate. The attention adapter additionally
 keeps a 15-minute, 30-message RAM buffer per configured channel and bounded recent-history
 summaries as described below; it does not import an unrestricted server archive.
-“fri what do you remember about me?” inspects the current conversation's notes. “fri forget me”
+“fri what do you remember about me?” inspects the notes the current conversation can see; in a DM it
+lists every note Fri holds about the member, labelled by where it shows. “fri forget me”
 erases all that user's Fri notes and chat turns and disables retention; “fri remember me again”
 re-enables it. These controls run without inference and invalidate in-flight replies so deleted
 data cannot be written back. **Forget my chats** clears recent turns while retaining personal notes.
 Anonymous usage counts survive erasure. Personal notes are never shared with the development worker.
-**My memory** edits or removes an individual entry without inference. Changes are revision-fenced,
-clear stale recent context, and prevent historical learning from restoring the removed disclosure.
+**My memory** edits or removes an individual entry without inference; in a DM it covers every
+note, in any scope. Changes are revision-fenced, clear stale recent context (every conversation in
+the server for a profile note), and prevent historical learning from restoring the removed disclosure.
 The item-storage upgrade preserves existing IDs and dates in one SQLite savepoint. A rollback to
 the earlier single-note release needs its matching database backup, because that older writer
 expects a different uniqueness constraint. Retain the pre-release database backup with the code SHA.

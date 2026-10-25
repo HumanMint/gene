@@ -166,6 +166,18 @@ summary insert can't handle. This loses only continuity and those derived reques
 own turns stay. Rolling back Fri alone needs no cleanup: the newer controller keeps enforcing
 provenance on everything already saved.
 
+Rolling the controller back below `member-profiles` also needs one step, because an older
+controller can neither show nor edit profile notes. With the controller stopped and backed up,
+run this from the current release before starting the older controller:
+
+```sh
+python -m gene.profile_downgrade "$GENE_DB"
+```
+
+It deletes profile notes and their removal fences and marks every saved exchange as staying in
+the conversation it was said in. Conversation notes and exchanges are kept. Rolling back Fri
+alone needs no cleanup: an older Fri saves nothing to profiles.
+
 The complete `/srv/gene/data/fri` and `/srv/gene/secrets/fri-chatgpt` directories stay
 in place initially. Identity, read/write allowlists, memory, pending controls/reviews,
 reminders, reports and persistent buttons remain unchanged. See Fri's operations

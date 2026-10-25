@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .config import Settings
 from .fri_context import ChatSource
@@ -125,6 +125,15 @@ class ChatTurn(ChatScope):
     provenance: Annotated[list[TurnSource], Field(max_length=200)] | None = None
     reply_message_id: str | None = Field(default=None, pattern=r'^[0-9]{1,25}$')
     verbatim: bool = False  # The saved reply is what Discord showed, not a neutral breadcrumb.
+    # server: said where everyone in the server could read it, so it may reach the member's profile
+    # and their other conversations. Only Fri can tell, from Discord's permissions at the time.
+    audience: Literal['server', 'conversation'] = 'conversation'
+
+    @model_validator(mode='after')
+    def private_stays_private(self):
+        if self.audience == 'server' and (self.mention_grant or not self.conversation_id.startswith('public:')):
+            raise ValueError('Only an everyone-readable server conversation can reach the member profile')
+        return self
 
 
 class MessageSources(BaseModel):
@@ -387,7 +396,7 @@ def create_app(settings: Settings | None = None):
                               response_kind=body.response_kind, reaction=body.reaction, allow_closing=body.allow_closing,
                               burst=[row.model_dump() for row in body.burst],
                               provenance=None if body.provenance is None else [row.model_dump() for row in body.provenance],
-                              reply_message_id=body.reply_message_id, verbatim=body.verbatim)
+                              reply_message_id=body.reply_message_id, verbatim=body.verbatim, audience=body.audience)
 
     @app.post('/chat/turn/check', dependencies=[auth('fri')])
     def chat_turn_check(body: ChatTurn):

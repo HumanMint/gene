@@ -940,11 +940,16 @@ class Store:
             if any(Store._privacy_state(db, s['user_id']) != (s['revision'], True) for s in json.loads(provenance)):
                 db.execute('DELETE FROM personal_notes WHERE id=?', (note_id,))
         row = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
+        # With profiles, each note says whose words were in view when it was learned: a reply built on it
+        # inherits them, as a reply built on an exchange does. An older Fri gets the notes as before.
         return {'enabled': bool(row[0]) if row else True,
-                'notes': [{**dict(r), 'scope': 'server' if scope == SERVER else 'here'}
+                'notes': [{'category': r['category'], 'evidence': r['evidence'],
+                           'scope': 'server' if scope == SERVER else 'here',
+                           **({'provenance': json.loads(r['provenance'])} if profiles else {})}
                           for scope in ((SERVER, channel_id) if profiles else (channel_id,)) for r in db.execute(
-                              'SELECT category,evidence FROM personal_notes WHERE guild_id=? AND channel_id=? '
-                              'AND user_id=? ORDER BY at DESC LIMIT ?', (guild_id, scope, user_id, limit(scope)))]}
+                              'SELECT category,evidence,provenance FROM personal_notes WHERE guild_id=? AND '
+                              'channel_id=? AND user_id=? ORDER BY at DESC LIMIT ?',
+                              (guild_id, scope, user_id, limit(scope)))]}
 
     def personal_control(self, user_id, action):
         if action not in ('disable', 'enable'):

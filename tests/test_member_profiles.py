@@ -10,7 +10,7 @@ from gene.fri_memory import TTL
 from gene.fri_memory_store import HORIZON, digest, edit, entries, fences, removed, save
 from gene.fri_protocol import compatible, contract
 from gene.profile_downgrade import main as downgrade
-from gene.store import Store
+from gene.store import Conflict, Store
 from tests.test_api import headers
 from tests.test_fri_agent import finish as learn
 from tests.test_fri_endings import source
@@ -172,6 +172,27 @@ def test_a_note_quoting_another_member_goes_with_their_privacy_change(store, cha
     assert notes(store, 'public:2') == [('server', 'I like chess')]
     with store.connection() as db:
         assert db.execute("SELECT count(*) FROM personal_notes WHERE evidence LIKE '%Minecraft%'").fetchone()[0] == 0
+
+
+def test_a_reply_built_on_a_quoting_note_inherits_its_provenance(store):
+    store.save_chat('123', 'public:1', '20', 0, 'ash said: I like Minecraft modpacks', 'noted', 'model', 'high',
+                    audience='server', notes=[{'category': 'games', 'evidence': 'I like Minecraft modpacks'}],
+                    source=source(user='20', channel='1'), provenance=[ASH])
+    with store.connection() as db:  # The exchange that saved it expires; the note stays.
+        db.execute('DELETE FROM chat_turns')
+    memory = store.chat_context('123', 'public:2', '20', True)['personal_memory']
+    assert memory['notes'] == [{'category': 'games', 'evidence': 'I like Minecraft modpacks', 'scope': 'server',
+                                'provenance': [ASH]}]
+    say(store, 'I like chess', conversation='public:5', audience='conversation')
+    assert store.chat_context('123', 'public:5', '20', False)['personal_memory']['notes'] == [
+        {'category': 'games', 'evidence': 'I like chess', 'scope': 'here'}]  # An older Fri sees no provenance.
+    # Fri inherits it, so a reply built on the note is checked and saved with it.
+    say(store, 'what games do i like', None, conversation='public:2', reply='minecraft modpacks', provenance=[ASH])
+    store.erase_user('30')
+    with pytest.raises(Conflict):
+        store.check_chat('20', 0, [ASH])
+    assert elsewhere(store, 'public:3') == [] and notes(store, 'public:3') == []
+    assert notes(store, 'public:5') == [('here', 'I like chess')]
 
 
 def test_elsewhere_counts_from_when_the_member_said_it(store):

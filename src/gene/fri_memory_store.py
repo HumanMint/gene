@@ -158,8 +158,8 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
                 continue
             if words in other['evidence'].casefold() or other['evidence'].casefold() in words:
                 db.execute('DELETE FROM personal_notes WHERE id=?', (other['id'],))
-        if note:  # New words are kept where they were typed: a DM's never reach the profile or another channel.
-            save(db, guild, conversation, user, note, time.time(), row['origin'] if scope == conversation else None)
+        if note:  # An edit keeps the note where it shows, as the member's list labels it, wherever it is made.
+            save(db, guild, scope, user, note, time.time(), row['origin'])
         # Clear stale conversational copies, research receipts and requests included, and invalidate every
         # in-flight derivation. A profile note reached every conversation in the server, so all of them go.
         if scope == SERVER:

@@ -24,7 +24,8 @@ STAGE=$ROOT/staging/batch-$G-$F${BATCH_ATTEMPT:+-$BATCH_ATTEMPT}  # A retry of a
 JOURNAL=$STAGE/journal
 MANIFEST=$STAGE/manifest.json
 BASELINE=$STAGE/baseline.json
-RESULT=$ROOT/maintainer-$G-$F-result.json
+RESULT=$ROOT/maintainer-$G-$F${BATCH_ATTEMPT:+-$BATCH_ATTEMPT}-result.json  # One per attempt, like STAGE
+KEEP_RELEASES=${KEEP_RELEASES:-3}  # cleanup keeps the old and new images of this many recent releases
 CONTROLLER=gene-controller-1
 RED=gene-red-1
 FRI=fri-runtime-1
@@ -1285,11 +1286,36 @@ rollback_fri() {
   log 'Fri rolled back. Workers stay stopped and development stays paused; run resume-old when settled.'
 }
 
-prune_images() {  # Release images other than this release's old and new ones. Docker keeps any a container uses.
+prune_images() {  # Release images nothing recent needs. Docker also keeps any a container uses.
   local keep repo tag
-  keep=$(python3 -c 'import json, sys
-m = json.load(open(sys.argv[1]))
-print("\n".join(m[kind][name]["tag"] for kind in ("old", "new") for name in ("runtime", "worker", "fri")))' "$MANIFEST")
+  # Kept: this release's old and new images; the images the live pins name, whichever release set them,
+  # since an idle worker has no container to protect its image; and the old and new images of the
+  # KEEP_RELEASES most recently resumed releases, so a rollback a few releases deep still finds them.
+  # Only the pin lines are read from the env files, and they are compared, never printed.
+  keep=$(python3 - "$MANIFEST" "$ROOT/staging" "$KEEP_RELEASES" "$ROOT/release.env" GENE_RUNTIME_IMAGE \
+    "$ROOT/secrets/worker.env" GENE_WORKER_IMAGE "$FRI_ROOT/release.env" FRI_RUNTIME_IMAGE <<'PY'
+import glob, json, os, sys
+manifest, staging, depth, *pins = sys.argv[1:]
+def images(path):
+    m = json.load(open(path))
+    return {m[kind][name]['tag'] for kind in ('old', 'new') for name in ('runtime', 'worker', 'fri') if name in m.get(kind, {})}
+keep = images(manifest)
+for path, key in zip(pins[::2], pins[1::2]):
+    with open(path) as handle:
+        keep |= {line.split('=', 1)[1].strip() for line in handle if line.startswith(key+'=')}
+resumed = []
+for journal in glob.glob(staging+'/batch-*/journal'):
+    with open(journal) as handle:
+        if 'resumed' in handle.read().split():
+            resumed.append((os.stat(journal).st_mtime, os.path.dirname(journal)+'/manifest.json'))
+for _, path in sorted(resumed, reverse=True)[:int(depth)]:
+    try:
+        keep |= images(path)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass  # An unreadable older manifest only means fewer images are kept for its rollback.
+print('\n'.join(sorted(keep)))
+PY
+  ) || die 'could not work out which images the live and recent releases need; no images removed'
   for repo in gene-runtime gene-worker fri-runtime; do
     while read -r tag; do
       [[ $tag =~ ^$repo:[0-9a-f]{40}$ ]] || continue  # Only release tags; bootstrap and others stay.
@@ -1303,7 +1329,7 @@ cleanup() {
   has resumed || has resumed_old || die 'resume first'
   rm -rf "$STAGE/fri-src" "$STAGE/gene-src" "$STAGE/cogs-ready" "$STAGE/dbtest" "$STAGE"/*.tar "$STAGE"/*.tar.sha256
   if [[ ${KEEP_IMAGES:-} == 1 ]]; then log 'KEEP_IMAGES=1: no images removed'; else prune_images; fi
-  log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); this release's old and new images"
+  log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); the live release's images and the old and new images of the last $KEEP_RELEASES releases"
   # Backups hold copies of member data, so removing them is the owner's call.
   local dir
   for dir in "$ROOT/backups" "$FRI_ROOT/backups"; do

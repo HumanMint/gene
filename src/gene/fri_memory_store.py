@@ -136,19 +136,30 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
             db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
                 'user_id,digest) DO UPDATE SET at=excluded.at', (guild, scope, user, fence, time.time()))
         db.execute('DELETE FROM personal_notes WHERE id=?', (identifier,))
-        if scope == SERVER:  # The same words kept in single conversations go with it, under any category.
-            db.execute('DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND evidence=?',
-                       (guild, user, row['evidence']))
+        # Other excerpts of the same words go with it, under any category: one containing the other, as two
+        # excerpts of one message do. For a profile note, in every conversation, which it reached.
+        words = row['evidence'].casefold()
+        others = db.execute('SELECT id,evidence,channel_id FROM personal_notes WHERE guild_id=? AND user_id=?',
+                            (guild, user)).fetchall()
+        for other in others:
+            if scope not in (SERVER, other['channel_id']):
+                continue
+            if words in other['evidence'].casefold() or other['evidence'].casefold() in words:
+                db.execute('DELETE FROM personal_notes WHERE id=?', (other['id'],))
         if note:
             save(db, guild, scope, user, note, time.time(), row['origin'])
-        # Clear stale conversational copies and invalidate every in-flight derivation. A profile
-        # note reached every conversation in the server, so all of them go.
+        # Clear stale conversational copies, research receipts and requests included, and invalidate every
+        # in-flight derivation. A profile note reached every conversation in the server, so all of them go.
         if scope == SERVER:
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND user_id=?', (guild, user))
             db.execute('DELETE FROM chat_pending WHERE guild_id=? AND user_id=?', (guild, user))
+            db.execute('DELETE FROM web_research WHERE guild_id=? AND user_id=?', (guild, user))
+            db.execute('DELETE FROM web_requests WHERE guild_id=? AND user_id=?', (guild, user))
         else:
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=?', (guild, scope, user))
             db.execute('DELETE FROM chat_pending WHERE guild_id=? AND conversation_id=? AND user_id=?', (guild, scope, user))
+            db.execute('DELETE FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=?', (guild, scope, user))
+            db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=?', (guild, scope, user))
         for summary in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
             if user in json.loads(summary['authors']):
                 db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (summary['channel_id'],))

@@ -179,8 +179,8 @@ It deletes profile notes and marks every saved exchange as staying in the conver
 in. An older controller checks a removal only in the channel it learns into, so each profile
 removal is first copied to every configured channel and every public conversation the database
 knows: an older controller then saves no note, in any category, from a member's messages before
-their removal. If profile removals exist and no channels are given, it changes nothing and exits
-with an error. An older controller's channel summaries and archive observations don't check
+their removal. If profile removals exist and no channels are given, or a channel isn't a numeric
+Discord id, it changes nothing and exits with an error. An older controller's channel summaries and archive observations don't check
 removals, as before member profiles. Conversation notes and exchanges are kept. Rolling back Fri
 alone needs no cleanup: an older Fri saves nothing to profiles and doesn't ask for them, so the
 controller shows it only each conversation's own notes. Profile notes stay stored, unseen, until a

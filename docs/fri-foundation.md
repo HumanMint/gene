@@ -144,9 +144,11 @@ member, channel and memory revision, and remain usable without a model call. An 
 requires a fresh explicit first-person preference, such as “I prefer Terraria”. It
 keeps the selected category and changes only that conversation's item.
 
-Editing or removing an entry clears recent saved turns and pending clarifications
-in that conversation, invalidates in-flight derivations, and clears cached context
-and derived summaries that could repeat it. A removal date, kept per category with no
+Editing or removing an entry clears recent saved turns, pending clarifications and
+research receipts in that conversation, invalidates in-flight derivations, and clears
+cached context and derived summaries that could repeat it. Other excerpts of the same
+words, one containing the other, go with it. A message sent before the change and
+answered after it is replied to but keeps nothing. A removal date, kept per category with no
 words in it, stops background learning from using anything the member said in that
 conversation before it (in the whole server, for a profile note): no note, archive
 observation or channel summary, so a shorter or recategorized restatement of the removed

@@ -276,6 +276,8 @@ def test_downgrade_refuses_without_channels_while_profile_removals_exist(store, 
         downgrade([str(store.path)])
     with pytest.raises(SystemExit, match='--channels'):
         downgrade([str(store.path), '--channel', '7'])
+    with pytest.raises(SystemExit, match='Nothing changed. Channels are Discord channel ids'):
+        downgrade([str(store.path), '--channels', 'public:7'])
     with store.connection() as db:
         assert {row[0] for row in db.execute('SELECT channel_id FROM personal_note_removals')} == {'server'}
     downgrade([str(store.path), '--channels', '7, 8'])
@@ -400,3 +402,65 @@ def test_the_member_profiles_capability_is_optional():
     for optional in ('member-profiles', 'reply-checks'):
         assert compatible({**advertised, 'capabilities': [c for c in advertised['capabilities'] if c != optional]})
     assert not compatible({**advertised, 'capabilities': [c for c in advertised['capabilities'] if c != 'turn-provenance']})
+
+
+def test_a_message_sent_before_a_removal_keeps_nothing_when_answered_after(store):
+    say(store, 'I like jazz', 'music')
+    early = source(age=3, channel='1')  # Waiting for a reply while the member opens My memory.
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
+    revision = entries(store, '123', 'private:9', '20')['revision']
+    queued = store.save_chat('123', 'public:1', '20', revision, 'I like Minecraft', 'nice', 'model', 'high',
+                             notes=[{'category': 'games', 'evidence': 'I like Minecraft'}], source=early,
+                             provenance=[], audience='server')
+    later = source(channel='1')
+    burst = store.save_chat('123', 'public:1', '20', revision, 'anyway', 'ok', 'model', 'high', source=later,
+                            burst=[{'source': early, 'text': 'I like Minecraft'}, {'source': later, 'text': 'anyway'}],
+                            provenance=[], audience='server')
+    assert queued == burst == {'ok': True, 'first_memory': False}
+    assert notes(store, 'public:2') == [] and elsewhere(store, 'public:2') == []
+    with store.connection() as db:
+        assert not db.execute("SELECT count(*) FROM chat_turns WHERE user_id='20'").fetchone()[0]
+    assert say(store, revision=revision)['first_memory']  # Said after the removal, it counts.
+
+
+@pytest.mark.parametrize('scope,cleared', [('server', {'public:1', 'public:5'}), ('public:5', {'public:5'})])
+def test_editing_a_note_clears_research_that_quotes_the_member(store, scope, cleared):
+    say(store, 'I like jazz', 'music', conversation='public:1' if scope == 'server' else scope,
+        audience='server' if scope == 'server' else 'conversation')
+    with store.connection() as db:
+        for conversation in ('public:1', 'public:5'):
+            db.execute('INSERT INTO web_research(guild_id,user_id,channel_id,created,receipt) VALUES (?,?,?,?,?)',
+                       ('123', '20', conversation, time.time(), '{"query": "I like jazz. What else?"}'))
+            db.execute('INSERT INTO web_requests VALUES (?,?,?,?,?,?,?)',
+                       ('123', conversation, '20', '1', 0, time.time(), 'jazz like this'))
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
+    with store.connection() as db:
+        for table in ('web_research', 'web_requests'):
+            assert {row[0] for row in db.execute(f'SELECT channel_id FROM {table}')} == {'public:1', 'public:5'}-cleared
+
+
+def test_removing_a_note_takes_overlapping_excerpts_with_it(store):
+    say(store, 'I like Minecraft')
+    say(store, 'I like Minecraft modpacks', 'hobbies', conversation='public:5', audience='conversation')
+    say(store, 'I like minecraft', conversation='private:9', audience='conversation')
+    say(store, 'I like jazz', 'music', conversation='public:5', audience='conversation')
+    say(store, 'I like chess clubs', 'hobbies')
+    say(store, 'I like chess openings', 'hobbies', conversation='public:6', audience='conversation')
+    say(store, 'I like chess', conversation='public:6', audience='conversation')
+
+    def listed():
+        return {(row['scope'], row['evidence']) for row in entries(store, '123', 'private:9', '20')['entries']}
+
+    def remove(scope, evidence):
+        row = next(r for r in entries(store, '123', 'private:9', '20')['entries']
+                   if (r['scope'], r['evidence']) == (scope, evidence))
+        edit(store, '123', 'private:9', '20', row['id'], entries(store, '123', 'private:9', '20')['revision'],
+             private_source(), 'remove')
+
+    remove('server', 'I like Minecraft')  # The profile reached every conversation.
+    assert listed() == {('public:5', 'I like jazz'), ('server', 'I like chess clubs'),
+                        ('public:6', 'I like chess openings'), ('public:6', 'I like chess')}
+    remove('public:6', 'I like chess')  # A conversation note, in its conversation only.
+    assert listed() == {('public:5', 'I like jazz'), ('server', 'I like chess clubs')}

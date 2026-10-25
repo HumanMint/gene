@@ -775,6 +775,8 @@ class Store:
         configured chat and learning channels) and every one this database knows. A removed preference
         stays removed. Without the channels a channel never learned in yet would be missed, so it refuses.
         """
+        if malformed := [str(c) for c in channels if not re.fullmatch(r'[0-9]{1,25}', str(c))]:
+            raise ValueError('Channels are Discord channel ids (digits only), not '+', '.join(malformed[:5])+'.')
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             if not channels and db.execute("SELECT 1 FROM personal_note_removals WHERE channel_id='server'").fetchone():
@@ -846,11 +848,17 @@ class Store:
             if source:
                 db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
                            (guild_id, channel_id, user_id, source.id))
+            # Words sent before the member removed a note seen here, answered after it (a queued message),
+            # can't bring it back: like memory off, the turn keeps nothing.
+            from .fri_memory_store import removed
+            cutoff = removed(db, guild_id, channel_id, user_id)
+            first = ChatSource.model_validate(burst[0]['source']) if burst else source  # A burst's earliest.
+            stale = bool(first and cutoff is not None and first.timestamp().timestamp() <= cutoff)
             if response_kind == 'reply':
-                save_pending(db, guild_id, channel_id, user_id, revision, text, source, clarification,
-                             provenance if attributed else None)
+                save_pending(db, guild_id, channel_id, user_id, revision, text, source,
+                             None if stale else clarification, provenance if attributed else None)
             profile = self._personal_context(db, guild_id, channel_id, user_id)
-            if not profile['enabled']:
+            if not profile['enabled'] or stale:
                 return {'ok': True, 'first_memory': False}
             if web_receipt:
                 db.execute('INSERT INTO web_research(guild_id,user_id,channel_id,created,receipt) VALUES (?,?,?,?,?)',

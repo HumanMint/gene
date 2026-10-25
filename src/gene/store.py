@@ -116,6 +116,8 @@ class Store:
             ''')
             from .repair_store import initialize as initialize_repairs
             initialize_repairs(db)
+            from .requester_notices import initialize as initialize_requester_notices
+            initialize_requester_notices(db)
             columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
             for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref', 'progress'):
                 if name not in columns:

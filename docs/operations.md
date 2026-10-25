@@ -387,7 +387,10 @@ Anonymous usage counts survive erasure. Personal notes are never shared with the
 **My memory** edits or removes an individual entry without inference; in a DM it covers every
 note, in any scope. An edited note keeps its place: the new wording shows wherever the note did, as
 the list labels it. A note learned while other members' words were in view keeps their provenance, like
-the turn that saved it, and goes when any of them erases or changes their privacy settings. Changes are revision-fenced, clear stale recent context and research receipts
+the turn that saved it, and goes when any of them erases or changes their privacy settings. A note
+saved before this, or learned from channel history, has no record of whose words were in view: it stays
+a conversation note, shown only where it was said, as before, and a profile note always has one. Rewording
+a note makes it the member's own words. Changes are revision-fenced, clear stale recent context and research receipts
 (every conversation in the server for a profile note), and prevent historical learning from restoring
 the removed disclosure: nothing the member said there before the change becomes a note, archive
 observation or channel summary, and a message or outside @mention sent before it but answered after

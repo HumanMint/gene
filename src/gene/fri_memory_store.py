@@ -33,7 +33,8 @@ def initialize(db):
         db.execute('ALTER TABLE personal_notes ADD COLUMN origin TEXT')
     if 'provenance' not in {row[1] for row in db.execute('PRAGMA table_info(personal_notes)')}:
         # Other members whose words the saving turn drew on: a member's message can quote someone else.
-        db.execute("ALTER TABLE personal_notes ADD COLUMN provenance TEXT NOT NULL DEFAULT '[]'")
+        # NULL is unknown: a note saved before this, or by a turn that didn't say. It stays where it was said.
+        db.execute('ALTER TABLE personal_notes ADD COLUMN provenance TEXT')
     db.execute('CREATE TABLE IF NOT EXISTS personal_note_removals (guild_id TEXT,channel_id TEXT,'
                'user_id TEXT,digest TEXT,at REAL,PRIMARY KEY(guild_id,channel_id,user_id,digest))')
 
@@ -73,8 +74,13 @@ def fences():
     return [digest(category, '') for category in CATEGORIES]
 
 
-def save(db, guild, scope, user, note, at, origin=None, provenance=()):
-    """provenance: other members whose words the saving turn drew on; their privacy changes remove the note."""
+def save(db, guild, scope, user, note, at, origin=None, provenance=None):
+    """provenance: other members whose words the saving turn drew on; their privacy changes remove the note.
+
+    None when the turn didn't say, so it's unknown: only a conversation note can be saved that way.
+    """
+    if scope == SERVER and provenance is None:
+        raise ValueError('A profile note needs to say whose words it drew on')
     category, evidence = note
     cutoff = removed(db, guild, scope, user)
     if at < time.time()-TTL or (cutoff is not None and at <= cutoff):
@@ -83,7 +89,7 @@ def save(db, guild, scope, user, note, at, origin=None, provenance=()):
         'VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category,evidence) '
         'DO UPDATE SET at=excluded.at,origin=excluded.origin,provenance=excluded.provenance '
         'WHERE excluded.at>personal_notes.at',
-        (guild, scope, user, category, evidence, at, origin, json.dumps(list(provenance))))
+        (guild, scope, user, category, evidence, at, origin, None if provenance is None else json.dumps(list(provenance))))
     db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? AND category=? '
         'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
         'AND category=? ORDER BY at DESC,id DESC LIMIT ?)',
@@ -164,7 +170,7 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
             if words in other['evidence'].casefold() or other['evidence'].casefold() in words:
                 db.execute('DELETE FROM personal_notes WHERE id=?', (other['id'],))
         if note:  # An edit keeps the note where it shows, as the member's list labels it, wherever it is made.
-            save(db, guild, scope, user, note, time.time(), row['origin'])
+            save(db, guild, scope, user, note, time.time(), row['origin'], ())  # In their own words now.
         # Clear stale conversational copies, research receipts and requests included, and invalidate every
         # in-flight derivation. A profile note reached every conversation in the server, so all of them go.
         if scope == SERVER:

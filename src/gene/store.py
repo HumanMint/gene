@@ -844,6 +844,8 @@ class Store:
         attributed = provenance is not None
         if audience not in ('server', 'conversation') or (audience == 'server' and not channel_id.startswith('public:')):
             raise ValueError('Only an everyone-readable server conversation can reach the member profile')
+        if audience == 'server' and not attributed:
+            raise ValueError('A turn that reaches the member profile needs to say whose words it drew on')
         from .fri_responses import validate_response
         validate_response(response_kind, reply, reaction, notes=notes)
         if allow_closing and (response_kind != 'reply' or clarification):
@@ -903,7 +905,7 @@ class Store:
                 note = personal_note(candidate, text)
                 if note:
                     saved += save_note(db, guild_id, scope, user_id, note, time.time(),
-                                       channel_id if scope == SERVER else None, provenance or ())
+                                       channel_id if scope == SERVER else None, provenance if attributed else None)
             db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
@@ -944,15 +946,17 @@ class Store:
         row = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
         # With profiles, each note says whose words were in view when it was learned: a reply built on it
         # inherits them, as a reply built on an exchange does. An older Fri can't carry that, so it gets
-        # only the notes that drew on no one else.
+        # only the notes that drew on no one else, or that it can't tell, as it always has. A note of unknown
+        # provenance (saved before profiles, or by a turn that didn't say) is a conversation note: it shows
+        # only where it was said, and so does a reply built on it, as before.
         return {'enabled': bool(row[0]) if row else True,
                 'notes': [{'category': r['category'], 'evidence': r['evidence'],
                            'scope': 'server' if scope == SERVER else 'here',
-                           **({'provenance': json.loads(r['provenance'])} if profiles else {})}
+                           **({'provenance': json.loads(r['provenance'] or '[]')} if profiles else {})}
                           for scope in ((SERVER, channel_id) if profiles else (channel_id,)) for r in db.execute(
                               'SELECT category,evidence,provenance FROM personal_notes WHERE guild_id=? AND '
-                              "channel_id=? AND user_id=? AND (? OR provenance='[]') ORDER BY at DESC LIMIT ?",
-                              (guild_id, scope, user_id, profiles, limit(scope)))]}
+                              "channel_id=? AND user_id=? AND (? OR provenance IS NULL OR provenance='[]') "
+                              'ORDER BY at DESC LIMIT ?', (guild_id, scope, user_id, profiles, limit(scope)))]}
 
     def personal_control(self, user_id, action):
         if action not in ('disable', 'enable'):

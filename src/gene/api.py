@@ -135,6 +135,8 @@ class ChatTurn(ChatScope):
     def private_stays_private(self):
         if self.audience == 'server' and (self.mention_grant or not self.conversation_id.startswith('public:')):
             raise ValueError('Only an everyone-readable server conversation can reach the member profile')
+        if self.audience == 'server' and self.provenance is None:
+            raise ValueError('A turn that reaches the member profile needs to say whose words it drew on')
         return self
 
 

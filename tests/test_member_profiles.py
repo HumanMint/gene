@@ -91,6 +91,8 @@ def test_turn_api_refuses_server_audience_for_private_and_invited_turns(controls
             **body, 'conversation_id': 'private:1', 'audience': 'server'}).status_code == 422
         assert client.post(path, headers=headers('fri'), json={
             **body, 'mention_grant': 'a'*64, 'audience': 'server'}).status_code == 422
+        unattributed = {key: value for key, value in body.items() if key != 'provenance'}
+        assert client.post(path, headers=headers('fri'), json={**unattributed, 'audience': 'server'}).status_code == 422
     assert client.post('/chat/turn', headers=headers('fri'), json={
         **body, 'audience': 'server', 'notes': [{'category': 'games', 'evidence': 'I like chess'}]}).json() == {
         'ok': True, 'first_memory': True, 'memory_scope': 'server'}
@@ -390,6 +392,36 @@ def test_existing_database_gains_profile_columns_without_moving_anything(tmp_pat
     assert notes(store, 'public:2') == []
 
 
+def test_a_note_of_unknown_provenance_stays_where_it_was_said(tmp_path):
+    path = tmp_path/'old.sqlite3'
+    Store(path)
+    with sqlite3.connect(path) as db:  # Saved before notes kept provenance: it could have quoted anyone.
+        db.execute('ALTER TABLE personal_notes DROP COLUMN provenance')
+        db.execute("INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at) "
+                   "VALUES ('123','public:1','20','games','I like Minecraft modpacks',?)", (time.time(),))
+    store = Store(path)
+    # A turn that doesn't say whose words it drew on saves the same way.
+    store.save_chat('123', 'public:1', '20', 0, 'I like chess', 'noted', 'model', 'high',
+                    notes=[{'category': 'games', 'evidence': 'I like chess'}], source=source(user='20', channel='1'))
+    with store.connection() as db:
+        assert [row[0] for row in db.execute('SELECT provenance FROM personal_notes')] == [None, None]
+    # Both work where they were said, for either Fri, as before, and never reach another conversation.
+    assert notes(store, 'public:1') == notes(store, 'public:1', profiles=False) == [
+        ('here', 'I like chess'), ('here', 'I like Minecraft modpacks')]
+    assert notes(store, 'public:2') == notes(store, 'private:9') == []
+    with pytest.raises(ValueError, match='whose words'):  # Nor can such a turn reach the profile.
+        store.save_chat('123', 'public:1', '20', 0, 'I like go', 'noted', 'model', 'high', audience='server',
+                        notes=[{'category': 'games', 'evidence': 'I like go'}], source=source(user='20', channel='1'))
+    with store.connection() as db, pytest.raises(ValueError, match='whose words'):
+        save(db, '123', 'server', '20', ('games', 'I like go'), time.time())
+    # Reworded by the member, it's their own words: known, and still where it was said.
+    note = next(row for row in entries(store, '123', 'private:9', '20')['entries'] if 'Minecraft' in row['evidence'])
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'replace', 'I like Minecraft')
+    with store.connection() as db:
+        assert tuple(db.execute("SELECT channel_id,provenance FROM personal_notes WHERE evidence='I like Minecraft'"
+                                ).fetchone()) == ('public:1', '[]')
+
+
 def test_an_older_fri_gets_only_this_conversations_notes(store):
     categories = ('games', 'music', 'hobbies', 'conversation', 'nickname')
     for index in range(15):
@@ -560,7 +592,7 @@ def test_removing_a_note_takes_overlapping_excerpts_with_it(store):
 def test_a_mention_sent_before_a_removal_keeps_nothing_when_admitted_after(h):  # noqa: F811
     early = mention_source(age=3)
     with h.store.connection() as db:
-        save(db, '123', 'server', '20', ('games', 'I like Minecraft'), time.time())
+        save(db, '123', 'server', '20', ('games', 'I like Minecraft'), time.time(), provenance=[])
     note = entries(h.store, '123', 'private:9', '20')['entries'][0]
     edit(h.store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
     _, scope, grant = invited(h, source=early, content='<@99> Minecraft release notes')

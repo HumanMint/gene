@@ -17,7 +17,8 @@ from tests.test_fri_social import (
 )
 from tests.test_fri_workspace import source as work_source
 
-EMPTY = {'reminders': [], 'saved_work': [], 'game_nights': []}
+DM_EMPTY = {'reminders': [], 'saved_work': [], 'game_nights': None}
+CHANNEL_EMPTY = {'reminders': None, 'saved_work': [], 'game_nights': []}
 
 
 def loops(store, conversation='private:999', user='10'):
@@ -33,8 +34,9 @@ def test_reminders_show_only_in_the_dm_they_were_made_in(store):
     confirmed(social, 10)
     assert sorted(r['state'] for r in loops(store)['reminders']) == ['pending', 'scheduled']
     # The /fri panel and server channels are other conversations: a DM reminder never shows there.
-    for conversation in ('private:456', 'public:456', 'public:999'):
-        assert loops(store, conversation)['reminders'] == []
+    assert loops(store, 'private:456')['reminders'] == []
+    for conversation in ('public:456', 'public:999'):  # Never visible in a channel, so not even "none".
+        assert loops(store, conversation)['reminders'] is None
     assert loops(store, user='11')['reminders'] == []
 
 
@@ -87,8 +89,9 @@ def test_game_nights_show_the_organizers_cards_in_their_channel_without_anyones_
     assert set(row) == {'title', 'state', 'timezone', 'options', 'available', 'chosen', 'rsvps'}
     # A member who only voted doesn't get the card as theirs, and it never leaves its channel.
     assert loops(store, 'public:456', user='11')['game_nights'] == []
-    for conversation in ('public:457', 'private:999', 'private:456'):
-        assert loops(store, conversation)['game_nights'] == []
+    assert loops(store, 'public:457')['game_nights'] == []
+    for conversation in ('private:999', 'private:456'):
+        assert loops(store, conversation)['game_nights'] is None
     social.plan_decide(card['id'], PUBLIC, source(3, interaction=True, public=True), 0, 'final1', '777')
     social.plan_decide(card['id'], {**PUBLIC, 'user_id': '11'}, source(4, interaction=True, public=True, user='11'),
                        0, 'going', '777')
@@ -115,9 +118,9 @@ def test_memory_off_shows_nothing_and_forget_me_erases_it(store):
     Workspace(store).save(DM, work_source(), 0, '', 0, 'Raid night intro', 'the intro text', 'open')
     assert loops(store)['reminders'] and loops(store)['saved_work'] and loops(store, 'public:456')['game_nights']
     store.personal_control('10', 'disable')
-    assert loops(store) == EMPTY and loops(store, 'public:456') == EMPTY
+    assert loops(store) == DM_EMPTY and loops(store, 'public:456') == CHANNEL_EMPTY
     store.personal_control('10', 'enable')
-    assert loops(store) == EMPTY and loops(store, 'public:456') == EMPTY
+    assert loops(store) == DM_EMPTY and loops(store, 'public:456') == CHANNEL_EMPTY
 
 
 def test_the_api_returns_loops_for_the_speakers_conversation(store):

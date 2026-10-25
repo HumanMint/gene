@@ -626,8 +626,8 @@ class Store:
                     'elsewhere': self._elsewhere(db, guild_id, channel_id, user_id)
                     if profiles and profile['enabled'] else [],
                     'requests': self._own_requests(db, guild_id, channel_id, user_id) if profile['enabled'] else [],
-                    'loops': self._open_loops(db, guild_id, channel_id, user_id, revision[0] if revision else 0)
-                    if profile['enabled'] else {'reminders': [], 'saved_work': [], 'game_nights': []},
+                    'loops': self._open_loops(db, guild_id, channel_id, user_id, revision[0] if revision else 0,
+                                              profile['enabled']),
                     'web_research': [json.loads(row[0]) for row in db.execute(
                         'SELECT receipt FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY id DESC LIMIT 3',
                         (guild_id, channel_id, user_id))],
@@ -681,20 +681,25 @@ class Store:
         return requests
 
     @staticmethod
-    def _open_loops(db, guild_id, conversation, user_id, revision):
+    def _open_loops(db, guild_id, conversation, user_id, revision, enabled=True):
         """The member's own unfinished things that belong to this conversation, so Fri knows them without a tool.
 
         Each shows only where the member already sees it: reminders in the DM they were made in, saved work in
         its own conversation, and game-night cards they organized in the channel the card is in. Nothing here
-        crosses into another conversation, and nothing holds another member's words or choices.
+        crosses into another conversation, and nothing holds another member's words or choices. A kind that
+        can't show in this conversation is None, so an empty list never reads as "none anywhere". A private /fri
+        panel looks like a DM here, so its reminder list is empty, and Fri, which knows a DM from a panel, nulls it.
         """
+        kind, _, place = conversation.partition(':')
+        reminders = [] if kind == 'private' else None
+        game_nights = [] if kind == 'public' else None
+        if not enabled:  # Memory off: Fri keeps none of these, and forget-me erased them.
+            return {'reminders': reminders, 'saved_work': [], 'game_nights': game_nights}
         from .fri_social_store import ACTIVE, Social
         from .fri_workspace_store import Workspace
         Social.prune(db)
         Workspace.prune(db)
         now = time.time()
-        kind, _, place = conversation.partition(':')
-        reminders = []
         if kind == 'private':
             for row in db.execute(
                     f"SELECT body,due,local_time,timezone,state,revision FROM fri_reminders WHERE guild_id=? AND user_id=? "
@@ -710,7 +715,6 @@ class Store:
         saved_work = [dict(row) for row in db.execute(
             "SELECT title,updated FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND state='open' "
             'ORDER BY updated DESC LIMIT ?', (guild_id, user_id, conversation, LOOP_ITEMS))]
-        game_nights = []
         if kind == 'public':
             for row in db.execute("SELECT id FROM fri_plans WHERE guild_id=? AND user_id=? AND channel_id=? AND state IN "
                                   "('pending','open','finalized') ORDER BY created DESC", (guild_id, user_id, place)).fetchall():
@@ -722,7 +726,8 @@ class Store:
                 game_nights.append({'title': plan['title'], 'state': plan['state'], 'timezone': plan['timezone'],
                                     'options': plan['slots'], 'available': plan['available'], 'chosen': chosen,
                                     'rsvps': plan['rsvps'] if chosen is not None else None})
-        return {'reminders': reminders, 'saved_work': saved_work, 'game_nights': game_nights[:LOOP_ITEMS]}
+        return {'reminders': reminders, 'saved_work': saved_work,
+                'game_nights': None if game_nights is None else game_nights[:LOOP_ITEMS]}
 
     @staticmethod
     def _privacy_state(db, user_id):

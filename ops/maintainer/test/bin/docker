@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Mock docker for offline tests of batch-release.sh. State lives in $MOCK/docker.json.
+
+`docker run` executes the real command with the image's code: old Gene from an OLD_G export,
+new Gene from this checkout, Fri from FRI_REPO. It runs as the --user ids with only the
+traversal a bind mount would give, so files it creates get the owner the real container would
+give them. Anything this stub does not model is refused, not ignored.
+"""
+import json, os, subprocess, sys, tempfile, time, uuid
+
+M, ROOT = os.environ['MOCK'], os.environ['BATCH_ROOT']
+GENE_PY, OLD_SRC, FRI_PY = os.environ['GENE_PY'], os.environ['OLD_SRC'], os.environ['FRI_PY']
+OLD_G = os.environ['OLD_G']
+STATE = M+'/docker.json'
+args = sys.argv[1:]
+with open(M+'/docker.log', 'a') as log:
+    log.write(' '.join(args)+'\n')
+st = json.load(open(STATE))
+
+
+def refuse(message):
+    sys.exit('mock docker refuses: '+message)
+
+
+def save():
+    json.dump(st, open(STATE, 'w'))
+
+
+def resolve(image):  # tag or id -> tag
+    for tag, info in st['images'].items():
+        if image in (tag, info['id']):
+            return tag
+    refuse('no such image '+image)
+
+
+def env_file(path):
+    return dict(line.split('=', 1) for line in open(path).read().splitlines() if '=' in line and not line.startswith('#'))
+
+
+def as_user(user, command, env, stdin=None, check=False):
+    uid, gid = user.split(':')
+    wrapper = ['setpriv', '--reuid='+uid, '--regid='+gid, '--clear-groups',
+               '--inh-caps=+dac_read_search', '--ambient-caps=+dac_read_search']
+    base = {'PATH': '/usr/bin:/bin', 'HOME': '/tmp', 'PYTHONDONTWRITEBYTECODE': '1'}
+    return subprocess.run(wrapper+command, env=base | env, input=stdin, check=check)
+
+
+def code(tag):  # interpreter and environment for an image's Python
+    repo, sha = tag.split(':')
+    if repo == 'gene-runtime':
+        return GENE_PY, ({'PYTHONPATH': OLD_SRC+'/src'} if sha == OLD_G else {})
+    if repo == 'fri-runtime':
+        return FRI_PY, {}
+    refuse('no Python modelled for '+tag)
+
+
+def heartbeat():
+    now = time.time()
+    for name, path in (('gene-red-1', ROOT+'/data/red/gene-health.json'), ('fri-runtime-1', ROOT+'/data/fri/fri-health.json')):
+        c = st['containers'].get(name)
+        if c and c['running'] and os.path.exists(path):
+            h = json.load(open(path))
+            h['at'] = now
+            json.dump(h, open(path, 'w'))
+
+
+def controller_env():
+    return env_file(ROOT+'/secrets/controller.env') | {'GENE_DB': ROOT+'/data/controller/gene.sqlite3'}
+
+
+def run(rest):
+    flags, mounts, env, user, network, i = set(), {}, {}, None, None, 0
+    while rest[i].startswith('-'):
+        flag = rest[i]
+        if flag in ('-i', '--rm', '--read-only'):
+            flags.add(flag); i += 1; continue
+        value = rest[i+1]; i += 2
+        if flag == '--network':
+            network = value
+        elif flag == '--user':
+            user = value
+        elif flag == '--tmpfs':
+            path, _, opts = value.partition(':')
+            if path != '/tmp':
+                scratch = tempfile.mkdtemp(dir=M)
+                ids = dict(o.split('=') for o in opts.split(',') if o)
+                os.chown(scratch, int(ids.get('uid', 0)), int(ids.get('gid', 0)))
+                mounts[path] = scratch
+        elif flag == '--cap-drop' and value == 'ALL' or flag == '--security-opt' and value == 'no-new-privileges:true':
+            flags.add(flag)
+        elif flag == '-v':
+            src, dst, *mode = value.split(':')
+            if not os.path.exists(src):
+                refuse('mount source missing '+src)
+            mounts[dst] = src
+        elif flag == '-e':
+            key, val = value.split('=', 1); env[key] = val
+        elif flag == '--env-file':
+            env = env_file(value) | env
+        else:
+            refuse('unmodelled run flag '+flag)
+    # The script's isolation discipline holds for every container it runs.
+    for required in ('--rm', '--read-only', '--cap-drop', '--security-opt'):
+        if required not in flags:
+            refuse('docker run without '+required)
+    if user is None or network is None:
+        refuse('docker run without --user or --network')
+    tag, command = resolve(rest[i]), rest[i+1:]
+    for dst, src in mounts.items():
+        if dst == '/data' and os.path.realpath(src).startswith(os.path.realpath(ROOT+'/data/controller')):
+            owner = '%d:%d' % (os.stat(ROOT+'/data/controller/gene.sqlite3').st_uid, os.stat(ROOT+'/data/controller/gene.sqlite3').st_gid)
+            if user != owner:
+                refuse(f'controller DB opened as {user}, not its owner {owner}')
+    if network == 'container:gene-audio-node-1':
+        if '/audio.yml' not in mounts or command[:2] != ['python', '-']:
+            refuse('unexpected audio probe')
+        sys.stdin.read()
+        players = int(os.environ.get('MOCK_PLAYERS', '0'))
+        seq = os.environ.get('MOCK_PLAYERS_SEQ')
+        if seq:
+            count_file = M+'/player-calls'
+            n = int(open(count_file).read()) if os.path.exists(count_file) else 0
+            open(count_file, 'w').write(str(n+1))
+            values = seq.split(',')
+            players = int(values[min(n, len(values)-1)])
+        print(json.dumps({'players': players, 'playing': int(os.environ.get('MOCK_PLAYING', '0'))}))
+        return 0
+    if network != 'none':
+        refuse('unmodelled network '+network)
+    if tag.startswith('gene-worker:'):
+        if command != ['codex', '--version']:
+            refuse('unmodelled worker command')
+        print('codex-cli (mock)')
+        return 0
+    if not command or command[0] != 'python':
+        refuse('unmodelled command '+' '.join(command))
+    python, code_env = code(tag)
+    if os.environ.get('MOCK_PROBE_FAIL') and 'find_spec' in ' '.join(command):
+        return 125  # Docker itself failed to start the probe container.
+
+    def mapped(text):
+        for dst in sorted(mounts, key=len, reverse=True):
+            text = text.replace(dst+'/', mounts[dst]+'/')
+            if text == dst:
+                text = mounts[dst]
+        return text
+    script = None
+    if command[1:2] == ['-']:
+        script = mapped(sys.stdin.read())
+    argv = [python] + [mapped(a) for a in command[1:]]
+    env = {k: mapped(v) for k, v in env.items()} | code_env
+    live = os.path.realpath(mounts.get('/data', '')) == os.path.realpath(ROOT+'/data/controller')
+    if live and command[1:4] == ['-m', 'gene.fri_reply_checks', 'purge']:
+        with open(M+'/purges', 'a') as out:
+            out.write(' '.join(command)+'\n')
+    result = as_user(user, argv, env, stdin=script.encode() if script is not None else None)
+    if (os.environ.get('MOCK_KILL_AFTER_PAUSE') and script and "key='paused'" in script and command[2:] == ['true']
+            and not os.path.exists(M+'/killed-after-pause')):
+        open(M+'/killed-after-pause', 'w').close()
+        os.kill(os.getppid(), 9)
+    return result.returncode
+
+
+def compose(rest):
+    project = rest[rest.index('--project-name')+1]
+    values = env_file(rest[rest.index('--env-file')+1])
+    compose_file = rest[rest.index('-f')+1]
+    if not os.path.isfile(compose_file):
+        refuse('compose file missing '+compose_file)
+    action_at = rest.index('-f')+2
+    action, rest = rest[action_at], rest[action_at+1:]
+    services = [a for a in rest if not a.startswith('-')]
+    allowed = {'gene': {'controller', 'red'}, 'fri': {'runtime'}}[project]
+    if not services or set(services) - allowed:
+        refuse(f'compose {action} {services} in project {project}')
+    names = {'controller': 'gene-controller-1', 'red': 'gene-red-1', 'runtime': 'fri-runtime-1'}
+    if action == 'stop':
+        for s in services:
+            if names[s] in st['containers']:
+                st['containers'][names[s]]['running'] = False
+        save()
+        if os.environ.get('MOCK_KILL_AFTER_STOP') and project == 'gene' and set(services) == {'controller', 'red'}:
+            os.kill(os.getppid(), 9)  # The batch shell dies right after the rollback stops Gene.
+        return 0
+    if action != 'up' or rest[:3] != ['-d', '--no-deps', '--force-recreate']:
+        refuse('compose '+action+' '+' '.join(rest))
+    if project == 'fri':
+        tag = values['FRI_RUNTIME_IMAGE']
+        st['containers']['fri-runtime-1'] = {'image': st['images'][resolve(tag)]['id'], 'running': True, 'health': 'healthy'}
+        h = json.load(open(ROOT+'/data/fri/fri-health.json'))
+        h.update(sha=values['FRI_RELEASE_SHA'], at=time.time())
+        json.dump(h, open(ROOT+'/data/fri/fri-health.json', 'w'))
+        save()
+        return 0
+    tag, sha = resolve(values['GENE_RUNTIME_IMAGE']), values['GENE_RELEASE_SHA']
+    if os.environ.get('MOCK_SLOW_UP') and sha != OLD_G:  # A slow up that can outlive a killed batch shell.
+        open(M+'/up-started', 'w').close()
+        time.sleep(float(os.environ['MOCK_SLOW_UP']))
+        st.update(json.load(open(STATE)))
+    image = st['images'][tag]['id']
+    owner = '%d:%d' % (os.stat(ROOT+'/data/controller').st_uid, os.stat(ROOT+'/data/controller').st_gid)
+    for s in services:
+        health = 'healthy'
+        if s == 'controller':
+            # The controller migrates the live DB on start, as its own user.
+            python, code_env = code(tag)
+            started = as_user(owner, [python, '-c', 'from gene.api import create_app; create_app()'],
+                              controller_env() | code_env)
+            health = 'healthy' if started.returncode == 0 else 'unhealthy'
+        if s == 'red':
+            if not os.path.isdir(ROOT+'/releases/'+sha+'/cogs'):
+                refuse('red started without releases/'+sha+'/cogs')
+            broken = os.environ.get('MOCK_BROKEN_SHA') == sha
+            h = json.load(open(ROOT+'/data/red/gene-health.json'))
+            h.update(sha=sha, at=time.time(), guild_connected=not broken, controls_running=True)
+            json.dump(h, open(ROOT+'/data/red/gene-health.json', 'w'))
+        st['containers'][names[s]] = {'image': image, 'running': True, 'health': health}
+    save()
+    if os.environ.get('MOCK_SLOW_UP'):
+        open(M+'/up-finished', 'w').close()
+    return 0
+
+
+if args[:2] == ['image', 'inspect']:
+    img = st['images'].get(args[4]) or st['images'][resolve(args[4])]
+    fmt = args[3]
+    print(img['id'] if '.Id' in fmt else img['label'] if 'revision' in fmt else img['size'] if '.Size' in fmt else refuse(fmt))
+elif args[:3] == ['image', 'ls', '--format']:
+    if args[3] != '{{.Repository}}:{{.Tag}}' or len(args) != 5:
+        refuse(' '.join(args))
+    for tag in st['images']:
+        if tag.split(':')[0] == args[4]:
+            print(tag)
+elif args[:2] == ['image', 'rm'] and len(args) == 3:
+    tag = resolve(args[2])
+    image = st['images'][tag]['id']
+    if (any(c['image'] == image for c in st['containers'].values())
+            and [i['id'] for i in st['images'].values()].count(image) == 1):
+        sys.exit('Error response from daemon: conflict: unable to remove repository reference "'+tag+'" (must force)')
+    del st['images'][tag]
+    save()
+    print('Untagged: '+tag)
+elif args[0] == 'inspect':
+    fmt, name = args[2], args[3]
+    c = st['containers'].get(name)
+    if not c:
+        sys.exit(1)
+    heartbeat()
+    if '.State.Running' in fmt:
+        print('true' if c['running'] else 'false')
+    elif '.State.Health' in fmt:
+        print(c['health'] if c['running'] else 'unhealthy')
+    elif '.Image' in fmt:
+        print(c['image'])
+    else:
+        refuse(fmt)
+elif args[0] == 'info':
+    print(M+'/docker')
+elif args[0] == 'build':
+    tag = args[args.index('-t')+1]
+    label = None
+    for i, a in enumerate(args):
+        if a in ('--label', '--build-arg'):
+            label = args[i+1].split('=', 1)[1]
+    st['images'][tag] = {'id': 'sha256:'+uuid.uuid4().hex, 'label': label, 'size': 1000}
+    save()
+    print(st['images'][tag]['id'])
+elif args[0] == 'compose':
+    sys.exit(compose(args[1:]))
+elif args[0] == 'run':
+    sys.exit(run(args[1:]))
+elif args[0] == 'exec':
+    rest = [a for a in args[1:] if a != '-i']
+    if rest[0] != 'fri-runtime-1' or rest[1:4] != ['python', '-m', 'fri.fri_eval'] or not st['containers']['fri-runtime-1']['running']:
+        refuse('exec '+' '.join(rest))
+    if rest[5:6] == [os.environ.get('MOCK_EVAL_FAIL')]:
+        print(json.dumps({'case': 'mock_case', 'status': 'completed', 'response_kind': 'reply', 'passed': False, 'reply': 'meh'}))
+        sys.exit(1)
+    print(json.dumps({'case': 'mock_case', 'status': 'completed', 'response_kind': 'reply', 'passed': True, 'reply': 'ok'}))
+else:
+    refuse(' '.join(args))

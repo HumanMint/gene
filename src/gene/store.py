@@ -119,6 +119,8 @@ class Store:
             ''')
             from .repair_store import initialize as initialize_repairs
             initialize_repairs(db)
+            from .requester_notices import initialize as initialize_requester_notices
+            initialize_requester_notices(db)
             columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
             for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref', 'progress'):
                 if name not in columns:
@@ -291,9 +293,12 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             now = time.time()
             active = self._setting(db, 'active_sha')
+            # A repair its checks handed to the owner is a feature job by then, with no intake approval;
+            # repair intake recorded it, so the owner still hears how the release they approved went.
             rows = db.execute('SELECT * FROM jobs WHERE state IN ("awaiting_owner","review") OR (updated>? '
-                              'AND (intake_approved_ref IS NOT NULL OR kind IN ("rollback","repair"))) '
-                              'ORDER BY updated', (now - 7 * 86400,)).fetchall()
+                              'AND (intake_approved_ref IS NOT NULL OR kind IN ("rollback","repair") '
+                              'OR id IN (SELECT job_id FROM repair_jobs))) ORDER BY updated',
+                              (now - 7 * 86400,)).fetchall()
             for row in rows:
                 job = self._job(row)
                 current = pending_notice(job, active)

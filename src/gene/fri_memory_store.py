@@ -9,7 +9,7 @@ import json
 import time
 
 from .fri_context import ChatSource
-from .fri_memory import MAX_NOTES, PER_CATEGORY, TTL, personal_note
+from .fri_memory import CATEGORIES, MAX_NOTES, PER_CATEGORY, TTL, personal_note
 
 SERVER = 'server'
 PROFILE_NOTES = 15  # Every category full, at PER_CATEGORY each.
@@ -121,13 +121,15 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
         if action == 'replace' and not note:
             raise ValueError('Use a short first-person preference, such as I like chess.')
         # Fence older category disclosures too: a learner could choose a shorter
-        # exact substring of the removed evidence rather than the same full text.
-        db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,digest) '
-            'DO UPDATE SET at=excluded.at', (guild, scope, user, digest(row['category'], ''), time.time()))
+        # exact substring of the removed evidence rather than the same full text. The same words
+        # filed under another category are fenced as well, so a reclassification can't restore them.
+        for fence in [digest(row['category'], '')] + [digest(category, row['evidence']) for category in CATEGORIES]:
+            db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
+                'user_id,digest) DO UPDATE SET at=excluded.at', (guild, scope, user, fence, time.time()))
         db.execute('DELETE FROM personal_notes WHERE id=?', (identifier,))
-        if scope == SERVER:  # The same preference kept in single conversations goes with it.
-            db.execute('DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND category=? AND evidence=?',
-                       (guild, user, row['category'], row['evidence']))
+        if scope == SERVER:  # The same words kept in single conversations go with it, under any category.
+            db.execute('DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND evidence=?',
+                       (guild, user, row['evidence']))
         if note:
             save(db, guild, scope, user, note, time.time(), row['origin'])
         # Clear stale conversational copies and invalidate every in-flight derivation. A profile

@@ -110,7 +110,7 @@ def test_elsewhere_is_the_latest_readable_exchanges_from_other_conversations(sto
     assert elsewhere(store, 'private:9') == [('public:4', 'third public'), ('public:1', 'here already')]
     assert elsewhere(store, 'public:4') == [('public:3', 'second public'), ('public:1', 'here already')]
     turn = store.chat_context('123', 'public:9', '20')['elsewhere'][-1]
-    assert set(turn) == {'conversation_id', 'input', 'at'}  # The member's own words, never Fri's reply.
+    assert set(turn) == {'conversation_id', 'input', 'at', 'provenance'}  # Their own words, never Fri's reply.
 
 
 def test_a_reply_drawing_on_a_conversation_note_never_reaches_another_channel(store):
@@ -124,7 +124,8 @@ def test_a_reply_drawing_on_a_conversation_note_never_reaches_another_channel(st
 def test_elsewhere_drops_turns_built_on_someone_who_changed_their_privacy(store):
     say(store, 'about ash', None, conversation='public:2', provenance=[ASH])
     say(store, 'my own thing', None, conversation='public:3')
-    assert elsewhere(store, 'public:1') == [('public:2', 'about ash'), ('public:3', 'my own thing')]
+    # Their words can repeat ash's, so what's built on them inherits ash's provenance.
+    assert [turn['provenance'] for turn in store.chat_context('123', 'public:1', '20')['elsewhere']] == [[ASH], []]
     with store.connection() as db:  # A revision change without an eager delete.
         db.execute("INSERT INTO chat_revisions VALUES ('30',1)")
     assert elsewhere(store, 'public:1') == [('public:3', 'my own thing')]
@@ -208,6 +209,38 @@ def test_public_conversations_cannot_edit_notes_they_cannot_see(store, scope, co
     note = entries(store, '123', 'private:9', '20')['entries'][0]
     with pytest.raises(ValueError, match='no longer available'):
         edit(store, '123', conversation, '20', note['id'], 0, {**control_source(), 'channel_id': event_channel}, 'remove')
+
+
+def test_removing_a_profile_note_takes_its_words_under_any_category(store):
+    before = time.time()-60
+    say(store)
+    say(store, 'I like Minecraft', 'hobbies', conversation='public:5', audience='conversation')
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
+    assert entries(store, '123', 'private:9', '20')['entries'] == []
+    with store.connection() as db:  # Older text can't bring the same words back under another category.
+        for category in ('hobbies', 'nickname'):
+            assert not save(db, '123', 'public:2', '20', (category, 'I like Minecraft'), before)
+
+
+def test_downgrade_copies_profile_removals_to_every_channel_an_older_controller_learns_in(store, monkeypatch):
+    before = time.time()-60
+    say(store, conversation='public:1')
+    say(store, 'chat', None, conversation='public:3', user='30')  # Editing clears member 20's own chats.
+    with store.connection() as db:
+        db.execute("INSERT INTO agent_summaries(channel_id,body,authors,at,revisions) VALUES ('4','x','[]',0,'{}')")
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
+    monkeypatch.setenv('FRI_CHANNEL_IDS', '7, 8')
+    monkeypatch.setenv('FRI_HISTORY_CHANNEL_IDS', '9')
+    downgrade([str(store.path)])
+    with store.connection() as db:
+        fenced = {row[0] for row in db.execute('SELECT channel_id FROM personal_note_removals')}
+        assert fenced == {'public:3', 'public:4', 'public:7', 'public:8', 'public:9'}
+        # The removal check an older controller runs: this conversation's fences only.
+        for channel in sorted(fenced):
+            for note in (('games', 'I like Minecraft'), ('games', 'I like chess'), ('hobbies', 'I like Minecraft')):
+                assert not save(db, '123', channel, '20', note, before)
 
 
 def test_downgrade_removes_profiles_and_keeps_exchanges_where_said(store):

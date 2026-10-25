@@ -634,13 +634,15 @@ class Store:
 
         Only their own words, said where everyone could read them. Fri's replies stay out: one can
         draw on a note or exchange that belongs to its own conversation. Private ones never appear.
+        Provenance stays with each one: the member's words can repeat someone else's, so a reply built
+        on them inherits it and goes when that person erases.
         """
         turns = [dict(row) for row in db.execute(
             "SELECT id,channel_id AS conversation_id,input,at,provenance FROM chat_turns "
             "WHERE guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND channel_id<>? "
             "AND response_kind='reply' AND attributed=1 AND at>? ORDER BY id DESC LIMIT ?",
             (guild_id, user_id, conversation, time.time()-ELSEWHERE_SECONDS, ELSEWHERE_TURNS))][::-1]
-        return [{key: turn[key] for key in ('conversation_id', 'input', 'at')}
+        return [{key: turn[key] for key in ('conversation_id', 'input', 'at', 'provenance')}
                 for turn in self._current_turns(db, turns)]
 
     @staticmethod
@@ -765,10 +767,28 @@ class Store:
             # The older controller writes summaries positionally.
             db.execute('ALTER TABLE agent_summaries DROP COLUMN revisions')
 
-    def downgrade_member_profiles(self):
-        """Before starting a controller without member profiles, which could neither show nor edit them."""
+    def downgrade_member_profiles(self, channels=()):
+        """Before starting a controller without member profiles, which could neither show nor edit them.
+
+        An older controller checks removal fences only in the conversation it writes to, so each profile
+        removal is copied to every public conversation it could learn into: the channels given (the
+        configured learning channels) and every one this database knows. A removed preference stays removed.
+        """
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
+            known = {row[0] for row in db.execute(
+                "SELECT channel_id FROM personal_notes UNION SELECT channel_id FROM personal_note_removals "
+                "UNION SELECT channel_id FROM chat_turns UNION SELECT 'public:'||channel_id FROM agent_summaries")}
+            from .fri_agent_store import AgentStore
+            known |= {'public:'+str(c) for c in [*channels, *AgentStore.get(db, 'cursors', {})]}
+            known = sorted(c for c in known if re.fullmatch(r'public:[0-9]{1,25}', c))
+            fences = db.execute("SELECT guild_id,user_id,digest,at FROM personal_note_removals "
+                                "WHERE channel_id='server'").fetchall()
+            for guild, user, digest, at in fences:
+                for conversation in known:
+                    db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) '
+                               'ON CONFLICT(guild_id,channel_id,user_id,digest) '
+                               'DO UPDATE SET at=max(at,excluded.at)', (guild, conversation, user, digest, at))
             db.execute("DELETE FROM personal_notes WHERE channel_id='server'")
             db.execute("DELETE FROM personal_note_removals WHERE channel_id='server'")
             # An older controller ignores the audience, so these stay in the conversation they were said in.

@@ -66,7 +66,9 @@ class ReviewDelivery(Lease):
     message_id: str = Field(default='', pattern=r'^[0-9]*$')
 
 
-class RequesterNoticeResult(Actor, Lease):
+class RequesterNoticeResult(Lease):
+    guild_id: str | None = None  # Both omitted only by a Fri from before the owner-scoped finish.
+    user_id: str | None = None
     state: Literal['sent', 'failed', 'uncertain']
     message_id: str = Field(default='', pattern=r'^[0-9]{0,25}$')
 
@@ -333,7 +335,12 @@ def create_app(settings: Settings | None = None):
 
     @app.post('/requests/{job_id}/requester-notice/finish', dependencies=[auth('fri')])
     def requester_notice_finish(job_id: str, body: RequesterNoticeResult):
-        requester_notice_scope(job_id, body)
+        if body.guild_id is None and body.user_id is None:
+            # A Fri-only rollback: its claim was already the owner's, and the lease is that claim's.
+            if store.get(job_id)['guild_id'] != settings.guild_id:
+                raise HTTPException(403, 'Request belongs to a different server')
+        else:
+            requester_notice_scope(job_id, body)
         from .requester_notices import finish
         finish(store, job_id, body.lease, body.state, body.message_id)
         return {'ok': True}

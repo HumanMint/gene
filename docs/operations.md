@@ -1020,7 +1020,7 @@ owner finished after the automatic checks handed them over. Those now get the sa
 deployed after the repair, any newer release now live, or another release still going out refuses
 the reply: "fixed now" has to describe what's running. Fri claims the mark only after its Discord reads, right before the send,
 so the claim is the send-time check. Claiming and recording the outcome both carry the owner and
-this server, and the controller refuses either one for anyone else. A Fri older than that sends
-no owner on the outcome, so it isn't recorded and the notice stays unretried, never sent twice.
+this server, and the controller refuses either one for anyone else. A Fri older than that (a
+Fri-only rollback) sends only the lease on the outcome, which is still recorded.
 Older controllers lack the table and the `requester-notices` capability, and Fri then shows no
 button. A downgrade leaves the table in place, unread.

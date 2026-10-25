@@ -213,14 +213,22 @@ def test_recording_the_reply_is_the_owners_on_this_server(tmp_path):
     owner = {'guild_id': '123', 'user_id': 'owner'}
     lease = client.post(route, headers=headers('fri'), json=owner).json()['lease']
     for scope in ({'guild_id': '999', 'user_id': '20'}, {'guild_id': '999', 'user_id': 'owner'},
-                  {'guild_id': '123', 'user_id': '20'}):
+                  {'guild_id': '123', 'user_id': '20'}, {'guild_id': '123'}, {'user_id': 'owner'}):
         refused = client.post(route+'/finish', headers=headers('fri'), json={**scope, 'lease': lease, 'state': 'failed'})
         assert refused.status_code == 403
-    assert client.post(route+'/finish', headers=headers('fri'), json={'lease': lease, 'state': 'failed'}).status_code == 422
     again = client.post(route, headers=headers('fri'), json=owner)
     assert again.status_code == 409 and 'may already' in again.json()['detail']  # Still the first claim's.
     assert client.post(route+'/finish', headers=headers('fri'),
-                       json={**owner, 'lease': lease, 'state': 'sent', 'message_id': '42'}).json() == {'ok': True}
+                       json={**owner, 'lease': lease, 'state': 'failed'}).json() == {'ok': True}
+    # A Fri from before the owner-scoped finish (a Fri-only rollback) sends just the lease, and its
+    # outcome still counts: a refusal it saw can be tried again.
+    lease = client.post(route, headers=headers('fri'), json=owner).json()['lease']
+    assert client.post(route+'/finish', headers=headers('fri'), json={'lease': lease, 'state': 'failed'}).json() == {'ok': True}
+    lease = client.post(route, headers=headers('fri'), json=owner).json()['lease']
+    assert client.post(route+'/finish', headers=headers('fri'),
+                       json={'lease': lease, 'state': 'sent', 'message_id': '42'}).json() == {'ok': True}
+    told = client.post(route, headers=headers('fri'), json=owner)
+    assert told.status_code == 409 and 'already told' in told.json()['detail']
 
 
 @pytest.mark.parametrize('next_release', ['rollback', 'feature'])

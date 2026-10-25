@@ -499,10 +499,16 @@ PY
 rename_preflight() {  # backup_dir: walk a probe dir through every directory the switch moves trees between
   # Equal device numbers are not enough: a bind mount shares them and still refuses rename(2).
   python3 - "$ROOT" "$STAGE" "$ROOT/releases" "$ROOT" "$1" <<'PY'
-import os, sys, uuid
+import os, re, sys, uuid
 root, stage, *hops = sys.argv[1:]
-if os.path.ismount(os.path.join(root, 'source')):
-    sys.exit(root+'/source is a mount point, so the switch cannot rename it')
+# A bind mount on the same filesystem looks like a plain directory to stat, so read the mount table.
+trees = [os.path.realpath(p) for p in (root+'/source', stage+'/gene-src', stage+'/cogs-ready') if os.path.exists(p)]
+with open('/proc/self/mountinfo') as info:
+    for line in info:
+        point = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), line.split()[4])
+        for tree in trees:
+            if point == tree or point.startswith(tree+'/'):
+                sys.exit(f'{point} is a mount point in {tree}, which the switch renames')
 name = '.rename-probe-'+uuid.uuid4().hex
 here = os.path.join(stage, name)
 os.mkdir(here, 0o700)
@@ -788,6 +794,7 @@ backup_db() {  # dir: an online copy at dir/db/controller.sqlite3, made as the D
 
 gene() {
   need staged rehearsed drained; check_manifest
+  no_rollback
   if has gene_recorded; then verify_gene_only; return; fi
   has gene_attempted && die 'an earlier Gene attempt is in the journal; finish rollback-gene, then stage again in a fresh directory'
   fence  # Re-verified, not trusted from the drain marker.
@@ -914,6 +921,8 @@ rollback_gene() {
   repair_sidecars
   log 'rollback: check that live state is built from the recorded releases'
   pair_check
+  # From here the forward phases refuse: a half-done rollback is finished by repeating rollback-gene.
+  has intent:rollback || mark intent:rollback
   log 'rollback: fence development'
   fence
   lock_fri
@@ -971,7 +980,7 @@ rollback_gene() {
 
 fri() {
   need gene_recorded; check_manifest
-  has gene_rolled_back && die 'Gene was rolled back'
+  no_rollback
   if has fri_switched; then probe_fri "$F" "$(jget "$MANIFEST" new.fri.id)"; return; fi
   mark intent:fri
   if ! "$ROOT/venv/bin/python" -m gene.fri_release "$F"; then
@@ -1079,10 +1088,19 @@ os.close(directory)
 PY
 }
 
+no_rollback() {
+  if has intent:rollback; then die 'a rollback has started; repeat rollback-gene until it finishes, then resume-old'; fi
+}
+
 resume() {
   need gene_recorded fri_switched; check_manifest
-  has gene_rolled_back && die 'Gene was rolled back; use resume-old'
-  has resumed && { log 'already resumed'; return; }
+  no_rollback
+  if has resumed; then
+    verify new any-work
+    if ! systemctl is-active -q gene-worker || ! systemctl is-active -q gene-deployer; then die 'resumed earlier, but the units are not running'; fi
+    log 'already resumed'
+    return
+  fi
   if ! has intent:services; then
     verify new
     mark intent:services

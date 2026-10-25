@@ -177,6 +177,8 @@ def compose(rest):
             if names[s] in st['containers']:
                 st['containers'][names[s]]['running'] = False
         save()
+        if os.environ.get('MOCK_KILL_AFTER_STOP') and project == 'gene' and set(services) == {'controller', 'red'}:
+            os.kill(os.getppid(), 9)  # The batch shell dies right after the rollback stops Gene.
         return 0
     if action != 'up' or rest[:3] != ['-d', '--no-deps', '--force-recreate']:
         refuse('compose '+action+' '+' '.join(rest))

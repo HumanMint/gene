@@ -768,6 +768,55 @@ still binds every release to an exact SHA. No shell or Docker credentials are ex
 to Fri's conversation model.
 
 
+### Reply checks
+
+Off by default. The owner turns them on through the normal settings preview
+(`reply_check_enabled`); `reply_check_private` adds DMs and private panel conversations,
+`reply_check_minutes` (10–720, default 30) and `reply_check_daily_pairs` (10–400, default 120)
+bound cost, and `reply_check_model`/`reply_check_effort` default to Luna/low. The controller
+advertises the `reply-checks` capability; Fri only runs checks against a controller that does.
+
+The controller offers Fri pairs from saved turns in the main server: Fri's verbatim reply, then the
+same member's next turn in that conversation within 15 minutes. Both turns must come after reply checks
+were last switched on (turning either `enabled` or `reply_check_enabled` back on moves that boundary and
+drops any batch claimed before it).
+Only conversations Fri may chat in right now qualify: a public conversation in a channel listed in
+`FRI_CHANNEL_IDS` (turns don't record a thread's parent, so threads under a configured channel are
+skipped) or, with `reply_check_private`, a private one while the workshop is configured. Reactions,
+breadcrumbs, unattributed turns and members whose privacy revision moved are never offered.
+Turns are walked in `(at, id)` order, so equal timestamps are neither skipped nor repeated. Each message
+is cut to 600 characters with Discord mentions, channel and role links, emoji ids, message links and long
+numbers replaced by neutral placeholders, and the offered pairs carry no member, channel or message
+identifiers. Fri claims a batch only once its background model slot is free.
+
+Fri's model returns only clear cases of a member being unhappy with the reply (a correction, a re-ask,
+an ignored request, a failed action, frustration aimed at Fri), as four labels from fixed lists:
+category, severity, topic and suggested fix. No model text is accepted or stored. The controller
+rereads both turns (matching id, time, member and conversation, so a reused id doesn't stand in) and
+applies the current settings and channel scope before keeping a finding: a pruned or erased turn,
+a privacy change since the claim, checks or `enabled` turned off, or private checks turned off for a
+private pair drops it. A privacy change also removes the member's pairs from a pending batch, and a
+batch Fri abandons is settled as interrupted by housekeeping after ten minutes. A failed batch is
+retried as the same batch twice, while newer turns wait, and is then skipped; a retry the allowance
+cuts short keeps the rest of the batch and its attempt count. Every model call counts
+against the daily allowance, retries included; nothing is refunded.
+
+Findings live 30 days in `fri_reply_findings` with the member and provenance revisions, so any
+privacy change by the member or anyone the pair drew on deletes them, and reads re-check the fence.
+Expiry runs with the controller health check, whether or not checks are on. The owner can ask Fri for
+a summary in DMs (“show reply checks”). Maintainers read the anonymized digest on the host without
+starting anything:
+
+```bash
+sudo /srv/gene/venv/bin/python -m gene.fri_reply_checks export /srv/gene/data/controller/gene.sqlite3 7
+```
+
+It prints exact totals by category, severity and space, and recurring themes (category, topic, fix)
+ranked by severity-weighted count with the last day seen. Before rolling the controller back to a
+release without reply checks, stop it and run `python -m gene.fri_reply_checks purge <database>`:
+older releases can't erase findings, and purge also removes the `reply_check_*` settings and state so
+Fri stops asking for checks.
+
 ## Conversational Gene controls
 
 Fri can use `play`, `pause`, `resume`, `skip`, `stop`, `volume` (0–100), `queue`,

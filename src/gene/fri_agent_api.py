@@ -73,6 +73,8 @@ class Finish(BaseModel):
 def register(app, store, settings, auth, actor):
     agent = AgentStore(store, settings)
     app.state.agent = agent
+    from .fri_reply_checks import register as register_reply_checks
+    register_reply_checks(app, agent, auth, actor, Identity)
 
     @app.get('/agent/state', dependencies=[auth('fri')])
     def state():

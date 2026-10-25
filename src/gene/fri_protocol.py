@@ -3,7 +3,7 @@
 PROTOCOL = 'gene-fri/1'
 CAPABILITIES = ('scoped-context', 'gene-controls', 'owner-reviews', 'privacy-revisions',
                 'workspace-outbox', 'social-outbox', 'research-receipts', 'agent-learning',
-                'event-mention-chat', 'turn-provenance')
+                'event-mention-chat', 'turn-provenance', 'reply-checks')
 
 
 def contract():

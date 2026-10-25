@@ -53,6 +53,18 @@ def removed(db, guild, scope, user):
                       'AND user_id=?', (guild, scope, SERVER, user)).fetchone()[0]
 
 
+def predates(db, guild, scope, user, source):
+    """A message sent before the member's latest removal seen here, answered after it: it keeps nothing."""
+    cutoff = removed(db, guild, scope, user)
+    return bool(source and cutoff is not None and source.timestamp().timestamp() <= cutoff)
+
+
+def last_removal(db, guild, user):
+    """When the member last edited or removed any note; Fri's own caches drop what they said before it."""
+    return db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND user_id=?',
+                      (guild, user)).fetchone()[0] or 0
+
+
 def fences():
     """Every category, with no words in it: also what an older controller checks for whatever it would save."""
     return [digest(category, '') for category in CATEGORIES]

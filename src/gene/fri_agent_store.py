@@ -11,6 +11,7 @@ from .fri_explore_store import Exploration
 from .fri_explore_store import initialize as initialize_exploration
 from .fri_explore_store import notes as historical_notes
 from .fri_memory import personal_note
+from .fri_memory_store import last_removal
 from .privacy import clean
 
 DEFAULTS = {
@@ -467,7 +468,8 @@ class AgentStore:
                     'summary_provenance': [{'user_id': author, 'revision': revision}
                                            for author, revision in sorted(revisions.items()) if author != str(user)],
                     'historical_topics': historical_notes(db, channel, user) if profile['enabled'] and guild == self.settings.guild_id else [],
-                    'enabled': profile['enabled'], 'revision': rev[0] if rev else 0}
+                    'enabled': profile['enabled'], 'revision': rev[0] if rev else 0,
+                    'removed_at': last_removal(db, guild, user)}
 
     def _summary_current(self, db, row):
         """A summary is shown only while every author still has the revision it was made from."""

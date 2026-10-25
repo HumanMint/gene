@@ -386,7 +386,9 @@ Anonymous usage counts survive erasure. Personal notes are never shared with the
 note, in any scope. Changes are revision-fenced, clear stale recent context and research receipts
 (every conversation in the server for a profile note), and prevent historical learning from restoring
 the removed disclosure: nothing the member said there before the change becomes a note, archive
-observation or channel summary, and a message sent before it but answered after keeps nothing. Other
+observation or channel summary, and a message or outside @mention sent before it but answered after
+keeps nothing (`/chat/turn` answers `kept: false`); `/agent/context` reports the member's latest edit as
+`removed_at`, so Fri's own short-lived channel caches drop what they said before it. Other
 excerpts of the same words (one containing the other) go with the note, under any category; for a
 profile note, wherever a single conversation kept them, and its removal covers older messages in every
 conversation of the server. A fresh disclosure afterwards still counts.

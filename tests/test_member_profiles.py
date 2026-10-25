@@ -15,6 +15,9 @@ from tests.test_api import headers
 from tests.test_fri_agent import finish as learn
 from tests.test_fri_endings import source
 from tests.test_fri_memory_items import source as control_source
+from tests.test_fri_mention_api import h, invited, post  # noqa: F401
+from tests.test_fri_mention_api import source as mention_source
+from tests.test_fri_mention_api import turn as mention_turn
 from tests.test_gene_controls import control_body, controls_api  # noqa: F401
 
 ASH = {'user_id': '30', 'revision': 0}
@@ -417,7 +420,7 @@ def test_a_message_sent_before_a_removal_keeps_nothing_when_answered_after(store
     burst = store.save_chat('123', 'public:1', '20', revision, 'anyway', 'ok', 'model', 'high', source=later,
                             burst=[{'source': early, 'text': 'I like Minecraft'}, {'source': later, 'text': 'anyway'}],
                             provenance=[], audience='server')
-    assert queued == burst == {'ok': True, 'first_memory': False}
+    assert queued == burst == {'ok': True, 'first_memory': False, 'kept': False}
     assert notes(store, 'public:2') == [] and elsewhere(store, 'public:2') == []
     with store.connection() as db:
         assert not db.execute("SELECT count(*) FROM chat_turns WHERE user_id='20'").fetchone()[0]
@@ -464,3 +467,48 @@ def test_removing_a_note_takes_overlapping_excerpts_with_it(store):
                         ('public:6', 'I like chess openings'), ('public:6', 'I like chess')}
     remove('public:6', 'I like chess')  # A conversation note, in its conversation only.
     assert listed() == {('public:5', 'I like jazz'), ('server', 'I like chess clubs')}
+
+
+def test_a_mention_sent_before_a_removal_keeps_nothing_when_admitted_after(h):  # noqa: F811
+    early = mention_source(age=3)
+    with h.store.connection() as db:
+        save(db, '123', 'server', '20', ('games', 'I like Minecraft'), time.time())
+    note = entries(h.store, '123', 'private:9', '20')['entries'][0]
+    edit(h.store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
+    _, scope, grant = invited(h, source=early, content='<@99> Minecraft release notes')
+    receipt = {'query': 'Minecraft release notes', 'answer': 'A new update.',
+               'sources': ['https://example.org/minecraft'], 'checked_at': '2026-10-25T00:00:00+00:00'}
+    saved = post(h, '/chat/turn', mention_turn(scope, revision=grant['revision'], input='Minecraft release notes',
+                                               web_receipt=receipt))
+    assert saved.json() == {'ok': True, 'first_memory': False, 'kept': False}
+    with h.store.connection() as db:
+        assert db.execute('SELECT count(*) FROM chat_turns').fetchone()[0] == 0
+        assert db.execute('SELECT count(*) FROM web_research').fetchone()[0] == 0
+    _, later, _ = invited(h)
+    assert post(h, '/chat/context', later).json()['web_research'] == []
+
+
+def test_fri_learns_when_a_member_last_edited_their_memory(store, tmp_path):
+    agent = learner(store, tmp_path)
+    assert agent.context('2', '20')['removed_at'] == 0
+    say(store, 'I like jazz', 'music', conversation='private:9', audience='conversation')
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    before = time.time()
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
+    assert before <= agent.context('2', '20')['removed_at'] <= time.time()
+
+
+def test_a_refused_downgrade_leaves_an_older_database_untouched(tmp_path):
+    path = tmp_path/'old.sqlite3'
+    Store(path)
+    with sqlite3.connect(path) as db:
+        db.execute('ALTER TABLE personal_notes DROP COLUMN origin')
+        db.execute('ALTER TABLE chat_turns DROP COLUMN audience')
+        schema = db.execute('SELECT group_concat(sql) FROM sqlite_master').fetchone()[0]
+    with pytest.raises(SystemExit, match='Nothing changed. Channels are Discord channel ids'):
+        downgrade([str(path), '--channels', 'public:7'])
+    with sqlite3.connect(path) as db:
+        assert db.execute('SELECT group_concat(sql) FROM sqlite_master').fetchone()[0] == schema
+    with pytest.raises(SystemExit, match='Nothing changed. .* is not a readable controller database'):
+        downgrade([str(tmp_path/'missing.sqlite3'), '--channels', '7'])
+    assert not (tmp_path/'missing.sqlite3').exists()

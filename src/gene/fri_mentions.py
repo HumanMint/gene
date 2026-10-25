@@ -152,8 +152,10 @@ def save_turn(store, body):
         db.execute('UPDATE mention_grants SET turn_hash=? WHERE token=?', (fingerprint, body.mention_grant))
         db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
                    (body.guild_id, body.conversation_id, body.user_id, body.source.id))
-        if not store._personal_context(db, body.guild_id, body.conversation_id, body.user_id)['enabled']:
-            return {'ok': True, 'first_memory': False}
+        from .fri_memory_store import predates
+        if (not store._personal_context(db, body.guild_id, body.conversation_id, body.user_id)['enabled'] or
+                predates(db, body.guild_id, body.conversation_id, body.user_id, body.source)):
+            return {'ok': True, 'first_memory': False, 'kept': False}  # The grant is used; nothing stays.
         if body.web_receipt:
             db.execute('INSERT INTO web_research(guild_id,user_id,channel_id,created,receipt) VALUES (?,?,?,?,?)',
                        (body.guild_id, body.user_id, body.conversation_id, time.time(),

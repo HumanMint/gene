@@ -767,6 +767,20 @@ class Store:
             # The older controller writes summaries positionally.
             db.execute('ALTER TABLE agent_summaries DROP COLUMN revisions')
 
+    @staticmethod
+    def downgrade_refusal(db, channels):
+        """Why a member-profile downgrade must not run, or None. Reads only, so it can run before a migration."""
+        if malformed := [str(c) for c in channels if not re.fullmatch(r'[0-9]{1,25}', str(c))]:
+            return 'Channels are Discord channel ids (digits only), not '+', '.join(malformed[:5])+'.'
+        try:
+            fenced = db.execute("SELECT 1 FROM personal_note_removals WHERE channel_id='server' LIMIT 1").fetchone()
+        except sqlite3.OperationalError:  # Older than removals: nothing to keep.
+            fenced = None
+        if fenced and not channels:
+            return ('Profile removals need the configured channels (FRI_CHANNEL_IDS and '
+                    'FRI_HISTORY_CHANNEL_IDS, or --channels) to be kept after the downgrade.')
+        return None
+
     def downgrade_member_profiles(self, channels=()):
         """Before starting a controller without member profiles, which could neither show nor edit them.
 
@@ -775,13 +789,10 @@ class Store:
         configured chat and learning channels) and every one this database knows. A removed preference
         stays removed. Without the channels a channel never learned in yet would be missed, so it refuses.
         """
-        if malformed := [str(c) for c in channels if not re.fullmatch(r'[0-9]{1,25}', str(c))]:
-            raise ValueError('Channels are Discord channel ids (digits only), not '+', '.join(malformed[:5])+'.')
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            if not channels and db.execute("SELECT 1 FROM personal_note_removals WHERE channel_id='server'").fetchone():
-                raise ValueError('Profile removals need the configured channels (FRI_CHANNEL_IDS and '
-                                 'FRI_HISTORY_CHANNEL_IDS, or --channels) to be kept after the downgrade.')
+            if refusal := self.downgrade_refusal(db, channels):
+                raise ValueError(refusal)
             known = {row[0] for row in db.execute(
                 "SELECT channel_id FROM personal_notes UNION SELECT channel_id FROM personal_note_removals "
                 "UNION SELECT channel_id FROM chat_turns UNION SELECT 'public:'||channel_id FROM agent_summaries")}
@@ -849,17 +860,16 @@ class Store:
                 db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
                            (guild_id, channel_id, user_id, source.id))
             # Words sent before the member removed a note seen here, answered after it (a queued message),
-            # can't bring it back: like memory off, the turn keeps nothing.
-            from .fri_memory_store import removed
-            cutoff = removed(db, guild_id, channel_id, user_id)
+            # can't bring it back: like memory off, the turn keeps nothing, and says so.
+            from .fri_memory_store import predates
             first = ChatSource.model_validate(burst[0]['source']) if burst else source  # A burst's earliest.
-            stale = bool(first and cutoff is not None and first.timestamp().timestamp() <= cutoff)
+            stale = predates(db, guild_id, channel_id, user_id, first)
             if response_kind == 'reply':
                 save_pending(db, guild_id, channel_id, user_id, revision, text, source,
                              None if stale else clarification, provenance if attributed else None)
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             if not profile['enabled'] or stale:
-                return {'ok': True, 'first_memory': False}
+                return {'ok': True, 'first_memory': False, 'kept': False}
             if web_receipt:
                 db.execute('INSERT INTO web_research(guild_id,user_id,channel_id,created,receipt) VALUES (?,?,?,?,?)',
                            (guild_id, user_id, channel_id, time.time(), json.dumps(web_receipt)))

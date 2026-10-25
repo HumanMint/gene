@@ -384,9 +384,10 @@ data cannot be written back. **Forget my chats** clears recent turns while retai
 Anonymous usage counts survive erasure. Personal notes are never shared with the development worker.
 **My memory** edits or removes an individual entry without inference; in a DM it covers every
 note, in any scope. Changes are revision-fenced, clear stale recent context (every conversation in
-the server for a profile note), and prevent historical learning from restoring the removed disclosure.
+the server for a profile note), and prevent historical learning from restoring the removed disclosure:
+nothing the member said there before the change becomes a note, archive observation or channel summary.
 Removing a profile note also removes the same preference wherever a single conversation kept it, and
-fences older text in every conversation of the server; a fresh disclosure afterwards still counts.
+covers older messages in every conversation of the server; a fresh disclosure afterwards still counts.
 The item-storage upgrade preserves existing IDs and dates in one SQLite savepoint. A rollback to
 the earlier single-note release needs its matching database backup, because that older writer
 expects a different uniqueness constraint. Retain the pre-release database backup with the code SHA.

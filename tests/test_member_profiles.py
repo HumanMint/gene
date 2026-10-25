@@ -5,11 +5,14 @@ import time
 
 import pytest
 
-from gene.fri_memory_store import edit, entries, save
+from gene.fri_agent_store import RANGES
+from gene.fri_memory import TTL
+from gene.fri_memory_store import HORIZON, digest, edit, entries, fences, removed, save
 from gene.fri_protocol import compatible, contract
 from gene.profile_downgrade import main as downgrade
 from gene.store import Store
 from tests.test_api import headers
+from tests.test_fri_agent import finish as learn
 from tests.test_fri_endings import source
 from tests.test_fri_memory_items import source as control_source
 from tests.test_gene_controls import control_body, controls_api  # noqa: F401
@@ -32,6 +35,22 @@ def notes(store, conversation, user='20', profiles=True):
 
 def elsewhere(store, conversation, user='20'):
     return [(turn['conversation_id'], turn['input']) for turn in store.chat_context('123', conversation, user)['elsewhere']]
+
+
+def older_controller_saves(db, channel, note, at, user='20'):
+    """The removal check a controller without member profiles runs before it saves a note."""
+    cutoff = db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND channel_id=? AND user_id=? '
+                        'AND digest IN (?,?)', ('123', channel, user, digest(*note), digest(note[0], ''))).fetchone()[0]
+    return cutoff is None or at > cutoff
+
+
+def learner(store, tmp_path):
+    from gene.config import Settings
+    from gene.fri_agent_store import AgentStore
+    agent = AgentStore(store, Settings(tmp_path/'unused.sqlite3', '123', 'owner', 'r'*40, 'w'*40, 'd'*40,
+                                       agent_channels='2', agent_history_channels='2', agent_role_id='admin'))
+    agent.update({'enabled': True}, 0, 'owner')
+    return agent
 
 
 def test_contract_advertises_member_profiles(client):
@@ -211,16 +230,17 @@ def test_public_conversations_cannot_edit_notes_they_cannot_see(store, scope, co
         edit(store, '123', conversation, '20', note['id'], 0, {**control_source(), 'channel_id': event_channel}, 'remove')
 
 
-def test_removing_a_profile_note_takes_its_words_under_any_category(store):
+def test_removing_a_profile_note_takes_its_words_under_any_category_or_phrasing(store):
     before = time.time()-60
-    say(store)
-    say(store, 'I like Minecraft', 'hobbies', conversation='public:5', audience='conversation')
+    say(store, 'I like Minecraft modpacks')
+    say(store, 'I like Minecraft modpacks', 'hobbies', conversation='public:5', audience='conversation')
     note = entries(store, '123', 'private:9', '20')['entries'][0]
     edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
     assert entries(store, '123', 'private:9', '20')['entries'] == []
-    with store.connection() as db:  # Older text can't bring the same words back under another category.
-        for category in ('hobbies', 'nickname'):
-            assert not save(db, '123', 'public:2', '20', (category, 'I like Minecraft'), before)
+    with store.connection() as db:  # Older text can't bring it back shorter or under another category.
+        for restated in (('hobbies', 'I like Minecraft modpacks'), ('nickname', 'I like Minecraft modpacks'),
+                         ('hobbies', 'I like Minecraft'), ('games', 'I like modpacks')):
+            assert not save(db, '123', 'public:2', '20', restated, before)
 
 
 def test_downgrade_copies_profile_removals_to_every_channel_an_older_controller_learns_in(store, monkeypatch):
@@ -237,10 +257,30 @@ def test_downgrade_copies_profile_removals_to_every_channel_an_older_controller_
     with store.connection() as db:
         fenced = {row[0] for row in db.execute('SELECT channel_id FROM personal_note_removals')}
         assert fenced == {'public:3', 'public:4', 'public:7', 'public:8', 'public:9'}
-        # The removal check an older controller runs: this conversation's fences only.
         for channel in sorted(fenced):
-            for note in (('games', 'I like Minecraft'), ('games', 'I like chess'), ('hobbies', 'I like Minecraft')):
-                assert not save(db, '123', channel, '20', note, before)
+            for note in (('games', 'I like Minecraft'), ('games', 'I like chess'), ('hobbies', 'I like Mine'),
+                         ('music', 'I like jazz')):
+                assert not older_controller_saves(db, channel, note, before)
+            assert older_controller_saves(db, channel, ('games', 'I like chess'), time.time()+1)
+
+
+def test_downgrade_refuses_without_channels_while_profile_removals_exist(store, monkeypatch):
+    say(store)
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
+    monkeypatch.delenv('FRI_CHANNEL_IDS', raising=False)
+    monkeypatch.delenv('FRI_HISTORY_CHANNEL_IDS', raising=False)
+    with pytest.raises(ValueError, match='configured channels'):
+        store.downgrade_member_profiles()
+    with pytest.raises(SystemExit, match='Nothing changed'):
+        downgrade([str(store.path)])
+    with pytest.raises(SystemExit, match='--channels'):
+        downgrade([str(store.path), '--channel', '7'])
+    with store.connection() as db:
+        assert {row[0] for row in db.execute('SELECT channel_id FROM personal_note_removals')} == {'server'}
+    downgrade([str(store.path), '--channels', '7, 8'])
+    with store.connection() as db:
+        assert {row[0] for row in db.execute('SELECT channel_id FROM personal_note_removals')} == {'public:7', 'public:8'}
 
 
 def test_downgrade_removes_profiles_and_keeps_exchanges_where_said(store):
@@ -315,8 +355,43 @@ def test_removing_a_profile_note_fences_learning_in_every_conversation(store):
         # Historical learning in any channel, of the removed text or another older line in its category.
         for evidence in ('I like Minecraft', 'I like Terraria'):
             assert not save(db, '123', 'public:2', '20', ('games', evidence), before)
-        assert save(db, '123', 'public:2', '20', ('games', 'I like Minecraft'), time.time()+1)
-        assert save(db, '123', 'public:2', '20', ('music', 'I like old jazz'), before)  # Other categories stay.
+        assert not save(db, '123', 'public:2', '20', ('music', 'I like old jazz'), before)  # Restated anywhere.
+        assert save(db, '123', 'public:2', '20', ('games', 'I like Minecraft'), time.time()+1)  # Said again.
+
+
+def test_background_learning_drops_what_a_member_said_before_a_removal(store, tmp_path):
+    before = time.time()-60
+    say(store)
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
+    revision = entries(store, '123', 'private:9', '20')['revision']
+    agent = learner(store, tmp_path)
+    claim = agent.claim()
+    member = {'user_id': '20', 'role_id': 'admin', 'revision': revision}
+    records = [{**member, 'id': '100', 'text': 'I like Minecraft modpacks', 'at': before},
+               {**member, 'id': '101', 'text': 'I like Terraria', 'at': time.time()},
+               {**member, 'id': '102', 'user_id': '30', 'revision': 0, 'text': 'same', 'at': before}]
+    result = learn(agent, claim, records, [{'source_id': '100', 'category': 'hobbies', 'evidence': 'I like Minecraft'},
+                                           {'source_id': '101', 'category': 'games', 'evidence': 'I like Terraria'}],
+                   summary='Member 20 likes Minecraft.')
+    assert (result['eligible'], result['saved']) == (2, 1)
+    assert notes(store, 'public:2') == [('here', 'I like Terraria')]  # Said after the removal.
+    assert agent.context('2', '30')['summary'] == ''
+    assert 'Minecraft' not in agent.reports()[0]['body']
+
+
+def test_a_removal_lasts_as_long_as_archive_search_reaches_back(store):
+    assert RANGES['exploration_days'][1]*86400 <= HORIZON
+    old = time.time()-TTL-86400
+    with store.connection() as db:
+        for fence in fences():
+            db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?)', ('123', 'server', '20', fence, old))
+        db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?)',
+                   ('123', 'public:1', '20', digest('games', 'I like chess'), old))
+    notes(store, 'public:1')
+    with store.connection() as db:
+        assert {row[0] for row in db.execute('SELECT digest FROM personal_note_removals')} == set(fences())
+        assert removed(db, '123', 'public:1', '20') == old
 
 
 def test_the_member_profiles_capability_is_optional():

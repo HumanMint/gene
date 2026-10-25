@@ -312,6 +312,7 @@ class AgentStore:
             if error:
                 result = {}  # Failed inference cannot produce derived memory or advance a cursor.
             accepted = {}
+            from .fri_memory_store import removed
             for r in records:
                 if (r.get('role_id') != claim['role_id'] or not claim['after'] <= r['at'] <= now or
                         (mode == 'explore' and (r['id'] not in scanned_ids or
@@ -320,7 +321,10 @@ class AgentStore:
                     continue
                 revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (r['user_id'],)).fetchone()
                 profile = self.store._personal_context(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
-                if profile['enabled'] and r.get('revision') == (revision[0] if revision else 0):
+                # Words from before a removal teach nothing again: no note, observation or summary.
+                cutoff = removed(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
+                if (profile['enabled'] and r.get('revision') == (revision[0] if revision else 0)
+                        and (cutoff is None or r['at'] > cutoff)):
                     accepted[r['id']] = r
             kept = []
             for candidate in (result.get('notes', [])[:5] if mode != 'explore' else []):

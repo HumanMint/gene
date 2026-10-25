@@ -146,11 +146,13 @@ keeps the selected category and changes only that conversation's item.
 
 Editing or removing an entry clears recent saved turns and pending clarifications
 in that conversation, invalidates in-flight derivations, and clears cached context
-and derived summaries that could repeat it. A scoped category hash and removal date
-prevent background learning from adding older disclosures in that category, including
-shorter excerpts of the removed note. Existing other items remain; a later explicit
-disclosure can renew a preference. Hashes expire with the 90-day learning horizon and
-are erased by **forget me**.
+and derived summaries that could repeat it. A removal date, kept per category with no
+words in it, stops background learning from using anything the member said in that
+conversation before it (in the whole server, for a profile note): no note, archive
+observation or channel summary, so a shorter or recategorized restatement of the removed
+note can't come back. Existing other items remain; a later explicit disclosure can renew
+a preference. Removal dates last as long as archive search can reach back and are erased
+by **forget me**.
 Other saved preference items remain. Existing Discord posts and backups are separate.
 Already confirmed personal reminders remain scheduled across a single preference
 edit, including an active delivery lease. The edit does not renew that lease,

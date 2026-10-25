@@ -13,6 +13,7 @@ from .fri_memory import CATEGORIES, MAX_NOTES, PER_CATEGORY, TTL, personal_note
 
 SERVER = 'server'
 PROFILE_NOTES = 15  # Every category full, at PER_CATEGORY each.
+HORIZON = 5000*86400  # The deepest archive search (exploration_days); see removed().
 
 
 def initialize(db):
@@ -42,14 +43,25 @@ def limit(scope):
     return PROFILE_NOTES if scope == SERVER else MAX_NOTES
 
 
+def removed(db, guild, scope, user):
+    """When the member last removed a note this scope could see; nothing they said before then is learned here.
+
+    A learner could restate removed words shorter or under another category, so a removal covers the member's
+    older words, not one phrasing. A profile removal covers every conversation. A fresh disclosure still counts.
+    """
+    return db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND channel_id IN (?,?) '
+                      'AND user_id=?', (guild, scope, SERVER, user)).fetchone()[0]
+
+
+def fences():
+    """Every category, with no words in it: also what an older controller checks for whatever it would save."""
+    return [digest(category, '') for category in CATEGORIES]
+
+
 def save(db, guild, scope, user, note, at, origin=None):
     category, evidence = note
-    # A profile removal fences every conversation too: older text anywhere in the server can't bring it
-    # back, so learning from history can't restore it. A fresh disclosure after the removal still counts.
-    removed = db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND channel_id IN (?,?) '
-        'AND user_id=? AND digest IN (?,?)',
-        (guild, scope, SERVER, user, digest(*note), digest(category, ''))).fetchone()[0]
-    if at < time.time()-TTL or (removed is not None and at <= removed):
+    cutoff = removed(db, guild, scope, user)
+    if at < time.time()-TTL or (cutoff is not None and at <= cutoff):
         return False
     updated = db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at,origin) '
         'VALUES (?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category,evidence) '
@@ -120,10 +132,7 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
         note = personal_note({'category': row['category'], 'evidence': evidence}, evidence) if action == 'replace' else None
         if action == 'replace' and not note:
             raise ValueError('Use a short first-person preference, such as I like chess.')
-        # Fence older category disclosures too: a learner could choose a shorter
-        # exact substring of the removed evidence rather than the same full text. The same words
-        # filed under another category are fenced as well, so a reclassification can't restore them.
-        for fence in [digest(row['category'], '')] + [digest(category, row['evidence']) for category in CATEGORIES]:
+        for fence in fences():  # See removed().
             db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
                 'user_id,digest) DO UPDATE SET at=excluded.at', (guild, scope, user, fence, time.time()))
         db.execute('DELETE FROM personal_notes WHERE id=?', (identifier,))

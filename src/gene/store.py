@@ -772,10 +772,14 @@ class Store:
 
         An older controller checks removal fences only in the conversation it writes to, so each profile
         removal is copied to every public conversation it could learn into: the channels given (the
-        configured learning channels) and every one this database knows. A removed preference stays removed.
+        configured chat and learning channels) and every one this database knows. A removed preference
+        stays removed. Without the channels a channel never learned in yet would be missed, so it refuses.
         """
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
+            if not channels and db.execute("SELECT 1 FROM personal_note_removals WHERE channel_id='server'").fetchone():
+                raise ValueError('Profile removals need the configured channels (FRI_CHANNEL_IDS and '
+                                 'FRI_HISTORY_CHANNEL_IDS, or --channels) to be kept after the downgrade.')
             known = {row[0] for row in db.execute(
                 "SELECT channel_id FROM personal_notes UNION SELECT channel_id FROM personal_note_removals "
                 "UNION SELECT channel_id FROM chat_turns UNION SELECT 'public:'||channel_id FROM agent_summaries")}
@@ -890,9 +894,13 @@ class Store:
 
         An older Fri (profiles=False) gets only this conversation's notes, within the bounds it was built for.
         """
-        from .fri_memory_store import SERVER, limit
+        from .fri_memory_store import HORIZON, SERVER, fences, limit
         db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
-        db.execute('DELETE FROM personal_note_removals WHERE at<?', (time.time() - TTL,))
+        # A removal that holds no words lasts as long as archive search reaches back, so nothing said
+        # before it is learned again; older per-phrase fences go with the notes they fenced.
+        wide = fences()
+        db.execute(f'DELETE FROM personal_note_removals WHERE at<? AND (at<? OR digest NOT IN ({",".join("?"*len(wide))}))',
+                   (time.time() - TTL, time.time() - HORIZON, *wide))
         row = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
         return {'enabled': bool(row[0]) if row else True,
                 'notes': [{**dict(r), 'scope': 'server' if scope == SERVER else 'here'}

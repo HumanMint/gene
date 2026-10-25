@@ -169,7 +169,7 @@ provenance on everything already saved.
 Rolling the controller back below `member-profiles` also needs one step, because an older
 controller can neither show nor edit profile notes. With the controller stopped and backed up,
 run this from the current release, in the controller's environment (it reads `FRI_CHANNEL_IDS`
-and `FRI_HISTORY_CHANNEL_IDS`), before starting the older controller:
+and `FRI_HISTORY_CHANNEL_IDS`; `--channels 1,2,3` adds more), before starting the older controller:
 
 ```sh
 python -m gene.profile_downgrade "$GENE_DB"
@@ -177,8 +177,11 @@ python -m gene.profile_downgrade "$GENE_DB"
 
 It deletes profile notes and marks every saved exchange as staying in the conversation it was said
 in. An older controller checks a removal only in the channel it learns into, so each profile
-removal is first copied to every configured learning channel and every public conversation the
-database knows: a preference a member removed can't be learned back from older messages. Conversation notes and exchanges are kept. Rolling back Fri
+removal is first copied to every configured channel and every public conversation the database
+knows: an older controller then saves no note, in any category, from a member's messages before
+their removal. If profile removals exist and no channels are given, it changes nothing and exits
+with an error. An older controller's channel summaries and archive observations don't check
+removals, as before member profiles. Conversation notes and exchanges are kept. Rolling back Fri
 alone needs no cleanup: an older Fri saves nothing to profiles and doesn't ask for them, so the
 controller shows it only each conversation's own notes. Profile notes stay stored, unseen, until a
 newer Fri returns or they expire; "forget me" still erases them.

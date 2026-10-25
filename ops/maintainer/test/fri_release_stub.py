@@ -6,7 +6,13 @@ stops and starts the runtime through docker compose, and on a failed health chec
 the previous pins itself. MOCK_FRI_FAIL=<sha> fails the health check; MOCK_FRI_CRASH=<sha>
 dies right after starting the new runtime, before the record and the DB are written.
 """
-import fcntl, json, os, sqlite3, subprocess, sys, time
+import fcntl
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
 
 ROOT, FRI = os.environ['BATCH_ROOT'], os.environ['BATCH_FRI_ROOT']
 assert sys.argv[1:3] == ['-m', 'gene.fri_release'], sys.argv

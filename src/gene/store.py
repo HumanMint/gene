@@ -202,6 +202,8 @@ class Store:
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
             db.execute('DELETE FROM web_requests WHERE created<?', (time.time()-600,))
             db.execute('DELETE FROM mention_grants WHERE expires<?', (time.time()-600,))
+            from .fri_reply_checks import prune as prune_reply_checks
+            prune_reply_checks(db)
             return {
                 'paused': self._setting(db, 'paused') == 'true',
                 'active_sha': self._setting(db, 'active_sha'),
@@ -740,6 +742,8 @@ class Store:
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
         db.execute("DELETE FROM chat_pending WHERE EXISTS (SELECT 1 FROM json_each(chat_pending.body, '$.provenance') p "
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
+        from .fri_reply_checks import erase as erase_reply_findings
+        erase_reply_findings(db, user_id)
         Store._erase_jobs(db, db.execute("SELECT j.id,j.proposal FROM jobs j, json_each(j.provenance) p "
                                          "WHERE json_extract(p.value, '$.user_id')=?", (user_id,)).fetchall(),
                           '[Request withdrawn: someone it drew on changed their privacy settings]')

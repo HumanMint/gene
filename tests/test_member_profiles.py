@@ -478,9 +478,9 @@ def test_a_mention_sent_before_a_removal_keeps_nothing_when_admitted_after(h):  
     _, scope, grant = invited(h, source=early, content='<@99> Minecraft release notes')
     receipt = {'query': 'Minecraft release notes', 'answer': 'A new update.',
                'sources': ['https://example.org/minecraft'], 'checked_at': '2026-10-25T00:00:00+00:00'}
-    saved = post(h, '/chat/turn', mention_turn(scope, revision=grant['revision'], input='Minecraft release notes',
-                                               web_receipt=receipt))
-    assert saved.json() == {'ok': True, 'first_memory': False, 'kept': False}
+    body = mention_turn(scope, revision=grant['revision'], input='Minecraft release notes', web_receipt=receipt)
+    for _ in range(2):  # A retry answers the same.
+        assert post(h, '/chat/turn', body).json() == {'ok': True, 'first_memory': False, 'kept': False}
     with h.store.connection() as db:
         assert db.execute('SELECT count(*) FROM chat_turns').fetchone()[0] == 0
         assert db.execute('SELECT count(*) FROM web_research').fetchone()[0] == 0
@@ -512,3 +512,14 @@ def test_a_refused_downgrade_leaves_an_older_database_untouched(tmp_path):
     with pytest.raises(SystemExit, match='Nothing changed. .* is not a readable controller database'):
         downgrade([str(tmp_path/'missing.sqlite3'), '--channels', '7'])
     assert not (tmp_path/'missing.sqlite3').exists()
+
+
+def test_a_retried_mention_save_answers_as_the_first_did(h):  # noqa: F811
+    _, scope, grant = invited(h)
+    body = mention_turn(scope, revision=grant['revision'])
+    assert post(h, '/chat/turn', body).json() == post(h, '/chat/turn', body).json() == {'ok': True, 'first_memory': False}
+    h.store.personal_control('20', 'disable')
+    _, scope, grant = invited(h)
+    body = mention_turn(scope, revision=grant['revision'])
+    for _ in range(2):
+        assert post(h, '/chat/turn', body).json() == {'ok': True, 'first_memory': False, 'kept': False}

@@ -141,7 +141,10 @@ def save_turn(store, body):
         if row['turn_hash']:
             if row['turn_hash'] != fingerprint:
                 raise HTTPException(409, 'This mention event already completed a different reply')
-            return {'ok': True, 'first_memory': False}
+            # A retry answers as the first save did. A breadcrumb gone since (pruned or erased) reads as not kept.
+            kept = db.execute('SELECT 1 FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? AND source=?',
+                              (body.guild_id, body.conversation_id, body.user_id, row['source'])).fetchone()
+            return {'ok': True, 'first_memory': False, **({} if kept else {'kept': False})}
         if body.web_receipt:
             from .web_policy import public_query
             receipt = body.web_receipt.model_dump()

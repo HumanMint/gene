@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 . "$(dirname "$0")/common.sh"
 prep
 MOCK_BROKEN_SHA=$G run gene 12

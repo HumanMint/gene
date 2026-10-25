@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 # Shared by the t_*.sh tests: fresh mock host, then helpers.
 set -u
 export MOCK=$1; H=$(dirname "$0"); "$H/setup.sh" "$MOCK"; . "$H/env.sh"

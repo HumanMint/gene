@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 . "$(dirname "$0")/common.sh"
 prep
 run gene 1 && run fri 1 && run resume 0

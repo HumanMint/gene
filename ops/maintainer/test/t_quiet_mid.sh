@@ -1,3 +1,4 @@
+# shellcheck shell=bash
 . "$(dirname "$0")/common.sh"
 prep
 rm -f "$MOCK/player-calls"

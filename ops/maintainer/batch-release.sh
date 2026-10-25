@@ -1269,16 +1269,41 @@ print('live Fri is built from the recorded old and new releases')
 PY
 }
 
+gene_unmoved() {  # A Fri-only rollback puts Fri back beside the Gene it left alone, so that Gene must still be live.
+  python3 - "$(state)" "$MANIFEST" "$BASELINE" "$G" <<'PY'
+import json, sys
+s, manifest, baseline, G = json.loads(sys.argv[1]), json.load(open(sys.argv[2])), json.load(open(sys.argv[3])), sys.argv[4]
+runtime, worker = manifest['old']['runtime'], manifest['old']['worker']
+checks = {
+    'active_sha': s['settings'].get('active_sha') == G,
+    'release.env': s['gene_env'] == {'GENE_RELEASE_SHA': G, 'GENE_RUNTIME_IMAGE': runtime['tag']},
+    'worker_pin': s['worker_pin'] == worker['tag'],
+    'source': s['source'] == baseline['source'],
+    'controller_image': s['controller']['image'] == runtime['id'],
+    'red_image': s['red']['image'] == runtime['id'],
+}
+bad = [k for k, v in checks.items() if not v]
+if bad:  # A member request deployed since, say: the old pair this rollback restores no longer exists.
+    sys.exit('Gene is no longer '+G[:7]+' ('+', '.join(bad)+'); rollback-fri only puts Fri back beside it. Reconcile by hand')
+print('Gene is still '+G[:7])
+PY
+}
+
 rollback_fri() {
   # A release that leaves Gene alone: putting the old Fri back is the whole rollback. It reconciles from
   # actual state through the backup the fri phase took, so it is safe to repeat.
   gene_changes && die 'this release changes Gene; rollback-gene puts the old Fri back first'
   need fri_backup; check_manifest
   fri_pair_check
-  has intent:rollback || mark intent:rollback
+  gene_unmoved || die 'nothing was changed'
   fence
   lock_fri
-  fri_pair_check  # The fence can wait for a deployment that lands a third Fri.
+  fri_pair_check  # The fence can wait for a deployment that lands a third Fri,
+  if ! gene_unmoved; then  # or a Gene release: development goes back as it was, with Fri untouched.
+    resume_services "$G"
+    die 'Gene moved during the fence; Fri was not changed and the worker and deployer are running again'
+  fi
+  has intent:rollback || mark intent:rollback  # From here on, only a repeat of rollback-fri finishes it.
   restore_old_fri
   probe_fri "$OLD_F" "$(jget "$MANIFEST" old.fri.id)"
   verify old
@@ -1289,8 +1314,9 @@ rollback_fri() {
 prune_images() {  # Release images nothing recent needs. Docker also keeps any a container uses.
   local keep repo tag
   # Kept: this release's old and new images; the images the live pins name, whichever release set them,
-  # since an idle worker has no container to protect its image; and the old and new images of the
-  # KEEP_RELEASES most recently resumed releases, so a rollback a few releases deep still finds them.
+  # since an idle worker has no container to protect its image; the old and new images of the
+  # KEEP_RELEASES most recently resumed releases, so a rollback a few releases deep still finds them;
+  # and every image of a release that is not back in service yet.
   # Only the pin lines are read from the env files, and they are compared, never printed.
   keep=$(python3 - "$MANIFEST" "$ROOT/staging" "$KEEP_RELEASES" "$ROOT/release.env" GENE_RUNTIME_IMAGE \
     "$ROOT/secrets/worker.env" GENE_WORKER_IMAGE "$FRI_ROOT/release.env" FRI_RUNTIME_IMAGE <<'PY'
@@ -1303,16 +1329,22 @@ keep = images(manifest)
 for path, key in zip(pins[::2], pins[1::2]):
     with open(path) as handle:
         keep |= {line.split('=', 1)[1].strip() for line in handle if line.startswith(key+'=')}
-resumed = []
+resumed, unfinished = [], []
 for journal in glob.glob(staging+'/batch-*/journal'):
     with open(journal) as handle:
-        if 'resumed' in handle.read().split():
-            resumed.append((os.stat(journal).st_mtime, os.path.dirname(journal)+'/manifest.json'))
-for _, path in sorted(resumed, reverse=True)[:int(depth)]:
+        marks = set(handle.read().split())
+    path = os.path.dirname(journal)+'/manifest.json'
+    if 'resumed' in marks:
+        resumed.append((os.stat(journal).st_mtime, path))
+    # Not yet back in service: staged, drained or switching, or mid-rollback. Its next phase checks
+    # every image its manifest names, so all of them stay, however old.
+    if 'resumed_old' not in marks and ('resumed' not in marks or 'intent:rollback' in marks):
+        unfinished.append(path)
+for path in [path for _, path in sorted(resumed, reverse=True)[:int(depth)]] + unfinished:
     try:
         keep |= images(path)
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        pass  # An unreadable older manifest only means fewer images are kept for its rollback.
+        pass  # An unreadable manifest only means fewer images are kept for its phases.
 print('\n'.join(sorted(keep)))
 PY
   ) || die 'could not work out which images the live and recent releases need; no images removed'

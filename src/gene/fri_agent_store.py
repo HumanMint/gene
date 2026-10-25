@@ -499,11 +499,12 @@ class AgentStore:
         with self.store.connection() as db:
             db.execute('UPDATE agent_reports SET delivered=1 WHERE id=?', (report_id,))
 
-    def usage(self):
+    def usage(self, since=None):
+        """Totals per role, model and effort; since (Unix seconds) keeps only attempts recorded from then on."""
         with self.store.connection() as db:
             return [dict(r) for r in db.execute('SELECT coalesce(r.role,"conversation") AS role,u.model,u.effort,'
                 'count(*) AS attempts,sum(u.input_tokens) AS input_tokens,sum(u.output_tokens) AS output_tokens,'
                 'sum(u.input_tokens IS NULL OR u.output_tokens IS NULL) AS unknown_attempts,'
                 'sum(u.reasoning_output_tokens) AS reasoning_tokens,sum(u.cached_input_tokens) AS cached_tokens '
                 'FROM chat_usage u LEFT JOIN agent_usage_roles r ON r.attempt_id=u.attempt_id '
-                'GROUP BY 1,2,3')]
+                'WHERE ? IS NULL OR u.at>=? GROUP BY 1,2,3', (since, since))]

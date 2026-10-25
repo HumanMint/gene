@@ -20,6 +20,7 @@ GENE_RUNTIME_TOKEN=runtime-do-not-print-000000000000000
 GENE_WORKER_TOKEN=worker-do-not-print-0000000000000000
 GENE_DEPLOY_TOKEN=deploy-do-not-print-0000000000000000
 GENE_FRI_TOKEN=fri-do-not-print-00000000000000000000
+FRI_CHANNEL_IDS=777
 X
 printf 'server:\n  port: 2333\nlavalink:\n  server:\n    password: do-not-print\n' > "$R/secrets/audio.yml"
 echo '{"FRI_ENV_FILE": "/srv/gene/secrets/fri.env", "FRI_DATA_DIR": "/srv/gene/data/fri"}' > "$MOCK/fri-env-template.json"

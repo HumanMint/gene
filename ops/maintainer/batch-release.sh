@@ -723,7 +723,22 @@ print("old code wrote a request on the migrated schema:", job["state"])'
     "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c "$start" new
     "${run[@]}" "$new" python -m gene.fri_reply_checks purge /data/downgrade.sqlite3
     if "${run[@]}" "$new" python -c 'import gene.profile_downgrade' 2>/dev/null; then
+      # A profile removal on the copy, so the downgrade must keep it in every configured channel. Without
+      # the channels in controller.env it refuses, which a rollback must not find out halfway through.
+      "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c '
+import sqlite3
+from gene.config import Settings
+with sqlite3.connect(Settings.from_env().db) as db:
+    db.execute("INSERT INTO personal_note_removals VALUES (?,?,?,?,?)", ("0", "server", "0", "rehearsal", 0))'
       "${run[@]}" "$new" python -m gene.profile_downgrade /data/downgrade.sqlite3
+      "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c '
+import sqlite3
+from gene.config import Settings
+with sqlite3.connect(Settings.from_env().db) as db:
+    kept = db.execute("SELECT count(*) FROM personal_note_removals WHERE digest=? AND channel_id!=?", ("rehearsal", "server")).fetchone()[0]
+    left = db.execute("SELECT count(*) FROM personal_note_removals WHERE channel_id=?", ("server",)).fetchone()[0]
+assert kept and not left, (kept, left)
+print("profile downgrade keeps a removal in", kept, "channels")'
     else
       echo 'no gene.profile_downgrade in G: the old release already has every profile migration'
     fi

@@ -25,7 +25,7 @@ The live release it upgrades from defaults to Gene `f667001` and Fri `6a1d410`. 
 |---|---|---|
 | `baseline` | none | Requires the tools it uses, a controller DB whose directory and journal files share its owner, and a healthy live pair at OLD_G / OLD_F: settings, pins, images, labels, an unmarked source tree, fresh heartbeats with a presence, controls, connections. Records it, plus the exact running image IDs, in `baseline.json` and `manifest.json`. |
 | `stage` | none | Walks a probe directory through staging, `releases/`, the source tree's parent and the backups dir by plain `rename(2)`, and refuses if any hop fails. A matching device number isn't enough, since a bind mount shares one and still refuses renames. It also reads the kernel's mount table and refuses a mount point at or under the source tree or either staged tree, since a bind mount there looks like a plain directory. Every tree move in the switch and its rollback is then a single rename that fails rather than copying. Disk admission on every filesystem it will write: Docker, staging, both backup dirs, `releases/` and the source tree. Checks the archive hashes and extracts into fresh dirs. Refuses dependency or ops diffs (`ALLOW_OPS_DIFF=1` after review). Prepares the immutable cog tree and records its hash. Builds the labelled images and records their IDs. Runs isolated import checks, the controller contract on synthetic state, a check that Fri accepts that contract, and a test of the audio player snapshot. |
-| `rehearse` | none | Copies the live DB twice into a private dir that is always removed. Migrates one copy with G, starts the exact rollback image on it, and writes a request with old code. Migrates the other, runs the reply-check purge (and `gene.profile_downgrade` when G has it), then starts the rollback image on it. |
+| `rehearse` | none | Copies the live DB twice into a private dir that is always removed. Migrates one copy with G, starts the exact rollback image on it, and writes a request with old code. Migrates the other, runs the reply-check purge and, when G has it, `gene.profile_downgrade` with the controller's env on a copy holding one profile removal, so a `controller.env` without the configured channels (which the downgrade needs to keep removals) stops here instead of halfway through a rollback. Then it starts the rollback image on it. |
 | `drain` | development pauses | The fence: pause (audited), wait for building/deploying work and `deploy-result.json` to clear, stop gene-worker and gene-deployer, recheck. |
 | `gene` | Red ~1 min, controller seconds | Re-runs the fence, verifies the old pair and the cog, rename and disk checks, then waits until the audio node reports zero players. Players left idle in voice are a stop: ask the owner. It verifies the old pair again and writes a complete backup into a unique dir: a DB copy, Red's data, and the four pin files with their modes kept. Only then does it journal the attempt. It renames the cogs into place, takes a fresh player snapshot, stops Red, swaps the source, and pins `release.env` and the worker image. It starts controller and red, probes health against the baseline guild and presence, then records `active_sha` / `previous_sha` plus an audit row in one guarded transaction. Any failure after the attempt is journaled runs `rollback-gene`. |
 | `fri` | Fri ~1 min | `gene.fri_release F` (G's coordinator), then a probe. On failure it prints the state; `rollback-gene` puts the old Fri back from any partial state. The workers stay stopped. |
@@ -46,6 +46,7 @@ The live release it upgrades from defaults to Gene `f667001` and Fri `6a1d410`. 
 OLD_G already includes turn provenance and the profile migrations of `f667001`. The controller changes after it are:
 - an additive `jobs.attributed` column and index
 - reply-check tables and settings, which `gene.fri_reply_checks purge` removes
+- member profiles: `chat_turns.audience`, `personal_notes.origin` and `personal_notes.provenance`, added on controller start with no backfill. `gene.profile_downgrade` deletes profile notes, copies their removals to every configured and known channel, and keeps conversation notes and exchanges. It never migrates, and it reads the channels from `FRI_CHANNEL_IDS` and `FRI_HISTORY_CHANNEL_IDS` in `controller.env`
 - whatever G adds, which `rehearse` exercises on a copy of the live DB
 
 Don't run `gene.provenance_downgrade` for this rollback: it would discard member continuity that the old release still supports.
@@ -58,7 +59,8 @@ Don't run `gene.provenance_downgrade` for this rollback: it would discard member
 - a player appearing mid-switch
 - a failed Fri release that recovers itself, then rollback
 - an interrupted Fri release, reconciled by rollback
-- a rollback after resume
+- a rollback after resume, after a member removed a profile note, whose removal the downgrade keeps in the configured channel
+- a controller env without the configured channels, which the rehearsal refuses
 - a rollback after resume with the controller down
 - a crash right after a mutation, then rollback
 - a rollback killed after it stops the new Gene, where resume refuses and a repeated rollback finishes

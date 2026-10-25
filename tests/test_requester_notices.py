@@ -57,7 +57,9 @@ def test_a_refused_reply_can_be_tried_again_but_an_unconfirmed_one_cannot(store)
 
 def test_a_repair_the_owner_finished_after_its_checks_still_qualifies(store):
     job = shipped(store, verified=False)
-    assert job['kind'] == 'feature' and job['approved_by'] == 'owner'
+    assert job['kind'] == 'feature' and job['approved_by'] == 'owner' and job['intake_approved_ref'] is None
+    notice = store.claim_review_notice()  # The owner hears it shipped, so the DM can offer the reply.
+    assert notice['job']['id'] == job['id'] and notice['phase'] == 'status' and notice['job']['state'] == 'deployed'
     assert claim(store, job['id'], 'owner')['job']['user_id'] == '20'
 
 

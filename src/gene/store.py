@@ -290,9 +290,11 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             now = time.time()
             active = self._setting(db, 'active_sha')
+            # A repair its checks handed to the owner is a feature job by then, with no intake approval;
+            # its source still says repair, so the owner still hears how the release they approved went.
             rows = db.execute('SELECT * FROM jobs WHERE state IN ("awaiting_owner","review") OR (updated>? '
-                              'AND (intake_approved_ref IS NOT NULL OR kind IN ("rollback","repair"))) '
-                              'ORDER BY updated', (now - 7 * 86400,)).fetchall()
+                              'AND (intake_approved_ref IS NOT NULL OR kind IN ("rollback","repair") '
+                              'OR source_id LIKE "repair:%")) ORDER BY updated', (now - 7 * 86400,)).fetchall()
             for row in rows:
                 job = self._job(row)
                 current = pending_notice(job, active)

@@ -1012,3 +1012,17 @@ An unhealthy release restores the previous code. Health alone does not prove aud
 or every Discord UI path; the failing-then-passing functional regression provides the
 feature evidence. Problems that need live credentials, external-service changes or cannot
 be reproduced safely are deliberately escalated rather than guessed at.
+
+### Telling the reporter
+
+When a repair a member reported ships, the owner's deployed DM can offer **Tell reporter**.
+Pressing it sends one fixed reply to the member's report, in its channel or DM, with mentions
+off and no request text. The controller keeps a mark per job (`requester_notices`), so a
+second press, a restart or a redelivered DM never replies twice. A reply Discord refused can be
+tried again. One that may have posted (a timeout, a server error, a crash mid-send) is never
+retried. Only deployed jobs that repair intake recorded for a member's report qualify, including ones the
+owner finished after the automatic checks handed them over. Those now get the same status DMs
+(approved, deploying, deployed) as other requests, since they carry no intake approval. An erased report, or a rollback
+deployed after the repair, refuses the reply. Older controllers lack the table and the
+`requester-notices` capability, and Fri then shows no button. A downgrade leaves the table
+in place, unread.

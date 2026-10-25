@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+f=$MOCK/units; touch "$f"
+case $1 in
+  stop) shift; for u; do sed -i "/^$u$/d" "$f"; done ;;
+  start) shift; for u; do grep -qx "$u" "$f" || echo "$u" >> "$f"; done ;;
+  is-active) shift; [[ $1 == -q ]] && shift; grep -qx "$1" "$f" ;;
+esac

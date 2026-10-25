@@ -5,9 +5,11 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 BASE=$(mktemp -d); chmod 755 "$BASE"
-export OLD_SRC=$BASE/old-src
+export OLD_SRC_ROOT=$BASE/old-src
 tests=("$@"); (( ${#tests[@]} )) || mapfile -t tests < <(cd "$HERE" && find . -maxdepth 1 -name 't_*.sh' | sed 's|^\./||; s/\.sh$//' | sort)
-MOCK=$BASE/prime . "$HERE/env.sh"  # Exports the old code once for every test.
+for old in '' 7d6e36a0e4621bbce75dd9c404b4864b90699b19 G; do  # Exports each old release's code once for every test.
+  (MOCK_OLD_G=$old MOCK=$BASE/prime . "$HERE/env.sh")
+done
 for t in "${tests[@]}"; do bash "$HERE/$t.sh" "$BASE/$t" > "$BASE/$t.log" 2>&1 & done
 wait
 failures=()

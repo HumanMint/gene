@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Batched maintainer release: Gene control plane + cogs, then Fri. Run as root on the host:
+# Maintainer release: Gene control plane + cogs, then Fri. Run as root on the host:
 #   batch-release.sh <phase> <full gene sha> <full fri sha>
 # Phases in order: baseline stage rehearse drain gene fri evals verify-off resume cleanup.
-# Recovery: rollback-gene (reconciles from actual state, safe to repeat), then resume-old.
+# It upgrades from the live release, which baseline records. When G or F is already live, that half
+# is left alone. Recovery: rollback-gene (reconciles from actual state, safe to repeat), then
+# resume-old. A release that leaves Gene alone rolls back with rollback-fri instead.
 # Prints no secrets: env files are passed to Docker, copied or compared, never read into output.
 # Every controller DB access runs as the DB owner in a throwaway container of the old runtime
 # image, so no root SQLite client leaves journal files the controller cannot open, and none
@@ -12,23 +14,27 @@ umask 077
 
 PHASE=${1:?phase}; G=${2:?gene sha}; F=${3:?fri sha}
 [[ $G =~ ^[0-9a-f]{40}$ && $F =~ ^[0-9a-f]{40}$ ]] || { echo 'Full 40-character SHAs required' >&2; exit 2; }
-OLD_G=${OLD_G:-f66700140d91dc80df0bca8ae29ca671ca67f80e}
-OLD_F=${OLD_F:-6a1d410cbb7f04f36cd5be629cc48b05a221d653}
+[[ ${BATCH_ATTEMPT:-} =~ ^[0-9]*$ ]] || { echo 'BATCH_ATTEMPT is a number' >&2; exit 2; }
 ROOT=${BATCH_ROOT:-/srv/gene}
 FRI_ROOT=${BATCH_FRI_ROOT:-/srv/fri}
 DB=$ROOT/data/controller/gene.sqlite3
 GENE_HEALTH=$ROOT/data/red/gene-health.json
 FRI_HEALTH=$ROOT/data/fri/fri-health.json
-STAGE=$ROOT/staging/batch-$G
+STAGE=$ROOT/staging/batch-$G-$F${BATCH_ATTEMPT:+-$BATCH_ATTEMPT}  # A retry of a rolled-back pair sets BATCH_ATTEMPT
 JOURNAL=$STAGE/journal
 MANIFEST=$STAGE/manifest.json
 BASELINE=$STAGE/baseline.json
+RESULT=$ROOT/maintainer-$G-$F-result.json
 CONTROLLER=gene-controller-1
 RED=gene-red-1
 FRI=fri-runtime-1
 AUDIO=gene-audio-node-1
 PROBE_WINDOW=${PROBE_WINDOW:-180}  # seconds; shorter only in offline tests of this script
 WAIT_WINDOW=${WAIT_WINDOW:-1800}
+# Controller data a Gene feature adds that a release without the feature can't handle, in the order a
+# rollback removes it (downgrade_step has each command). Only a feature the old release lacks is removed:
+# the old release reads its own features' data correctly, and removing that would lose it.
+DOWNGRADE_MODULES=(gene.fri_reply_checks gene.profile_downgrade)
 SWITCHING=0
 
 log() { echo "== $*"; }
@@ -46,6 +52,17 @@ has_module() {  # module docker-run-words...: true when the image has the module
   found=$("$@" python -c 'import importlib.util, sys; print("yes" if importlib.util.find_spec(sys.argv[1]) else "no")' "$module") ||
     die "could not check the image for $module"
   case $found in yes) return 0 ;; no) return 1 ;; *) die "could not check the image for $module" ;; esac
+}
+gene_changes() { [[ $G != "$OLD_G" ]]; }
+fri_changes() { [[ $F != "$OLD_F" ]]; }
+changes() { if [[ $1 == fri ]]; then fri_changes; else gene_changes; fi; }  # runtime|worker|fri: a new image
+downgrade_step() {  # module db docker-run-words...: remove the module's data for a release without its feature
+  local module=$1 db=$2; shift 2
+  case $module in
+    gene.fri_reply_checks) "$@" python -m gene.fri_reply_checks purge "$db" ;;
+    gene.profile_downgrade) "$@" python -m gene.profile_downgrade "$db" ;;
+    *) die "no downgrade step for $module" ;;
+  esac
 }
 owns_pause() {  # This release paused development and has not unpaused it since.
   [[ -f $JOURNAL && $({ grep -x -e intent:pause -e done:unpause "$JOURNAL" || true; } | tail -n 1) == intent:pause ]]
@@ -217,6 +234,12 @@ db.close()
 PY
 }
 
+source_state() {  # The installed tree's release marker, which this script writes, else unmarked or missing.
+  if [[ -f $ROOT/source/.release-sha ]]; then cat "$ROOT/source/.release-sha"
+  elif [[ -d $ROOT/source ]]; then echo unmarked
+  else echo missing; fi
+}
+
 state() {  # Read-only snapshot of running, pinned and recorded state; no row contents or secrets.
   local worker_pin=unknown sha health http=0 src_state db
   for sha in "$G" "$OLD_G"; do
@@ -226,9 +249,7 @@ state() {  # Read-only snapshot of running, pinned and recorded state; no row co
   done
   health=$(docker inspect -f '{{.State.Health.Status}}' "$CONTROLLER" 2>/dev/null || echo none)
   http=$(curl -s -o /dev/null -m 5 -w '%{http_code}' http://127.0.0.1:8787/health || true)
-  if [[ -f $ROOT/source/.release-sha ]]; then src_state=$(cat "$ROOT/source/.release-sha")
-  elif [[ -d $ROOT/source ]]; then src_state=unmarked
-  else src_state=missing; fi
+  src_state=$(source_state)
   db=$(db_py <<'PY'
 import json, sqlite3
 with sqlite3.connect('file:/data/gene.sqlite3?mode=ro', uri=True, timeout=30) as conn:
@@ -280,7 +301,8 @@ s, which, mode, manifest, baseline = json.loads(sys.argv[1]), sys.argv[2], sys.a
 G, F, OLD_G, OLD_F = sys.argv[6:10]
 gene_sha, fri_sha = (G, F) if which == 'new' else (OLD_G, OLD_F)
 images = manifest['new' if which == 'new' else 'old']
-expect_settings = ({'active_sha': G, 'previous_sha': OLD_G} if which == 'new'
+gene_moves = which == 'new' and G != OLD_G  # A release that leaves Gene alone keeps its settings and source.
+expect_settings = ({'active_sha': G, 'previous_sha': OLD_G} if gene_moves
                    else {'active_sha': OLD_G, 'previous_sha': baseline['settings']['previous_sha']})
 checks = {
     'controller_healthy': s['controller']['health'] == 'healthy' and s['controller']['http'] == '200',
@@ -289,7 +311,7 @@ checks = {
     'fri_image': s['fri_container']['running'] and s['fri_container']['image'] == images['fri']['id'],
     'gene_env': s['gene_env'] == {'GENE_RELEASE_SHA': gene_sha, 'GENE_RUNTIME_IMAGE': images['runtime']['tag']},
     'worker_pin': s['worker_pin'] == images['worker']['tag'],
-    'source': s['source'] == (G if which == 'new' else 'unmarked'),
+    'source': s['source'] == (G if gene_moves else baseline['source']),
     'fri_env': s['fri_env'] == {'FRI_RELEASE_SHA': fri_sha, 'FRI_RUNTIME_IMAGE': images['fri']['tag']},
     'fri_record': s['fri_record_sha'] == fri_sha,
     'release_settings': {k: s['settings'].get(k) for k in expect_settings} == expect_settings,
@@ -347,7 +369,7 @@ checks = {
     'controller image': s['controller']['image'] in gene_images,
     'red image': s['red']['image'] in gene_images,
     'fri image': s['fri_container']['image'] in (old['fri']['id'], new['fri']['id'], 'none'),
-    'source': (s['source'], os.path.isdir(B+'/installed-source')) in (('unmarked', False), (G, True), ('missing', True)),
+    'source': (s['source'], os.path.isdir(B+'/installed-source')) in ((baseline['source'], False), (G, True), ('missing', True)),
 }
 bad = [k for k, v in checks.items() if not v]
 if bad:
@@ -550,6 +572,8 @@ check_manifest() {  # Every phase after baseline runs against the same G, F and 
 baseline() {
   local tool
   for tool in docker flock python3 sha256sum tar cmp; do command -v "$tool" > /dev/null || die "$tool is missing"; done
+  [[ $OLD_G =~ ^[0-9a-f]{40}$ && $OLD_F =~ ^[0-9a-f]{40}$ ]] || die 'the release.env files do not name the live Gene and Fri'
+  gene_changes || fri_changes || die "Gene ${G:0:7} and Fri ${F:0:7} are already live; nothing to release"
   local owner file
   owner=$(db_owner)
   for file in "$DB-wal" "$DB-shm" "$DB-journal"; do
@@ -568,7 +592,7 @@ s, old_g, old_f, runtime_id, fri_id, runtime_label, fri_label = json.loads(sys.a
 checks = {
     'active_sha': s['settings'].get('active_sha') == old_g, 'previous_sha': len(s['settings'].get('previous_sha') or '') == 40,
     'gene_env': s['gene_env']['GENE_RELEASE_SHA'] == old_g, 'runtime_label': runtime_label == old_g,
-    'worker_pin': s['worker_pin'] == 'gene-worker:'+old_g, 'source': s['source'] == 'unmarked',
+    'worker_pin': s['worker_pin'] == 'gene-worker:'+old_g, 'source': s['source'] in ('unmarked', old_g),
     'controller': s['controller']['health'] == 'healthy' and s['controller']['http'] == '200' and s['controller']['image'] == runtime_id,
     'red': s['red']['running'] and s['red']['image'] == runtime_id,
     'gene_health': s['gene']['sha'] == old_g and s['gene']['age'] < 25 and s['gene']['guild_connected'] is True
@@ -586,99 +610,119 @@ print('live state matches Gene', old_g[:7], 'and Fri', old_f[:7])
 PY
   if [[ ! -f $BASELINE ]]; then
     echo "$snapshot" > "$BASELINE"
-    python3 - "$MANIFEST" "$G" "$F" "$runtime_tag" "$(image_id "$runtime_tag")" "gene-worker:$OLD_G" \
+    python3 - "$MANIFEST" "$G" "$F" "$OLD_G" "$OLD_F" "$runtime_tag" "$(image_id "$runtime_tag")" "gene-worker:$OLD_G" \
       "$(image_id "gene-worker:$OLD_G")" "$fri_tag" "$(image_id "$fri_tag")" <<'PY'
 import json, os, sys
-path, g, f, rt, rid, wt, wid, ft, fid = sys.argv[1:10]
+path, g, f, old_g, old_f, rt, rid, wt, wid, ft, fid = sys.argv[1:12]
 fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
 with os.fdopen(fd, 'w') as out:
-    json.dump({'gene': g, 'fri': f, 'old': {'runtime': {'tag': rt, 'id': rid}, 'worker': {'tag': wt, 'id': wid},
-                                           'fri': {'tag': ft, 'id': fid}}}, out, indent=1)
+    json.dump({'gene': g, 'fri': f, 'old_gene': old_g, 'old_fri': old_f,
+               'old': {'runtime': {'tag': rt, 'id': rid}, 'worker': {'tag': wt, 'id': wid}, 'fri': {'tag': ft, 'id': fid}}},
+              out, indent=1)
 PY
     mark baseline
   else
     check_manifest
     log 'baseline already recorded; live state still healthy at the old release'
   fi
+  if ! gene_changes; then log "Gene ${G:0:7} is live: this release changes only Fri"
+  elif ! fri_changes; then log "Fri ${F:0:7} is live: this release changes only Gene"; fi
   echo "$snapshot"
 }
 
 stage() {
   need baseline; check_manifest
   has staged && { log 'already staged'; return; }
-  local name file
-  for name in gene fri; do
+  local names=() name file kind
+  if gene_changes; then names+=(gene); fi
+  if fri_changes; then names+=(fri); fi
+  for name in "${names[@]}"; do
     [[ -f $STAGE/$name.tar && -f $STAGE/$name.tar.sha256 ]] || die "upload $STAGE/$name.tar and $name.tar.sha256 first"
     (cd "$STAGE" && sha256sum -c "$name.tar.sha256")
     mset "archives.$name" "$(cut -d' ' -f1 "$STAGE/$name.tar.sha256")"
   done
-  [[ ! -e $ROOT/releases/$G ]] || die "$ROOT/releases/$G already exists; inspect it before staging"
-  local images=0 tag
-  for tag in "$(jget "$MANIFEST" old.runtime.tag)" "$(jget "$MANIFEST" old.worker.tag)" "$(jget "$MANIFEST" old.fri.tag)"; do
-    images=$(( images + $(docker image inspect -f '{{.Size}}' "$tag") ))
+  if gene_changes; then [[ ! -e $ROOT/releases/$G ]] || die "$ROOT/releases/$G already exists; inspect it before staging"; fi
+  local images=0
+  for kind in runtime worker fri; do
+    if changes "$kind"; then images=$(( images + $(docker image inspect -f '{{.Size}}' "$(jget "$MANIFEST" "old.$kind.tag")") )); fi
   done
-  local db_size red_size fri_size source_size gene_tar tars
-  db_size=$(du_bytes "$ROOT/data/controller"); red_size=$(du_bytes "$ROOT/data/red")
-  fri_size=$(du_bytes "$ROOT/data/fri"); source_size=$(du_bytes "$ROOT/source")
-  gene_tar=$(stat -c %s "$STAGE/gene.tar")
-  tars=$(( gene_tar + $(stat -c %s "$STAGE/fri.tar") ))
-  mkdir -p "$ROOT/backups" "$ROOT/releases" "$FRI_ROOT/backups"
-  rename_preflight "$ROOT/backups"
-  disk_admission "docker=$(docker info -f '{{.DockerRootDir}}'):$images" \
-    "staging=$STAGE:$(( 2*tars + 2*db_size ))" \
-    "gene_backup=$ROOT/backups:$(( db_size + red_size + source_size ))" \
-    "fri_backup=$FRI_ROOT/backups:$(( fri_size + db_size ))" \
-    "releases=$ROOT/releases:$gene_tar" "source=$ROOT:$gene_tar"
-  for name in gene fri; do
+  local db_size tars=0 gene_tar disk
+  db_size=$(du_bytes "$ROOT/data/controller")
+  for name in "${names[@]}"; do tars=$(( tars + $(stat -c %s "$STAGE/$name.tar") )); done
+  disk=("docker=$(docker info -f '{{.DockerRootDir}}'):$images" "staging=$STAGE:$(( 2*tars + 2*db_size ))")
+  mkdir -p "$ROOT/backups" "$FRI_ROOT/backups"
+  if gene_changes; then
+    mkdir -p "$ROOT/releases"
+    rename_preflight "$ROOT/backups"
+    gene_tar=$(stat -c %s "$STAGE/gene.tar")
+    disk+=("gene_backup=$ROOT/backups:$(( db_size + $(du_bytes "$ROOT/data/red") + $(du_bytes "$ROOT/source") ))"
+           "releases=$ROOT/releases:$gene_tar" "source=$ROOT:$gene_tar")
+  fi
+  if fri_changes; then disk+=("fri_backup=$FRI_ROOT/backups:$(( $(du_bytes "$ROOT/data/fri") + db_size ))"); fi
+  disk_admission "${disk[@]}"
+  for name in "${names[@]}"; do
     [[ ! -e $STAGE/$name-src ]] || die "$STAGE/$name-src exists from an earlier attempt; inspect and remove it"
     mkdir -m 700 "$STAGE/$name-src"
     tar -x --no-same-owner -f "$STAGE/$name.tar" -C "$STAGE/$name-src"
     chmod -R a+rX,go-w "$STAGE/$name-src"
   done
-  echo "$G" > "$STAGE/gene-src/.release-sha"
-  for file in pyproject.toml uv.lock; do
-    cmp -s "$ROOT/source/$file" "$STAGE/gene-src/$file" || die "$file changed: the host venv needs its own plan"
-  done
-  for file in ops/compose.yml ops/fri-compose.yml ops/gene-worker.service ops/gene-deployer.service; do
-    if ! cmp -s "$ROOT/source/$file" "$STAGE/gene-src/$file"; then
-      diff -u "$ROOT/source/$file" "$STAGE/gene-src/$file" || true
-      [[ ${ALLOW_OPS_DIFF:-} == 1 ]] || die "$file changed; review the diff, then rerun with ALLOW_OPS_DIFF=1"
-    fi
-  done
-  # The cog release, prepared now so downtime only renames it into place.
-  [[ ! -e $STAGE/cogs-ready ]] || die "$STAGE/cogs-ready exists from an earlier attempt"
-  mkdir -m 755 "$STAGE/cogs-ready"
-  cp -r "$STAGE/gene-src/cogs" "$STAGE/cogs-ready/cogs"
-  chown -R 0:0 "$STAGE/cogs-ready"
-  find "$STAGE/cogs-ready" -type d -exec chmod 755 {} +
-  find "$STAGE/cogs-ready" -type f -exec chmod 444 {} +
-  mset cogs "$(tree_hash "$STAGE/cogs-ready")"
-  log 'building images'
-  docker build -q -f "$STAGE/gene-src/ops/Dockerfile" --target runtime \
-    --label org.opencontainers.image.revision="$G" -t "gene-runtime:$G" "$STAGE/gene-src"
-  docker build -q -f "$STAGE/gene-src/ops/Dockerfile" --target worker \
-    --label org.opencontainers.image.revision="$G" -t "gene-worker:$G" "$STAGE/gene-src"
-  docker build -q -f "$STAGE/fri-src/ops/Dockerfile" --build-arg FRI_RELEASE_SHA="$F" \
-    -t "fri-runtime:$F" "$STAGE/fri-src"
-  local image label
+  if gene_changes; then
+    echo "$G" > "$STAGE/gene-src/.release-sha"
+    for file in pyproject.toml uv.lock; do
+      cmp -s "$ROOT/source/$file" "$STAGE/gene-src/$file" || die "$file changed: the host venv needs its own plan"
+    done
+    for file in ops/compose.yml ops/fri-compose.yml ops/gene-worker.service ops/gene-deployer.service; do
+      if ! cmp -s "$ROOT/source/$file" "$STAGE/gene-src/$file"; then
+        diff -u "$ROOT/source/$file" "$STAGE/gene-src/$file" || true
+        [[ ${ALLOW_OPS_DIFF:-} == 1 ]] || die "$file changed; review the diff, then rerun with ALLOW_OPS_DIFF=1"
+      fi
+    done
+    # The cog release, prepared now so downtime only renames it into place.
+    [[ ! -e $STAGE/cogs-ready ]] || die "$STAGE/cogs-ready exists from an earlier attempt"
+    mkdir -m 755 "$STAGE/cogs-ready"
+    cp -r "$STAGE/gene-src/cogs" "$STAGE/cogs-ready/cogs"
+    chown -R 0:0 "$STAGE/cogs-ready"
+    find "$STAGE/cogs-ready" -type d -exec chmod 755 {} +
+    find "$STAGE/cogs-ready" -type f -exec chmod 444 {} +
+    mset cogs "$(tree_hash "$STAGE/cogs-ready")"
+    log 'building Gene images'
+    docker build -q -f "$STAGE/gene-src/ops/Dockerfile" --target runtime \
+      --label org.opencontainers.image.revision="$G" -t "gene-runtime:$G" "$STAGE/gene-src"
+    docker build -q -f "$STAGE/gene-src/ops/Dockerfile" --target worker \
+      --label org.opencontainers.image.revision="$G" -t "gene-worker:$G" "$STAGE/gene-src"
+  fi
+  if fri_changes; then
+    log 'building the Fri image'
+    docker build -q -f "$STAGE/fri-src/ops/Dockerfile" --build-arg FRI_RELEASE_SHA="$F" \
+      -t "fri-runtime:$F" "$STAGE/fri-src"
+  fi
+  local image label tag
   for image in "runtime:gene-runtime:$G" "worker:gene-worker:$G" "fri:fri-runtime:$F"; do
-    tag=${image#*:}
-    label=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$tag")
-    [[ $label == "${tag#*:}" ]] || die "$tag label is $label"
-    mset "new.${image%%:*}.tag" "$tag"; mset "new.${image%%:*}.id" "$(image_id "$tag")"
+    kind=${image%%:*}; tag=${image#*:}
+    if changes "$kind"; then
+      label=$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$tag")
+      [[ $label == "${tag#*:}" ]] || die "$tag label is $label"
+      mset "new.$kind.tag" "$tag"; mset "new.$kind.id" "$(image_id "$tag")"
+    else  # Unchanged: the new release keeps the live image.
+      mset "new.$kind.tag" "$(jget "$MANIFEST" "old.$kind.tag")"; mset "new.$kind.id" "$(jget "$MANIFEST" "old.$kind.id")"
+    fi
   done
   log 'isolated import checks'
   local isolated=(docker run --rm --network none --user 10001:10001 --read-only --tmpfs /tmp --cap-drop ALL
                   --security-opt no-new-privileges:true)
-  "${isolated[@]}" "gene-runtime:$G" python -c 'import gene.api, gene.store, gene.runtime, gene.fri_release, gene.fri_reply_checks, gene.deploy, gene.provenance_downgrade; print("gene imports ok")'
-  "${isolated[@]}" "gene-worker:$G" codex --version
-  "${isolated[@]}" "fri-runtime:$F" python -c 'import fri.fri, fri.fri_eval, fri.fri_request_eval; print("fri imports ok")'
+  if gene_changes; then
+    "${isolated[@]}" "gene-runtime:$G" python -c 'import gene.api, gene.store, gene.runtime, gene.fri_release, gene.fri_reply_checks, gene.deploy, gene.provenance_downgrade; print("gene imports ok")'
+    "${isolated[@]}" "gene-worker:$G" codex --version
+  fi
+  if fri_changes; then
+    "${isolated[@]}" "fri-runtime:$F" python -c 'import fri.fri, fri.fri_eval, fri.fri_request_eval; print("fri imports ok")'
+  fi
   log 'controller contract on synthetic state'
   local contract
   contract=$("${isolated[@]}" --tmpfs /data:uid=10001,gid=10001 -e GENE_DB=/data/synthetic.sqlite3 \
     -e GENE_RUNTIME_TOKEN=synthetic-runtime-token-0000000000000000 -e GENE_WORKER_TOKEN=synthetic-worker-token-00000000000000000 \
     -e GENE_DEPLOY_TOKEN=synthetic-deploy-token-00000000000000000 -e GENE_FRI_TOKEN=synthetic-fri-token-0000000000000000000000 \
-    "gene-runtime:$G" python -c '
+    "$(jget "$MANIFEST" new.runtime.tag)" python -c '
 import json
 from fastapi.testclient import TestClient
 from gene.api import create_app
@@ -688,18 +732,26 @@ response = client.get("/fri/contract", headers={"Authorization": "Bearer synthet
 assert response.status_code == 200, response.status_code
 print(json.dumps(response.json()))')
   echo "$contract"
-  "${isolated[@]}" "fri-runtime:$F" python -c 'import json, sys
+  "${isolated[@]}" "$(jget "$MANIFEST" new.fri.tag)" python -c 'import json, sys
 from fri.fri_protocol import compatible
 assert compatible(json.loads(sys.argv[1])), "Fri rejects the candidate controller contract"
 print("fri accepts the contract")' "$contract"
-  log 'audio player snapshot works'
-  player_snapshot
+  if gene_changes; then
+    log 'audio player snapshot works'
+    player_snapshot
+  fi
   mark staged
 }
 
 rehearse() {  # Migrate copies of the live DB with G, then start the exact rollback image on them.
   need staged; check_manifest
   has rehearsed && { log 'already rehearsed'; return; }
+  if ! gene_changes; then
+    log "Gene stays at ${G:0:7}: no database migration to rehearse"
+    mset downgrades ''
+    mark rehearsed
+    return
+  fi
   local old new owner
   old=$(jget "$MANIFEST" old.runtime.id); new=$(jget "$MANIFEST" new.runtime.id); owner=$(db_owner)
   (
@@ -707,9 +759,17 @@ rehearse() {  # Migrate copies of the live DB with G, then start the exact rollb
     [[ ! -e $test ]] || { echo "FAIL: $test exists; remove it first" >&2; exit 1; }
     trap 'rm -rf "$test"' EXIT  # The copies hold member data; never leave them behind.
     install -d -m 700 -o "${owner%:*}" -g "${owner#*:}" "$test"
-    for copy in forward downgrade; do db_copy "$test" "$copy.sqlite3"; done
     run=(docker run --rm --network none --user "$owner" --read-only --tmpfs /tmp --cap-drop ALL
          --security-opt no-new-privileges:true --env-file "$ROOT/secrets/controller.env" -v "$test:/data")
+    # Asked of both images with a probe that answers yes or no, so one that fails to start stops here
+    # rather than skipping a step. The rollback runs exactly the recorded list.
+    downgrades=()
+    for module in "${DOWNGRADE_MODULES[@]}"; do
+      if has_module "$module" "${run[@]}" "$new" && ! has_module "$module" "${run[@]}" "$old"; then downgrades+=("$module"); fi
+    done
+    mset downgrades "${downgrades[*]}"
+    echo "a rollback downgrades: ${downgrades[*]:-nothing, the old release has every feature G has a downgrade for}"
+    for copy in forward downgrade; do db_copy "$test" "$copy.sqlite3"; done
     start='import sys
 from fastapi.testclient import TestClient
 from gene.api import create_app
@@ -727,17 +787,19 @@ job = Store(settings.db).request(settings.guild_id, "0", "rehearsal:"+uuid.uuid4
 assert isinstance(job, dict) and job.get("id"), job
 print("old code wrote a request on the migrated schema:", job["state"])'
     "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c "$start" new
-    "${run[@]}" "$new" python -m gene.fri_reply_checks purge /data/downgrade.sqlite3
-    if has_module gene.profile_downgrade "${run[@]}" "$new"; then
-      # A profile removal on the copy, so the downgrade must keep it in every configured channel. Without
-      # the channels in controller.env it refuses, which a rollback must not find out halfway through.
-      "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c '
+    for module in "${downgrades[@]}"; do
+      if [[ $module == gene.profile_downgrade ]]; then
+        # A profile removal on the copy, so the downgrade must keep it in every configured channel. Without
+        # the channels in controller.env it refuses, which a rollback must not find out halfway through.
+        "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c '
 import sqlite3
 from gene.config import Settings
 with sqlite3.connect(Settings.from_env().db) as db:
     db.execute("INSERT INTO personal_note_removals VALUES (?,?,?,?,?)", ("0", "server", "0", "rehearsal", 0))'
-      "${run[@]}" "$new" python -m gene.profile_downgrade /data/downgrade.sqlite3
-      "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c '
+      fi
+      downgrade_step "$module" /data/downgrade.sqlite3 "${run[@]}" "$new"
+      if [[ $module == gene.profile_downgrade ]]; then
+        "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c '
 import sqlite3
 from gene.config import Settings
 with sqlite3.connect(Settings.from_env().db) as db:
@@ -745,9 +807,8 @@ with sqlite3.connect(Settings.from_env().db) as db:
     left = db.execute("SELECT count(*) FROM personal_note_removals WHERE channel_id=?", ("server",)).fetchone()[0]
 assert kept and not left, (kept, left)
 print("profile downgrade keeps a removal in", kept, "channels")'
-    else
-      echo 'no gene.profile_downgrade in G: the old release already has every profile migration'
-    fi
+      fi
+    done
     "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$old" python -c "$start" old-after-downgrade
   )
   mark rehearsed
@@ -816,6 +877,15 @@ backup_db() {  # dir: an online copy at dir/db/controller.sqlite3, made as the D
 gene() {
   need staged rehearsed drained; check_manifest
   no_rollback
+  if ! gene_changes; then
+    if ! has gene_recorded; then
+      fence  # Re-verified, not trusted from the drain marker.
+      verify old
+      mark gene_recorded
+    fi
+    log "Gene stays at ${G:0:7}"
+    return
+  fi
   if has gene_recorded; then verify_gene_only; return; fi
   has gene_attempted && die 'an earlier Gene attempt is in the journal; finish rollback-gene, then stage again in a fresh directory'
   fence  # Re-verified, not trusted from the drain marker.
@@ -960,10 +1030,10 @@ rollback_gene() {
     local run=(docker run --rm --network none --user "$owner" --read-only --tmpfs /tmp --cap-drop ALL
                --security-opt no-new-privileges:true --env-file "$ROOT/secrets/controller.env"
                -v "$ROOT/data/controller:/data" "$(jget "$MANIFEST" new.runtime.id)")
-    "${run[@]}" python -m gene.fri_reply_checks purge /data/gene.sqlite3
-    if has_module gene.profile_downgrade "${run[@]}"; then
-      "${run[@]}" python -m gene.profile_downgrade /data/gene.sqlite3
-    fi
+    local list downgrades module
+    list=$(jget "$MANIFEST" downgrades)  # Worked out and run on a copy by rehearse.
+    read -ra downgrades <<< "$list"
+    for module in "${downgrades[@]}"; do downgrade_step "$module" /data/gene.sqlite3 "${run[@]}"; done
     mark done:downgrade
   fi
   log 'rollback: pins'
@@ -979,7 +1049,7 @@ rollback_gene() {
     [[ -d $B/installed-source ]] || die 'neither the new nor the old source is in place; operator recovery required'
     rename_tree "$B/installed-source" "$ROOT/source"
   fi
-  [[ -d $ROOT/source && ! -f $ROOT/source/.release-sha ]] || die 'old source not in place'
+  [[ $(source_state) == "$(jget "$BASELINE" source)" ]] || die 'old source not in place'
   log 'rollback: old controller and Red'
   if [[ $(container_image "$CONTROLLER") == "$old_id" && $(container_image "$RED") == "$old_id" ]] \
      && container_running "$CONTROLLER" && container_running "$RED" && probe_gene "$OLD_G" 0 "$old_id"; then
@@ -1002,7 +1072,24 @@ rollback_gene() {
 fri() {
   need gene_recorded; check_manifest
   no_rollback
-  if has fri_switched; then probe_fri "$F" "$(jget "$MANIFEST" new.fri.id)"; return; fi
+  if has fri_switched || ! fri_changes; then
+    probe_fri "$F" "$(jget "$MANIFEST" new.fri.id)"  # Unchanged: the live Fri, now against the new Gene.
+    has fri_switched || mark fri_switched
+    return
+  fi
+  if ! gene_changes && ! has fri_backup; then
+    # The pins and record rollback-fri restores. Taken once, before the first attempt: a retry after a
+    # crash must not record its partial state as the old release.
+    fence
+    verify old
+    local B
+    B=$ROOT/backups/maintainer-fri-$F-$(date +%s)
+    mkdir -m 700 "$B"
+    cp -p "$FRI_ROOT/release.env" "$B/fri-release.env"
+    cp -p "$FRI_ROOT/release.json" "$B/fri-release.json"
+    mset backup "$B"
+    mark fri_backup
+  fi
   mark intent:fri
   if ! "$ROOT/venv/bin/python" -m gene.fri_release "$F"; then
     repair_sidecars
@@ -1011,7 +1098,8 @@ fri() {
     local latest
     latest=$(find "$FRI_ROOT/backups" -maxdepth 1 -name "*-$F" -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)
     if [[ -n $latest && -f $latest/failure.json ]]; then cat "$latest/failure.json"; fi
-    die 'workers stay stopped; rollback-gene restores the old Fri first, from any partial state'
+    if gene_changes; then die 'workers stay stopped; rollback-gene restores the old Fri first, from any partial state'; fi
+    die 'workers stay stopped; gene.fri_release put the old Fri back if it could, and rollback-fri restores it from any partial state'
   fi
   repair_sidecars
   probe_fri "$F" "$(jget "$MANIFEST" new.fri.id)"
@@ -1049,7 +1137,7 @@ stages = (health.get('agent_heartbeat') or {}).get('stages') or {}
 failing = {name: stage.get('error') for name, stage in stages.items() if stage.get('error')}  # exception class names
 print('  stages:', sorted(stages), '| failing:', failing or 'none', '| rejected usage receipts:', health.get('rejected_usage'))
 PY
-  (( ${#failed[@]} == 0 )) || die "eval suites failed: ${failed[*]}; decide with the owner whether to roll back"
+  (( ${#failed[@]} == 0 )) || die "eval suites failed: ${failed[*]}; decide with the owner whether to roll back ($(gene_changes && echo rollback-gene || echo rollback-fri))"
 }
 
 verify_off() {
@@ -1076,7 +1164,7 @@ resume_services() {  # gene_sha
 }
 
 write_result() {  # The deployer's receipt for this release; a repeat accepts the same receipt.
-  python3 - "$ROOT/maintainer-$G-result.json" "$G" "$OLD_G" "$F" "$OLD_F" "$(backup_dir)" <<'PY'
+  python3 - "$RESULT" "$G" "$OLD_G" "$F" "$OLD_F" "$(backup_dir)" <<'PY'
 import json, os, sys, tempfile, time
 path, sha, previous, fri, fri_previous, backup = sys.argv[1:7]
 result = {'sha': sha, 'previous': previous, 'success': True, 'recovered': False, 'backup': backup,
@@ -1148,10 +1236,45 @@ resume_old() {
   has resumed_old || mark resumed_old
 }
 
+rollback_fri() {
+  # A release that leaves Gene alone: putting the old Fri back is the whole rollback. It reconciles from
+  # actual state through the backup the fri phase took, so it is safe to repeat.
+  gene_changes && die 'this release changes Gene; rollback-gene puts the old Fri back first'
+  need fri_backup; check_manifest
+  has intent:rollback || mark intent:rollback
+  fence
+  lock_fri
+  restore_old_fri
+  probe_fri "$OLD_F" "$(jget "$MANIFEST" old.fri.id)"
+  verify old
+  has fri_rolled_back || mark fri_rolled_back
+  log 'Fri rolled back. Workers stay stopped and development stays paused; run resume-old when settled.'
+}
+
+prune_images() {  # Release images other than this release's old and new ones. Docker keeps any a container uses.
+  local keep repo tag
+  keep=$(python3 -c 'import json, sys
+m = json.load(open(sys.argv[1]))
+print("\n".join(m[kind][name]["tag"] for kind in ("old", "new") for name in ("runtime", "worker", "fri")))' "$MANIFEST")
+  for repo in gene-runtime gene-worker fri-runtime; do
+    while read -r tag; do
+      [[ $tag =~ ^$repo:[0-9a-f]{40}$ ]] || continue  # Only release tags; bootstrap and others stay.
+      grep -Fxq -- "$tag" <<< "$keep" && continue
+      if docker image rm "$tag" > /dev/null; then log "removed image $tag"; else log "kept image $tag: docker would not remove it"; fi
+    done < <(docker image ls --format '{{.Repository}}:{{.Tag}}' "$repo")
+  done
+}
+
 cleanup() {
   has resumed || has resumed_old || die 'resume first'
   rm -rf "$STAGE/fri-src" "$STAGE/gene-src" "$STAGE/cogs-ready" "$STAGE/dbtest" "$STAGE"/*.tar "$STAGE"/*.tar.sha256
-  log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); all images"
+  if [[ ${KEEP_IMAGES:-} == 1 ]]; then log 'KEEP_IMAGES=1: no images removed'; else prune_images; fi
+  log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); this release's old and new images"
+  # Backups hold copies of member data, so removing them is the owner's call.
+  local dir
+  for dir in "$ROOT/backups" "$FRI_ROOT/backups"; do
+    log "$dir: $(find "$dir" -mindepth 1 -maxdepth 1 | wc -l) backups, $(du -sh "$dir" | cut -f1); none removed"
+  done
 }
 
 batch_lock() {
@@ -1162,6 +1285,12 @@ batch_lock() {
 }
 
 [[ $PHASE == status ]] || batch_lock
+if [[ -f $MANIFEST ]]; then
+  OLD_G=$(jget "$MANIFEST" old_gene) && OLD_F=$(jget "$MANIFEST" old_fri) || die "$MANIFEST names no old release"
+else  # Before baseline the old release is the live one; baseline checks that it is healthy and consistent.
+  OLD_G=$(sed -n 's/^GENE_RELEASE_SHA=//p' "$ROOT/release.env" 2>/dev/null || true)
+  OLD_F=$(sed -n 's/^FRI_RELEASE_SHA=//p' "$FRI_ROOT/release.env" 2>/dev/null || true)
+fi
 case $PHASE in
   baseline) baseline ;;
   stage) stage ;;
@@ -1175,6 +1304,7 @@ case $PHASE in
   cleanup) cleanup ;;
   status) state; if [[ -f $JOURNAL ]]; then cat "$JOURNAL"; fi ;;
   rollback-gene) need gene_attempted; check_manifest; rollback_gene ;;
+  rollback-fri) rollback_fri ;;
   resume-old) resume_old ;;
   *) die "unknown phase $PHASE" ;;
 esac

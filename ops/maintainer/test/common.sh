@@ -6,7 +6,7 @@ H=$(cd "$(dirname "$0")" && pwd)
 . "$H/env.sh"
 "$H/setup.sh" > "$MOCK.setup.log" 2>&1 || { cat "$MOCK.setup.log"; echo 'RESULT: FAIL (mock host setup)'; exit 1; }
 FAILED=0 RUNS=0
-JOURNAL=$BATCH_ROOT/staging/batch-$G/journal
+JOURNAL=$ST/journal
 fail() { echo "ASSERT FAILED: $*"; FAILED=1; }
 run() {  # expected_rc phase [lines of output to show]
   local want=$1 phase=$2 lines=${3:-3} rc=0 out
@@ -26,9 +26,9 @@ purges() { [[ $(cat "$MOCK/purges" 2>/dev/null | wc -l) == "$1" ]] || fail "expe
 expect() {  # old|new paused(true|false) units(up|down): what is recorded, pinned, running and reported
   local s
   s=$(bash "$S" status "$G" "$F" 2>/dev/null | head -1)
-  python3 - "$s" "$1" "$2" "$3" "$G" "$F" "$OLD_G" "$OLD_F" "$(tr '\n' ' ' < "$MOCK/units")" "$MOCK/docker.json" <<'PY' || fail "expected $1 release, paused=$2, units $3"
+  python3 - "$s" "$1" "$2" "$3" "$G" "$F" "$OLD_G" "$OLD_F" "$(tr '\n' ' ' < "$MOCK/units")" "$MOCK/docker.json" "$OLD_SOURCE" <<'PY' || fail "expected $1 release, paused=$2, units $3"
 import json, sys
-s, which, paused, units, G, F, OLD_G, OLD_F, running, docker = json.loads(sys.argv[1]), *sys.argv[2:11]
+s, which, paused, units, G, F, OLD_G, OLD_F, running, docker, old_source = json.loads(sys.argv[1]), *sys.argv[2:12]
 images = json.load(open(docker))['images']
 g, f = (G, F) if which == 'new' else (OLD_G, OLD_F)
 runtime, fri = images['gene-runtime:'+g]['id'], images['fri-runtime:'+f]['id']
@@ -36,7 +36,8 @@ checks = {
     'active_sha': s['settings']['active_sha'] == g, 'paused': s['settings']['paused'] == paused,
     'fri_active_sha': s['settings'].get('fri_active_sha') == f,
     'gene_env': s['gene_env'] == {'GENE_RELEASE_SHA': g, 'GENE_RUNTIME_IMAGE': 'gene-runtime:'+g},
-    'worker_pin': s['worker_pin'] == 'gene-worker:'+g, 'source': s['source'] == (G if which == 'new' else 'unmarked'),
+    'worker_pin': s['worker_pin'] == 'gene-worker:'+g,
+    'source': s['source'] == (G if which == 'new' and G != OLD_G else old_source),
     'fri_env': s['fri_env'] == {'FRI_RELEASE_SHA': f, 'FRI_RUNTIME_IMAGE': 'fri-runtime:'+f}, 'fri_record': s['fri_record_sha'] == f,
     'controller': s['controller']['health'] == 'healthy' and s['controller']['image'] == runtime,
     'red': s['red']['running'] and s['red']['image'] == runtime,

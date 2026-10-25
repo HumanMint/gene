@@ -10,7 +10,7 @@ import json, os, subprocess, sys, tempfile, time, uuid
 
 M, ROOT = os.environ['MOCK'], os.environ['BATCH_ROOT']
 GENE_PY, OLD_SRC, FRI_PY = os.environ['GENE_PY'], os.environ['OLD_SRC'], os.environ['FRI_PY']
-OLD_G = 'f66700140d91dc80df0bca8ae29ca671ca67f80e'
+OLD_G = os.environ['OLD_G']
 STATE = M+'/docker.json'
 args = sys.argv[1:]
 with open(M+'/docker.log', 'a') as log:
@@ -225,6 +225,21 @@ if args[:2] == ['image', 'inspect']:
     img = st['images'].get(args[4]) or st['images'][resolve(args[4])]
     fmt = args[3]
     print(img['id'] if '.Id' in fmt else img['label'] if 'revision' in fmt else img['size'] if '.Size' in fmt else refuse(fmt))
+elif args[:3] == ['image', 'ls', '--format']:
+    if args[3] != '{{.Repository}}:{{.Tag}}' or len(args) != 5:
+        refuse(' '.join(args))
+    for tag in st['images']:
+        if tag.split(':')[0] == args[4]:
+            print(tag)
+elif args[:2] == ['image', 'rm'] and len(args) == 3:
+    tag = resolve(args[2])
+    image = st['images'][tag]['id']
+    if (any(c['image'] == image for c in st['containers'].values())
+            and [i['id'] for i in st['images'].values()].count(image) == 1):
+        sys.exit('Error response from daemon: conflict: unable to remove repository reference "'+tag+'" (must force)')
+    del st['images'][tag]
+    save()
+    print('Untagged: '+tag)
 elif args[0] == 'inspect':
     fmt, name = args[2], args[3]
     c = st['containers'].get(name)

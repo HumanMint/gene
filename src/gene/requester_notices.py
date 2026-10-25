@@ -36,6 +36,9 @@ def claim(store, job_id, actor):
             raise Conflict('A rollback ran after this repair shipped, so the fix may not be live')
         if store._setting(db, 'active_sha') != job['approved_sha']:
             raise Conflict('A newer release is live now, so this repair is not what the reporter is running')
+        # active_sha moves only once a deployment is recorded; the runtime may switch well before that.
+        if db.execute('SELECT 1 FROM jobs WHERE state="deploying"').fetchone():
+            raise Conflict('Another release is going out right now, so tap again once it lands')
         row = db.execute('SELECT state FROM requester_notices WHERE job_id=?', (job_id,)).fetchone()
         if row and row['state'] == 'sent':
             raise Conflict('The reporter was already told')

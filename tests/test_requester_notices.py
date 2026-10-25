@@ -221,3 +221,20 @@ def test_recording_the_reply_is_the_owners_on_this_server(tmp_path):
     assert again.status_code == 409 and 'may already' in again.json()['detail']  # Still the first claim's.
     assert client.post(route+'/finish', headers=headers('fri'),
                        json={**owner, 'lease': lease, 'state': 'sent', 'message_id': '42'}).json() == {'ok': True}
+
+
+@pytest.mark.parametrize('next_release', ['rollback', 'feature'])
+def test_no_reply_while_another_release_is_going_out(store, next_release):
+    job = shipped(store)
+    if next_release == 'rollback':
+        store.rollback('123', 'owner')
+    else:
+        feature = proposed(store, sha='c'*40, source='message-9')
+        store.approve(feature['id'], 'c'*40, 'owner')
+    deploying = store.claim_deploy()
+    assert store.status()['active_sha'] == 'b'*40  # The runtime may already run it; the controller hasn't recorded it.
+    with pytest.raises(Conflict, match='going out'):
+        claim(store, job['id'], 'owner')
+    store.finish_deploy(deploying['id'], deploying['lease'], False, 'Health check failed.')
+    assert store.status()['active_sha'] == 'b'*40
+    assert claim(store, job['id'], 'owner')['job']['id'] == job['id']  # It never landed, so the repair is still live.

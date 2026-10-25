@@ -1017,8 +1017,8 @@ tried again. One that may have posted (a timeout, a server error, a crash mid-se
 retried. Only deployed jobs that repair intake recorded for a member's report qualify, including ones the
 owner finished after the automatic checks handed them over. Those now get the same status DMs
 (approved, deploying, deployed) as other requests, since they carry no intake approval. An erased report, a rollback
-deployed after the repair, or any newer release now live refuses the reply: "fixed now" has to
-describe what's running. Fri claims the mark only after its Discord reads, right before the send,
+deployed after the repair, any newer release now live, or another release still going out refuses
+the reply: "fixed now" has to describe what's running. Fri claims the mark only after its Discord reads, right before the send,
 so the claim is the send-time check. Claiming and recording the outcome both carry the owner and
 this server, and the controller refuses either one for anyone else. A Fri older than that sends
 no owner on the outcome, so it isn't recorded and the notice stays unretried, never sent twice.

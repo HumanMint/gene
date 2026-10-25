@@ -52,7 +52,8 @@ def test_settled_reminders_stay_a_day_and_cancelled_or_expired_ones_drop(store):
         db.execute('UPDATE fri_reminders SET created=? WHERE id=?', (time.time()-901, stale['id']))
     assert [(r['state'], r['text']) for r in loops(store)['reminders']] == [('sent', 'update the mods')]
     with store.connection() as db:
-        db.execute('UPDATE fri_reminders SET due=? WHERE id=?', (time.time()-86401, sent['id']))
+        db.execute('UPDATE fri_reminders SET due=?,lease_until=? WHERE id=?',
+                   (time.time()-86500, time.time()-86401, sent['id']))  # A day after it went out.
     assert loops(store)['reminders'] == []
 
 
@@ -128,3 +129,15 @@ def test_the_api_returns_loops_for_the_speakers_conversation(store):
     social.reminder_prepare(DM, source(), 0, 'stretch', future(2), 'UTC')
     context = store.chat_context('123', 'private:999', '10', False)  # An older Fri gets them too and ignores them.
     assert [row['text'] for row in context['loops']['reminders']] == ['stretch']
+
+
+def test_a_late_delivery_stays_visible_for_a_day_after_it_settles(store):
+    social = Social(store)
+    late = confirmed(social)
+    with store.connection() as db:  # Fri was down for days: it goes out long after it was due.
+        db.execute('UPDATE fri_reminders SET due=? WHERE id=?', (time.time()-3*86400, late['id']))
+    assert [r['state'] for r in loops(store)['reminders']] == ['scheduled']
+    claim = social.reminder_claim()
+    social.reminder_sending(claim['id'], claim['lease'])
+    social.reminder_finish(claim['id'], claim['lease'], 'sent', '555')
+    assert [r['state'] for r in loops(store)['reminders']] == ['sent']

@@ -701,10 +701,12 @@ class Store:
         Workspace.prune(db)
         now = time.time()
         if kind == 'private':
+            # A settled one stays a day from when it settled: delivery stamps lease_until (two minutes on) when it
+            # claims and sends, so a late send after an outage doesn't vanish the moment it goes out.
             for row in db.execute(
                     f"SELECT body,due,local_time,timezone,state,revision FROM fri_reminders WHERE guild_id=? AND user_id=? "
                     f"AND dm_id=? AND (state IN ({','.join('?'*len(ACTIVE))}) OR (state IN ('sent','failed','uncertain') "
-                    f"AND due>?)) ORDER BY state IN ({','.join('?'*len(ACTIVE))}) DESC, due LIMIT ?",
+                    f"AND max(due,lease_until)>?)) ORDER BY state IN ({','.join('?'*len(ACTIVE))}) DESC, due LIMIT ?",
                     (guild_id, user_id, place, *ACTIVE, now-LOOP_SETTLED_SECONDS, *ACTIVE, LOOP_ITEMS)):
                 state = row['state']
                 # Confirming and delivering both check the privacy revision: a change since then means it never goes out.

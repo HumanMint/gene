@@ -103,6 +103,8 @@ class ChatScope(Actor):
     conversation_id: str = Field(pattern=r'^(private|public):[0-9]{1,25}$')
     mention_grant: str | None = Field(default=None, pattern=r'^[a-f0-9]{64}$')
     source: ChatSource | None = None
+    # Sent by a Fri that understands member profiles. An older Fri gets this conversation's notes only.
+    profiles: bool = False
 
 
 class ChatTurn(ChatScope):
@@ -367,7 +369,7 @@ def create_app(settings: Settings | None = None):
             from .fri_mentions import context
             return context(store, body)
         chat_scope(body)
-        return store.chat_context(body.guild_id, body.conversation_id, body.user_id)
+        return store.chat_context(body.guild_id, body.conversation_id, body.user_id, body.profiles)
 
     @app.post('/chat/pending', dependencies=[auth('fri')])
     def chat_pending(body: ChatScope):
@@ -433,14 +435,14 @@ def create_app(settings: Settings | None = None):
     def personal_notes(body: ChatScope):
         chat_scope(body)
         from .fri_memory_store import entries
-        return entries(store, body.guild_id, body.conversation_id, body.user_id)
+        return entries(store, body.guild_id, body.conversation_id, body.user_id, body.profiles)
 
     @app.post('/chat/memory/notes/{identifier}', dependencies=[auth('fri')])
     def edit_personal_note(identifier: int, body: PersonalNoteEdit):
         chat_scope(body)
         from .fri_memory_store import edit
         return edit(store, body.guild_id, body.conversation_id, body.user_id, identifier,
-                    body.revision, body.source.model_dump(), body.action, body.evidence)
+                    body.revision, body.source.model_dump(), body.action, body.evidence, profiles=body.profiles)
 
     @app.post('/chat/usage/report', dependencies=[auth('fri')])
     def chat_usage_report(body: ChatUsage):

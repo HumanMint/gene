@@ -176,7 +176,9 @@ python -m gene.profile_downgrade "$GENE_DB"
 
 It deletes profile notes and their removal fences and marks every saved exchange as staying in
 the conversation it was said in. Conversation notes and exchanges are kept. Rolling back Fri
-alone needs no cleanup: an older Fri saves nothing to profiles.
+alone needs no cleanup: an older Fri saves nothing to profiles and doesn't ask for them, so the
+controller shows it only each conversation's own notes. Profile notes stay stored, unseen, until a
+newer Fri returns or they expire; "forget me" still erases them.
 
 The complete `/srv/gene/data/fri` and `/srv/gene/secrets/fri-chatgpt` directories stay
 in place initially. Identity, read/write allowlists, memory, pending controls/reviews,

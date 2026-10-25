@@ -44,9 +44,11 @@ def limit(scope):
 
 def save(db, guild, scope, user, note, at, origin=None):
     category, evidence = note
-    removed = db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND channel_id=? '
+    # A profile removal fences every conversation too: older text anywhere in the server can't bring it
+    # back, so learning from history can't restore it. A fresh disclosure after the removal still counts.
+    removed = db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND channel_id IN (?,?) '
         'AND user_id=? AND digest IN (?,?)',
-        (guild, scope, user, digest(*note), digest(category, ''))).fetchone()[0]
+        (guild, scope, SERVER, user, digest(*note), digest(category, ''))).fetchone()[0]
     if at < time.time()-TTL or (removed is not None and at <= removed):
         return False
     updated = db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at,origin) '
@@ -70,19 +72,24 @@ def visible(conversation):
     return (SERVER, conversation)
 
 
-def manageable(conversation, scope):
-    """Only the member can see a private conversation, so it lists and edits all of their notes."""
+def manageable(conversation, scope, profiles=True):
+    """Only the member can see a private conversation, so it lists and edits all of their notes.
+
+    An older Fri (profiles=False) manages only this conversation's notes, as before profiles existed.
+    """
+    if not profiles:
+        return scope == conversation
     return conversation.startswith('private:') or scope in visible(conversation)
 
 
-def entries(store, guild, conversation, user):
+def entries(store, guild, conversation, user, profiles=True):
     with store.connection() as db:
-        profile = store._personal_context(db, guild, conversation, user)
+        profile = store._personal_context(db, guild, conversation, user, profiles)
         row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
         notes = []
         for scope in [r[0] for r in db.execute('SELECT DISTINCT channel_id FROM personal_notes WHERE guild_id=? '
                                                 'AND user_id=? ORDER BY channel_id', (guild, user))]:
-            if manageable(conversation, scope):
+            if manageable(conversation, scope, profiles):
                 notes += [{**dict(r), 'scope': scope} for r in db.execute(
                     'SELECT id,category,evidence,at,origin FROM personal_notes WHERE guild_id=? AND channel_id=? '
                     'AND user_id=? ORDER BY at DESC,id DESC LIMIT ?', (guild, scope, user, limit(scope)))]
@@ -93,7 +100,7 @@ def entries(store, guild, conversation, user):
                 'entries': [{**row, 'expires_at': row['at']+TTL} for row in notes]}
 
 
-def edit(store, guild, conversation, user, identifier, revision, source, action, evidence=''):
+def edit(store, guild, conversation, user, identifier, revision, source, action, evidence='', *, profiles=True):
     source = ChatSource.model_validate(source).check(guild, conversation, user)
     if not -5 <= time.time()-source.timestamp().timestamp() <= 300:
         raise ValueError('Use a fresh memory control')
@@ -107,7 +114,7 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
         store._personal_context(db, guild, conversation, user)
         row = db.execute('SELECT * FROM personal_notes WHERE id=? AND guild_id=? AND user_id=?',
                          (identifier, guild, user)).fetchone()
-        if not row or not manageable(conversation, row['channel_id']):
+        if not row or not manageable(conversation, row['channel_id'], profiles):
             raise ValueError('That saved preference is no longer available here')
         scope = row['channel_id']
         note = personal_note({'category': row['category'], 'evidence': evidence}, evidence) if action == 'replace' else None
@@ -118,6 +125,9 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
         db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,digest) '
             'DO UPDATE SET at=excluded.at', (guild, scope, user, digest(row['category'], ''), time.time()))
         db.execute('DELETE FROM personal_notes WHERE id=?', (identifier,))
+        if scope == SERVER:  # The same preference kept in single conversations goes with it.
+            db.execute('DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND category=? AND evidence=?',
+                       (guild, user, row['category'], row['evidence']))
         if note:
             save(db, guild, scope, user, note, time.time(), row['origin'])
         # Clear stale conversational copies and invalidate every in-flight derivation. A profile
@@ -139,4 +149,4 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
         from .fri_social_store import Social
         Social.preserve_confirmed(db, user, revision)
         store.advance_revision(db, user)
-    return entries(store, guild, conversation, user)
+    return entries(store, guild, conversation, user, profiles)

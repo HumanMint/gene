@@ -594,12 +594,13 @@ class Store:
             db.execute('UPDATE jobs SET approved_by="deleted" WHERE approved_by=?', (user_id,))
             db.execute('UPDATE jobs SET intake_approved_by="deleted" WHERE intake_approved_by=?', (user_id,))
 
-    def chat_context(self, guild_id, channel_id, user_id):
+    def chat_context(self, guild_id, channel_id, user_id, profiles=True):
+        """profiles=False is an older Fri: only this conversation's notes, as before profiles existed."""
         with self.connection() as db:
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
             db.execute('DELETE FROM web_requests WHERE created<?', (time.time()-600,))
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
-            profile = self._personal_context(db, guild_id, channel_id, user_id)
+            profile = self._personal_context(db, guild_id, channel_id, user_id, profiles)
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             turns = [dict(row) for row in db.execute(
                 'SELECT id,input,reply,source,at,response_kind,reaction,allow_closing,burst,provenance,attributed '
@@ -619,7 +620,8 @@ class Store:
             from .fri_pending import read as read_pending
             pending = read_pending(db, guild_id, channel_id, user_id, revision[0] if revision else 0)
             return {'pending': pending, 'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
-                    'elsewhere': self._elsewhere(db, guild_id, channel_id, user_id) if profile['enabled'] else [],
+                    'elsewhere': self._elsewhere(db, guild_id, channel_id, user_id)
+                    if profiles and profile['enabled'] else [],
                     'requests': self._own_requests(db, guild_id, channel_id, user_id) if profile['enabled'] else [],
                     'web_research': [json.loads(row[0]) for row in db.execute(
                         'SELECT receipt FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY id DESC LIMIT 3',
@@ -628,16 +630,18 @@ class Store:
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
 
     def _elsewhere(self, db, guild_id, conversation, user_id):
-        """The member's latest exchanges in the server's other everyone-readable conversations.
+        """What the member said to Fri lately in the server's other everyone-readable conversations.
 
-        Never a private conversation's: those stay where they were said.
+        Only their own words, said where everyone could read them. Fri's replies stay out: one can
+        draw on a note or exchange that belongs to its own conversation. Private ones never appear.
         """
         turns = [dict(row) for row in db.execute(
-            "SELECT id,channel_id AS conversation_id,input,reply,at,provenance FROM chat_turns "
+            "SELECT id,channel_id AS conversation_id,input,at,provenance FROM chat_turns "
             "WHERE guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND channel_id<>? "
             "AND response_kind='reply' AND attributed=1 AND at>? ORDER BY id DESC LIMIT ?",
             (guild_id, user_id, conversation, time.time()-ELSEWHERE_SECONDS, ELSEWHERE_TURNS))][::-1]
-        return self._current_turns(db, turns)
+        return [{key: turn[key] for key in ('conversation_id', 'input', 'at')}
+                for turn in self._current_turns(db, turns)]
 
     @staticmethod
     def _own_requests(db, guild_id, conversation, user_id):
@@ -861,15 +865,18 @@ class Store:
                     'memory_scope': 'server' if scope == SERVER else 'conversation'}
 
     @staticmethod
-    def _personal_context(db, guild_id, channel_id, user_id):
-        """The member's profile and this conversation's own notes: never another conversation's."""
+    def _personal_context(db, guild_id, channel_id, user_id, profiles=True):
+        """The member's profile and this conversation's own notes: never another conversation's.
+
+        An older Fri (profiles=False) gets only this conversation's notes, within the bounds it was built for.
+        """
         from .fri_memory_store import SERVER, limit
         db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
         db.execute('DELETE FROM personal_note_removals WHERE at<?', (time.time() - TTL,))
         row = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user_id,)).fetchone()
         return {'enabled': bool(row[0]) if row else True,
                 'notes': [{**dict(r), 'scope': 'server' if scope == SERVER else 'here'}
-                          for scope in (SERVER, channel_id) for r in db.execute(
+                          for scope in ((SERVER, channel_id) if profiles else (channel_id,)) for r in db.execute(
                               'SELECT category,evidence FROM personal_notes WHERE guild_id=? AND channel_id=? '
                               'AND user_id=? ORDER BY at DESC LIMIT ?', (guild_id, scope, user_id, limit(scope)))]}
 

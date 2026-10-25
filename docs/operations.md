@@ -368,9 +368,12 @@ profile (up to fifteen notes) for what they told Fri in a channel everyone in th
 Fri decides that from Discord's permissions when it saves, and the profile appears in every
 conversation with that member in the server, including their DMs. Notes said in a DM, the private
 /fri panel, a restricted channel or a private thread stay in that conversation (up to ten each), as
-do all notes saved before member profiles. Fri also sees the member's latest two exchanges from
-other everyone-readable channels in the past twelve hours; private conversations never reach
-another conversation. Users and guilds stay separate. The attention adapter additionally
+do all notes saved before member profiles. Fri also sees the member's own latest two messages to it
+from other everyone-readable channels in the past twelve hours, without its replies there, since a
+reply can draw on a note that stays in its own conversation; private conversations never reach
+another conversation. A Fri that doesn't ask for profiles (an older release) gets only the current
+conversation's notes, as before, so its lists stay within the bounds it was built for. Users and
+guilds stay separate. The attention adapter additionally
 keeps a 15-minute, 30-message RAM buffer per configured channel and bounded recent-history
 summaries as described below; it does not import an unrestricted server archive.
 “fri what do you remember about me?” inspects the notes the current conversation can see; in a DM it
@@ -382,6 +385,8 @@ Anonymous usage counts survive erasure. Personal notes are never shared with the
 **My memory** edits or removes an individual entry without inference; in a DM it covers every
 note, in any scope. Changes are revision-fenced, clear stale recent context (every conversation in
 the server for a profile note), and prevent historical learning from restoring the removed disclosure.
+Removing a profile note also removes the same preference wherever a single conversation kept it, and
+fences older text in every conversation of the server; a fresh disclosure afterwards still counts.
 The item-storage upgrade preserves existing IDs and dates in one SQLite savepoint. A rollback to
 the earlier single-note release needs its matching database backup, because that older writer
 expects a different uniqueness constraint. Retain the pre-release database backup with the code SHA.

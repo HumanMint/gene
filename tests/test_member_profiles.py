@@ -5,7 +5,8 @@ import time
 
 import pytest
 
-from gene.fri_memory_store import edit, entries
+from gene.fri_memory_store import edit, entries, save
+from gene.fri_protocol import compatible, contract
 from gene.profile_downgrade import main as downgrade
 from gene.store import Store
 from tests.test_api import headers
@@ -24,9 +25,9 @@ def say(store, text='I like Minecraft', category='games', conversation='public:1
                            provenance=list(provenance), audience=audience, **extra)
 
 
-def notes(store, conversation, user='20'):
+def notes(store, conversation, user='20', profiles=True):
     return [(note['scope'], note['evidence']) for note in
-            store.chat_context('123', conversation, user)['personal_memory']['notes']]
+            store.chat_context('123', conversation, user, profiles)['personal_memory']['notes']]
 
 
 def elsewhere(store, conversation, user='20'):
@@ -109,13 +110,21 @@ def test_elsewhere_is_the_latest_readable_exchanges_from_other_conversations(sto
     assert elsewhere(store, 'private:9') == [('public:4', 'third public'), ('public:1', 'here already')]
     assert elsewhere(store, 'public:4') == [('public:3', 'second public'), ('public:1', 'here already')]
     turn = store.chat_context('123', 'public:9', '20')['elsewhere'][-1]
-    assert set(turn) == {'conversation_id', 'input', 'reply', 'at', 'provenance'}
+    assert set(turn) == {'conversation_id', 'input', 'at'}  # The member's own words, never Fri's reply.
+
+
+def test_a_reply_drawing_on_a_conversation_note_never_reaches_another_channel(store):
+    # Said while #1 was restricted; #1 later opens to everyone and Fri's reply there uses the note.
+    say(store, 'I like private jazz', 'music', conversation='public:1', audience='conversation')
+    say(store, 'what music do i like', None, reply='you like private jazz')
+    assert elsewhere(store, 'public:2') == [('public:1', 'what music do i like')]
+    assert 'private jazz' not in str(store.chat_context('123', 'public:2', '20'))
 
 
 def test_elsewhere_drops_turns_built_on_someone_who_changed_their_privacy(store):
     say(store, 'about ash', None, conversation='public:2', provenance=[ASH])
     say(store, 'my own thing', None, conversation='public:3')
-    assert [turn['provenance'] for turn in store.chat_context('123', 'public:1', '20')['elsewhere']] == [[ASH], []]
+    assert elsewhere(store, 'public:1') == [('public:2', 'about ash'), ('public:3', 'my own thing')]
     with store.connection() as db:  # A revision change without an eager delete.
         db.execute("INSERT INTO chat_revisions VALUES ('30',1)")
     assert elsewhere(store, 'public:1') == [('public:3', 'my own thing')]
@@ -223,3 +232,63 @@ def test_existing_database_gains_profile_columns_without_moving_anything(tmp_pat
     store = Store(path)
     assert notes(store, 'public:1') == [('here', 'I like chess')]
     assert notes(store, 'public:2') == []
+
+
+def test_an_older_fri_gets_only_this_conversations_notes(store):
+    categories = ('games', 'music', 'hobbies', 'conversation', 'nickname')
+    for index in range(15):
+        say(store, f'I like profile thing {index}', categories[index % 5])
+        say(store, f'I like dm thing {index}', categories[index % 5], conversation='private:9', audience='conversation')
+        say(store, f'I like staff thing {index}', categories[index % 5], conversation='public:5',
+            audience='conversation')
+    say(store, 'chat', None, conversation='public:2')
+    assert notes(store, 'public:1', profiles=False) == []
+    assert store.chat_context('123', 'public:1', '20', False)['elsewhere'] == []
+    assert {scope for scope, _ in notes(store, 'public:5', profiles=False)} == {'here'}
+    assert len(notes(store, 'public:5', profiles=False)) == 10  # The bound it always had.
+    legacy = entries(store, '123', 'private:9', '20', False)['entries']
+    assert {row['scope'] for row in legacy} == {'private:9'} and len(legacy) <= 10
+    assert len(entries(store, '123', 'private:9', '20')['entries']) > 25  # Newer Fri pages its own view.
+    profile_note = next(row for row in entries(store, '123', 'private:9', '20')['entries'] if row['scope'] == 'server')
+    with pytest.raises(ValueError, match='no longer available'):
+        edit(store, '123', 'private:9', '20', profile_note['id'], 0, private_source(), 'remove', profiles=False)
+
+
+def test_context_and_lists_ask_for_profiles(controls_api):  # noqa: F811
+    client, store = controls_api
+    body = {key: control_body()[key] for key in ('guild_id', 'channel_id', 'user_id', 'conversation_id')}
+    assert client.post('/chat/turn', headers=headers('fri'), json={
+        **body, 'source': control_body()['source'], 'revision': 0, 'input': 'I like chess', 'reply': 'ok',
+        'model': 'm', 'effort': 'high', 'provenance': [], 'audience': 'server',
+        'notes': [{'category': 'games', 'evidence': 'I like chess'}]}).json()['memory_scope'] == 'server'
+    other = {**body, 'conversation_id': 'public:'+str(int(body['conversation_id'].split(':')[1])+1)}
+    for path, key in (('/chat/context', 'personal_memory'), ('/chat/memory/notes', 'entries')):
+        older = client.post(path, headers=headers('fri'), json=other).json()[key]
+        newer = client.post(path, headers=headers('fri'), json={**other, 'profiles': True}).json()[key]
+        assert (older.get('notes') if isinstance(older, dict) else older) == []
+        assert [row['evidence'] for row in (newer['notes'] if isinstance(newer, dict) else newer)] == ['I like chess']
+
+
+def test_removing_a_profile_note_fences_learning_in_every_conversation(store):
+    before = time.time()-60
+    say(store, conversation='public:1')
+    say(store, 'I like Minecraft', conversation='public:5', audience='conversation')  # A single-channel copy.
+    say(store, 'I like private jazz', 'music', conversation='public:5', audience='conversation')
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    assert note['scope'] == 'server'
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'remove')
+    assert notes(store, 'public:5') == [('here', 'I like private jazz')]  # The copy went with it.
+    with store.connection() as db:
+        # Historical learning in any channel, of the removed text or another older line in its category.
+        for evidence in ('I like Minecraft', 'I like Terraria'):
+            assert not save(db, '123', 'public:2', '20', ('games', evidence), before)
+        assert save(db, '123', 'public:2', '20', ('games', 'I like Minecraft'), time.time()+1)
+        assert save(db, '123', 'public:2', '20', ('music', 'I like old jazz'), before)  # Other categories stay.
+
+
+def test_the_member_profiles_capability_is_optional():
+    advertised = contract()
+    assert compatible(advertised)
+    for optional in ('member-profiles', 'reply-checks'):
+        assert compatible({**advertised, 'capabilities': [c for c in advertised['capabilities'] if c != optional]})
+    assert not compatible({**advertised, 'capabilities': [c for c in advertised['capabilities'] if c != 'turn-provenance']})

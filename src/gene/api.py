@@ -67,6 +67,8 @@ class ReviewDelivery(Lease):
 
 
 class RequesterNoticeResult(Lease):
+    guild_id: str | None = None  # Both omitted only by a Fri from before the owner-scoped finish.
+    user_id: str | None = None
     state: Literal['sent', 'failed', 'uncertain']
     message_id: str = Field(default='', pattern=r'^[0-9]{0,25}$')
 
@@ -318,17 +320,27 @@ def create_app(settings: Settings | None = None):
         store.finish_review_notice(job_id, body.lease, body.channel_id, body.message_id)
         return {'ok': True}
 
-    @app.post('/requests/{job_id}/requester-notice', dependencies=[auth('fri')])
-    def requester_notice(job_id: str, body: Actor):
-        """The owner's tap on a shipped repair's DM: one reply to the member who reported it."""
+    def requester_notice_scope(job_id, body):
+        """Claiming and recording the reply are both the owner's, for a request on this server."""
         actor(body, owner=True)
         if store.get(job_id)['guild_id'] != settings.guild_id:
             raise HTTPException(403, 'Request belongs to a different server')
+
+    @app.post('/requests/{job_id}/requester-notice', dependencies=[auth('fri')])
+    def requester_notice(job_id: str, body: Actor):
+        """The owner's tap on a shipped repair's DM: one reply to the member who reported it."""
+        requester_notice_scope(job_id, body)
         from .requester_notices import claim
         return claim(store, job_id, body.user_id)
 
     @app.post('/requests/{job_id}/requester-notice/finish', dependencies=[auth('fri')])
     def requester_notice_finish(job_id: str, body: RequesterNoticeResult):
+        if body.guild_id is None and body.user_id is None:
+            # A Fri-only rollback: its claim was already the owner's, and the lease is that claim's.
+            if store.get(job_id)['guild_id'] != settings.guild_id:
+                raise HTTPException(403, 'Request belongs to a different server')
+        else:
+            requester_notice_scope(job_id, body)
         from .requester_notices import finish
         finish(store, job_id, body.lease, body.state, body.message_id)
         return {'ok': True}

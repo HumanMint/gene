@@ -1,5 +1,6 @@
 """One profile per member across the server's readable channels; private conversations stay put."""
 
+import json
 import sqlite3
 import time
 
@@ -662,3 +663,110 @@ def test_a_retried_mention_save_answers_as_the_first_did(h):  # noqa: F811
     body = mention_turn(scope, revision=grant['revision'])
     for _ in range(2):
         assert post(h, '/chat/turn', body).json() == {'ok': True, 'first_memory': False, 'kept': False}
+
+
+def test_sharing_a_dm_note_moves_it_into_the_profile(store):
+    say(store, 'I like private jazz', 'music', conversation='private:9', audience='conversation')
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    result = edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
+    assert [(row['scope'], row['evidence'], row['origin']) for row in result['entries']] == [
+        ('server', 'I like private jazz', 'private:9')]
+    assert result['revision'] == 0  # Nothing narrowed, so nothing derived goes.
+    assert notes(store, 'public:2') == [('server', 'I like private jazz')]
+    with pytest.raises(ValueError, match='no longer available'):  # A second press finds nothing to move.
+        edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
+
+
+def test_a_restricted_channel_note_can_be_shared_from_dms(store):
+    say(store, 'I like restricted chess', conversation='public:5', audience='conversation')
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
+    assert notes(store, 'public:2') == [('server', 'I like restricted chess')]
+    assert notes(store, 'public:5') == [('server', 'I like restricted chess')]
+
+
+@pytest.mark.parametrize('provenance', [None, [ASH]])
+def test_a_note_that_may_repeat_someone_else_is_never_shared(store, provenance):
+    say(store, 'I like private jazz', 'music', conversation='private:9', audience='conversation')
+    with store.connection() as db:
+        db.execute('UPDATE personal_notes SET provenance=?', (None if provenance is None else json.dumps(provenance),))
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    with pytest.raises(ValueError, match='someone else'):
+        edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
+    assert notes(store, 'public:2') == []
+    assert notes(store, 'private:9') == [('here', 'I like private jazz')]
+
+
+def test_moves_never_push_another_note_out(store):
+    for game in ('Minecraft', 'Terraria', 'Factorio'):
+        say(store, f'I like {game}')
+    say(store, 'I like private chess', conversation='private:9', audience='conversation')
+    note = next(row for row in entries(store, '123', 'private:9', '20')['entries'] if row['scope'] == 'private:9')
+    with pytest.raises(ValueError, match='full for games'):
+        edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
+    assert len(notes(store, 'public:2')) == 3 and ('here', 'I like private chess') in notes(store, 'private:9')
+    for game in ('Go', 'Shogi', 'Xiangqi'):
+        say(store, f'I like {game}', conversation='private:9', audience='conversation')
+    profile = entries(store, '123', 'private:9', '20')['entries'][0]
+    with pytest.raises(ValueError, match='full for games'):
+        edit(store, '123', 'private:9', '20', profile['id'], 0, private_source(), 'keep')
+    assert len(notes(store, 'public:2')) == 3
+
+
+@pytest.mark.parametrize('conversation,action', [('public:1', 'share'), ('public:1', 'keep')])
+def test_moves_only_happen_from_a_private_chat(store, conversation, action):
+    say(store)
+    note = entries(store, '123', conversation, '20')['entries'][0]
+    with pytest.raises(ValueError, match='DMs'):
+        edit(store, '123', conversation, '20', note['id'], 0, control_source(), action)
+    with pytest.raises(ValueError, match='DMs'):  # An older Fri doesn't ask for profiles.
+        edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), action, profiles=False)
+
+
+def test_keeping_a_profile_note_in_dms_pulls_it_out_of_the_server(store):
+    before = time.time()-60
+    say(store)
+    say(store, 'other chat', None, conversation='public:2')
+    say(store, 'I like Minecraft', 'hobbies', conversation='public:5', audience='conversation')
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    result = edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'keep')
+    assert [(row['scope'], row['evidence']) for row in result['entries']] == [('private:9', 'I like Minecraft')]
+    assert result['revision'] == 1
+    assert notes(store, 'public:2') == [] and notes(store, 'public:5') == []
+    assert notes(store, 'private:9') == [('here', 'I like Minecraft')]
+    with store.connection() as db:  # Saved chats it reached go, and older words can't re-learn it publicly.
+        assert db.execute("SELECT count(*) FROM chat_turns WHERE user_id='20'").fetchone()[0] == 0
+        assert not save(db, '123', 'public:2', '20', ('games', 'I like Minecraft'), before)
+    with pytest.raises(ValueError, match='already stays'):
+        edit(store, '123', 'private:9', '20', result['entries'][0]['id'], 1, private_source(), 'keep')
+
+
+def test_keeping_a_note_that_quoted_someone_still_goes_with_their_privacy_change(store):
+    say(store, provenance=[ASH])
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'keep')
+    assert notes(store, 'private:9') == [('here', 'I like Minecraft')]
+    store.erase_user('30')
+    assert notes(store, 'private:9') == []
+
+
+def test_contract_advertises_optional_memory_moves():
+    advertised = contract()
+    assert 'memory-moves' in advertised['capabilities']
+    assert compatible({**advertised, 'capabilities': [c for c in advertised['capabilities'] if c != 'memory-moves']})
+
+
+def test_moves_over_the_api(controls_api):  # noqa: F811
+    client, _ = controls_api
+    store = client.app.state.store
+    say(store, 'I like private jazz', 'music', conversation='private:9', audience='conversation')
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    body = {'guild_id': '123', 'channel_id': '456', 'conversation_id': 'private:9', 'user_id': '20', 'profiles': True,
+            'source': private_source(), 'revision': 0}
+    shared = client.post(f"/chat/memory/notes/{note['id']}", headers=headers('fri'), json={**body, 'action': 'share'})
+    assert shared.status_code == 200 and shared.json()['entries'][0]['scope'] == 'server'
+    kept = client.post(f"/chat/memory/notes/{shared.json()['entries'][0]['id']}", headers=headers('fri'),
+                       json={**body, 'action': 'keep'})
+    assert kept.status_code == 200 and kept.json()['entries'][0]['scope'] == 'private:9'
+    bad = client.post(f"/chat/memory/notes/{note['id']}", headers=headers('fri'), json={**body, 'action': 'move'})
+    assert bad.status_code == 422

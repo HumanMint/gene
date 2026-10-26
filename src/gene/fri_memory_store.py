@@ -139,8 +139,10 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
     source = ChatSource.model_validate(source).check(guild, conversation, user)
     if not -5 <= time.time()-source.timestamp().timestamp() <= 300:
         raise ValueError('Use a fresh memory control')
-    if action not in ('remove', 'replace') or (action == 'remove' and evidence):
+    if action not in ('remove', 'replace', 'share', 'keep') or (action != 'replace' and evidence):
         raise ValueError('Choose Remove or Replace for one saved preference')
+    if action in ('share', 'keep') and not (profiles and conversation.startswith('private:')):
+        raise ValueError('Move a preference from My memory in your DMs')
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
         current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
@@ -152,6 +154,12 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
         if not row or not manageable(conversation, row['channel_id'], profiles):
             raise ValueError('That saved preference is no longer available here')
         scope = row['channel_id']
+        if action == 'share':
+            return share(store, db, guild, conversation, user, row, profiles)
+        if action == 'keep':
+            if scope != SERVER:
+                raise ValueError('That preference already stays where you said it')
+            moved(db, guild, conversation, user, row, 'Your list here')
         note = personal_note({'category': row['category'], 'evidence': evidence}, evidence) if action == 'replace' else None
         if action == 'replace' and not note:
             raise ValueError('Use a short first-person preference, such as I like chess.')
@@ -171,6 +179,10 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
                 db.execute('DELETE FROM personal_notes WHERE id=?', (other['id'],))
         if note:  # An edit keeps the note where it shows, as the member's list labels it, wherever it is made.
             save(db, guild, scope, user, note, time.time(), row['origin'], ())  # In their own words now.
+        if action == 'keep':  # Out of the profile the way a removal goes, then saved only in this private chat.
+            if not save(db, guild, conversation, user, (row['category'], row['evidence']), time.time(), None,
+                        None if row['provenance'] is None else json.loads(row['provenance'])):
+                raise ValueError('That preference can’t be moved now. Open My memory again.')
         # Clear stale conversational copies, research receipts and requests included, and invalidate every
         # in-flight derivation. A profile note reached every conversation in the server, so all of them go.
         if scope == SERVER:
@@ -194,4 +206,30 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
         from .fri_social_store import Social
         Social.preserve_confirmed(db, user, revision)
         store.advance_revision(db, user)
+    return entries(store, guild, conversation, user, profiles)
+
+
+def moved(db, guild, scope, user, row, place):
+    """A move never pushes another note out: the member makes room first."""
+    full = db.execute('SELECT count(*), sum(category=?) FROM personal_notes WHERE guild_id=? AND channel_id=? '
+                      'AND user_id=? AND evidence<>?', (row['category'], guild, scope, user, row['evidence'])).fetchone()
+    if full[0] >= limit(scope) or (full[1] or 0) >= PER_CATEGORY:
+        raise ValueError(f"{place} is full for {row['category']}. Remove one there first.")
+
+
+def share(store, db, guild, conversation, user, row, profiles):
+    """The member's own press moves a note they said somewhere narrower into their profile.
+
+    Only their own words: a note that drew on someone else, or saved before notes said whose words they drew on,
+    stays where it was said. Nothing narrows, so nothing derived is cleared and the revision stays.
+    """
+    if row['channel_id'] == SERVER:
+        raise ValueError('That preference already shows across the server')
+    if row['provenance'] is None or json.loads(row['provenance']):
+        raise ValueError('That preference may repeat someone else’s words, so it stays where you said it')
+    moved(db, guild, SERVER, user, row, 'Your server-wide list')
+    db.execute('DELETE FROM personal_notes WHERE id=?', (row['id'],))
+    if not save(db, guild, SERVER, user, (row['category'], row['evidence']), time.time(), row['channel_id'], ()):
+        raise ValueError('That preference can’t be shared now. Open My memory again.')
+    db.commit()
     return entries(store, guild, conversation, user, profiles)

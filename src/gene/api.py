@@ -172,7 +172,7 @@ class PersonalControl(ChatScope):
 class PersonalNoteEdit(ChatScope):
     source: ChatSource
     revision: int = Field(ge=0)
-    action: Literal['remove', 'replace']
+    action: Literal['remove', 'replace', 'share', 'keep']
     evidence: str = Field(default='', max_length=180)
 
 

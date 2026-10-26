@@ -79,6 +79,31 @@ def test_notes_are_exact_bounded_disclosures_not_permission(candidate, text):
     assert personal_note(candidate, text) is None
 
 
+@pytest.mark.parametrize('evidence', [
+    "I'm working on a Factorio mod", 'I’m working on a pixel art game', 'I am working on my portfolio site',
+    "I'm building a synth", 'I am building a keyboard', 'I main Mercy', "I've been playing Hades",
+    'I’ve been playing Hollow Knight'])
+def test_what_a_member_is_doing_is_a_projects_note(evidence):
+    assert personal_note({'category': 'projects', 'evidence': evidence}, 'fri '+evidence+' lol') == ('projects', evidence)
+
+
+@pytest.mark.parametrize('candidate,text', [
+    ({'category': 'projects', 'evidence': "I'm working on my health"}, "I'm working on my health"),
+    ({'category': 'projects', 'evidence': 'I am building a deploy bot'}, 'I am building a deploy bot'),
+    ({'category': 'projects', 'evidence': "I've been playing with the system prompt"}, "I've been playing with the system prompt"),
+    ({'category': 'projects', 'evidence': 'I main https://example.com'}, 'I main https://example.com'),
+    ({'category': 'projects', 'evidence': "I'm building a mod"}, 'Bob said "I\'m building a mod"'),
+    ({'category': 'projects', 'evidence': "I'm building a mod"}, 'Bob is building a mod'),
+    # A project is only ever a projects note, and a projects note only ever says what they're doing.
+    ({'category': 'games', 'evidence': "I've been playing Hades"}, "I've been playing Hades"),
+    ({'category': 'hobbies', 'evidence': "I'm building a synth"}, "I'm building a synth"),
+    ({'category': 'projects', 'evidence': 'I like chess'}, 'I like chess'),
+    ({'category': 'projects', 'evidence': 'I have been playing Hades'}, 'I have been playing Hades'),
+])
+def test_projects_notes_keep_every_other_rule(candidate, text):
+    assert personal_note(candidate, text) is None
+
+
 def test_notes_expire_on_idle_health_and_erasure(store):
     note = {'category': 'music', 'evidence': 'I love trance'}
     store.save_chat('guild', 'public:1', 'one', 0, note['evidence'], 'reply', 'model', 'high', notes=[note])

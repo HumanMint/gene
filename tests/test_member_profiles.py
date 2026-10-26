@@ -120,6 +120,28 @@ def test_first_memory_is_per_scope(store):
     assert not say(store, 'nothing to keep', None)['first_memory']
 
 
+def test_what_a_member_is_working_on_stays_where_they_said_it(store):
+    assert say(store, "I'm working on a Factorio mod", 'projects') == {
+        'ok': True, 'first_memory': True, 'memory_scope': 'conversation'}
+    assert notes(store, 'public:1') == [('here', "I'm working on a Factorio mod")]
+    assert notes(store, 'public:2') == notes(store, 'private:9') == []
+    # Beside a preference in the same server-wide turn: the preference follows them, the project stays.
+    text = 'I like Minecraft and I main Mercy'
+    assert store.save_chat('123', 'public:2', '20', 0, text, 'noted', 'model', 'high', source=source(channel='2'),
+                           notes=[{'category': 'games', 'evidence': 'I like Minecraft'},
+                                  {'category': 'projects', 'evidence': 'I main Mercy'}],
+                           provenance=[], audience='server') == {
+        'ok': True, 'first_memory': True, 'memory_scope': 'server'}
+    assert notes(store, 'public:2') == [('server', 'I like Minecraft'), ('here', 'I main Mercy')]
+    assert notes(store, 'public:1') == [('server', 'I like Minecraft'), ('here', "I'm working on a Factorio mod")]
+    with store.connection() as db:
+        assert db.execute("SELECT count(*) FROM personal_notes WHERE category='projects' AND channel_id='server'"
+                          ).fetchone()[0] == 0
+    # A conversation-only turn keeps it there too, as it does every note.
+    say(store, "I've been playing Hades", 'projects', conversation='private:9', audience='conversation')
+    assert notes(store, 'private:9') == [('server', 'I like Minecraft'), ('here', "I've been playing Hades")]
+
+
 def test_elsewhere_is_the_latest_readable_exchanges_from_other_conversations(store):
     say(store, 'old public thing', None, conversation='public:2')
     with store.connection() as db:
@@ -675,6 +697,22 @@ def test_sharing_a_dm_note_moves_it_into_the_profile(store):
     assert notes(store, 'public:2') == [('server', 'I like private jazz')]
     with pytest.raises(ValueError, match='no longer available'):  # A second press finds nothing to move.
         edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
+
+
+def test_the_member_can_share_what_they_are_working_on(store):
+    say(store, "I'm working on a Factorio mod", 'projects')
+    note = entries(store, '123', 'private:9', '20')['entries'][0]
+    assert (note['scope'], note['category']) == ('public:1', 'projects')
+    result = edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
+    assert [(row['scope'], row['category'], row['evidence'], row['origin']) for row in result['entries']] == [
+        ('server', 'projects', "I'm working on a Factorio mod", 'public:1')]
+    assert notes(store, 'public:2') == [('server', "I'm working on a Factorio mod")]
+    # Edited where it now shows, it stays a project there; a preference in its place is refused.
+    edited = edit(store, '123', 'private:9', '20', result['entries'][0]['id'], 0, private_source(), 'replace',
+                  "I'm building a Factorio mod")
+    assert [(row['scope'], row['evidence']) for row in edited['entries']] == [('server', "I'm building a Factorio mod")]
+    with pytest.raises(ValueError, match='working on'):
+        edit(store, '123', 'private:9', '20', edited['entries'][0]['id'], 1, private_source(), 'replace', 'I like chess')
 
 
 def test_a_restricted_channel_note_can_be_shared_from_dms(store):

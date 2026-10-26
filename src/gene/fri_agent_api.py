@@ -11,6 +11,10 @@ class Identity(BaseModel):
     user_id: str
 
 
+class UsageQuery(Identity):
+    since: float | None = Field(default=None, ge=0, allow_inf_nan=False)  # Unix seconds; omitted is all time.
+
+
 class Change(Identity):
     version: int = Field(ge=0)
     changes: dict
@@ -158,6 +162,6 @@ def register(app, store, settings, auth, actor):
         return {'ok': True}
 
     @app.post('/agent/usage', dependencies=[auth('fri')])
-    def usage(body: Identity):
+    def usage(body: UsageQuery):
         actor(body, owner=True)
-        return agent.usage()
+        return agent.usage(body.since)

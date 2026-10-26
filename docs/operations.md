@@ -195,6 +195,12 @@ observations, not dollar charges or remaining plan quota. There is no applicatio
 budget. Account usage and resets are available at https://chatgpt.com/settings/usage.
 Chat usage is an anonymous ledger separate from conversation retention. Local durable
 usage receipts retry delivery to the controller without duplicating attempts.
+The owner's `/agent/usage` report takes an optional `since` (Unix seconds) and then counts
+only attempts the controller recorded from then on, so a receipt Fri held through an
+outage counts when it arrives. Each row of a windowed report carries the `since` it
+applied. The controller advertises this as the optional `usage-window` capability. Fri
+sends a window only to a controller that offers it, and names the window only when every
+row carries it, so a controller rolled back under a running Fri reads as all-time.
 
 ### Connect Fri on the personal VM
 

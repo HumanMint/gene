@@ -162,7 +162,7 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
             moved(db, guild, conversation, user, row, 'Your list here')
         note = personal_note({'category': row['category'], 'evidence': evidence}, evidence) if action == 'replace' else None
         if action == 'replace' and not note:
-            raise ValueError('Say what you’re doing in your own words, such as I’m working on a mod.'
+            raise ValueError('Say what you’re doing, such as I’m working on a mod.'
                              if row['category'] == 'projects' else
                              'Use a short first-person preference, such as I like chess.')
         for fence in fences():  # See removed().

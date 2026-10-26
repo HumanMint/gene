@@ -662,3 +662,15 @@ def test_a_retried_mention_save_answers_as_the_first_did(h):  # noqa: F811
     body = mention_turn(scope, revision=grant['revision'])
     for _ in range(2):
         assert post(h, '/chat/turn', body).json() == {'ok': True, 'first_memory': False, 'kept': False}
+
+
+def test_context_says_where_each_profile_note_was_said_beside_the_notes(store):
+    say(store)
+    say(store, 'I like restricted chess', conversation='public:5', audience='conversation')
+    context = store.chat_context('123', 'public:5', '20', True)
+    assert [(note['scope'], note['evidence']) for note in context['personal_memory']['notes']] == [
+        ('server', 'I like Minecraft'), ('here', 'I like restricted chess')]
+    # Beside the notes, so a Fri that passes notes to its model whole never sends where they were said.
+    assert all('origin' not in note for note in context['personal_memory']['notes'])
+    assert context['profile_origins'] == ['public:1', None]
+    assert 'profile_origins' not in store.chat_context('123', 'public:5', '20', False)

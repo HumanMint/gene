@@ -131,6 +131,26 @@ carries `withdrawn: true` and no title, so its `rejected` state isn't mistaken f
 decision. Withdrawal refreshes `updated`, so it stays listed for a week. With memory off the list is
 empty. Older companions ignore the field.
 
+## Open loops in context
+
+`chat_context` also returns `loops`, the speaker's own unfinished things that belong to that
+conversation, so the companion knows them without a tool call. Each is scoped exactly like the tool or
+card that already shows it there:
+
+- `reminders`: in a private conversation, the speaker's reminders whose `dm_id` matches it (as
+  `reminder_list`), upcoming first, plus any due in the last day with their delivery state, up to five.
+  A pending, scheduled or claimed reminder whose privacy revision no longer matches is
+  `will_not_send`, since confirming and delivering both check it. A `/fri` panel conversation is
+  private too and gets an empty list; the companion nulls it outside DMs.
+- `saved_work`: open items saved in this exact conversation (as `work_list`), title and `updated`.
+- `game_nights`: in a public conversation, cards the speaker organized in that channel or thread that
+  haven't happened (or started under three hours ago), with the card's own availability and RSVP
+  counts. Never who voted or what they chose.
+
+A kind that can't show in the conversation is `null`. With memory off, every list is empty. It runs
+the same prune steps as the list endpoints, so states match. No schema change, and older companions
+ignore the field.
+
 ## Release and recovery
 
 The trusted coordinator is `python -m gene.fri_release <full-reviewed-fri-sha>`.

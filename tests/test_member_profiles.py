@@ -770,3 +770,15 @@ def test_moves_over_the_api(controls_api):  # noqa: F811
     assert kept.status_code == 200 and kept.json()['entries'][0]['scope'] == 'private:9'
     bad = client.post(f"/chat/memory/notes/{note['id']}", headers=headers('fri'), json={**body, 'action': 'move'})
     assert bad.status_code == 422
+
+
+def test_context_says_where_each_profile_note_was_said_beside_the_notes(store):
+    say(store)
+    say(store, 'I like restricted chess', conversation='public:5', audience='conversation')
+    context = store.chat_context('123', 'public:5', '20', True)
+    assert [(note['scope'], note['evidence']) for note in context['personal_memory']['notes']] == [
+        ('server', 'I like Minecraft'), ('here', 'I like restricted chess')]
+    # Beside the notes, so a Fri that passes notes to its model whole never sends where they were said.
+    assert all('origin' not in note for note in context['personal_memory']['notes'])
+    assert context['profile_origins'] == ['public:1', None]
+    assert 'profile_origins' not in store.chat_context('123', 'public:5', '20', False)

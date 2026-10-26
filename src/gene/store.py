@@ -608,7 +608,10 @@ class Store:
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
             db.execute('DELETE FROM web_requests WHERE created<?', (time.time()-600,))
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
-            profile = self._personal_context(db, guild_id, channel_id, user_id, profiles)
+            profile = self._personal_context(db, guild_id, channel_id, user_id, profiles, origins=profiles)
+            # Where each profile note was said, beside the notes rather than in them: an older Fri passes the
+            # notes to its model whole. A newer one drops a note said where not everyone can read now (fri #98).
+            origins = [note.pop('origin') for note in profile['notes']] if profiles else None
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             turns = [dict(row) for row in db.execute(
                 'SELECT id,input,reply,source,at,response_kind,reaction,allow_closing,burst,provenance,attributed '
@@ -637,6 +640,7 @@ class Store:
                         'SELECT receipt FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=? ORDER BY id DESC LIMIT 3',
                         (guild_id, channel_id, user_id))],
                     'personal_memory': profile,
+                    **({'profile_origins': origins} if profiles else {}),
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
 
     def _elsewhere(self, db, guild_id, conversation, user_id):
@@ -987,10 +991,11 @@ class Store:
                     'memory_scope': 'server' if scope == SERVER else 'conversation'}
 
     @staticmethod
-    def _personal_context(db, guild_id, channel_id, user_id, profiles=True):
+    def _personal_context(db, guild_id, channel_id, user_id, profiles=True, origins=False):
         """The member's profile and this conversation's own notes: never another conversation's.
 
         An older Fri (profiles=False) gets only this conversation's notes, within the bounds it was built for.
+        origins: each note also says where a profile note was said (see chat_context), for Fri to recheck.
         """
         from .fri_memory_store import HORIZON, SERVER, fences, limit
         db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
@@ -1013,9 +1018,10 @@ class Store:
         return {'enabled': bool(row[0]) if row else True,
                 'notes': [{'category': r['category'], 'evidence': r['evidence'],
                            'scope': 'server' if scope == SERVER else 'here',
-                           **({'provenance': json.loads(r['provenance'] or '[]')} if profiles else {})}
+                           **({'provenance': json.loads(r['provenance'] or '[]')} if profiles else {}),
+                           **({'origin': r['origin'] if scope == SERVER else None} if origins else {})}
                           for scope in ((SERVER, channel_id) if profiles else (channel_id,)) for r in db.execute(
-                              'SELECT category,evidence,provenance FROM personal_notes WHERE guild_id=? AND '
+                              'SELECT category,evidence,provenance,origin FROM personal_notes WHERE guild_id=? AND '
                               "channel_id=? AND user_id=? AND (? OR provenance IS NULL OR provenance='[]') "
                               'ORDER BY at DESC LIMIT ?', (guild_id, scope, user_id, profiles, limit(scope)))]}
 

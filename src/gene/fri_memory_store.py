@@ -12,7 +12,7 @@ from .fri_context import ChatSource
 from .fri_memory import CATEGORIES, MAX_NOTES, PER_CATEGORY, TTL, personal_note
 
 SERVER = 'server'
-PROFILE_NOTES = 15  # Every category full, at PER_CATEGORY each.
+PROFILE_NOTES = 15  # Every learned category full, at PER_CATEGORY each. Projects get there only by the member's Share.
 HORIZON = 5000*86400  # The deepest archive search (exploration_days); see removed().
 
 
@@ -162,7 +162,9 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
             moved(db, guild, conversation, user, row, 'Your list here')
         note = personal_note({'category': row['category'], 'evidence': evidence}, evidence) if action == 'replace' else None
         if action == 'replace' and not note:
-            raise ValueError('Use a short first-person preference, such as I like chess.')
+            raise ValueError('Say what you’re doing, such as I’m working on a mod.'
+                             if row['category'] == 'projects' else
+                             'Use a short first-person preference, such as I like chess.')
         for fence in fences():  # See removed().
             db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
                 'user_id,digest) DO UPDATE SET at=excluded.at', (guild, scope, user, fence, time.time()))

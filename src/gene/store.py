@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .fri_agent_store import initialize
 from .fri_context import ChatSource
-from .fri_memory import TTL, personal_note
+from .fri_memory import CONVERSATION_ONLY, TTL, personal_note
 from .privacy import clean
 from .reviews import pending_notice, pending_review, request_reference
 
@@ -963,14 +963,19 @@ class Store:
             from .fri_memory_store import SERVER, limit
             from .fri_memory_store import save as save_note
             scope = SERVER if audience == 'server' else channel_id
-            first = not db.execute('SELECT 1 FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=?',
-                                   (guild_id, scope, user_id)).fetchone()
-            saved = 0
+            first, fresh = {}, set()  # Whether each scope had no notes before this turn; those it gave a first.
             for candidate in list(notes)[:3]:
                 note = personal_note(candidate, text)
-                if note:
-                    saved += save_note(db, guild_id, scope, user_id, note, time.time(),
-                                       channel_id if scope == SERVER else None, provenance if attributed else None)
+                if not note:
+                    continue
+                # What a member is working on stays where they said it, even in a turn that reaches the profile.
+                where = channel_id if note[0] in CONVERSATION_ONLY else scope
+                if where not in first:
+                    first[where] = not db.execute('SELECT 1 FROM personal_notes WHERE guild_id=? AND channel_id=? '
+                                                  'AND user_id=?', (guild_id, where, user_id)).fetchone()
+                if save_note(db, guild_id, where, user_id, note, time.time(),
+                             channel_id if where == SERVER else None, provenance if attributed else None) and first[where]:
+                    fresh.add(where)
             db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
@@ -987,8 +992,9 @@ class Store:
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',
                        (guild_id, channel_id, user_id, guild_id, channel_id, user_id))
-            return {'ok': True, 'first_memory': bool(saved and first),
-                    'memory_scope': 'server' if scope == SERVER else 'conversation'}
+            shown = SERVER if SERVER in fresh else channel_id if fresh else scope  # The notice names the wider.
+            return {'ok': True, 'first_memory': bool(fresh),
+                    'memory_scope': 'server' if shown == SERVER else 'conversation'}
 
     @staticmethod
     def _personal_context(db, guild_id, channel_id, user_id, profiles=True, origins=False):

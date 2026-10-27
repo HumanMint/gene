@@ -4,7 +4,8 @@ import re
 
 from .privacy import clean
 
-CATEGORIES = ('nickname', 'games', 'music', 'hobbies', 'conversation')
+CATEGORIES = ('nickname', 'games', 'music', 'hobbies', 'conversation', 'projects')
+CONVERSATION_ONLY = ('projects',)  # Kept where it was said; only the member's own Share puts one in their profile.
 MAX_NOTES = 10
 PER_CATEGORY = 3
 TTL = 90 * 86400
@@ -22,7 +23,11 @@ def personal_note(candidate, text):
     before = text[:text.index(evidence)].rstrip()
     if before.endswith(('"', "'", '“', '‘', '>', '`')):
         return None
-    if not re.match(r"(?i)^(?:i (?:like|love|prefer|enjoy|play|usually|mostly)|my (?:favorite|favourite|nickname)|call me)\b", evidence):
+    # What a member is doing is only ever a projects note, and a projects note only ever says what they're doing.
+    if candidate['category'] == 'projects':
+        if not re.match(r"(?i)^(?:i(?:['’]m| am) (?:working on|building)|i main|i['’]ve been playing)\b", evidence):
+            return None
+    elif not re.match(r"(?i)^(?:i (?:like|love|prefer|enjoy|play|usually|mostly)|my (?:favorite|favourite|nickname)|call me)\b", evidence):
         return None
     # Defense in depth; notes are still untrusted data even after validation.
     if re.search(r'(?i)\b(?:ignore|instructions?|system|developer|password|token|secret|address|diagnos\w*|'

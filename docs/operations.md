@@ -368,13 +368,16 @@ uv run --no-sync python scripts/import_history.py --delete-evidence
 
 Shared memory consists of explicit owner-approved facts and operational request/release records.
 Fri retains six exchanges per person and conversation for seven days, plus short personal notes for
-90 days. The notes are exact, validated self-disclosures for nickname, games, music, hobbies, or
-conversation style, with at most three separate entries per category. Each member has one server
+90 days. The notes are exact, validated self-disclosures for nickname, games, music, hobbies,
+conversation style, or projects (what the member is working on, building, maining or has been
+playing), with at most three separate entries per category. Each member has one server
 profile (up to fifteen notes) for what they told Fri in a channel everyone in the server can read;
 Fri decides that from Discord's permissions when it saves, and the profile appears in every
 conversation with that member in the server, including their DMs. Notes said in a DM, the private
 /fri panel, a restricted channel or a private thread stay in that conversation (up to ten each), as
-do all notes saved before member profiles. Fri also sees the member's own latest two messages to it
+do all notes saved before member profiles. A projects note always stays in the conversation where
+it was said, even in a channel everyone can read; only the member's own Share server-wide in My
+memory moves one into their profile. Fri also sees the member's own latest two messages to it
 from other everyone-readable channels in the past twelve hours, without its replies there, since a
 reply can draw on a note that stays in its own conversation; private conversations never reach
 another conversation. A Fri that doesn't ask for profiles (an older release) gets only the current

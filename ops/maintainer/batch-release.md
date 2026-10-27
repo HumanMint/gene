@@ -51,11 +51,12 @@ If Gene deployed a member's request since the last maintainer release, `release.
 - **Fri on rollback.** The rollback holds `gene.fri_release`'s lock before it looks at Fri, so a coordinator that outlived a killed batch shell makes it stop instead of racing it. If the old Fri's pins, record and image are not all in place, it works through the switch backup. It restores `release.env` and `release.json` byte for byte, sets `fri_active_sha` with an audit row, and starts the old runtime. This covers a clean new Fri and an interrupted Fri release alike, and needs no healthy controller. Fri's health is probed once Gene is back.
 
 ## Compatibility boundary
-A rollback never restores a DB snapshot: the old release runs on the migrated DB, after the downgrades for features it lacks. `rehearse` starts the old image on a migrated copy and writes with it, so a schema change it can't run on stops there. Data it would run on but misread is the feature's job: a Gene change whose data an older release would handle wrongly (dropping a privacy removal, say) ships a downgrade module, and gets an entry in `DOWNGRADE_MODULES` and `downgrade_step`. The ones so far, both added after `f667001`:
+A rollback never restores a DB snapshot: the old release runs on the migrated DB, after the downgrades for features it lacks. `rehearse` starts the old image on a migrated copy and writes with it, so a schema change it can't run on stops there. Data it would run on but misread is the feature's job: a Gene change whose data an older release would handle wrongly (dropping a privacy removal, say) ships a downgrade module, and gets an entry in `DOWNGRADE_MODULES` and `downgrade_step`. The ones so far, all added after `f667001`:
 - `gene.fri_reply_checks purge` drops the reply-check tables and settings.
 - `gene.profile_downgrade` deletes member-profile notes, copies their removals to every configured and known channel, and keeps conversation notes and exchanges. It never migrates, and it reads the channels from `FRI_CHANNEL_IDS` and `FRI_HISTORY_CHANNEL_IDS` in `controller.env`.
+- `gene.fri_member_summary purge` drops Fri's member summaries and their daily call stamps, since an older controller could neither show, edit nor erase them.
 
-`7d6e36a` has both features, so a rollback to it or later runs neither. Don't run `gene.provenance_downgrade` either: every release since `f667001` has turn provenance, and it would discard member continuity they support.
+`7d6e36a` has the first two features, so a rollback to it runs only the member-summary purge. Don't run `gene.provenance_downgrade` either: every release since `f667001` has turn provenance, and it would discard member continuity they support.
 
 ## Offline tests
 `FRI_REPO=<fri checkout> ops/maintainer/test/run.sh [t_name ...]` runs the script against mock hosts: stub docker, systemctl and curl, and a controller DB created by the old code as uid 10001. Each `docker run` executes the real command with the image's code: an export of OLD_G, this checkout for G, and FRI_REPO for F. The live release defaults to `f667001`; tests set `MOCK_OLD_G` / `MOCK_OLD_F` for others. It runs as the requested user and refuses anything it does not model. Every phase's exit code and the resulting state are asserted. Scenarios:
@@ -85,7 +86,7 @@ A rollback never restores a DB snapshot: the old release runs on the migrated DB
 - cleanup pruning older release images while keeping this release's, non-release tags and an image a container uses
 - cleanup keeping the previous release's rollback images and, when repeated after a newer release went live, that release's pinned images, including an idle worker's
 - a rollback after resume retried with `BATCH_ATTEMPT=2`, for a Gene release and a Fri-only one, through resume and cleanup
-- a second-day release from `7d6e36a` (marked source, features already there), whose rollback downgrades nothing and keeps profile removals and reply-check findings
+- a second-day release from `7d6e36a` (marked source, features already there), whose rollback keeps profile removals and reply-check findings and removes only member summaries
 - a Fri-only release that never touches Gene, then `rollback-fri` after resume, and `resume-old`
 - a Fri-only release whose `rollback-fri` finds Gene moved by a member request, before it starts and during its fence: it refuses with Fri untouched and development running
 - cleanup, repeated for a finished release while another is staged and drained, keeping every image of the unfinished one

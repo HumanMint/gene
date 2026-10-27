@@ -14,9 +14,10 @@ import httpx
 from PIL import Image, ImageOps
 from redbot.core import commands
 
+from gene.privacy import clean
+
 from .fri_agent_model import STRING, obj
 from .fri_image_request import image_request, receipt_query
-from .privacy import clean
 
 API = 'https://safebooru.donmai.us'
 MAX_BYTES = 4 * 1024 * 1024

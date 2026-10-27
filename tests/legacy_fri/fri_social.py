@@ -11,11 +11,12 @@ import discord
 import httpx
 from redbot.core import commands
 
-from .fri_context import ChatSource, addressed_content, discord_source
+from gene.fri_context import ChatSource, addressed_content, discord_source
+from gene.privacy import clean
+from gene.subscription import private_json
+
 from .fri_errors import ControllerRejected
 from .fri_workspace import send_once
-from .privacy import clean
-from .subscription import private_json
 
 NO_MENTIONS = discord.AllowedMentions.none()
 COMPONENT = re.compile(r'^fri:social:(reminder|plan):([a-f0-9]{32}):(confirm|cancel|publish|vote[0-3]|final[0-3]|going|maybe|cannot)$')

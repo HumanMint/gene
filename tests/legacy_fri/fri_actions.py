@@ -7,17 +7,18 @@ import time
 import discord
 from redbot.core import commands
 
+from gene.fri_context import discord_source
+from gene.fri_conversation import PERSISTENT_MODEL_WRITES
+from gene.fri_pending import Clarification, completion, research_query
+from gene.gene_controls import COMMANDS, arguments, music_control_intent, requested
+from gene.privacy import clean
+from gene.web_policy import public_query
+
 from .fri_agent_model import ATTENTION, DIAGNOSIS
-from .fri_context import discord_source
-from .fri_conversation import PERSISTENT_MODEL_WRITES
 from .fri_errors import ControllerRejected
 from .fri_history_search import READ_ONLY_AFTER_HISTORY, HistorySearch
 from .fri_history_search import requested as history_requested
-from .fri_pending import Clarification, completion, research_query
 from .fri_web import lookup
-from .gene_controls import COMMANDS, arguments, music_control_intent, requested
-from .privacy import clean
-from .web_policy import public_query
 
 
 class Actions:
@@ -62,7 +63,7 @@ class Actions:
         rows = self.conversation.get('message_burst', [])
         if not self.event or len(rows) < 2:
             return None
-        from .fri_conversation import burst_continuation
+        from gene.fri_conversation import burst_continuation
         return burst_continuation(rows[-2], discord_source(self.event), clean(self.event.content, 4000),
             action.get('action'), action.get('argument'), self.revision,
             str(getattr(getattr(self.fri, 'user', None), 'id', '')))
@@ -181,7 +182,7 @@ class Actions:
             return {'blocked': 'Read member evidence cannot be copied into a persistent draft, post or setting. '
                     'Provide the request in a fresh message.'}
         if self.conversation and (self.conversation.get('message_burst') or self.conversation.get('reply_target')):
-            from .fri_conversation import unchanged
+            from gene.fri_conversation import unchanged
             if not await unchanged(self.agent, self.event, self.conversation):
                 return {'blocked': 'The conversation evidence changed. Send a fresh request.'}
         from .fri_images import require_current
@@ -341,7 +342,7 @@ class Actions:
             target = (await self.fri.api('GET', '/controls/catalog')).get('dm_channel_id', '')
             if target not in channels:
                 return {'blocked': 'The configured bot commands channel is not accessible. Ask there instead.'}
-        from .fri_context import discord_source
+        from gene.fri_context import discord_source
         self.sources.add(target)
         submitted = await self.fri.api('POST', '/controls', {**self.scope, 'source': discord_source(self.event).model_dump(),
             'target_channel_id': target, 'request_text': clean(self.event.content, 4000),
@@ -439,7 +440,7 @@ class Actions:
         """Fail closed if access or source privacy changed while the model was answering."""
         try:
             if self.conversation and (self.conversation.get('message_burst') or self.conversation.get('reply_target')):
-                from .fri_conversation import unchanged
+                from gene.fri_conversation import unchanged
                 if not await unchanged(self.agent, self.event, self.conversation):
                     return False
             from .fri_images import unchanged

@@ -6,7 +6,7 @@ import re
 import time
 import uuid
 
-from .privacy import clean
+from gene.privacy import clean
 
 PAGE_SIZE = 10
 MAX_PAGES = 2

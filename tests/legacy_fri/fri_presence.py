@@ -11,8 +11,9 @@ import time
 import discord
 from redbot.core import commands
 
+from gene.private_files import private_json
+
 from .fri_agent_model import STRING, obj
-from .private_files import private_json
 
 LOG = logging.getLogger('fri.presence')
 SCHEMA = obj({'lines': {'type': 'array', 'items': STRING}})

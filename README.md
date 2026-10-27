@@ -75,9 +75,12 @@ version on subsequent calls. The Gene feature deployer only restarts Red; Fri us
 separate release file and a maintainer-only coordinator, `gene.fri_release`.
 
 Some `fri_*` modules remain active controller contracts and persistence. The old
-companion implementation is retained temporarily as a compatibility/rollback
-baseline; future companion features belong in the Fri repository. See
+companion implementation is a test-only baseline in `tests/legacy_fri/`, excluded
+from the installed Gene package and runtime image. Rollback uses retained immutable
+images, and future companion features belong in the Fri repository. See
 [ownership and migration](docs/fri-migration.md) for the precise boundary.
+The staged [service separation](docs/fri-service-separation.md) records what still
+needs to leave Gene before it is a thin Red integration.
 
 Tokens, auth sessions, raw history, databases and private context stay in ignored
 private paths. `gene forgetme true` erases stored user context and cancels pending

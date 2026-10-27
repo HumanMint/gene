@@ -8,10 +8,10 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
-from gene.fri_addressing import addressed_text
-from gene.fri_chat import ChatResult
 from gene.fri_memory import memory_intent, personal_note
 from gene.store import Conflict, Store
+from tests.legacy_fri.fri_addressing import addressed_text
+from tests.legacy_fri.fri_chat import ChatResult
 from tests.test_api import actor, headers
 from tests.test_fri_runtime import configured, event
 

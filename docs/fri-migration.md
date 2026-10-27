@@ -20,11 +20,20 @@ obsolete companion code: `fri_agent_store`, `fri_context`, `fri_conversation`,
 `fri_workspace_store`, and their route modules.
 
 Old companion modules (`fri.py`, `fri_agent.py`, `fri_chat.py`, UI/tools/evaluators)
-remain as a frozen compatibility baseline plus a shared process lock for migration.
-They are not the production companion after cutover. Keep the prior immutable image
-and configuration for initial rollback. Future runtime fixes go to `HumanMint/fri`;
-controller contract fixes still go here. A later reviewed retirement can remove the
-legacy snapshot once old/new compatibility evidence is no longer needed.
+now live in `tests/legacy_fri/`, outside the installed Gene package. Tests import
+that namespace explicitly; no test-only import hook extends the production package.
+Its shared contracts and persistence still come from `gene`, so the controller's
+older-client coverage remains in place. The optional legacy `fri` Compose profile
+is removed; new Gene images cannot start another companion. The active companion
+uses `ops/fri-compose.yml` and the separate Fri image.
+
+Keep the prior immutable image/container and its configuration for initial-cutover
+rollback. The release coordinator still restores that existing container on a
+failed first migration; it never rebuilds it from this test fixture. Independent
+Fri rollback uses its previous compatible independent image. No state, erasure
+fence, delivery receipt or auth bundle is moved or restored by this code cleanup.
+Future runtime fixes go to `HumanMint/fri`; controller contract fixes still go here.
+See `fri-service-separation.md` for the remaining backend ownership work.
 
 The additive `event-mention-chat` capability admits an explicit Discord mention in
 the configured main guild without adding the channel to any allowlist. The Fri-only

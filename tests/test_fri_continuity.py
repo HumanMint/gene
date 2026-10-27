@@ -9,13 +9,13 @@ import discord
 import pytest
 
 from gene.control_store import Controls
-from gene.fri_actions import Actions
-from gene.fri_chat import ChatResult
 from gene.fri_pending import research_query
 from gene.fri_research import start as start_research
-from gene.fri_runner import run
 from gene.gene_controls import requested
 from gene.store import Store
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_chat import ChatResult
+from tests.legacy_fri.fri_runner import run
 from tests.test_api import headers
 from tests.test_fri_actions import harness
 from tests.test_fri_research import RECEIPT
@@ -261,7 +261,7 @@ def test_pending_research_rechecks_source_before_any_web_export(monkeypatch, tmp
         old = SimpleNamespace(author=SimpleNamespace(id=20), webhook_id=None, content='edited request')
         actions.event.channel.fetch_message = AsyncMock(return_value=old)
         fri.api = AsyncMock(return_value={'revision': 0, 'pending': pending if changed == 'edited' else None})
-        with patch('gene.fri_actions.lookup', new=AsyncMock()) as lookup:
+        with patch('tests.legacy_fri.fri_actions.lookup', new=AsyncMock()) as lookup:
             result = await actions.execute({'kind': 'web_search', 'query': pending['topic']})
             assert 'blocked' in result
             lookup.assert_not_awaited()
@@ -334,7 +334,7 @@ def test_real_clarification_to_red_command_keeps_voice_checks_and_receipts(monke
             result = await fri.talk(123, 1, 20, initial['request_text'], 'public', event=original)
             assert result.reply == 'what song?' and calls == []
             assert client.app.state.store.chat_context('123', 'public:1', '20')['pending']
-            with patch('gene.fri_actions.asyncio.sleep', new=deliver):
+            with patch('tests.legacy_fri.fri_actions.asyncio.sleep', new=deliver):
                 result = await fri.talk(123, 1, 20, message.content, 'public', event=message)
             assert result.reply == 'queued it'
             assert len(calls) == 1 and calls[0][1] == song
@@ -386,7 +386,7 @@ def test_irrelevant_research_can_refine_once_without_exporting_extra_context(mon
         second = {**RECEIPT, 'answer': 'Fixture evidence: the specified team has a verified record.', 'sources': ['https://www.buffalobills.com/']}
         replies = [ChatResult(action={'kind': 'web_refine', 'query': ''}), ChatResult(reply='heres how theyre doing', status='completed')]
         fri.chat_once = AsyncMock(side_effect=replies)
-        with patch('gene.fri_actions.lookup', new=AsyncMock(side_effect=[(first, {}, 'completed'), (second, {}, 'completed')])) as lookup:
+        with patch('tests.legacy_fri.fri_actions.lookup', new=AsyncMock(side_effect=[(first, {}, 'completed'), (second, {}, 'completed')])) as lookup:
             result, receipts, research = await run(fri, actions, actions.message, {'actions': {'web_search': {}}},
                 ChatResult(action={'kind': 'web_search', 'query': actions.message}))
             assert result.reply == 'heres how theyre doing' and len(receipts) == 2

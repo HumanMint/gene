@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gene.fri_actions import Actions
-from gene.fri_chat import Chat, ChatResult
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_chat import Chat, ChatResult
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
 from tests.test_fri_research import RECEIPT
@@ -108,7 +108,7 @@ def test_receipt_timeout_never_resubmits_or_cancels_the_gene_command(monkeypatch
         actions.scope = {'guild_id': '123', 'user_id': '20', 'channel_id': '1', 'conversation_id': 'public:1'}
         fri.api = AsyncMock(side_effect=[{'revision': 0}, {'id': 'one-command'}])
         actions.diagnose = AsyncMock(return_value={'kind': 'gene_diagnose', 'assessment': 'Unconfirmed command'})
-        with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock(side_effect=TimeoutError)):
+        with patch('tests.legacy_fri.fri_actions.asyncio.sleep', new=AsyncMock(side_effect=TimeoutError)):
             result = await actions.execute({'kind': 'gene_command', 'action': 'play', 'argument': 'Sad Machine'})
         assert 'uncertain' in result
         assert [call.args[1] for call in fri.api.await_args_list] == ['/chat/context', '/controls']
@@ -139,8 +139,8 @@ def test_uncertain_receipt_diagnosis_runs_once_outside_command_wait_deadline(mon
             assert not deadline.entered
             return {'assessment': 'Cause unknown'}
         actions.diagnose = AsyncMock(side_effect=diagnose)
-        with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock()), \
-             patch('gene.fri_actions.asyncio.timeout', return_value=deadline):
+        with patch('tests.legacy_fri.fri_actions.asyncio.sleep', new=AsyncMock()), \
+             patch('tests.legacy_fri.fri_actions.asyncio.timeout', return_value=deadline):
             result = await actions.execute({'kind': 'gene_command', 'action': 'play', 'argument': 'Sad Machine'})
         assert result['uncertain'] == 'Gene restarted'
         actions.diagnose.assert_awaited_once()

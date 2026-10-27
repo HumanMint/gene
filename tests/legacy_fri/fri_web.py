@@ -8,9 +8,10 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from gene.subscription import RESOURCE, SubscriptionError
+from gene.web_policy import public_url
+
 from .fri_chat import events, usage
-from .subscription import RESOURCE, SubscriptionError
-from .web_policy import public_url
 
 
 async def lookup(chat, query, model, effort, *, previous=None):

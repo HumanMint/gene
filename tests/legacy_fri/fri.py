@@ -14,23 +14,24 @@ from discord import app_commands
 from discord.ext import tasks
 from redbot.core import commands
 
+from gene.fri_context import discord_source
+from gene.fri_memory import describe_memory, memory_intent
+from gene.fri_responses import quick_closure
+from gene.panels import defer_panel
+from gene.privacy import clean
+from gene.reviews import owner_dm_component
+from gene.subscription import Subscription, private_json
+
 from .fri_actions import Actions
 from .fri_addressing import addressed_text
 from .fri_chat import Chat, ChatResult
-from .fri_context import discord_source
 from .fri_errors import ControllerRejected
-from .fri_memory import describe_memory, memory_intent
 from .fri_notices import ReplyInProgress, WaitingNotices, notice_text
 from .fri_panel import DraftView, HomeView, authorized, card, reply, sessions
 from .fri_reports import ReportButton, report_component
 from .fri_requests import request_dm_component
-from .fri_responses import quick_closure
 from .fri_reviews import ReviewButton, notify_owner
 from .fri_usage import describe_usage, usage_requested
-from .panels import defer_panel
-from .privacy import clean
-from .reviews import owner_dm_component
-from .subscription import Subscription, private_json
 
 LOG = logging.getLogger('fri')
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -180,7 +181,7 @@ class Fri(discord.Client):
                     'say “remember me again” if you change your mind. discord messages and backups are separate.'
                     if intent == 'disable' else 'memory’s back on. i’ll pick up small preferences as we talk.')
             return ChatResult(reply=text, status='completed')
-        from .fri_pending import cancelled
+        from gene.fri_pending import cancelled
         if source.kind == 'discord_message' and cancelled(text):
             result = await self.api('POST', '/chat/pending/cancel',
                                     {**scope, 'source': source.model_dump(), 'input': text})
@@ -196,7 +197,7 @@ class Fri(discord.Client):
                 context = await self.api('POST', '/chat/context', scope)
                 conversation = {}
                 if self.agent and source.kind == 'discord_message':
-                    from .fri_conversation import evidence
+                    from gene.fri_conversation import evidence
                     try:
                         conversation = await evidence(self.agent, event, burst)
                     except ValueError as exc:
@@ -277,12 +278,12 @@ class Fri(discord.Client):
                     readable = await actions.channels(fresh=True)
                     context['gene_receipts'] = [r for r in recent.get('receipts', []) if r['channel_id'] in readable]
                     actions.sources.update(r['channel_id'] for r in context['gene_receipts'])
-                    from .gene_controls import current_music_context
+                    from gene.gene_controls import current_music_context
                     actions.music_context = current_music_context(context['gene_receipts'])
                 text = clean(text, 4000)
                 result = await self.chat_once(text, context)
                 if conversation and (conversation.get('message_burst') or conversation.get('reply_target')):
-                    from .fri_conversation import unchanged
+                    from gene.fri_conversation import unchanged
                     if not await unchanged(self.agent, event, conversation):
                         raise commands.UserFeedbackCheckFailure('That conversation changed while I was replying. Ask again for a fresh reply.')
                 from .fri_images import require_current as require_current_images
@@ -471,7 +472,7 @@ class Fri(discord.Client):
 
 
 def main():
-    from .logging import install_secret_filter
+    from gene.logging import install_secret_filter
     install_secret_filter()
     from .fri_instance import instance_lock
     with instance_lock(os.getenv('FRI_DATA', '/data')):

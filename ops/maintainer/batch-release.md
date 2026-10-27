@@ -24,10 +24,10 @@ Owner policy, 2026-10-27: production changes start only in [04:00, 05:00) Americ
   - `accept-evals`, once `evals` has run. With `EVALS_ACCEPTED='<why>'` it records the eval rule's decision to keep a release whose suites had failures.
   - `resume`, once the last `evals` run passed (`evaluated`, from a clean run or `accept-evals`) and `verify-off` passed (`verified_off`). Each `evals` run starts over (`evals_started`), so a failed rerun cancels an earlier pass.
 - **A batch that has resumed the old release** doesn't go forward again.
-- **Waits that cross 05:00:** the script checks again before each switch, image build, check or rehearsal container, and eval suite, and after the drain's wait.
+- **Waits that cross 05:00:** the script checks again before each switch, image build, and every container `stage` and `rehearse` start (checks, module probes, DB copies, migrations, downgrades), before each eval suite, and after the drain's wait.
   - Before `drained` or a switch, a closed window means `drain`, `gene` and `fri` switch nothing and take the safe path themselves: `resume-old`, or `rollback-gene` then `resume-old` once Gene switched.
   - A closed window stops `evals` before its next suite. The release is rolled back and the old one resumed.
-  - A closed window stops `stage` or `rehearse` before its next build or container. Production is untouched, so the phase is repeated in a later window.
+  - A closed window stops `stage` or `rehearse` before its next build or container. Production is untouched, so the phase is repeated in a later window: `stage` removes the trees an interrupted stage left (never after `staged`), and `rehearse` never leaves its DB copies.
 
   Each of these then exits 1.
 - **Unknown clock or zone** counts as closed for forward phases: a clock before 2026-10-27, an unreadable clock, or no zone database. Recovery never reads the clock to decide, and its health probes time out on bash's `SECONDS`, so a failing `date` can't stop a rollback.

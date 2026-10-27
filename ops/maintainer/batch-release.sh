@@ -669,7 +669,7 @@ stage() {
   if fri_changes; then disk+=("fri_backup=$FRI_ROOT/backups:$(( $(du_bytes "$ROOT/data/fri") + db_size ))"); fi
   disk_admission "${disk[@]}"
   for name in "${names[@]}"; do
-    [[ ! -e $STAGE/$name-src ]] || die "$STAGE/$name-src exists from an earlier attempt; inspect and remove it"
+    clear_interrupted "$STAGE/$name-src"
     mkdir -m 700 "$STAGE/$name-src"
     tar -x --no-same-owner -f "$STAGE/$name.tar" -C "$STAGE/$name-src"
     chmod -R a+rX,go-w "$STAGE/$name-src"
@@ -686,7 +686,7 @@ stage() {
       fi
     done
     # The cog release, prepared now so downtime only renames it into place.
-    [[ ! -e $STAGE/cogs-ready ]] || die "$STAGE/cogs-ready exists from an earlier attempt"
+    clear_interrupted "$STAGE/cogs-ready"
     mkdir -m 755 "$STAGE/cogs-ready"
     cp -r "$STAGE/gene-src/cogs" "$STAGE/cogs-ready/cogs"
     chown -R 0:0 "$STAGE/cogs-ready"
@@ -720,7 +720,7 @@ stage() {
   done
   open_for 'the isolated import checks'
   log 'isolated import checks'
-  local isolated=(docker run --rm --network none --user 10001:10001 --read-only --tmpfs /tmp --cap-drop ALL
+  local isolated=(forward_docker run --rm --network none --user 10001:10001 --read-only --tmpfs /tmp --cap-drop ALL
                   --security-opt no-new-privileges:true)
   if gene_changes; then
     "${isolated[@]}" "gene-runtime:$G" python -c 'import gene.api, gene.store, gene.runtime, gene.fri_release, gene.fri_reply_checks, gene.deploy, gene.provenance_downgrade; print("gene imports ok")'
@@ -773,7 +773,7 @@ rehearse() {  # Migrate copies of the live DB with G, then start the exact rollb
     [[ ! -e $test ]] || { echo "FAIL: $test exists; remove it first" >&2; exit 1; }
     trap 'rm -rf "$test"' EXIT  # The copies hold member data; never leave them behind.
     install -d -m 700 -o "${owner%:*}" -g "${owner#*:}" "$test"
-    run=(docker run --rm --network none --user "$owner" --read-only --tmpfs /tmp --cap-drop ALL
+    run=(forward_docker run --rm --network none --user "$owner" --read-only --tmpfs /tmp --cap-drop ALL
          --security-opt no-new-privileges:true --env-file "$ROOT/secrets/controller.env" -v "$test:/data")
     # Asked of both images with a probe that answers yes or no, so one that fails to start stops here
     # rather than skipping a step. The rollback runs exactly the recorded list.
@@ -783,7 +783,7 @@ rehearse() {  # Migrate copies of the live DB with G, then start the exact rollb
     done
     mset downgrades "${downgrades[*]}"
     echo "a rollback downgrades: ${downgrades[*]:-nothing, the old release has every feature G has a downgrade for}"
-    for copy in forward downgrade; do db_copy "$test" "$copy.sqlite3"; done
+    for copy in forward downgrade; do open_for "the $copy copy"; db_copy "$test" "$copy.sqlite3"; done
     start='import sys
 from fastapi.testclient import TestClient
 from gene.api import create_app
@@ -1450,6 +1450,16 @@ window_open() {
   now=$(now_epoch) && [[ $now =~ ^[0-9]+$ ]] || return 1
   state=$(window "$now") || return 1
   [[ $state == open\ * ]]
+}
+forward_docker() {  # docker for stage and rehearse: each container starts inside the window or not at all
+  open_for "the next $PHASE container"
+  docker "$@"
+}
+clear_interrupted() {  # path: a tree stage generates, left by a stage the close cut off; nothing live uses it yet
+  [[ -e $1 ]] || return 0
+  has staged && die "$1 exists after staging; inspect it"
+  log "removing ${1##*/}, left by an interrupted stage"
+  rm -rf -- "$1"
 }
 open_for() {  # what: before a step that changes nothing live (a build), stop once the window has closed
   [[ -n $EXCEPTION ]] || window_open || die "the window closed before $1; production is untouched, so repeat this phase in the next window"

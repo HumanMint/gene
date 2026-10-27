@@ -37,6 +37,7 @@ class FriRelease:
         self.record = self.root / 'release.json'
         self.run = self._run
         self.restart_s = None
+        self.permitted = lambda: True  # main() checks the maintenance window here, right before the switch
 
     @staticmethod
     def _run(args):
@@ -151,6 +152,8 @@ class FriRelease:
         if not before and legacy:
             health = json.loads((self.data/'fri-health.json').read_text())
             legacy_sha = health['sha']
+        if not self.permitted():
+            raise RuntimeError('The maintenance window closed before the Fri switch; nothing was changed')
         stopped = False
         try:
             stopped = True  # Even a partially failed stop needs recovery.
@@ -233,6 +236,7 @@ def main():
         raise SystemExit('Outside the maintenance window [04:00, 05:00) America/Los_Angeles; nothing was changed. '
                          'Only a rollback to the previous Fri runs at any hour.')
     release, started, outcome = FriRelease(args.root, args.gene_root), time.time(), 'failed'
+    release.permitted = lambda: permitted(args.sha, args.root, exception)
     try:
         result = release.deploy(args.sha)
         outcome = 'ok'

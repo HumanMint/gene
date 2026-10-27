@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Maintainer release: Gene control plane + cogs, then Fri. Run as root on the host:
 #   batch-release.sh <phase> <full gene sha> <full fri sha>
-# Phases in order: baseline stage rehearse drain gene fri evals verify-off resume cleanup.
+# Phases in order: baseline stage rehearse drain gene fri evals [accept-evals] verify-off resume cleanup.
 # It upgrades from the live release, which baseline records. When G or F is already live, that half
 # is left alone. Recovery: rollback-gene (reconciles from actual state, safe to repeat), then
 # resume-old. A release that leaves Gene alone rolls back with rollback-fri instead.
@@ -688,13 +688,16 @@ stage() {
     find "$STAGE/cogs-ready" -type f -exec chmod 444 {} +
     mset cogs "$(tree_hash "$STAGE/cogs-ready")"
     log 'building Gene images'
+    open_for 'the Gene runtime build'
     docker build -q -f "$STAGE/gene-src/ops/Dockerfile" --target runtime \
       --label org.opencontainers.image.revision="$G" -t "gene-runtime:$G" "$STAGE/gene-src"
+    open_for 'the Gene worker build'
     docker build -q -f "$STAGE/gene-src/ops/Dockerfile" --target worker \
       --label org.opencontainers.image.revision="$G" -t "gene-worker:$G" "$STAGE/gene-src"
   fi
   if fri_changes; then
     log 'building the Fri image'
+    open_for 'the Fri build'
     docker build -q -f "$STAGE/fri-src/ops/Dockerfile" --build-arg FRI_RELEASE_SHA="$F" \
       -t "fri-runtime:$F" "$STAGE/fri-src"
   fi
@@ -927,7 +930,7 @@ gene() {
   quiet 0  # A fresh player snapshot right before Red stops.
   mark intent:red_stop
   local stopped
-  stopped=$(date +%s)
+  stopped=$(date +%s 2>/dev/null || true)
   compose_gene stop red
   ! container_running "$RED" || die 'Red did not stop'
   tar -C "$ROOT/data" -czf "$B/red.tar.gz" red
@@ -948,7 +951,7 @@ gene() {
   repair_sidecars
   compose_gene up -d --no-deps --force-recreate controller red
   probe_gene "$G" "$started" "$(jget "$MANIFEST" new.runtime.id)"
-  RESTART_S=$(( $(date +%s) - stopped ))
+  RESTART_S=$(since "$stopped")
   mark intent:record
   settings_transition "$OLD_G" "$(jget "$BASELINE" settings.previous_sha)" "$G" "$OLD_G" maintainer_deployed
   mark gene_recorded
@@ -1110,7 +1113,7 @@ fri() {
   fi
   mark intent:fri
   local switching
-  switching=$(date +%s)
+  switching=$(date +%s 2>/dev/null || true)
   if ! "$ROOT/venv/bin/python" -m gene.fri_release "$F"; then
     repair_sidecars
     echo 'FAIL: Fri release failed. State for reconciliation:' >&2
@@ -1123,7 +1126,7 @@ fri() {
   fi
   repair_sidecars
   probe_fri "$F" "$(jget "$MANIFEST" new.fri.id)"
-  RESTART_S=$(( $(date +%s) - switching ))
+  RESTART_S=$(since "$switching")
   mark fri_switched
 }
 
@@ -1131,6 +1134,11 @@ evals() {
   need fri_switched; check_manifest
   local suite failed=()
   for suite in requests sass controls; do
+    if closed_during "the evals (before $suite)"; then
+      if gene_changes; then rollback_gene; else rollback_fri; fi
+      resume_old
+      die 'the window closed before the evals finished; the release was rolled back and development resumed at the old release'
+    fi
     log "eval suite $suite"
     if docker exec "$FRI" python -m fri.fri_eval --suite "$suite" > "$STAGE/eval-$suite.jsonl" 2>&1; then
       echo "suite $suite passed"
@@ -1158,11 +1166,25 @@ stages = (health.get('agent_heartbeat') or {}).get('stages') or {}
 failing = {name: stage.get('error') for name, stage in stages.items() if stage.get('error')}  # exception class names
 print('  stages:', sorted(stages), '| failing:', failing or 'none', '| rejected usage receipts:', health.get('rejected_usage'))
 PY
-  has evaluated || mark evaluated  # The suites ran; keeping the release is the eval rule's call.
+  has evals_ran || mark evals_ran
+  # Every suite passed. With failures, keeping the release is the eval rule's call: accept-evals records it.
+  if (( ${#failed[@]} == 0 )) && ! has evaluated; then mark evaluated; fi
   (( ${#failed[@]} == 0 )) || die "eval suites failed: ${failed[*]}; decide with the owner whether to roll back ($(gene_changes && echo rollback-gene || echo rollback-fri))"
 }
 
 verify_off() {
+  verify_off_check
+  if [[ -d $STAGE ]]; then has verified_off || mark verified_off; fi
+}
+
+accept_evals() {  # The eval rule kept a release whose suites had failures (known misses, a passing rerun).
+  need evals_ran
+  [[ -n ${EVALS_ACCEPTED:-} ]] || die 'set EVALS_ACCEPTED to why the eval rule keeps this release'
+  has evaluated || mark evaluated
+  log "evals accepted: $EVALS_ACCEPTED"
+}
+
+verify_off_check() {
   db_py <<'PY'
 import json, sqlite3
 with sqlite3.connect('file:/data/gene.sqlite3?mode=ro', uri=True, timeout=30) as db:
@@ -1247,7 +1269,7 @@ resume() {
 resume_old() {
   check_manifest
   if has gene_attempted && ! has gene_rolled_back; then die 'a Gene switch was attempted; run rollback-gene first'; fi
-  need drained
+  touched || die "phase needs 'drained' first"  # A drain that timed out after pausing still resumes here.
   if ! has intent:services_old; then
     verify old
     mark intent:services_old
@@ -1397,7 +1419,7 @@ cleanup() {
 # exception, which the log records. src/gene/maintenance.py holds the same window for the deployer.
 ACTIONS=$ROOT/production-actions.jsonl
 EXCEPTION=${MAINTENANCE_EXCEPTION:-}
-STARTED_AT=$(date +%s)
+STARTED_AT=$(date +%s 2>/dev/null || true)  # Instrumentation only: an unreadable clock never blocks recovery.
 RESTART_S='' REFUSED=''
 now_epoch() { TZ=UTC date +%s; }  # The window's clock; the offline tests shift only this call.
 window() {  # epoch: "open|closed <local date> <local time>"; fails on an unknown zone or clock
@@ -1416,6 +1438,9 @@ window_open() {
   now=$(now_epoch) && [[ $now =~ ^[0-9]+$ ]] || return 1
   state=$(window "$now") || return 1
   [[ $state == open\ * ]]
+}
+open_for() {  # what: before a step that changes nothing live (a build), stop once the window has closed
+  [[ -n $EXCEPTION ]] || window_open || die "the window closed before $1; production is untouched, so stage again in the next window"
 }
 closed_during() {  # what: true, with a note, when the window closed during this phase's wait
   [[ -z $EXCEPTION ]] && ! window_open || return 1
@@ -1453,10 +1478,12 @@ sys.exit(3)
 PY
   [[ $? != 3 ]]
 }
+touched() { has drained || has intent:pause; }  # This batch has paused development, or begun to.
 safe_path() {  # What this batch may do outside the window, from its journal.
-  if ! has drained; then echo 'Production is untouched; start again in the next window.'
+  if ! touched; then echo 'Production is untouched; start again in the next window.'
   elif has resumed || has resumed_old; then echo 'This batch has resumed; cleanup waits for the next window.'
-  elif has evaluated; then echo 'Its evals ran: verify-off, then resume, run at any hour (or roll back).'
+  elif has evaluated; then echo 'Its evals passed: verify-off, then resume, run at any hour (or roll back).'
+  elif has evals_ran; then echo 'Its evals ran with failures: under the eval rule, accept-evals (EVALS_ACCEPTED=<why>), verify-off and resume, or roll back.'
   elif gene_changes_now && has gene_attempted && ! has gene_rolled_back; then echo 'Run rollback-gene, then resume-old.'
   elif has intent:fri && ! has fri_rolled_back; then echo 'Run rollback-fri, then resume-old.'
   else echo 'Run resume-old.'; fi
@@ -1468,8 +1495,9 @@ refuse() { REFUSED=$1; echo "REFUSED: $1. $(safe_path)" >&2; exit 4; }
 gate() {
   case $PHASE in
     rollback-gene|rollback-fri|resume-old) return 0 ;;  # Recovery runs at any hour.
-    status|verify-off) has drained && return 0 ;;  # Read checks within a batch that already drained.
-    resume) has evaluated && return 0 ;;  # Development resumes on a release whose evals ran.
+    status|verify-off) touched && return 0 ;;  # Read checks within a batch that paused development.
+    accept-evals) has evals_ran && return 0 ;;  # The eval rule's decision; it changes no service.
+    resume) has evaluated && has verified_off && return 0 ;;  # Service resumes on a release that passed its gates.
   esac
   if has resumed_old && [[ $PHASE =~ ^(drain|gene|fri|evals|resume)$ ]]; then
     refuse 'this batch already resumed the old release; a retry is a new batch (BATCH_ATTEMPT) in a later window'
@@ -1481,6 +1509,12 @@ gate() {
   fi
 }
 live_sha() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1 || true; }
+since() {  # epoch: seconds from then to now, or nothing when either clock read failed
+  local now
+  now=$(date +%s 2>/dev/null) || return 0
+  if [[ $1 =~ ^[0-9]+$ && $now =~ ^[0-9]+$ ]]; then echo $(( now - $1 )); fi
+}
+elapsed() { since "$STARTED_AT"; }
 BEFORE_G=$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA) BEFORE_F=$(live_sha "$FRI_ROOT/release.env" FRI_RELEASE_SHA)
 log_action() {  # rc: this command's line in the production-action log; it never changes the outcome
   trap - ERR; set +e
@@ -1489,7 +1523,7 @@ log_action() {  # rc: this command's line in the production-action log; it never
   if [[ -n $REFUSED ]]; then outcome="refused: $REFUSED"; elif (( rc )); then outcome="failed: exit $rc"; fi
   python3 - "$ACTIONS" "$(now_epoch)" "$PHASE" "$(basename "$STAGE")" "$BEFORE_G" "$BEFORE_F" \
     "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)" "$(live_sha "$FRI_ROOT/release.env" FRI_RELEASE_SHA)" \
-    "$(( $(date +%s) - STARTED_AT ))" "$RESTART_S" "$outcome" "$EXCEPTION" "${SUDO_USER:-$(id -un)}" \
+    "$(elapsed)" "$RESTART_S" "$outcome" "$EXCEPTION" "${SUDO_USER:-$(id -un)}" \
     "${BATCH_TRIGGER:-maintainer}" "$G" "$F" <<'PY' || echo 'WARN: the production-action log was not written' >&2
 import datetime as dt, fcntl, json, os, sys
 (path, now, phase, stage, before_g, before_f, after_g, after_f, duration, restart, outcome, exception, actor,
@@ -1502,7 +1536,7 @@ except Exception:
 row = {'at': local.isoformat(), 'local_date': local.date().isoformat(), 'tz': tz, 'actor': actor, 'trigger': trigger,
        'action': 'batch-release '+phase, 'reason': 'maintainer batch release Gene '+g+' Fri '+f, 'stage': stage,
        'before': {'gene': before_g or None, 'fri': before_f or None}, 'after': {'gene': after_g or None, 'fri': after_f or None},
-       'duration_s': int(duration), 'restart_s': int(restart) if restart else None, 'outcome': outcome,
+       'duration_s': int(duration) if duration else None, 'restart_s': int(restart) if restart else None, 'outcome': outcome,
        'exception': exception or None}
 line, limit = json.dumps(row, sort_keys=True)+'\n', 1 << 20  # Past 1 MiB the log keeps its newest half.
 while True:
@@ -1555,6 +1589,7 @@ case $PHASE in
   fri) fri ;;
   evals) evals ;;
   verify-off) verify_off ;;
+  accept-evals) accept_evals ;;
   resume) resume ;;
   cleanup) cleanup ;;
   status) state; if [[ -f $JOURNAL ]]; then cat "$JOURNAL"; fi ;;

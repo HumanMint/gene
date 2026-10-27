@@ -18,13 +18,23 @@ It never prints secrets: env files are passed to Docker, copied or compared, nev
 ## Maintenance window
 Owner policy, 2026-10-27: production changes start only in [04:00, 05:00) America/Los_Angeles, following daylight saving, and one batch drains per local calendar day. The script checks before anything else, so a refused command takes no lock, creates no staging dir and writes nothing but its log line. It exits 4 and names the batch's safe path.
 - **Inside the window only:** `baseline`, `stage`, `rehearse`, `drain`, `gene`, `fri`, `evals`, `cleanup`. `baseline`, `stage`, `rehearse` and `drain` also refuse when another batch drained today. That's read from the action log; a batch from before the log is dated by its journal's last change. A retry after a rollback is a new batch, so it waits a day.
-- **At any hour:** `rollback-gene`, `rollback-fri`, `resume-old`; `status` and `verify-off` once this batch drained (each starts a throwaway read-only DB container); `resume` once `evals` has run (journal `evaluated`). Outside the window a batch that has resumed the old release doesn't go forward again.
-- **Waits that cross 05:00:** `drain`, `gene` (before its first change) and `fri` (before the switch) check again after their waits. If the window has closed, they switch nothing and take the safe path themselves: `resume-old`, or `rollback-gene` then `resume-old` once Gene switched. Then they exit 1.
-- **Unknown clock or zone** counts as closed: a clock before 2026-10-27, an unreadable clock, or no zone database.
+- **At any hour:**
+  - `rollback-gene`, `rollback-fri` and `resume-old`. `resume-old` also restores service after a `drain` that paused but timed out before `drained`.
+  - `status` and `verify-off`, once this batch has paused development. Each starts a throwaway read-only DB container. `verify-off` records `verified_off`.
+  - `accept-evals`, once `evals` has run. With `EVALS_ACCEPTED='<why>'` it records the eval rule's decision to keep a release whose suites had failures.
+  - `resume`, once the evals passed (`evaluated`, from a clean `evals` or `accept-evals`) and `verify-off` passed (`verified_off`).
+- **A batch that has resumed the old release** doesn't go forward again.
+- **Waits that cross 05:00:** the script checks again before each switch, image build and eval suite, and after the drain's wait.
+  - Before `drained` or a switch, a closed window means `drain`, `gene` and `fri` switch nothing and take the safe path themselves: `resume-old`, or `rollback-gene` then `resume-old` once Gene switched.
+  - A closed window stops `evals` before its next suite. The release is rolled back and the old one resumed.
+  - A closed window stops `stage` before its next build. Production is untouched.
+
+  Each of these then exits 1.
+- **Unknown clock or zone** counts as closed for forward phases: a clock before 2026-10-27, an unreadable clock, or no zone database. Recovery never reads the clock to decide.
 - **Exception:** `MAINTENANCE_EXCEPTION='<who, when, why>'` lets a refused phase run. Set it only on the owner's explicit words for that change. The log records it.
 - **Action log:** `/srv/gene/production-actions.jsonl` (root, 0600). Each command appends one line, except `status`: local time and zone, `local_date`, actor (`SUDO_USER`), trigger (`BATCH_TRIGGER`, default `maintainer`), action, reason, staging dir, live Gene/Fri SHAs before and after, duration, the `gene`/`fri` restart time, outcome (`ok`, `failed: exit N` or `refused: …`) and exception. It holds no secrets or member content. Past 1 MiB it keeps its newest half. `gene.fri_release` and the automatic deployer append to the same file.
 
-The controller holds automatic deployments to the same window: `/deploy/claim` hands out approved feature and repair jobs only in [04:00, 04:50), so the switch starts before the close, and an owner's rollback at any hour. `gene.fri_release` refuses outside the window, except a rollback to the Fri the live one replaced or a `MAINTENANCE_EXCEPTION`. `src/gene/maintenance.py` holds the window for both.
+The controller holds automatic deployments to the same window. `/deploy/claim` hands out approved feature and repair jobs only in [04:00, 04:50), and an owner's rollback at any hour. The deployer checks again before preparing and right before the switch. If preparing ran past the close, it removes the cogs it just installed and fails the job unswitched, and the job needs approving again. `gene.fri_release` checks at start and right before stopping Fri, and refuses outside the window except for a rollback to the Fri the live one replaced or a `MAINTENANCE_EXCEPTION`. `src/gene/maintenance.py` holds the window for both.
 
 ## Before running
 1. Fetch both repos. Confirm G and F are the reviewed mains, and that CI is green on both.
@@ -74,7 +84,7 @@ A rollback never restores a DB snapshot: the old release runs on the migrated DB
 - the full release, with a failing eval suite, then repeats of resume and cleanup
 - a failed health check with auto-rollback, a repeated rollback, then resume-old
 - players on the audio node for the whole window: no switch, then resume-old
-- the maintenance window: refusals outside it with no lock, staging or journal; the daylight-saving day; a drain, a Gene fence and a Fri-only fence whose waits cross 05:00 and resume the old release themselves; switched halves found after 05:00 rolled back at once; a release whose evals ran resumed after 05:00; one batch a day, the owner's exception, and the next day's retry. A fake `date` shifts only the window's clock (`TZ=UTC date +%s`); `tests/test_maintenance.py` covers the exact boundaries with a stopped clock.
+- the maintenance window: refusals outside it with no lock, staging or journal; the daylight-saving day; a drain, a Gene fence and a Fri-only fence whose waits cross 05:00 and resume the old release themselves; a drain that timed out after pausing, resumed after 05:00; a build and an eval suite cut off by the close; switched halves found after 05:00 rolled back at once; a passing release, and one kept by `accept-evals`, resumed after 05:00 once `verify-off` passed; one batch a day, the owner's exception, and the next day's retry. A fake `date` shifts only the window's clock (`TZ=UTC date +%s`); `tests/test_maintenance.py` covers the exact boundaries with a stopped clock.
 - a player appearing mid-switch
 - a failed Fri release that recovers itself, then rollback
 - an interrupted Fri release, reconciled by rollback

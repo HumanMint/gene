@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import time
@@ -106,6 +107,11 @@ class Deployer:
         backup_dir = self.root / 'backups' / job['id']
         backup_dir.mkdir(parents=True, mode=0o700)
         Store(self.root / 'data/controller/gene.sqlite3').backup(backup_dir / 'controller.sqlite3')
+        if job.get('kind') != 'rollback' and not maintenance.is_open():
+            # Preparing took past the close: take back the cogs this job just installed, switch nothing.
+            shutil.rmtree(self.root / 'releases' / sha, ignore_errors=True)
+            raise RuntimeError('The maintenance window closed before the switch; nothing was changed. '
+                               'Approve it again for the next window.')
         stopped = time.time()
         self.compose('stop', 'red')
         try:

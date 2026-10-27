@@ -261,7 +261,13 @@ def test_baseline_outside_the_window_takes_no_lock_and_writes_no_staging(tmp_pat
     ('status', ('baseline', 'drained'), False),
     ('verify-off', ('baseline', 'drained'), False),
     ('resume', ('baseline', 'drained', 'gene_recorded', 'fri_switched'), True),
-    ('resume', ('baseline', 'drained', 'gene_recorded', 'fri_switched', 'evaluated'), False),
+    ('resume', ('baseline', 'drained', 'gene_recorded', 'fri_switched', 'evaluated'), True),
+    ('resume', ('baseline', 'drained', 'gene_recorded', 'fri_switched', 'evals_ran', 'verified_off'), True),
+    ('resume', ('baseline', 'drained', 'gene_recorded', 'fri_switched', 'evaluated', 'verified_off'), False),
+    ('status', ('baseline', 'intent:pause'), False),
+    ('verify-off', ('baseline', 'intent:pause'), False),
+    ('accept-evals', ('baseline', 'drained', 'evals_ran'), False),
+    ('accept-evals', ('baseline', 'drained'), True),
     ('gene', ('baseline', 'drained'), True),
     ('evals', ('baseline', 'drained', 'gene_recorded', 'fri_switched'), True),
     ('cleanup', ('baseline', 'drained', 'resumed'), True),
@@ -341,3 +347,54 @@ def test_the_scripts_log_stays_within_its_bound(tmp_path):
     log = root/'production-actions.jsonl'
     assert log.stat().st_size <= 1 << 20 and stat.S_IMODE(log.stat().st_mode) == 0o600
     assert json.loads(log.read_text().splitlines()[-1])['action'] == 'batch-release baseline'
+
+
+@needs_bash4
+def test_an_unreadable_clock_never_blocks_recovery(tmp_path):
+    bin_dir = tmp_path/'bin'
+    bin_dir.mkdir()
+    (bin_dir/'date').write_text('#!/usr/bin/env bash\nexit 1\n')
+    (bin_dir/'date').chmod(0o755)
+    root = tmp_path/'srv/gene'
+    root.mkdir(parents=True)
+    env = {**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}', 'BATCH_ROOT': str(root),
+           'BATCH_FRI_ROOT': str(tmp_path/'srv/fri')}
+    env.pop('MAINTENANCE_EXCEPTION', None)
+    out = subprocess.run(['bash', str(SCRIPT), 'resume-old', G, F], capture_output=True, text=True, env=env, timeout=60)
+    assert 'REFUSED' not in out.stderr  # past the gate; the empty root then stops it on its own
+    rows = [json.loads(line) for line in (root/'production-actions.jsonl').read_text().splitlines()]
+    assert rows[-1]['action'] == 'batch-release resume-old' and rows[-1]['duration_s'] is None
+    out = subprocess.run(['bash', str(SCRIPT), 'baseline', G, F], capture_output=True, text=True, env=env, timeout=60)
+    assert out.returncode == 4 and not (root/'staging').exists()
+
+
+@needs_bash4
+def test_the_eval_rules_decision_is_recorded_with_its_reason(tmp_path):
+    journal = ('baseline', 'drained', 'gene_recorded', 'fri_switched', 'evals_ran')
+    out, root, _ = script(tmp_path, 'accept-evals', '2026-10-28T05:20:00-07:00', journal)
+    assert out.returncode == 1 and 'set EVALS_ACCEPTED' in out.stderr
+    out, root, rows = script(tmp_path, 'accept-evals', '2026-10-28T05:20:00-07:00', journal,
+                             {'EVALS_ACCEPTED': 'known sass miss; rerun passed'})
+    assert out.returncode == 0 and 'evals accepted: known sass miss' in out.stdout
+    assert (root/f'staging/batch-{G}-{F}/journal').read_text().splitlines()[-1] == 'evaluated'
+
+
+def test_the_deployer_takes_back_a_feature_whose_preparation_ran_past_the_close(tmp_path, monkeypatch):
+    times = iter([at('2026-10-28T04:49:00-07:00'), at('2026-10-28T05:00:30-07:00')])
+    monkeypatch.setattr(maintenance, 'clock', lambda: next(times))
+    worker = deployer(tmp_path)
+    worker.prepare = Mock(side_effect=lambda job: (tmp_path/'releases'/G/'cogs').mkdir(parents=True))
+    with pytest.raises(RuntimeError, match='closed before the switch; nothing was changed'):
+        worker.process({'id': 'job', 'kind': 'feature', 'proposal': {'sha': G, 'base_sha': OLD_G}})
+    worker.compose.assert_not_called()
+    assert not (tmp_path/'releases'/G).exists()
+
+
+def test_fri_release_rechecks_the_window_right_before_its_switch(tmp_path):
+    from tests.test_fri_split import installation
+    release, store, calls = installation(tmp_path)
+    release.permitted = lambda: False
+    with pytest.raises(RuntimeError, match='closed before the Fri switch'):
+        release.deploy('c'*40)
+    assert not [command for command in calls if command[:2] == ['docker', 'compose']]
+    assert json.loads(release.record.read_text())['sha'] == 'b'*40

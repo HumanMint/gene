@@ -2,7 +2,8 @@
 # Only the maintenance-window clock is mocked: batch-release.sh reads it as `TZ=UTC date +%s`, and a
 # test sets $MOCK/clock to "<mock epoch> <real epoch then>" (common.sh's at). It runs on in real time.
 # Every other date call, such as a probe's deadline, stays on the real clock.
-if [[ ${TZ:-} == UTC && $* == +%s && -f ${MOCK:-}/clock ]]; then
+if [[ -e ${MOCK:-}/date-broken ]]; then exit 1  # A test of recovery with no readable clock at all.
+elif [[ ${TZ:-} == UTC && $* == +%s && -f ${MOCK:-}/clock ]]; then
   read -r base set < "$MOCK/clock"
   echo $(( base + $(/bin/date +%s) - set ))
 else

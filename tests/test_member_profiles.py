@@ -823,3 +823,25 @@ def test_context_says_where_each_profile_note_was_said_beside_the_notes(store):
     assert all('origin' not in note for note in context['personal_memory']['notes'])
     assert context['profile_origins'] == ['public:1', None]
     assert 'profile_origins' not in store.chat_context('123', 'public:5', '20', False)
+
+
+def test_a_move_into_a_full_profile_never_counts_the_same_words_in_another_category_as_room(store):
+    """save() matches a note by category and words, so only that exact note already there takes no new slot."""
+    from gene.fri_memory_store import SERVER
+    profile = [('games', 'I like chess'), ('games', 'I like Go'), ('games', 'I like Shogi'),
+               ('music', 'I like jazz'), ('music', 'I like funk'), ('music', 'I like soul'),
+               ('conversation', 'I like puns'), ('conversation', 'I like memes'), ('conversation', 'I like banter'),
+               ('nickname', 'Call me Bo'), ('nickname', 'Call me B'), ('nickname', 'Call me Boss'),
+               ('hobbies', 'I like hiking'), ('hobbies', 'I like biking'), ('projects', "I'm building a mod")]
+    with store.connection() as db:
+        for i, note in enumerate(profile):  # A full profile: 15 notes, hobbies with room.
+            save(db, '123', SERVER, '20', note, time.time()-100+i, 'private:9', ())
+    say(store, 'I like chess', 'hobbies', conversation='private:9', audience='conversation')
+    note = next(row for row in entries(store, '123', 'private:9', '20')['entries']
+                if row['scope'] == 'private:9' and row['category'] == 'hobbies')
+    with pytest.raises(ValueError, match='full'):
+        edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
+    with store.connection() as db:
+        kept = {(r['category'], r['evidence']) for r in db.execute(
+            "SELECT category,evidence FROM personal_notes WHERE channel_id='server' AND user_id='20'")}
+    assert kept == set(profile)  # Nothing pushed out.

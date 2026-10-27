@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .fri_workspace_store import Workspace
 from .privacy import redact
+from .store import LOOP_SETTLED_SECONDS
 
 ACTIVE = ('pending', 'scheduled', 'claimed', 'sending')
 
@@ -89,8 +90,8 @@ class Social:
     def prune(db):
         now = time.time()
         db.execute("UPDATE fri_reminders SET state='expired' WHERE state='pending' AND created<?", (now-900,))
-        # A crash before the sending fence cannot post; after it, never replay.
-        db.execute("UPDATE fri_reminders SET state=CASE WHEN state='sending' THEN 'uncertain' ELSE 'failed' END WHERE state IN ('claimed','sending') AND lease_until<?", (now,))
+        # A crash before the sending fence cannot post; after it, never replay. Settled, it keeps its day in open loops.
+        db.execute("UPDATE fri_reminders SET state=CASE WHEN state='sending' THEN 'uncertain' ELSE 'failed' END,expires=max(expires,lease_until+?) WHERE state IN ('claimed','sending') AND lease_until<?", (LOOP_SETTLED_SECONDS, now))
         db.execute('DELETE FROM fri_reminders WHERE expires<?', (now,))
         db.execute('DELETE FROM fri_plans WHERE expires<?', (now,))
         db.execute("UPDATE fri_plans SET state='expired' WHERE state='pending' AND created<?", (now-900,))
@@ -213,7 +214,9 @@ class Social:
                 raise ValueError('This reminder delivery is closed.')
             if state not in ('sent', 'failed', 'uncertain') or (state == 'sent' and (not message_id or (row['message_id'] and row['message_id'] != message_id))):
                 raise ValueError('A successful delivery needs its exact Discord message ID.')
-            db.execute('UPDATE fri_reminders SET state=?,message_id=? WHERE id=?', (state, message_id, item))
+            # A late send (Fri down most of a week) would otherwise expire before its day in open loops is up.
+            db.execute('UPDATE fri_reminders SET state=?,message_id=?,expires=max(expires,lease_until+?) WHERE id=?',
+                       (state, message_id, LOOP_SETTLED_SECONDS, item))
             return {'state': state}
 
     @staticmethod

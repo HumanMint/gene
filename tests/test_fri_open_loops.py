@@ -141,3 +141,38 @@ def test_a_late_delivery_stays_visible_for_a_day_after_it_settles(store):
     social.reminder_sending(claim['id'], claim['lease'])
     social.reminder_finish(claim['id'], claim['lease'], 'sent', '555')
     assert [r['state'] for r in loops(store)['reminders']] == ['sent']
+
+
+def last_minute(store, social):
+    """Fri was down most of a week: the reminder goes out a minute before its text was due to expire."""
+    row, now = confirmed(social), time.time()
+    with store.connection() as db:
+        db.execute('UPDATE fri_reminders SET due=?,expires=? WHERE id=?', (now-7*86400+60, now+60, row['id']))
+    claim = social.reminder_claim()
+    social.reminder_sending(claim['id'], claim['lease'])
+    return claim, now
+
+
+def stored(store):
+    with store.connection() as db:
+        return db.execute('SELECT COUNT(*) FROM fri_reminders').fetchone()[0]
+
+
+def test_a_send_just_before_expiry_still_stays_a_day_then_goes(store, monkeypatch):
+    social = Social(store)
+    claim, now = last_minute(store, social)
+    social.reminder_finish(claim['id'], claim['lease'], 'sent', '555')
+    monkeypatch.setattr('gene.fri_social_store.time.time', lambda: now+61)
+    assert [r['state'] for r in loops(store)['reminders']] == ['sent']
+    assert [r['state'] for r in social.reminder_list(DM)['items']] == ['sent']
+    monkeypatch.setattr('gene.fri_social_store.time.time', lambda: now+120+86401)
+    assert loops(store)['reminders'] == [] and stored(store) == 0  # Kept no longer than it shows.
+
+
+def test_a_send_that_never_reported_back_just_before_expiry_still_stays_a_day(store, monkeypatch):
+    social = Social(store)
+    _, now = last_minute(store, social)  # Fri crashed mid-send, so the lease runs out instead.
+    monkeypatch.setattr('gene.fri_social_store.time.time', lambda: now+121)
+    assert [r['state'] for r in loops(store)['reminders']] == ['uncertain']
+    monkeypatch.setattr('gene.fri_social_store.time.time', lambda: now+120+86401)
+    assert loops(store)['reminders'] == [] and stored(store) == 0

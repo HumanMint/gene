@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 import os
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -379,9 +380,11 @@ def test_a_refused_fri_release_changes_nothing_and_is_recorded(tmp_path, monkeyp
 
 # The release script itself, run against an empty root: the gate runs before its lock, staging or
 # anything else, so a refusal leaves only its log line.
-def script(tmp_path, phase, when, journal=(), extra_env=None, g=G):
+def script(tmp_path, phase, when, journal=(), extra_env=None, g=G, db=True):
     root = tmp_path/'srv/gene'
     root.mkdir(parents=True, exist_ok=True)
+    if db and not (root/'data/controller/gene.sqlite3').exists():
+        Store(root/'data/controller/gene.sqlite3')  # The daily cap reads the controller's deployments.
     if journal:
         stage = root/f'staging/batch-{g}-{F}'
         stage.mkdir(parents=True, exist_ok=True)
@@ -549,6 +552,151 @@ def test_a_batch_drained_before_the_log_existed_counts_by_its_journal(tmp_path):
     os.utime(legacy/'journal', (stamp, stamp))
     out, _, _ = script(tmp_path, 'baseline', '2026-10-28T04:10:00-07:00')
     assert 'REFUSED' not in out.stderr
+
+
+def controller(root):
+    """The controller DB at the path batch-release.sh reads, set up like the store fixture."""
+    result = Store(root/'data/controller/gene.sqlite3')
+    result.bootstrap(OLD_G)
+    result.update_models([{'id': 'gpt-6-astra', 'name': 'GPT-6 Astra',
+                           'efforts': ['medium', 'high'], 'default_effort': 'medium'}])
+    result.select_model('gpt-6-astra', 'medium', 'owner')
+    result.set_paused(False, 'owner')
+    return result
+
+
+def deploy(store, job, success):
+    """The deployer claims the job and finishes it, without writing a line to the production-action log."""
+    claimed = store.claim_deploy()
+    assert claimed['id'] == job['id']
+    store.finish_deploy(claimed['id'], claimed['lease'], success, 'Healthy' if success else 'Failed')
+
+
+@needs_bash4
+def test_the_daily_cap_counts_a_deployment_the_controller_claimed_without_a_log_line(tmp_path, monkeypatch):
+    # gene #68: the controller's own deployment record decides, whatever reached the action log.
+    root = tmp_path/'srv/gene'
+    store = controller(root)
+    clocks(monkeypatch, '2026-10-27T04:10:00-07:00')
+    deploy(store, approved(store, G, 'message-1'), True)  # yesterday's
+    clocks(monkeypatch, '2026-10-28T04:02:00-07:00')
+    deploy(store, store.rollback('guild', 'owner'), True)  # restoring service never counts
+    out, _, rows = script(tmp_path, 'baseline', '2026-10-28T04:40:00-07:00')
+    assert 'REFUSED' not in out.stderr
+    clocks(monkeypatch, '2026-10-28T04:41:00-07:00')
+    job = approved(store, 'e'*40, 'message-2')
+    deploy(store, job, False)  # claimed today and failed
+    out, _, rows = script(tmp_path, 'stage', '2026-10-28T04:45:00-07:00')
+    assert not [row for row in rows if row['action'].startswith('deploy ')]
+    assert out.returncode == 4
+    assert f'the controller claimed an automatic deployment today: feature job {job["id"]}' in out.stderr
+    assert "CRITICAL_FIX='<reason>'" in out.stderr
+    assert rows[-1]['action'] == 'batch-release stage' and rows[-1]['outcome'].startswith('refused')
+    out, _, _ = script(tmp_path, 'baseline', '2026-10-29T04:05:00-07:00')  # the next day's window
+    assert 'REFUSED' not in out.stderr
+
+
+@needs_bash4
+@pytest.mark.parametrize('job_kind, claimed_at', [
+    (None, '2026-10-28T00:00:00-07:00'),  # its job is gone: it counts, as for the controller
+    ('repair', '2026-10-29T01:00:00-07:00'),  # dated later than now: the clock went back
+])
+def test_the_daily_cap_counts_deployments_as_the_controller_does(tmp_path, job_kind, claimed_at):
+    root = tmp_path/'srv/gene'
+    controller(root)
+    with sqlite3.connect(root/'data/controller/gene.sqlite3') as db:
+        if job_kind:
+            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,state,created,updated,kind) '
+                       "VALUES ('job-1','guild','member','src-1','','request','deployed',?,?,?)",
+                       (at(claimed_at), at(claimed_at), job_kind))
+        db.execute("INSERT INTO deployments VALUES ('job-1',?,?,'deployed',?)", (G, OLD_G, at(claimed_at)))
+    out, _, _ = script(tmp_path, 'baseline', '2026-10-28T04:40:00-07:00')
+    assert out.returncode == 4
+    assert f'the controller claimed an automatic deployment today: {job_kind or "unrecorded"} job job-1' in out.stderr
+
+
+@needs_bash4
+@pytest.mark.parametrize('history', ['missing', 'not a database', 'no deployments table'])
+def test_missing_or_unreadable_deployment_history_holds_the_batch(tmp_path, history):
+    path = tmp_path/'srv/gene/data/controller/gene.sqlite3'
+    path.parent.mkdir(parents=True)
+    if history == 'not a database':
+        path.write_bytes(b'not a database, but long enough to be read as one' * 4)
+    elif history == 'no deployments table':
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    out, root, rows = script(tmp_path, 'baseline', '2026-10-28T04:40:00-07:00', db=False)
+    assert out.returncode == 4 and "the controller's deployment history could not be read" in out.stderr
+    assert not (root/'batch-release.lock').exists() and not (root/'staging').exists()
+    assert rows[-1]['action'] == 'batch-release baseline' and rows[-1]['outcome'].startswith('refused')
+    assert path.exists() is (history != 'missing')  # read-only: a missing DB is never created
+
+
+def pausing(tmp_path, *steps):
+    """batch-release.sh's pause and resume on their own, against a controller DB at tmp_path/data, and the
+    paused setting after: each step is `ours` (the fence's pause), `lost-id` (that pause, killed before its
+    audit id reached the journal), `owner-pause`, `owner-resume` or `resume` (resume_services)."""
+    store = Store(tmp_path/'data/gene.sqlite3')
+    store.set_paused(False, 'owner')
+    owner = f'"{sys.executable}" -c "import sys; from pathlib import Path; from gene.store import Store; ' \
+            'Store(Path(sys.argv[1])).set_paused(sys.argv[2] == \'pause\', \'555\')" "$DATA/gene.sqlite3"'
+    calls = {
+        'ours': 'mark intent:pause; pause_development',
+        'lost-id': "mark intent:pause; pause_development; sed -i '/^paused:/d' \"$JOURNAL\"",
+        'owner-pause': owner + ' pause',  # /pause, as the controller records it
+        'owner-resume': owner + ' resume',
+        'resume': 'resume_services ' + G,
+    }
+    stubs = f'''
+set -Eeuo pipefail
+DATA={tmp_path}/data JOURNAL={tmp_path}/journal STAGE={tmp_path}/staging/batch-x NOTE=''
+db_py() {{ local code; code=$(cat); "{sys.executable}" -c "${{code//\\/data\\//$DATA/}}" "$@"; }}
+systemctl() {{ :; }}
+audit() {{ :; }}
+die() {{ echo "FAIL: $*" >&2; exit 1; }}
+'''
+    body = functions('log', 'mark', 'owns_pause', 'pause_id', 'pause_development', 'unpause_if_ours', 'resume_services')
+    out = subprocess.run(['bash', '-c', stubs + body + '\n' + '\n'.join(calls[step] for step in steps)],
+                         capture_output=True, text=True, timeout=60)
+    with sqlite3.connect(tmp_path/'data/gene.sqlite3') as db:
+        paused = db.execute("SELECT value FROM settings WHERE key='paused'").fetchone()[0]
+        events = db.execute("SELECT actor,action FROM audit WHERE action IN ('pause','resume') ORDER BY id").fetchall()
+    journal = (tmp_path/'journal').read_text().split() if (tmp_path/'journal').exists() else []
+    return out, paused, events[1:], journal  # the fixture's own first resume left out
+
+
+@needs_bash4
+def test_resume_lifts_only_the_batchs_own_latest_pause(tmp_path):
+    out, paused, events, journal = pausing(tmp_path, 'ours', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and events == [('maintainer:claude', 'pause'), ('maintainer:claude', 'resume')]
+    assert journal[-1] == 'done:unpause' and journal[1].startswith('paused:')
+
+
+@needs_bash4
+def test_resume_leaves_a_pause_the_owner_made_after_the_batchs(tmp_path):
+    # gene #69: the owner paused through /pause while the fence waited.
+    out, paused, events, journal = pausing(tmp_path, 'ours', 'owner-pause', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'true' and events == [('maintainer:claude', 'pause'), ('555', 'pause')]
+    assert 'development stays paused: a newer pause' in out.stdout and 'done:unpause' not in journal
+
+
+@needs_bash4
+def test_resume_leaves_development_the_owner_resumed_after_the_batchs_pause(tmp_path):
+    out, paused, events, journal = pausing(tmp_path, 'ours', 'owner-resume', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and events == [('maintainer:claude', 'pause'), ('555', 'resume')]
+    assert 'already resumed' in out.stdout and 'done:unpause' not in journal
+
+
+@needs_bash4
+def test_a_pause_whose_id_never_reached_the_journal_is_known_by_its_batch(tmp_path):
+    out, paused, events, journal = pausing(tmp_path, 'lost-id', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and journal == ['intent:pause', 'done:unpause']
+    out, paused, _, _ = pausing(tmp_path/'owner', 'lost-id', 'owner-pause', 'resume')
+    assert paused == 'true' and 'development stays paused' in out.stdout
 
 
 @needs_bash4

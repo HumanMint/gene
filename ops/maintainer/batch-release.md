@@ -15,6 +15,17 @@ Only one batch command runs at a time on the host: each takes `/srv/gene/batch-r
 
 It never prints secrets: env files are passed to Docker, copied or compared, never echoed. It never starts the legacy `fri` service in Gene's compose or `gene-fri-1`.
 
+## Maintenance window
+Owner policy, 2026-10-27: production changes start only in [04:00, 05:00) America/Los_Angeles, following daylight saving, and one batch drains per local calendar day. The script checks before anything else, so a refused command takes no lock, creates no staging dir and writes nothing but its log line. It exits 4 and names the batch's safe path.
+- **Inside the window only:** `baseline`, `stage`, `rehearse`, `drain`, `gene`, `fri`, `evals`, `cleanup`. `baseline`, `stage`, `rehearse` and `drain` also refuse when another batch drained today. That's read from the action log; a batch from before the log is dated by its journal's last change. A retry after a rollback is a new batch, so it waits a day.
+- **At any hour:** `rollback-gene`, `rollback-fri`, `resume-old`; `status` and `verify-off` once this batch drained (each starts a throwaway read-only DB container); `resume` once `evals` has run (journal `evaluated`). Outside the window a batch that has resumed the old release doesn't go forward again.
+- **Waits that cross 05:00:** `drain`, `gene` (before its first change) and `fri` (before the switch) check again after their waits. If the window has closed, they switch nothing and take the safe path themselves: `resume-old`, or `rollback-gene` then `resume-old` once Gene switched. Then they exit 1.
+- **Unknown clock or zone** counts as closed: a clock before 2026-10-27, an unreadable clock, or no zone database.
+- **Exception:** `MAINTENANCE_EXCEPTION='<who, when, why>'` lets a refused phase run. Set it only on the owner's explicit words for that change. The log records it.
+- **Action log:** `/srv/gene/production-actions.jsonl` (root, 0600). Each command appends one line, except `status`: local time and zone, `local_date`, actor (`SUDO_USER`), trigger (`BATCH_TRIGGER`, default `maintainer`), action, reason, staging dir, live Gene/Fri SHAs before and after, duration, the `gene`/`fri` restart time, outcome (`ok`, `failed: exit N` or `refused: …`) and exception. It holds no secrets or member content. Past 1 MiB it keeps its newest half. `gene.fri_release` and the automatic deployer append to the same file.
+
+The controller holds automatic deployments to the same window: `/deploy/claim` hands out approved feature and repair jobs only in [04:00, 04:50), so the switch starts before the close, and an owner's rollback at any hour. `gene.fri_release` refuses outside the window, except a rollback to the Fri the live one replaced or a `MAINTENANCE_EXCEPTION`. `src/gene/maintenance.py` holds the window for both.
+
 ## Before running
 1. Fetch both repos. Confirm G and F are the reviewed mains, and that CI is green on both.
 2. Read F's `docs/integration-pair.json` and get `verified_controller_commit`. It must be an ancestor of G.
@@ -23,7 +34,7 @@ It never prints secrets: env files are passed to Docker, copied or compared, nev
    - `sha256sum gene.tar > gene.tar.sha256`, and the same for `fri.tar`
 4. Upload the script itself to a root-owned path.
 
-Retrying the same G and F after a rollback needs a fresh staging dir and result file: set `BATCH_ATTEMPT=2` (any number) on every phase, and, when the failed attempt changed Gene, move its `releases/$G` aside first. A Fri-only attempt never created `releases/$G`: that tree is the running Gene's cogs, so leave it in place. The retry stages in `batch-$G-$F-2` and writes `maintainer-$G-$F-2-result.json`.
+Retrying the same G and F after a rollback is a new batch, so it waits for a later day's window. It needs a fresh staging dir and result file: set `BATCH_ATTEMPT=2` (any number) on every phase, and, when the failed attempt changed Gene, move its `releases/$G` aside first. A Fri-only attempt never created `releases/$G`: that tree is the running Gene's cogs, so leave it in place. The retry stages in `batch-$G-$F-2` and writes `maintainer-$G-$F-2-result.json`.
 
 If Gene deployed a member's request since the last maintainer release, `release.env` names that request's SHA while the runtime image and worker pin still carry the maintainer release, and `baseline` refuses (`runtime_label`, `worker_pin`). Make sure the request is in G, then reconcile by hand.
 
@@ -63,6 +74,7 @@ A rollback never restores a DB snapshot: the old release runs on the migrated DB
 - the full release, with a failing eval suite, then repeats of resume and cleanup
 - a failed health check with auto-rollback, a repeated rollback, then resume-old
 - players on the audio node for the whole window: no switch, then resume-old
+- the maintenance window: refusals outside it with no lock, staging or journal; the daylight-saving day; a drain, a Gene fence and a Fri-only fence whose waits cross 05:00 and resume the old release themselves; switched halves found after 05:00 rolled back at once; a release whose evals ran resumed after 05:00; one batch a day, the owner's exception, and the next day's retry. A fake `date` shifts only the window's clock (`TZ=UTC date +%s`); `tests/test_maintenance.py` covers the exact boundaries with a stopped clock.
 - a player appearing mid-switch
 - a failed Fri release that recovers itself, then rollback
 - an interrupted Fri release, reconciled by rollback

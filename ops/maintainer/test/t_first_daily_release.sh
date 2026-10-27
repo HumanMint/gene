@@ -7,6 +7,7 @@ export MOCK_OLD_G=7d6e36a0e4621bbce75dd9c404b4864b90699b19 MOCK_OLD_F=261b47c9d3
 legacy=$BATCH_ROOT/staging/batch-$OLD_G
 mkdir -p "$legacy"
 printf 'baselined\nstaged\nrehearsed\ndrained\ngene_recorded\nfri_switched\nresumed\n' > "$legacy/journal"
+touch -d 2026-10-20T03:30:00-07:00 "$legacy/journal"  # It drained on an earlier day.
 echo '{"gene": "'"$OLD_G"'", "fri": "'"$OLD_F"'", "old": {}, "new": {}}' > "$legacy/manifest.json"
 echo '{"sha": "'"$OLD_G"'", "previous": "f66700140d91dc80df0bca8ae29ca671ca67f80e", "success": true}' > "$BATCH_ROOT/maintainer-$OLD_G-result.json"
 before=$(cd "$BATCH_ROOT" && sha256sum "staging/batch-$OLD_G/journal" "staging/batch-$OLD_G/manifest.json" "maintainer-$OLD_G-result.json")
@@ -16,6 +17,7 @@ run 0 rollback-gene 1
 run 0 resume-old 1
 expect old false up
 mv "$BATCH_ROOT/releases/$G" "$BATCH_ROOT/releases/$G.attempt-1"
+next_day  # A retry is a new batch, and one batch drains per local day.
 export BATCH_ATTEMPT=2
 ST=$ST-2
 release

@@ -8,6 +8,7 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
+from . import maintenance
 from .fri_agent_store import initialize
 from .fri_context import ChatSource
 from .fri_memory import CONVERSATION_ONLY, TTL, personal_note
@@ -489,8 +490,13 @@ class Store:
             if db.execute('SELECT 1 FROM jobs WHERE state IN ("deploying","building")').fetchone():
                 return None
             rows = db.execute('SELECT * FROM jobs WHERE state="approved" ORDER BY updated').fetchall()
+            # Outside the maintenance window approved work waits for the next one, untouched; an owner's
+            # rollback restores service at any hour. Claims stop early enough for the switch to start in time.
+            window = maintenance.is_open(margin=maintenance.CLAIM_MARGIN)
             for row in rows:
                 job = self._job(row)
+                if not window and job['kind'] != 'rollback':
+                    continue
                 proposal = job['proposal']
                 if job['kind'] == 'repair':
                     from .repair_policy import ACTOR

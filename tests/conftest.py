@@ -12,6 +12,13 @@ from gene.store import Store
 
 gene_test_config = TemporaryDirectory(prefix='gene-test-config-')
 os.environ['XDG_CONFIG_HOME'] = gene_test_config.name
+INSIDE_WINDOW = 1793185500.0  # 2026-10-28T04:05:00-07:00
+
+
+@pytest.fixture(autouse=True)
+def inside_maintenance_window(monkeypatch):
+    """Deployments start only in the production window; tests not about the window run inside it."""
+    monkeypatch.setattr('gene.maintenance.clock', lambda: INSIDE_WINDOW)
 
 
 @pytest.fixture

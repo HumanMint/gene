@@ -8,6 +8,7 @@ run 0 rollback-gene 1
 run 0 resume-old 1
 expect old false up
 mv "$BATCH_ROOT/releases/$G" "$BATCH_ROOT/releases/$G.attempt-1"
+next_day  # A retry is a new batch, and one batch drains per local day.
 export BATCH_ATTEMPT=2
 ST=$ST-2
 release

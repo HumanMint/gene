@@ -850,6 +850,10 @@ drain() {
   need baseline; check_manifest
   fence
   has drained || mark drained
+  if closed_during 'the drain'; then
+    resume_old
+    die 'the window closed during the drain; development resumed at the old release, and this pair waits for a later window'
+  fi
 }
 
 on_gene_error() {
@@ -910,6 +914,10 @@ gene() {
   mset backup "$B"
   rename_preflight "$B"
   # Nothing has changed yet. From here on every failure rolls back from this complete backup.
+  if closed_during 'the Gene backup'; then
+    resume_old
+    die 'the window closed before the Gene switch; nothing switched, development resumed at the old release'
+  fi
   mark gene_attempted
   SWITCHING=1
   trap on_gene_error ERR
@@ -918,6 +926,8 @@ gene() {
   rename_tree "$STAGE/cogs-ready" "$ROOT/releases/$G"
   quiet 0  # A fresh player snapshot right before Red stops.
   mark intent:red_stop
+  local stopped
+  stopped=$(date +%s)
   compose_gene stop red
   ! container_running "$RED" || die 'Red did not stop'
   tar -C "$ROOT/data" -czf "$B/red.tar.gz" red
@@ -938,6 +948,7 @@ gene() {
   repair_sidecars
   compose_gene up -d --no-deps --force-recreate controller red
   probe_gene "$G" "$started" "$(jget "$MANIFEST" new.runtime.id)"
+  RESTART_S=$(( $(date +%s) - stopped ))
   mark intent:record
   settings_transition "$OLD_G" "$(jget "$BASELINE" settings.previous_sha)" "$G" "$OLD_G" maintainer_deployed
   mark gene_recorded
@@ -1092,7 +1103,14 @@ fri() {
     mset backup "$B"
     mark fri_backup
   fi
+  if closed_during 'the Fri preparation'; then
+    if gene_changes; then rollback_gene; fi
+    resume_old
+    die 'the window closed before the Fri switch; development resumed at the old release'
+  fi
   mark intent:fri
+  local switching
+  switching=$(date +%s)
   if ! "$ROOT/venv/bin/python" -m gene.fri_release "$F"; then
     repair_sidecars
     echo 'FAIL: Fri release failed. State for reconciliation:' >&2
@@ -1105,6 +1123,7 @@ fri() {
   fi
   repair_sidecars
   probe_fri "$F" "$(jget "$MANIFEST" new.fri.id)"
+  RESTART_S=$(( $(date +%s) - switching ))
   mark fri_switched
 }
 
@@ -1139,6 +1158,7 @@ stages = (health.get('agent_heartbeat') or {}).get('stages') or {}
 failing = {name: stage.get('error') for name, stage in stages.items() if stage.get('error')}  # exception class names
 print('  stages:', sorted(stages), '| failing:', failing or 'none', '| rejected usage receipts:', health.get('rejected_usage'))
 PY
+  has evaluated || mark evaluated  # The suites ran; keeping the release is the eval rule's call.
   (( ${#failed[@]} == 0 )) || die "eval suites failed: ${failed[*]}; decide with the owner whether to roll back ($(gene_changes && echo rollback-gene || echo rollback-fri))"
 }
 
@@ -1370,6 +1390,146 @@ cleanup() {
   done
 }
 
+# Production maintenance window (owner policy, 2026-10-27). Forward phases start only in [04:00, 05:00)
+# America/Los_Angeles, following daylight saving, and only one batch drains per local day. A wait that
+# crosses the close takes the batch's safe path instead of switching. Recovery runs at any hour, and
+# an unknown clock or zone counts as closed. MAINTENANCE_EXCEPTION carries the owner's explicit
+# exception, which the log records. src/gene/maintenance.py holds the same window for the deployer.
+ACTIONS=$ROOT/production-actions.jsonl
+EXCEPTION=${MAINTENANCE_EXCEPTION:-}
+STARTED_AT=$(date +%s)
+RESTART_S='' REFUSED=''
+now_epoch() { TZ=UTC date +%s; }  # The window's clock; the offline tests shift only this call.
+window() {  # epoch: "open|closed <local date> <local time>"; fails on an unknown zone or clock
+  python3 - "$1" <<'PY'
+import datetime as dt, sys
+from zoneinfo import ZoneInfo
+stamp = int(sys.argv[1])
+if stamp < 1793059200:  # 2026-10-27T00:00Z: a clock that reads earlier than the policy is wrong
+    sys.exit('the clock reads before 2026-10-27')
+local = dt.datetime.fromtimestamp(stamp, ZoneInfo('America/Los_Angeles'))
+print('open' if dt.time(4) <= local.time() < dt.time(5) else 'closed', local.date().isoformat(), local.isoformat())
+PY
+}
+window_open() {
+  local now state
+  now=$(now_epoch) && [[ $now =~ ^[0-9]+$ ]] || return 1
+  state=$(window "$now") || return 1
+  [[ $state == open\ * ]]
+}
+closed_during() {  # what: true, with a note, when the window closed during this phase's wait
+  [[ -z $EXCEPTION ]] && ! window_open || return 1
+  log "the maintenance window closed during $1: no switch starts now; taking this batch's safe path"
+}
+drained_today() {  # True when another batch drained on today's local date. Anything unknown counts as drained.
+  local now
+  now=$(now_epoch) && [[ $now =~ ^[0-9]+$ ]] || return 0
+  python3 - "$now" "$ROOT/staging" "$STAGE" "$ACTIONS" <<'PY' && return 0
+import datetime as dt, glob, json, os, sys
+from zoneinfo import ZoneInfo
+zone = ZoneInfo('America/Los_Angeles')
+now, staging, stage, actions = int(sys.argv[1]), *sys.argv[2:5]
+today = dt.datetime.fromtimestamp(now, zone).date().isoformat()
+logged = {}  # batch dir name -> local dates its drain completed, from the action log
+if os.path.exists(actions):
+    for line in open(actions, errors='replace'):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get('action') == 'batch-release drain' and row.get('outcome') == 'ok':
+            logged.setdefault(row.get('stage'), set()).add(row.get('local_date'))
+for journal in glob.glob(staging+'/batch-*/journal'):
+    path = os.path.dirname(journal)
+    if path == stage or 'drained' not in open(journal).read().split():
+        continue
+    # A batch drained before the log existed is dated by its journal's last change.
+    dates = logged.get(os.path.basename(path)) or {
+        dt.datetime.fromtimestamp(os.stat(journal).st_mtime, zone).date().isoformat()}
+    if today in dates:
+        print('drained today:', os.path.basename(path))
+        sys.exit(0)
+sys.exit(3)
+PY
+  [[ $? != 3 ]]
+}
+safe_path() {  # What this batch may do outside the window, from its journal.
+  if ! has drained; then echo 'Production is untouched; start again in the next window.'
+  elif has resumed || has resumed_old; then echo 'This batch has resumed; cleanup waits for the next window.'
+  elif has evaluated; then echo 'Its evals ran: verify-off, then resume, run at any hour (or roll back).'
+  elif gene_changes_now && has gene_attempted && ! has gene_rolled_back; then echo 'Run rollback-gene, then resume-old.'
+  elif has intent:fri && ! has fri_rolled_back; then echo 'Run rollback-fri, then resume-old.'
+  else echo 'Run resume-old.'; fi
+}
+gene_changes_now() {  # gene_changes before OLD_G is known: from the manifest, if there is one
+  [[ -f $MANIFEST ]] && [[ $G != "$(jget "$MANIFEST" old_gene)" ]]
+}
+refuse() { REFUSED=$1; echo "REFUSED: $1. $(safe_path)" >&2; exit 4; }
+gate() {
+  case $PHASE in
+    rollback-gene|rollback-fri|resume-old) return 0 ;;  # Recovery runs at any hour.
+    status|verify-off) has drained && return 0 ;;  # Read checks within a batch that already drained.
+    resume) has evaluated && return 0 ;;  # Development resumes on a release whose evals ran.
+  esac
+  if has resumed_old && [[ $PHASE =~ ^(drain|gene|fri|evals|resume)$ ]]; then
+    refuse 'this batch already resumed the old release; a retry is a new batch (BATCH_ATTEMPT) in a later window'
+  fi
+  if [[ -n $EXCEPTION ]]; then log "maintenance exception: $EXCEPTION"; return 0; fi
+  window_open || refuse 'outside the maintenance window [04:00, 05:00) America/Los_Angeles, or the clock or zone is unknown'
+  if [[ $PHASE =~ ^(baseline|stage|rehearse|drain)$ ]] && ! has drained && drained_today; then
+    refuse 'a batch already drained today; one regular batch per local day'
+  fi
+}
+live_sha() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1 || true; }
+BEFORE_G=$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA) BEFORE_F=$(live_sha "$FRI_ROOT/release.env" FRI_RELEASE_SHA)
+log_action() {  # rc: this command's line in the production-action log; it never changes the outcome
+  trap - ERR; set +e
+  local rc=$1 outcome=ok
+  [[ $PHASE == status ]] && return 0
+  if [[ -n $REFUSED ]]; then outcome="refused: $REFUSED"; elif (( rc )); then outcome="failed: exit $rc"; fi
+  python3 - "$ACTIONS" "$(now_epoch)" "$PHASE" "$(basename "$STAGE")" "$BEFORE_G" "$BEFORE_F" \
+    "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)" "$(live_sha "$FRI_ROOT/release.env" FRI_RELEASE_SHA)" \
+    "$(( $(date +%s) - STARTED_AT ))" "$RESTART_S" "$outcome" "$EXCEPTION" "${SUDO_USER:-$(id -un)}" \
+    "${BATCH_TRIGGER:-maintainer}" "$G" "$F" <<'PY' || echo 'WARN: the production-action log was not written' >&2
+import datetime as dt, fcntl, json, os, sys
+(path, now, phase, stage, before_g, before_f, after_g, after_f, duration, restart, outcome, exception, actor,
+ trigger, g, f) = sys.argv[1:17]
+try:
+    from zoneinfo import ZoneInfo
+    local, tz = dt.datetime.fromtimestamp(int(now), ZoneInfo('America/Los_Angeles')), 'America/Los_Angeles'
+except Exception:
+    local, tz = dt.datetime.now(dt.timezone.utc), 'UTC (zone unavailable)'
+row = {'at': local.isoformat(), 'local_date': local.date().isoformat(), 'tz': tz, 'actor': actor, 'trigger': trigger,
+       'action': 'batch-release '+phase, 'reason': 'maintainer batch release Gene '+g+' Fri '+f, 'stage': stage,
+       'before': {'gene': before_g or None, 'fri': before_f or None}, 'after': {'gene': after_g or None, 'fri': after_f or None},
+       'duration_s': int(duration), 'restart_s': int(restart) if restart else None, 'outcome': outcome,
+       'exception': exception or None}
+line, limit = json.dumps(row, sort_keys=True)+'\n', 1 << 20  # Past 1 MiB the log keeps its newest half.
+while True:
+    with open(path, 'a') as log:
+        os.fchmod(log.fileno(), 0o600)
+        fcntl.flock(log, fcntl.LOCK_EX)
+        if os.fstat(log.fileno()).st_ino != os.stat(path).st_ino:
+            continue  # Trimmed meanwhile: write to the file that is there now.
+        log.write(line)
+        log.flush()
+        if log.tell() > limit:
+            kept, size = [], 0
+            for old in reversed(open(path, 'rb').read().splitlines(keepends=True)):
+                if size+len(old) > limit//2:
+                    break
+                kept.append(old)
+                size += len(old)
+            with open(path+'.tmp', 'wb') as out:
+                os.fchmod(out.fileno(), 0o600)
+                out.writelines(reversed(kept))
+                out.flush()
+                os.fsync(out.fileno())
+            os.replace(path+'.tmp', path)
+        break
+PY
+}
+
 batch_lock() {
   # Host-wide. Children inherit the descriptor, so a command a killed batch shell left running (a
   # compose up, a coordinator, a DB helper) keeps the lock until it ends, and nothing races it.
@@ -1377,6 +1537,8 @@ batch_lock() {
   flock -n 8 || die "another batch-release command, or one a killed run left behind, still is running; find it with: fuser -v $ROOT/batch-release.lock"
 }
 
+trap 'log_action $?' EXIT
+gate
 [[ $PHASE == status ]] || batch_lock
 if [[ -f $MANIFEST ]]; then
   OLD_G=$(jget "$MANIFEST" old_gene) && OLD_F=$(jget "$MANIFEST" old_fri) || die "$MANIFEST names no old release"

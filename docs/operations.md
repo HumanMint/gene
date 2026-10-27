@@ -165,7 +165,8 @@ in the audio image for decoding, seeking, and timed sender checks without a comp
 
 The owner's direct request in this Codex chat authorizes implementation and deployment
 without a second approval, inside the production maintenance window: [04:00, 05:00)
-America/Los_Angeles, one regular batch a day (`ops/maintainer/batch-release.md`). Test the change, commit and push it, record the complete
+America/Los_Angeles, one production batch a day across the maintainer batch and automatic
+deployments, unless it's a critical fix (`ops/maintainer/batch-release.md`). Test the change, commit and push it, record the complete
 release SHA, and retain the GitHub diff for review. Do not automatically merge to `main`.
 Before switching a release, pause the worker/deployer, confirm no job is building or
 deploying, and back up the controller, stopped Red state, previous source, and release
@@ -304,6 +305,13 @@ accepts an exact duplicate lease/outcome once and never reapplies an older relea
 Changed outcomes or leases are rejected. Retrying a receipt never reruns deployment.
 If the coordinator dies before recording a known result, the existing deployment
 lease remains blocked for operator reconciliation; do not invent or replay its outcome.
+
+Approved feature and repair jobs deploy only in the maintenance window, and only while the day's one
+production batch is unused: an automatic deployment counts once claimed, whatever its outcome, and a
+maintainer batch once it drains. A held job stays approved for a later day. A fix for a crash, data
+loss, a privacy leak or a broken rollback can skip the cap, never the window: on the owner's explicit
+words, mark it with `python -m gene.maintenance critical <job id> --reason '<P0 reason>'` on the host
+(`critical-list` shows the marks). Rollbacks run at any hour and never count.
 
 **Pause development** in Fri’s owner settings stops new work; an already-running job/release is allowed to finish.
 For an emergency, stop `gene-worker` / `gene-deployer` through systemd. The existing bot

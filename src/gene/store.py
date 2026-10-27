@@ -122,6 +122,7 @@ class Store:
             initialize_repairs(db)
             from .requester_notices import initialize as initialize_requester_notices
             initialize_requester_notices(db)
+            maintenance.initialize(db)
             from .runtime_state import initialize as initialize_runtime_state
             initialize_runtime_state(db)
             columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
@@ -508,6 +509,8 @@ class Store:
                 # A rollback still restores service: it proves its release healthy or puts the last one back.
                 if unknown and job['kind'] != 'rollback':
                     continue
+                if job['kind'] != 'rollback' and maintenance.batch_used(db, job):
+                    continue  # Today's one production batch is used: the job waits for a later day, untouched.
                 proposal = job['proposal']
                 if job['kind'] == 'repair':
                     from .repair_policy import ACTOR

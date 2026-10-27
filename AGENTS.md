@@ -41,8 +41,11 @@ or expand feature-job paths to the Fri repository.
   reason, before/after SHAs, restart duration, outcome, exception), never secrets or
   member content. It binds both routes to production:
   `ops/maintainer/batch-release.sh` (with `gene.fri_release`) and the automatic
-  deployer's `/deploy/claim`, including approved feature and repair jobs. Code
-  enforces it on both routes once a release includes it
+  deployer's `/deploy/claim`, including approved feature and repair jobs. The daily batch
+  is shared across both routes (owner, 2026-10-27): a maintainer batch that drains or one
+  automatic feature or repair deployment, whichever comes first; a critical (P0) fix is
+  exempt from that cap, never from the window (`CRITICAL_FIX`, `gene.maintenance critical`),
+  and rollbacks never count. Code enforces it on both routes once a release includes it
   (`ops/maintainer/batch-release.md`). Until that release is live, an approved job can
   still deploy at any hour; don't stop or reconfigure live services outside the window
   to cover that.

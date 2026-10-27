@@ -336,9 +336,9 @@ sudo /srv/gene/venv/bin/python -m gene.runtime_state clear /srv/gene/data/contro
 It refuses another SHA, a stale or unhealthy heartbeat, or a deployment in flight. If a
 different release is what's running, record it through a maintainer release first.
 `batch-release.sh` doesn't read or clear the state; after its `resume`, clear it with the
-release it recorded. A
-deployer from before this change reports no runtime state, as before; an older controller
-ignores the field, and a Gene rollback below it leaves the setting in place, unread.
+release it recorded. A deployer from before this change reports no runtime state, as before;
+an older controller ignores the field, and a Gene rollback below it leaves the setting in
+place, unread.
 
 The trusted `gene` control cog should remain loadable. If a candidate breaks it, use
 SSH for recovery; Discord commands are not the only recovery path.

@@ -87,6 +87,14 @@ class BuildResult(Lease):
 class DeploymentResult(Lease):
     success: bool
     detail: str = Field(max_length=6000)
+    # Sent only by a deployer that knows it: Red was stopped and no release, restore included, proved healthy.
+    runtime_unknown: bool = False
+
+    @model_validator(mode='after')
+    def known_when_healthy(self):
+        if self.success and self.runtime_unknown:
+            raise ValueError('A release that proved healthy is a known runtime')
+        return self
 
 
 class UsageReport(Lease):
@@ -575,7 +583,7 @@ def create_app(settings: Settings | None = None):
 
     @app.post('/deploy/{job_id}/finish', dependencies=[auth('deploy')])
     def deploy_finish(job_id: str, body: DeploymentResult):
-        store.finish_deploy(job_id, body.lease, body.success, body.detail)
+        store.finish_deploy(job_id, body.lease, body.success, body.detail, body.runtime_unknown)
         return {'ok': True}
 
     return app

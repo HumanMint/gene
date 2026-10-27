@@ -113,6 +113,8 @@ class Deployer:
             raise RuntimeError('The maintenance window closed before the switch; nothing was changed. '
                                'Approve it again for the next window.')
         stopped = time.time()
+        # From the stop until a release proves healthy, nothing says which one is running (gene #48).
+        self.runtime_unknown = True
         self.compose('stop', 'red')
         try:
             with tarfile.open(backup_dir / 'red.tar.gz', 'w:gz') as archive:
@@ -121,6 +123,7 @@ class Deployer:
             self.activate(sha)
             if not self.healthy(sha, started):
                 raise RuntimeError('New release did not become healthy')
+            self.runtime_unknown = False
             self.restart_s = time.time() - stopped
         except Exception:
             restored = time.time()
@@ -129,6 +132,7 @@ class Deployer:
             self.restart_s = time.time() - stopped
             if not healthy:
                 raise RuntimeError('Release and automatic rollback both failed. Operator recovery required') from None
+            self.runtime_unknown = False
             raise RuntimeError('Release failed health checks; the previous code was restored') from None
 
     def live_sha(self):
@@ -145,7 +149,8 @@ class Deployer:
                                actor='gene-deployer', trigger='controller claim of an approved job',
                                reason=f"approved {job['kind']} {job['proposal']['sha']}",
                                outcome='ok' if success else 'failed', before={'gene': before},
-                               after={'gene': self.live_sha()}, started=started, restart_s=self.restart_s)
+                               after={'gene': self.live_sha()}, started=started, restart_s=self.restart_s,
+                               **({'runtime': 'unknown'} if self.runtime_unknown else {}))
         except Exception as exc:
             LOG.error('Production-action record failed (%s)', type(exc).__name__)
 
@@ -158,8 +163,11 @@ class Deployer:
                 receipt = json.loads(path.read_text())
             except FileNotFoundError:
                 return False
-        # Corrupt state needs operator reconciliation, not a new claim or guessed outcome.
-        if (not isinstance(receipt, dict) or set(receipt) != {'job_id', 'lease', 'success', 'detail'}
+        # Corrupt state needs operator reconciliation, not a new claim or guessed outcome. runtime_unknown is
+        # there only when it holds, so a receipt written before it existed still reads.
+        if (not isinstance(receipt, dict) or set(receipt)-{'runtime_unknown'} != {'job_id', 'lease', 'success', 'detail'}
+                or ('runtime_unknown' in receipt and (receipt['runtime_unknown'] is not True
+                                                      or receipt['success'] is not False))
                 or not re.fullmatch(r'[a-f0-9]{12}', str(receipt['job_id']))
                 or not re.fullmatch(r'[a-f0-9]{32}', str(receipt['lease']))
                 or type(receipt['success']) is not bool or not isinstance(receipt['detail'], str)):
@@ -167,7 +175,7 @@ class Deployer:
         self.pending_result = receipt
         private_json(path, receipt)
         self.sync_directory()
-        payload = {key: receipt[key] for key in ('lease', 'success', 'detail')}
+        payload = {key: receipt[key] for key in ('lease', 'success', 'detail', 'runtime_unknown') if key in receipt}
         acknowledgement = self.api.post(f'/deploy/{receipt["job_id"]}/finish', payload)
         if acknowledgement != {'ok': True}:
             raise RuntimeError('Controller did not acknowledge the deployment receipt')
@@ -190,7 +198,7 @@ class Deployer:
         if not job:
             return False
         LOG.info('Deploying approved request %s', job['id'])
-        started, before, self.restart_s = time.time(), self.live_sha(), None
+        started, before, self.restart_s, self.runtime_unknown = time.time(), self.live_sha(), None, False
         try:
             self.process(job)
             success, detail = True, 'Deployed approved commit; Discord connection and Gene heartbeat healthy.'
@@ -201,7 +209,8 @@ class Deployer:
         # Keep the result in memory as well, so a temporary disk failure cannot cause
         # the running process to forget it. A crash before persistence still fails closed.
         self.pending_result = {'job_id': job['id'], 'lease': job['lease'],
-                               'success': success, 'detail': clean(detail)}
+                               'success': success, 'detail': clean(detail),
+                               **({'runtime_unknown': True} if self.runtime_unknown and not success else {})}
         return self.finish_pending()
 
 

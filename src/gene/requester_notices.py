@@ -24,6 +24,9 @@ def claim(store, job_id, actor):
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
         job = store._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
+        from .runtime_state import current as runtime_unknown
+        if runtime_unknown(db):  # A restore that never proved healthy: active_sha may not be what's running.
+            raise Conflict("Gene's runtime is unknown after a failed restore, so the fix may not be live")
         # Started by repair intake, not merely labelled like it; shipped by the deployer, which dates it.
         shipped = db.execute('SELECT d.at FROM deployments d JOIN repair_jobs r ON r.job_id=d.job_id '
                              'WHERE d.job_id=? AND d.state="deployed"', (job_id,)).fetchone()

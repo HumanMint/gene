@@ -179,7 +179,7 @@ def test_another_members_privacy_change_takes_a_summary_built_on_their_words(sto
     build(agent)
     assert shown(store)['provenance'] == [ASH]
     store.clear_chats('30')
-    assert shown(store) is None and rows(store) == 0
+    assert rows(store) == 0 and shown(store) is None  # Erased with the change, not only hidden.
 
 
 @pytest.mark.parametrize('change', ['clear', 'forget', 'erase', 'enable', 'note'])
@@ -196,7 +196,7 @@ def test_the_members_own_revision_change_invalidates_it(store, tmp_path, change)
     else:
         {'clear': lambda: store.clear_chats('20'), 'forget': lambda: store.personal_control('20', 'disable'),
          'erase': lambda: store.erase_user('20'), 'enable': lambda: store.personal_control('20', 'enable')}[change]()
-    assert shown(store) is None and rows(store) == 0
+    assert rows(store) == 0 and shown(store) is None  # Erased with the change, not only hidden.
     with store.connection() as db:
         db.execute('DELETE FROM fri_member_summary_calls')
     assert offered(agent) is None  # What was said before the change never builds it again.
@@ -223,8 +223,21 @@ def test_it_expires_thirty_days_after_its_last_refresh(store, tmp_path):
     assert shown(store)['expires_at'] > time.time()
     with store.connection() as db:
         db.execute('UPDATE fri_member_summaries SET refreshed=?', (time.time()-TTL-1,))
-    store.status()  # The health check prunes it, even if nobody asks.
-    assert rows(store) == 0 and shown(store) is None
+    assert shown(store) is None  # Never shown once lapsed.
+    build_again(store, agent)
+    with store.connection() as db:
+        db.execute('UPDATE fri_member_summaries SET refreshed=?', (time.time()-TTL-1,))
+    store.status()  # The health check deletes it, even if nobody asks.
+    assert rows(store) == 0
+
+
+def build_again(store, agent):
+    chat(store, 'later chat')
+    chat(store, 'and more')
+    with store.connection() as db:
+        db.execute('DELETE FROM fri_member_summary_calls')
+    build(agent)
+    assert rows(store) == 1
 
 
 def test_nothing_worth_keeping_keeps_no_text_and_waits_for_new_exchanges(store, tmp_path):

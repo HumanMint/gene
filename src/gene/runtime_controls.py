@@ -10,7 +10,7 @@ import discord
 from redbot.core import commands
 
 from .fri_pending import completion
-from .gene_controls import COMMANDS, arguments, requested
+from .gene_controls import COMMANDS, arguments, correction, requested
 from .privacy import clean
 
 LOG = logging.getLogger('gene.controls')
@@ -124,7 +124,9 @@ class ControlRunner:
         continued = completion(claim.get('continuation'), claim['request_text'], action, argument,
                                claim['source'], claim['guild_id'], claim['conversation_id'],
                                claim['user_id'], claim['revision'], claim.get('addressed_bot_id', ''))
-        if action not in self.catalog() or not (requested(claim['request_text'], action) or continued):
+        # The controller found the member's own play this puts right (control_store.corrected); the words still must.
+        corrects = bool(claim.get('correction_of')) and action == 'play' and correction(claim['request_text'], argument)
+        if action not in self.catalog() or not (requested(claim['request_text'], action) or continued or corrects):
             return {'blocked': 'That command is unavailable or was not requested.'}
         source = claim['source']
         event_time = discord.utils.snowflake_time(int(source['id'])).timestamp()

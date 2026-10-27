@@ -77,6 +77,23 @@ def requested(text, action):
     return bool(mutation_request(text.strip(), action))
 
 
+CORRECTION = re.compile(r"\b(?:not (?:that|this|the) (?:one|song|track)|wrong (?:one|song|track)|i meant|"
+                        r"that'?s not (?:it|the one|the song|the track))\b")
+CORRECTION_SECONDS = 600  # How long after Gene played a song for someone they can put it right.
+
+
+def correction(text, argument):
+    """A member putting right a song Gene just played for them ("not that one, X", "i meant X"), with the
+    right one in their own words. Whether there was such a play is the store's to check (Controls.enqueue)."""
+    visible = request_text(text).replace('\u2019', "'")
+    if not argument or not CORRECTION.search(visible):
+        return False
+    if re.search(r"\b(for example|hypothetically|if i|used to|dont|don't|do not)\b", visible):
+        return False
+    said = text.casefold()
+    return argument.casefold() in said or set(re.findall(r"[\w']+", argument.casefold())) <= set(re.findall(r"[\w']+", said))
+
+
 def control_text(text):
     text = ' '.join(text.casefold().replace('’', "'").split()).strip(' .!?')
     text = re.sub(r'^(?:(?:hey|yo)\s+)?(?:fri|<@!?\d+>)[,:]?\s+', '', text)

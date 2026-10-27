@@ -635,7 +635,8 @@ def test_missing_or_unreadable_deployment_history_holds_the_batch(tmp_path, hist
 def pausing(tmp_path, *steps):
     """batch-release.sh's pause and resume on their own, against a controller DB at tmp_path/data, and the
     paused setting after: each step is `ours` (the fence's pause), `lost-id` (that pause, killed before its
-    audit id reached the journal), `owner-pause`, `owner-resume` or `resume` (resume_services)."""
+    audit id reached the journal), `owner-pause`, `owner-resume`, `resume` (resume_services) or `lost-done` (that
+    resume, killed before its journal line)."""
     store = Store(tmp_path/'data/gene.sqlite3')
     store.set_paused(False, 'owner')
     owner = f'"{sys.executable}" -c "import sys; from pathlib import Path; from gene.store import Store; ' \
@@ -646,6 +647,7 @@ def pausing(tmp_path, *steps):
         'owner-pause': owner + ' pause',  # /pause, as the controller records it
         'owner-resume': owner + ' resume',
         'resume': 'resume_services ' + G,
+        'lost-done': "sed -i '/^done:unpause$/d' \"$JOURNAL\"",  # resume killed before its journal line
     }
     stubs = f'''
 set -Eeuo pipefail
@@ -671,6 +673,10 @@ def test_resume_lifts_only_the_batchs_own_latest_pause(tmp_path):
     assert out.returncode == 0, out.stderr
     assert paused == 'false' and events == [('maintainer:claude', 'pause'), ('maintainer:claude', 'resume')]
     assert journal[-1] == 'done:unpause' and journal[1].startswith('paused:')
+    out, paused, events, journal = pausing(tmp_path/'repeat', 'ours', 'resume', 'lost-done', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and events == [('maintainer:claude', 'pause'), ('maintainer:claude', 'resume')]
+    assert journal[-1] == 'done:unpause' and 'development already resumed by this batch' in out.stdout
 
 
 @needs_bash4
@@ -687,7 +693,7 @@ def test_resume_leaves_development_the_owner_resumed_after_the_batchs_pause(tmp_
     out, paused, events, journal = pausing(tmp_path, 'ours', 'owner-resume', 'resume')
     assert out.returncode == 0, out.stderr
     assert paused == 'false' and events == [('maintainer:claude', 'pause'), ('555', 'resume')]
-    assert 'already resumed' in out.stdout and 'done:unpause' not in journal
+    assert 'resumed (audit' in out.stdout and 'after this batch paused it' in out.stdout and 'done:unpause' not in journal
 
 
 @needs_bash4

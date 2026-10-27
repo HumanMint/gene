@@ -74,8 +74,12 @@ downgrade_step() {  # module db docker-run-words...: remove the module's data fo
     *) die "no downgrade step for $module" ;;
   esac
 }
-owns_pause() {  # This release paused development and has not unpaused it since.
+owns_pause() {  # This release paused development and has not unpaused it since, by its journal.
   [[ -f $JOURNAL && $({ grep -x -e intent:pause -e done:unpause "$JOURNAL" || true; } | tail -n 1) == intent:pause ]]
+}
+pause_id() {  # The audit id of this release's latest pause; empty when it was killed before journaling it
+  [[ -f $JOURNAL ]] || return 0
+  awk '$0 == "intent:pause" {id = ""} /^paused:[0-9]+$/ {id = substr($0, 8)} END {print id}' "$JOURNAL"
 }
 jget() {  # file dotted.key
   python3 -c 'import json, sys
@@ -199,18 +203,63 @@ print('release settings recorded', dict(db.execute(keys)))
 PY
 }
 
-set_paused() {  # true|false: the writes Store.set_paused makes, without needing the controller
-  db_py "$1" <<'PY'
+pause_development() {  # The writes Store.set_paused makes, without needing the controller. The audit row
+  # names this batch, and its id goes in the journal: unpause_if_ours lifts only that pause.
+  local id
+  id=$(db_py "${STAGE##*/}" <<'PY'
 import sqlite3, sys, time
-paused = sys.argv[1] == 'true'
 db = sqlite3.connect('/data/gene.sqlite3', timeout=30, isolation_level=None)
 db.execute('BEGIN IMMEDIATE')
-if db.execute("UPDATE settings SET value=? WHERE key='paused'", ('true' if paused else 'false',)).rowcount != 1:
+if db.execute("UPDATE settings SET value='true' WHERE key='paused'").rowcount != 1:
     raise SystemExit('the controller has no paused setting')
-db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
-           (time.time(), 'maintainer:claude', 'pause' if paused else 'resume', '', ''))
+row = db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
+                 (time.time(), 'maintainer:claude', 'pause', sys.argv[1], ''))
 db.execute('COMMIT')
-print('development paused =', sys.argv[1])
+print(row.lastrowid)
+PY
+  )
+  [[ $id =~ ^[0-9]+$ ]] || die "unexpected pause record: $id"
+  mark "paused:$id"
+  log "development paused (audit $id)"
+}
+
+unpause_if_ours() {  # Unpause only while this batch's pause is still the latest pause or resume, checked and
+  # changed in one transaction, so a pause the owner made since (/pause) stays. Exit 3: left as it is, and why.
+  db_py "$(pause_id)" "${STAGE##*/}" <<'PY'
+import sqlite3, sys, time
+mine, stage = sys.argv[1:3]
+db = sqlite3.connect('/data/gene.sqlite3', timeout=30, isolation_level=None)
+db.execute('BEGIN IMMEDIATE')
+try:
+    latest = db.execute("SELECT id,action,actor,target FROM audit WHERE action IN ('pause','resume') "
+                        'ORDER BY id DESC LIMIT 1').fetchone()
+    # A repeat of a resume killed before its journal line: the latest resume is this batch's own.
+    if latest is not None and latest[1:] == ('resume', 'maintainer:claude', stage):
+        db.execute('ROLLBACK')
+        print(f'development already resumed by this batch (audit {latest[0]})')
+        sys.exit(0)
+    # A pause killed before its id reached the journal is known by the batch its row names.
+    ours = latest is not None and latest[1] == 'pause' and (
+        latest[0] == int(mine) if mine else latest[2:] == ('maintainer:claude', stage))
+    if not ours:
+        db.execute('ROLLBACK')
+        if latest is None:
+            print('no pause or resume is recorded, so development is left as it is')
+        elif latest[1] == 'pause':
+            print(f"development stays paused: a newer pause (audit {latest[0]}) is not this batch's")
+        else:
+            print(f'development was resumed (audit {latest[0]}) after this batch paused it, and is left as it is')
+        sys.exit(3)
+    if db.execute("UPDATE settings SET value='false' WHERE key='paused'").rowcount != 1:
+        raise SystemExit('the controller has no paused setting')
+    db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
+               (time.time(), 'maintainer:claude', 'resume', stage, f'lifts the pause in audit {latest[0]}'))
+    db.execute('COMMIT')
+except BaseException:
+    if db.in_transaction:
+        db.execute('ROLLBACK')
+    raise
+print(f"development resumed: this batch's pause (audit {latest[0]}) was still the latest")
 PY
 }
 
@@ -840,13 +889,14 @@ state_value() {  # dotted.key of a fresh state read; use it in an assignment, so
 
 fence() {  # Pause new work, let current work finish, then stop the worker and deployer.
   # Checked against the live setting every time, so a fence after resume pauses again. The intent
-  # line is the ownership record: resume unpauses only while the latest pause in the journal is ours.
+  # line and the pause's audit id are the ownership record: resume unpauses only while the latest pause
+  # in the journal is ours and the controller has recorded no pause or resume after it.
   local paused busy waited=0
   paused=$(state_value settings.paused)
   [[ $paused == true || $paused == false ]] || die "unexpected paused setting: $paused"
   if [[ $paused == false ]]; then
     mark intent:pause
-    set_paused true
+    pause_development
   fi
   while true; do
     busy=$(state_value busy_jobs)
@@ -873,7 +923,7 @@ drain() {
     if [[ -z $EXCEPTION && -z $CRITICAL ]] && used=$(drained_today); then
       resume_services "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)"
       mark resumed_old
-      die "today's batch was used during the drain ($used); development resumed as it was, and this pair waits for a later day"
+      die "today's batch was used during the drain ($used); $(resumed_as), and this pair waits for a later day"
     fi
     audit "$DRAINED" "${STAGE##*/}"  # Before the journal line, so a drained batch always holds the controller's claims.
     mark drained
@@ -1227,10 +1277,18 @@ resume_services() {  # gene_sha
   systemctl is-active -q gene-worker || die 'gene-worker did not start'
   systemctl is-active -q gene-deployer || die 'gene-deployer did not start'
   if owns_pause; then
-    set_paused false
-    mark done:unpause
+    local said rc=0
+    said=$(unpause_if_ours) || rc=$?
+    case $rc in
+      0) mark done:unpause; log "$said" ;;
+      3) NOTE=$said; log "$said" ;;  # The log line and the exit message carry it too.
+      *) die "could not resume development: ${said:-no answer from the controller DB}" ;;
+    esac
   fi
   audit maintainer_services_resumed "$1"
+}
+resumed_as() {  # How development came back, for an exit message
+  if [[ -n $NOTE ]]; then echo "the worker and deployer are running again, but $NOTE"; else echo 'development resumed as it was'; fi
 }
 
 write_result() {  # The deployer's receipt for this release; a repeat accepts the same receipt.
@@ -1370,7 +1428,7 @@ rollback_fri() {
   fri_pair_check  # The fence can wait for a deployment that lands a third Fri,
   if ! gene_unmoved; then  # or a Gene release: development goes back as it was, with Fri untouched.
     resume_services "$G"
-    die 'Gene moved during the fence; Fri was not changed and the worker and deployer are running again'
+    die "Gene moved during the fence; Fri was not changed and $(resumed_as)"
   fi
   has intent:rollback || mark intent:rollback  # From here on, only a repeat of rollback-fri finishes it.
   restore_old_fri
@@ -1451,7 +1509,7 @@ CRITICAL=${CRITICAL_FIX:-}
 [[ $CRITICAL =~ [^[:space:]] ]] || CRITICAL=''  # A blank reason is no reason.
 DRAINED=batch_drained  # The controller's audit action for a drained batch: maintenance.DRAINED holds claims for the day.
 STARTED_AT=$(date +%s 2>/dev/null || true)  # Instrumentation only: an unreadable clock never blocks recovery.
-RESTART_S='' REFUSED=''
+RESTART_S='' REFUSED='' NOTE=''  # NOTE: why resume_services left development as it was
 now_epoch() { TZ=UTC date +%s; }  # The window's clock; the offline tests shift only this call.
 window() {  # epoch: "open|closed <local date> <local time>"; fails on an unknown zone or clock
   python3 - "$1" <<'PY'
@@ -1603,10 +1661,10 @@ log_action() {  # rc: this command's line in the production-action log; it never
   python3 - "$ACTIONS" "$(now_epoch)" "$PHASE" "$(basename "$STAGE")" "$BEFORE_G" "$BEFORE_F" \
     "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)" "$(live_sha "$FRI_ROOT/release.env" FRI_RELEASE_SHA)" \
     "$(elapsed)" "$RESTART_S" "$outcome" "$EXCEPTION${CRITICAL:+${EXCEPTION:+; }critical fix: $CRITICAL}" "${SUDO_USER:-$(id -un)}" \
-    "${BATCH_TRIGGER:-maintainer}" "$G" "$F" <<'PY' || echo 'WARN: the production-action log was not written' >&2
+    "${BATCH_TRIGGER:-maintainer}" "$G" "$F" "$NOTE" <<'PY' || echo 'WARN: the production-action log was not written' >&2
 import datetime as dt, fcntl, json, os, sys
 (path, now, phase, stage, before_g, before_f, after_g, after_f, duration, restart, outcome, exception, actor,
- trigger, g, f) = sys.argv[1:17]
+ trigger, g, f, note) = sys.argv[1:18]
 try:
     from zoneinfo import ZoneInfo
     local, tz = dt.datetime.fromtimestamp(int(now), ZoneInfo('America/Los_Angeles')), 'America/Los_Angeles'
@@ -1616,7 +1674,7 @@ row = {'at': local.isoformat(), 'local_date': local.date().isoformat(), 'tz': tz
        'action': 'batch-release '+phase, 'reason': 'maintainer batch release Gene '+g+' Fri '+f, 'stage': stage,
        'before': {'gene': before_g or None, 'fri': before_f or None}, 'after': {'gene': after_g or None, 'fri': after_f or None},
        'duration_s': int(duration) if duration else None, 'restart_s': int(restart) if restart else None, 'outcome': outcome,
-       'exception': exception or None}
+       'exception': exception or None, 'note': note or None}
 line, limit = json.dumps(row, sort_keys=True)+'\n', 1 << 20  # Past 1 MiB the log keeps its newest half.
 while True:
     with open(path, 'a') as log:
@@ -1677,3 +1735,4 @@ case $PHASE in
   resume-old) resume_old ;;
   *) die "unknown phase $PHASE" ;;
 esac
+if [[ -n $NOTE ]]; then log "$NOTE"; fi  # Development left as the owner set it: the last thing said.

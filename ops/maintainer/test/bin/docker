@@ -157,7 +157,7 @@ def run(rest):
         with open(M+'/purges', 'a') as out:
             out.write(' '.join(command)+'\n')
     result = as_user(user, argv, env, stdin=script.encode() if script is not None else None)
-    if (os.environ.get('MOCK_KILL_AFTER_PAUSE') and script and "key='paused'" in script and command[2:] == ['true']
+    if (os.environ.get('MOCK_KILL_AFTER_PAUSE') and script and "SET value='true' WHERE key='paused'" in script
             and not os.path.exists(M+'/killed-after-pause')):
         open(M+'/killed-after-pause', 'w').close()
         os.kill(os.getppid(), 9)

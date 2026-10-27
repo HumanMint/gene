@@ -204,7 +204,7 @@ def edit(store, guild, conversation, user, revision, source, action, text=''):
             raise ValueError('Keep it to a short line, without links, mentions or code.')
     elif action != 'remove' or text:
         raise ValueError('Choose Edit or Clear for your summary')
-    from .fri_memory_store import SERVER, cleared, entries
+    from .fri_memory_store import SERVER, cleared, entries, fences
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
         current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
@@ -212,6 +212,11 @@ def edit(store, guild, conversation, user, revision, source, action, text=''):
             raise ValueError('Memory changed. Open My memory again.')
         if not view(read(db, guild, user)):
             raise ValueError('There’s no summary to change now. Open My memory again.')
+        # A server-wide removal fence, as a profile note edit records: nothing they sent before this, queued or
+        # still in a burst, is kept or learned afterwards, so it can't rebuild what they cleared.
+        for fence in fences():
+            db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
+                       'user_id,digest) DO UPDATE SET at=excluded.at', (guild, SERVER, user, fence, time.time()))
         cleared(store, db, guild, user, SERVER, revision)
         if action == 'replace':
             now = time.time()

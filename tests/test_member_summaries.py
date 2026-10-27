@@ -345,3 +345,25 @@ def test_the_downgrade_purges_summaries_for_an_older_controller(store, tmp_path,
     assert not (tmp_path/'missing.sqlite3').exists()
     Store(store.path)  # A newer controller starting again finds an empty table.
     assert rows(store) == 0
+
+
+@pytest.mark.parametrize('action', ['remove', 'replace'])
+def test_a_message_sent_before_an_edit_keeps_nothing_after_it(store, tmp_path, action):
+    """Like a note edit: what they said before Edit or Clear, answered after it, can't rebuild the summary."""
+    from gene.fri_member_summary import edit as edit_summary
+    from tests.test_member_profiles import source
+    agent = background(store, tmp_path)
+    chat(store, 'we planned a raid on friday')
+    chat(store, 'i main a healer now')
+    build(agent)
+    assert shown(store)
+    queued = source(user='20', channel='1')  # Sent now, answered only after the edit.
+    time.sleep(0.01)
+    revision = store.chat_context('123', 'private:9', '20')['revision']
+    edit_summary(store, '123', 'private:9', '20', revision, private_source(), action,
+                 'they like raids' if action == 'replace' else '')
+    after = store.chat_context('123', 'public:1', '20')['revision']
+    saved = store.save_chat('123', 'public:1', '20', after, 'the raid on friday is still on', 'noted', 'model', 'high',
+                            notes=[], source=queued, provenance=[], audience='server')
+    assert saved.get('kept') is False
+    assert not store.chat_context('123', 'public:1', '20')['turns']

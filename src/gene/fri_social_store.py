@@ -92,7 +92,9 @@ class Social:
         db.execute("UPDATE fri_reminders SET state='expired' WHERE state='pending' AND created<?", (now-900,))
         # A crash before the sending fence cannot post; after it, never replay. Settled, it keeps its day in open loops.
         db.execute("UPDATE fri_reminders SET state=CASE WHEN state='sending' THEN 'uncertain' ELSE 'failed' END,expires=max(expires,lease_until+?) WHERE state IN ('claimed','sending') AND lease_until<?", (LOOP_SETTLED_SECONDS, now))
-        db.execute('DELETE FROM fri_reminders WHERE expires<?', (now,))
+        # Never mid-send: once its lease runs out it settles above and keeps its day; deleting it now loses Fri's report.
+        db.execute("DELETE FROM fri_reminders WHERE expires<? AND NOT (state IN ('claimed','sending') AND lease_until>=?)",
+                   (now, now))
         db.execute('DELETE FROM fri_plans WHERE expires<?', (now,))
         db.execute("UPDATE fri_plans SET state='expired' WHERE state='pending' AND created<?", (now-900,))
         db.execute('DELETE FROM fri_social_events WHERE created<?', (now-31*86400,))

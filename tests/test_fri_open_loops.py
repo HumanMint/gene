@@ -169,6 +169,18 @@ def test_a_send_just_before_expiry_still_stays_a_day_then_goes(store, monkeypatc
     assert loops(store)['reminders'] == [] and stored(store) == 0  # Kept no longer than it shows.
 
 
+def test_a_reminder_mid_send_outlives_its_expiry_until_it_settles(store, monkeypatch):
+    """A read while Discord still answers the send, a minute past the text's expiry, must not delete the row:
+    Fri's report would 404, its receipt would be dropped, and the promised day would never show."""
+    social = Social(store)
+    claim, now = last_minute(store, social)
+    monkeypatch.setattr('gene.fri_social_store.time.time', lambda: now+61)  # past expiry, lease still running
+    loops(store)
+    assert stored(store) == 1
+    social.reminder_finish(claim['id'], claim['lease'], 'sent', '555')
+    assert [r['state'] for r in loops(store)['reminders']] == ['sent']
+
+
 def test_a_send_that_never_reported_back_just_before_expiry_still_stays_a_day(store, monkeypatch):
     social = Social(store)
     _, now = last_minute(store, social)  # Fri crashed mid-send, so the lease runs out instead.

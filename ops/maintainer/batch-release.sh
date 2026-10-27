@@ -39,6 +39,9 @@ DOWNGRADE_MODULES=(gene.fri_reply_checks gene.profile_downgrade gene.fri_member_
 SWITCHING=0
 
 log() { echo "== $*"; }
+epoch() {  # Now, for health freshness. Recovery must not stop on a clock read: Python's clock, then 0 (no baseline).
+  date +%s 2>/dev/null || python3 -c 'import time; print(int(time.time()))' 2>/dev/null || echo 0
+}
 die() {
   echo "FAIL: $*" >&2
   # exit skips the ERR trap, so a refusal mid-switch must start the rollback itself.
@@ -47,6 +50,9 @@ die() {
 }
 mark() { echo "$1" >> "$JOURNAL"; sync "$JOURNAL"; }
 has() { [[ -f $JOURNAL ]] && grep -qx -- "$1" "$JOURNAL"; }
+latest() {  # step: journaled since the last evals run started, so a later run's result replaces an earlier one's
+  [[ -f $JOURNAL ]] && awk -v step="$1" '$0 == "evals_started" {found = 0} $0 == step {found = 1} END {exit !found}' "$JOURNAL"
+}
 need() { local step; for step in "$@"; do has "$step" || die "phase needs '$step' first"; done; }
 has_module() {  # module docker-run-words...: true when the image has the module; a probe that fails to run stops the phase
   local module=$1 found; shift
@@ -381,8 +387,8 @@ PY
 }
 
 probe_gene() {  # sha started_epoch image_id: 6 consecutive good 5 s samples within 180 s
-  local deadline=$(( $(date +%s) + PROBE_WINDOW )) good=0 snapshot reason=''
-  while (( $(date +%s) < deadline )); do
+  local deadline=$(( SECONDS + PROBE_WINDOW )) good=0 snapshot reason=''  # SECONDS: no clock read can fail
+  while (( SECONDS < deadline )); do
     snapshot=$(state)
     if reason=$(python3 - "$snapshot" "$1" "$2" "$3" "$BASELINE" <<'PY'
 import json, sys, time
@@ -413,8 +419,8 @@ PY
 }
 
 probe_fri() {  # sha image_id: 4 consecutive good samples within 180 s
-  local deadline=$(( $(date +%s) + PROBE_WINDOW )) good=0 reason=''
-  while (( $(date +%s) < deadline )); do
+  local deadline=$(( SECONDS + PROBE_WINDOW )) good=0 reason=''
+  while (( SECONDS < deadline )); do
     if reason=$(python3 - "$(state)" "$1" "$2" "$BASELINE" "$FRI_HEALTH" <<'PY'
 import json, sys
 s, sha, image, base = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3], json.load(open(sys.argv[4]))
@@ -468,13 +474,13 @@ PY
 }
 
 quiet() {  # wait_seconds: Red restarts only once the audio node reports no players at all
-  local deadline=$(( $(date +%s) + $1 )) snapshot players playing
+  local deadline=$(( SECONDS + $1 )) snapshot players playing
   while true; do
     snapshot=$(player_snapshot) || die 'could not read the audio node player state; not restarting Red'
     players=$(jget <(echo "$snapshot") players); playing=$(jget <(echo "$snapshot") playing)
     log "audio node: $players players, $playing playing"
     (( players == 0 )) && return 0
-    (( $(date +%s) < deadline )) || die "the audio node still has $players players ($playing playing); not restarting Red. If Gene is sitting idle in voice, ask the owner before disconnecting it"
+    (( SECONDS < deadline )) || die "the audio node still has $players players ($playing playing); not restarting Red. If Gene is sitting idle in voice, ask the owner before disconnecting it"
     sleep 60
   done
 }
@@ -663,7 +669,7 @@ stage() {
   if fri_changes; then disk+=("fri_backup=$FRI_ROOT/backups:$(( $(du_bytes "$ROOT/data/fri") + db_size ))"); fi
   disk_admission "${disk[@]}"
   for name in "${names[@]}"; do
-    [[ ! -e $STAGE/$name-src ]] || die "$STAGE/$name-src exists from an earlier attempt; inspect and remove it"
+    clear_interrupted "$STAGE/$name-src"
     mkdir -m 700 "$STAGE/$name-src"
     tar -x --no-same-owner -f "$STAGE/$name.tar" -C "$STAGE/$name-src"
     chmod -R a+rX,go-w "$STAGE/$name-src"
@@ -680,7 +686,7 @@ stage() {
       fi
     done
     # The cog release, prepared now so downtime only renames it into place.
-    [[ ! -e $STAGE/cogs-ready ]] || die "$STAGE/cogs-ready exists from an earlier attempt"
+    clear_interrupted "$STAGE/cogs-ready"
     mkdir -m 755 "$STAGE/cogs-ready"
     cp -r "$STAGE/gene-src/cogs" "$STAGE/cogs-ready/cogs"
     chown -R 0:0 "$STAGE/cogs-ready"
@@ -712,8 +718,9 @@ stage() {
       mset "new.$kind.tag" "$(jget "$MANIFEST" "old.$kind.tag")"; mset "new.$kind.id" "$(jget "$MANIFEST" "old.$kind.id")"
     fi
   done
+  open_for 'the isolated import checks'
   log 'isolated import checks'
-  local isolated=(docker run --rm --network none --user 10001:10001 --read-only --tmpfs /tmp --cap-drop ALL
+  local isolated=(forward_docker run --rm --network none --user 10001:10001 --read-only --tmpfs /tmp --cap-drop ALL
                   --security-opt no-new-privileges:true)
   if gene_changes; then
     "${isolated[@]}" "gene-runtime:$G" python -c 'import gene.api, gene.store, gene.runtime, gene.fri_release, gene.fri_reply_checks, gene.deploy, gene.provenance_downgrade; print("gene imports ok")'
@@ -722,6 +729,7 @@ stage() {
   if fri_changes; then
     "${isolated[@]}" "fri-runtime:$F" python -c 'import fri.fri, fri.fri_eval, fri.fri_request_eval; print("fri imports ok")'
   fi
+  open_for 'the controller contract check'
   log 'controller contract on synthetic state'
   local contract
   contract=$("${isolated[@]}" --tmpfs /data:uid=10001,gid=10001 -e GENE_DB=/data/synthetic.sqlite3 \
@@ -742,6 +750,7 @@ from fri.fri_protocol import compatible
 assert compatible(json.loads(sys.argv[1])), "Fri rejects the candidate controller contract"
 print("fri accepts the contract")' "$contract"
   if gene_changes; then
+    open_for 'the audio player check'
     log 'audio player snapshot works'
     player_snapshot
   fi
@@ -764,7 +773,7 @@ rehearse() {  # Migrate copies of the live DB with G, then start the exact rollb
     [[ ! -e $test ]] || { echo "FAIL: $test exists; remove it first" >&2; exit 1; }
     trap 'rm -rf "$test"' EXIT  # The copies hold member data; never leave them behind.
     install -d -m 700 -o "${owner%:*}" -g "${owner#*:}" "$test"
-    run=(docker run --rm --network none --user "$owner" --read-only --tmpfs /tmp --cap-drop ALL
+    run=(forward_docker run --rm --network none --user "$owner" --read-only --tmpfs /tmp --cap-drop ALL
          --security-opt no-new-privileges:true --env-file "$ROOT/secrets/controller.env" -v "$test:/data")
     # Asked of both images with a probe that answers yes or no, so one that fails to start stops here
     # rather than skipping a step. The rollback runs exactly the recorded list.
@@ -774,13 +783,14 @@ rehearse() {  # Migrate copies of the live DB with G, then start the exact rollb
     done
     mset downgrades "${downgrades[*]}"
     echo "a rollback downgrades: ${downgrades[*]:-nothing, the old release has every feature G has a downgrade for}"
-    for copy in forward downgrade; do db_copy "$test" "$copy.sqlite3"; done
+    for copy in forward downgrade; do open_for "the $copy copy"; db_copy "$test" "$copy.sqlite3"; done
     start='import sys
 from fastapi.testclient import TestClient
 from gene.api import create_app
 client = TestClient(create_app())
 assert client.get("/health").status_code == 200
 print(sys.argv[1], "controller starts; status keys:", sorted(client.app.state.store.status()))'
+    open_for 'the forward rehearsal'
     "${run[@]}" -e GENE_DB=/data/forward.sqlite3 "$new" python -c "$start" new
     "${run[@]}" -e GENE_DB=/data/forward.sqlite3 "$old" python -c "$start" old-on-migrated
     "${run[@]}" -e GENE_DB=/data/forward.sqlite3 "$old" python -c '
@@ -791,6 +801,7 @@ settings = Settings.from_env()
 job = Store(settings.db).request(settings.guild_id, "0", "rehearsal:"+uuid.uuid4().hex, "", "rehearsal write")
 assert isinstance(job, dict) and job.get("id"), job
 print("old code wrote a request on the migrated schema:", job["state"])'
+    open_for 'the downgrade rehearsal'
     "${run[@]}" -e GENE_DB=/data/downgrade.sqlite3 "$new" python -c "$start" new
     for module in "${downgrades[@]}"; do
       if [[ $module == gene.profile_downgrade ]]; then
@@ -946,7 +957,7 @@ gene() {
   [[ $(grep -Fxc -- "GENE_WORKER_IMAGE=gene-worker:$G" "$ROOT/secrets/worker.env" || true) == 1 ]] || die 'worker image not pinned'
   [[ $(stat -c %a:%u:%g "$ROOT/secrets/worker.env") == $(stat -c %a:%u:%g "$B/worker.env") ]] || die 'worker.env mode changed'
   local started
-  started=$(date +%s)
+  started=$(epoch)
   mark intent:start_new
   repair_sidecars
   compose_gene up -d --no-deps --force-recreate controller red
@@ -1058,7 +1069,7 @@ rollback_gene() {
   log 'rollback: source'
   if [[ -f $ROOT/source/.release-sha && $(cat "$ROOT/source/.release-sha") == "$G" ]]; then
     local failed=$B/failed-source
-    [[ ! -e $failed ]] || failed=$B/failed-source-$(date +%s%N)
+    [[ ! -e $failed ]] || failed=$B/failed-source-$(date +%s%N 2>/dev/null || echo "$$-$RANDOM")
     rename_tree "$ROOT/source" "$failed"
   fi
   if [[ ! -e $ROOT/source ]]; then
@@ -1072,7 +1083,7 @@ rollback_gene() {
     log 'old controller and Red already running'
   else
     local started
-    started=$(date +%s)
+    started=$(epoch)
     repair_sidecars
     compose_gene up -d --no-deps --force-recreate controller red
     probe_gene "$OLD_G" "$started" "$old_id"
@@ -1132,6 +1143,7 @@ fri() {
 
 evals() {
   need fri_switched; check_manifest
+  mark evals_started  # Whatever an earlier run passed or had accepted no longer counts.
   local suite failed=()
   for suite in requests sass controls; do
     if closed_during "the evals (before $suite)"; then
@@ -1166,9 +1178,9 @@ stages = (health.get('agent_heartbeat') or {}).get('stages') or {}
 failing = {name: stage.get('error') for name, stage in stages.items() if stage.get('error')}  # exception class names
 print('  stages:', sorted(stages), '| failing:', failing or 'none', '| rejected usage receipts:', health.get('rejected_usage'))
 PY
-  has evals_ran || mark evals_ran
+  mark evals_ran
   # Every suite passed. With failures, keeping the release is the eval rule's call: accept-evals records it.
-  if (( ${#failed[@]} == 0 )) && ! has evaluated; then mark evaluated; fi
+  if (( ${#failed[@]} == 0 )); then mark evaluated; fi
   (( ${#failed[@]} == 0 )) || die "eval suites failed: ${failed[*]}; decide with the owner whether to roll back ($(gene_changes && echo rollback-gene || echo rollback-fri))"
 }
 
@@ -1178,9 +1190,9 @@ verify_off() {
 }
 
 accept_evals() {  # The eval rule kept a release whose suites had failures (known misses, a passing rerun).
-  need evals_ran
+  latest evals_ran || die 'the last evals run has not finished; run evals'
   [[ -n ${EVALS_ACCEPTED:-} ]] || die 'set EVALS_ACCEPTED to why the eval rule keeps this release'
-  has evaluated || mark evaluated
+  latest evaluated || mark evaluated
   log "evals accepted: $EVALS_ACCEPTED"
 }
 
@@ -1439,8 +1451,18 @@ window_open() {
   state=$(window "$now") || return 1
   [[ $state == open\ * ]]
 }
+forward_docker() {  # docker for stage and rehearse: each container starts inside the window or not at all
+  open_for "the next $PHASE container"
+  docker "$@"
+}
+clear_interrupted() {  # path: a tree stage generates, left by a stage the close cut off; nothing live uses it yet
+  [[ -e $1 ]] || return 0
+  has staged && die "$1 exists after staging; inspect it"
+  log "removing ${1##*/}, left by an interrupted stage"
+  rm -rf -- "$1"
+}
 open_for() {  # what: before a step that changes nothing live (a build), stop once the window has closed
-  [[ -n $EXCEPTION ]] || window_open || die "the window closed before $1; production is untouched, so stage again in the next window"
+  [[ -n $EXCEPTION ]] || window_open || die "the window closed before $1; production is untouched, so repeat this phase in the next window"
 }
 closed_during() {  # what: true, with a note, when the window closed during this phase's wait
   [[ -z $EXCEPTION ]] && ! window_open || return 1
@@ -1482,8 +1504,8 @@ touched() { has drained || has intent:pause; }  # This batch has paused developm
 safe_path() {  # What this batch may do outside the window, from its journal.
   if ! touched; then echo 'Production is untouched; start again in the next window.'
   elif has resumed || has resumed_old; then echo 'This batch has resumed; cleanup waits for the next window.'
-  elif has evaluated; then echo 'Its evals passed: verify-off, then resume, run at any hour (or roll back).'
-  elif has evals_ran; then echo 'Its evals ran with failures: under the eval rule, accept-evals (EVALS_ACCEPTED=<why>), verify-off and resume, or roll back.'
+  elif latest evaluated; then echo 'Its evals passed: verify-off, then resume, run at any hour (or roll back).'
+  elif latest evals_ran; then echo 'Its evals ran with failures: under the eval rule, accept-evals (EVALS_ACCEPTED=<why>), verify-off and resume, or roll back.'
   elif gene_changes_now && has gene_attempted && ! has gene_rolled_back; then echo 'Run rollback-gene, then resume-old.'
   elif has intent:fri && ! has fri_rolled_back; then echo 'Run rollback-fri, then resume-old.'
   else echo 'Run resume-old.'; fi
@@ -1496,8 +1518,8 @@ gate() {
   case $PHASE in
     rollback-gene|rollback-fri|resume-old) return 0 ;;  # Recovery runs at any hour.
     status|verify-off) touched && return 0 ;;  # Read checks within a batch that paused development.
-    accept-evals) has evals_ran && return 0 ;;  # The eval rule's decision; it changes no service.
-    resume) has evaluated && has verified_off && return 0 ;;  # Service resumes on a release that passed its gates.
+    accept-evals) latest evals_ran && return 0 ;;  # The eval rule's decision on the last run; it changes no service.
+    resume) latest evaluated && has verified_off && return 0 ;;  # Service resumes on a release that passed its gates.
   esac
   if has resumed_old && [[ $PHASE =~ ^(drain|gene|fri|evals|resume)$ ]]; then
     refuse 'this batch already resumed the old release; a retry is a new batch (BATCH_ATTEMPT) in a later window'

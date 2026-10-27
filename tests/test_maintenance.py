@@ -398,3 +398,22 @@ def test_fri_release_rechecks_the_window_right_before_its_switch(tmp_path):
         release.deploy('c'*40)
     assert not [command for command in calls if command[:2] == ['docker', 'compose']]
     assert json.loads(release.record.read_text())['sha'] == 'b'*40
+
+
+@needs_bash4
+@pytest.mark.parametrize('journal, gated', [
+    (('baseline', 'drained', 'evals_started', 'evals_ran', 'evaluated', 'verified_off', 'evals_started', 'evals_ran'), True),
+    (('baseline', 'drained', 'evals_started', 'evals_ran', 'evaluated', 'verified_off', 'evals_started', 'evals_ran',
+      'evaluated'), False),
+    (('baseline', 'drained', 'evals_started', 'evals_ran', 'verified_off', 'evals_started'), True),
+])
+def test_only_the_last_evals_runs_result_admits_resume_after_the_close(tmp_path, journal, gated):
+    out, _, _ = script(tmp_path, 'resume', '2026-10-28T05:20:00-07:00', journal)
+    assert ('REFUSED' in out.stderr) is gated
+
+
+@needs_bash4
+def test_accepting_needs_the_last_evals_run_finished(tmp_path):
+    journal = ('baseline', 'drained', 'evals_started', 'evals_ran', 'evals_started')
+    out, _, _ = script(tmp_path, 'accept-evals', '2026-10-28T05:20:00-07:00', journal, {'EVALS_ACCEPTED': 'why'})
+    assert out.returncode == 4

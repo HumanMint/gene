@@ -231,7 +231,9 @@ def share(store, db, guild, conversation, user, row, profiles):
         raise ValueError('That preference may repeat someone else’s words, so it stays where you said it')
     moved(db, guild, SERVER, user, row, 'Your server-wide list')
     db.execute('DELETE FROM personal_notes WHERE id=?', (row['id'],))
-    if not save(db, guild, SERVER, user, (row['category'], row['evidence']), time.time(), row['channel_id'], ()):
+    # Its origin is the private chat where they pressed Share: their consent, so a Fri that drops profile notes
+    # said where not everyone can read (fri #98) still shows this one wherever the profile does.
+    if not save(db, guild, SERVER, user, (row['category'], row['evidence']), time.time(), conversation, ()):
         raise ValueError('That preference can’t be shared now. Open My memory again.')
     db.commit()
     return entries(store, guild, conversation, user, profiles)

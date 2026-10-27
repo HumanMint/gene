@@ -1,5 +1,6 @@
 """gene #48: a deployment whose restore also failed leaves the runtime unknown, not the old release live."""
 import json
+import re
 import time
 from unittest.mock import Mock
 
@@ -63,8 +64,8 @@ def test_a_failure_before_red_stops_changes_nothing_it_has_to_report(tmp_path):
 
 def test_the_unknown_runtime_survives_a_lost_acknowledgement_and_a_restart(tmp_path):
     worker = deployer(tmp_path, ())
-    worker.pending_result = {'job_id': 'a'*12, 'lease': 'b'*32, 'success': False, 'detail': UNKNOWN,
-                             'runtime_unknown': True}
+    worker.pending_result = {'job_id': 'a'*12, 'lease': 'b'*32, 'success': False, 'detail': UNKNOWN}
+    worker.pending_unknown = True
     worker.api.post.side_effect = httpx.ConnectError('Controller unavailable')
     with pytest.raises(httpx.HTTPError):
         worker.tick()
@@ -73,16 +74,65 @@ def test_the_unknown_runtime_survives_a_lost_acknowledgement_and_a_restart(tmp_p
     assert restarted.tick()
     restarted.api.post.assert_called_once_with('/deploy/'+'a'*12+'/finish', {
         'lease': 'b'*32, 'success': False, 'detail': UNKNOWN, 'runtime_unknown': True})
-    assert not (tmp_path/'deploy-result.json').exists()
+    assert not (tmp_path/'deploy-result.json').exists() and not (tmp_path/'deploy-runtime.json').exists()
 
 
-@pytest.mark.parametrize('receipt', [
-    {'success': True, 'runtime_unknown': True},  # A healthy release is a known one.
-    {'success': False, 'runtime_unknown': False},  # Present only when it holds.
-    {'success': False, 'runtime_unknown': 'yes'}])
-def test_a_contradictory_unknown_receipt_needs_an_operator(tmp_path, receipt):
+def an_older_deployer_accepts(receipt):
+    """The receipt check of every deployer before gene #48 (4c51f3c, src/gene/deploy.py), verbatim. One it refuses
+    stops it before the controller on every tick, so it never claims again, owner rollbacks included."""
+    return not (not isinstance(receipt, dict) or set(receipt) != {'job_id', 'lease', 'success', 'detail'}
+                or not re.fullmatch(r'[a-f0-9]{12}', str(receipt['job_id']))
+                or not re.fullmatch(r'[a-f0-9]{32}', str(receipt['lease']))
+                or type(receipt['success']) is not bool or not isinstance(receipt['detail'], str))
+
+
+@pytest.mark.parametrize('healthy', [(True,), (False, True), (False, False)])
+def test_a_pending_receipt_stays_one_an_older_deployer_can_finish(tmp_path, healthy):
+    Store(tmp_path/'data/controller/gene.sqlite3').bootstrap('a'*40)
+    (tmp_path/'data/red').mkdir()
+    worker = deployer(tmp_path, healthy)
+    worker.api.post.side_effect = [{'id': 'f'*12, 'lease': 'e'*32, 'kind': 'feature',
+                                    'proposal': {'sha': 'b'*40, 'base_sha': 'a'*40}},
+                                   httpx.ConnectError('Acknowledgement lost')]
+    with pytest.raises(httpx.HTTPError):
+        worker.tick()
+    # Downgraded now, the deployer replays this file before anything else, every tick.
+    receipt = json.loads((tmp_path/'deploy-result.json').read_text())
+    assert an_older_deployer_accepts(receipt)
+    assert receipt == {'job_id': 'f'*12, 'lease': 'e'*32, 'success': healthy == (True,), 'detail': receipt['detail']}
+    # Kept on, it still reports what it saw.
+    restarted = deployer(tmp_path, ())
+    restarted.api.post.return_value = {'ok': True}
+    assert restarted.tick()
+    assert restarted.api.post.call_args.args[1].get('runtime_unknown', False) is (healthy == (False, False))
+    assert not (tmp_path/'deploy-result.json').exists() and not (tmp_path/'deploy-runtime.json').exists()
+
+
+def test_evidence_an_older_deployer_left_behind_speaks_for_no_other_receipt(tmp_path):
+    # An older deployer finished the receipt this belonged to without reading it, then the deployer came back.
+    (tmp_path/'deploy-runtime.json').write_text(json.dumps({'job_id': 'c'*12, 'lease': 'd'*32,
+                                                            'runtime_unknown': True}))
+    (tmp_path/'deploy-result.json').write_text(json.dumps({'job_id': 'a'*12, 'lease': 'b'*32, 'success': False,
+                                                           'detail': 'The previous approved release is missing'}))
+    worker = deployer(tmp_path, ())
+    worker.api.post.return_value = {'ok': True}
+    assert worker.tick()
+    worker.api.post.assert_called_once_with('/deploy/'+'a'*12+'/finish', {
+        'lease': 'b'*32, 'success': False, 'detail': 'The previous approved release is missing'})
+    assert not (tmp_path/'deploy-runtime.json').exists()
+
+
+@pytest.mark.parametrize('receipt,evidence', [
+    ({'success': True}, {'runtime_unknown': True}),  # A healthy release is a known one.
+    ({'success': False}, {'runtime_unknown': False}),  # Written only when it holds.
+    ({'success': False}, {'runtime_unknown': 'yes'}),
+    ({'success': False}, {'runtime_unknown': True, 'detail': 'x'}),
+    ({'success': False, 'runtime_unknown': True}, None)])  # Beside the receipt, never in it.
+def test_contradictory_unknown_runtime_evidence_needs_an_operator(tmp_path, receipt, evidence):
     (tmp_path/'deploy-result.json').write_text(json.dumps(
         {'job_id': 'a'*12, 'lease': 'b'*32, 'detail': 'x', **receipt}))
+    if evidence is not None:
+        (tmp_path/'deploy-runtime.json').write_text(json.dumps({'job_id': 'a'*12, 'lease': 'b'*32, **evidence}))
     worker = deployer(tmp_path, ())
     with pytest.raises(ValueError, match='operator reconciliation'):
         worker.tick()

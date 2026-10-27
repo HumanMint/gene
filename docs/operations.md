@@ -317,10 +317,15 @@ an invalid or conflicting receipt privately instead of deleting it to unblock cl
 
 A deployment that stopped Red and then failed without any release proving healthy, its
 restore included (or whose restore couldn't start), reports `runtime_unknown` with its
-failure. The controller keeps `active_sha` as the last release a health check proved and
-records the runtime as unknown: `/status` shows `runtime_unknown` (the job, the release it
-tried, the one it tried to restore and since when). Until it's cleared, approved feature and
-repair jobs wait unclaimed, and the reporter reply for a shipped repair refuses. An owner
+failure. While that result waits for the controller, `deploy-result.json` keeps the four
+fields every deployer reads and `deploy-runtime.json` beside it names the same job and lease,
+so a deployer downgraded below this change still finishes the receipt (without the runtime
+state) and claims again; the next receipt replaces the leftover file. Treat an invalid
+`deploy-runtime.json` like an invalid receipt. The controller keeps `active_sha` as the
+last release a health check proved and records the runtime as unknown: `/status` shows
+`runtime_unknown` (the job, the release it tried, the one it tried to restore and since
+when). Until it's cleared, approved feature and repair jobs wait unclaimed, and the
+reporter reply for a shipped repair refuses. An owner
 rollback can still go out at any hour: it backs up, proves its release healthy or restores
 the recorded one, as usual. A deployment that proves its release healthy makes the runtime
 known again. Otherwise, once a maintainer has the release `active_sha` names running with a

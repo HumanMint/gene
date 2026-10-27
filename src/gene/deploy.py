@@ -156,33 +156,57 @@ class Deployer:
 
     def finish_pending(self):
         """Retry only the durable completion receipt, never repeat its deployment."""
-        path = self.root / 'deploy-result.json'
+        path, beside = self.root / 'deploy-result.json', self.root / 'deploy-runtime.json'
         receipt = getattr(self, 'pending_result', None)
+        unknown = getattr(self, 'pending_unknown', False)
         if receipt is None:
             try:
                 receipt = json.loads(path.read_text())
             except FileNotFoundError:
                 return False
-        # Corrupt state needs operator reconciliation, not a new claim or guessed outcome. runtime_unknown is
-        # there only when it holds, so a receipt written before it existed still reads.
-        if (not isinstance(receipt, dict) or set(receipt)-{'runtime_unknown'} != {'job_id', 'lease', 'success', 'detail'}
-                or ('runtime_unknown' in receipt and (receipt['runtime_unknown'] is not True
-                                                      or receipt['success'] is not False))
+            unknown = self.runtime_evidence(beside, receipt)
+        # Corrupt state needs operator reconciliation, not a new claim or guessed outcome.
+        if (not isinstance(receipt, dict) or set(receipt) != {'job_id', 'lease', 'success', 'detail'}
                 or not re.fullmatch(r'[a-f0-9]{12}', str(receipt['job_id']))
                 or not re.fullmatch(r'[a-f0-9]{32}', str(receipt['lease']))
-                or type(receipt['success']) is not bool or not isinstance(receipt['detail'], str)):
+                or type(receipt['success']) is not bool or not isinstance(receipt['detail'], str)
+                or (unknown and receipt['success'] is not False)):
             raise ValueError('Invalid deployment completion receipt; operator reconciliation required')
-        self.pending_result = receipt
+        self.pending_result, self.pending_unknown = receipt, unknown
+        # The receipt keeps the four fields every deployer reads: an older one refuses any other before it reaches
+        # the controller, so it would never claim again, rollbacks included. An unknown runtime (gene #48) goes
+        # beside it, written first, so a crash between the two can't leave the receipt without it.
+        if unknown:
+            private_json(beside, {'job_id': receipt['job_id'], 'lease': receipt['lease'], 'runtime_unknown': True})
+        else:
+            beside.unlink(missing_ok=True)
         private_json(path, receipt)
         self.sync_directory()
-        payload = {key: receipt[key] for key in ('lease', 'success', 'detail', 'runtime_unknown') if key in receipt}
+        payload = {key: receipt[key] for key in ('lease', 'success', 'detail')}
+        if unknown:
+            payload['runtime_unknown'] = True
         acknowledgement = self.api.post(f'/deploy/{receipt["job_id"]}/finish', payload)
         if acknowledgement != {'ok': True}:
             raise RuntimeError('Controller did not acknowledge the deployment receipt')
         path.unlink()
+        beside.unlink(missing_ok=True)
         self.sync_directory()
-        self.pending_result = None
+        self.pending_result, self.pending_unknown = None, False
         return True
+
+    @staticmethod
+    def runtime_evidence(path, receipt):
+        """Whether the file beside a pending receipt says its deployment left the runtime unknown."""
+        try:
+            evidence = json.loads(path.read_text())
+        except FileNotFoundError:
+            return False
+        if (not isinstance(evidence, dict) or set(evidence) != {'job_id', 'lease', 'runtime_unknown'}
+                or evidence['runtime_unknown'] is not True):
+            raise ValueError('Invalid deployment runtime evidence; operator reconciliation required')
+        # Otherwise it was left for an earlier receipt, which an older deployer finished without reading it.
+        return isinstance(receipt, dict) and (evidence['job_id'], evidence['lease']) == (receipt.get('job_id'),
+                                                                                       receipt.get('lease'))
 
     def sync_directory(self):
         descriptor = os.open(self.root, os.O_RDONLY)
@@ -209,8 +233,8 @@ class Deployer:
         # Keep the result in memory as well, so a temporary disk failure cannot cause
         # the running process to forget it. A crash before persistence still fails closed.
         self.pending_result = {'job_id': job['id'], 'lease': job['lease'],
-                               'success': success, 'detail': clean(detail),
-                               **({'runtime_unknown': True} if self.runtime_unknown and not success else {})}
+                               'success': success, 'detail': clean(detail)}
+        self.pending_unknown = self.runtime_unknown and not success
         return self.finish_pending()
 
 

@@ -4,6 +4,7 @@ import os
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -138,6 +139,161 @@ def test_an_unknown_zone_defers_every_claim_but_a_rollback(store, monkeypatch):
     monkeypatch.setattr(maintenance, 'ZONE', 'Nowhere/Missing')
     assert store.claim_deploy() is None
     assert store.get(job['id'])['state'] == 'approved'
+
+
+def clocks(monkeypatch, text):
+    """The window's clock and the controller's record clock, stopped together as on the host."""
+    clock(monkeypatch, text)
+    monkeypatch.setattr(time, 'time', lambda: at(text))
+
+
+def drained(store, when):
+    """The audit row batch-release.sh's drain leaves in the controller DB."""
+    with store.connection() as db:
+        db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
+                   (at(when), 'maintainer:claude', maintenance.DRAINED, 'batch-x', ''))
+
+
+def approved(store, sha, source):
+    job = proposed(store, sha, source)
+    store.approve(job['id'], sha, 'owner')
+    return job
+
+
+@pytest.mark.parametrize('success', [True, False])
+def test_an_automatic_deploy_uses_the_days_batch_whatever_its_outcome(store, monkeypatch, success):
+    clocks(monkeypatch, '2026-10-28T04:05:00-07:00')
+    first = approved(store, G, 'message-1')
+    claimed = store.claim_deploy()
+    assert claimed['id'] == first['id']
+    store.finish_deploy(claimed['id'], claimed['lease'], success, 'Healthy' if success else 'Failed')
+    second = approved(store, 'e'*40, 'message-2')
+    clocks(monkeypatch, '2026-10-28T04:30:00-07:00')
+    assert store.claim_deploy() is None
+    assert store.get(second['id'])['state'] == 'approved'  # deferred, untouched
+    clocks(monkeypatch, '2026-10-29T04:05:00-07:00')  # the next day's window
+    assert store.claim_deploy()['id'] == second['id']
+
+
+def test_a_maintainer_drain_today_defers_automatic_claims(store, monkeypatch):
+    job = approved(store, G, 'message-1')
+    drained(store, '2026-10-27T04:10:00-07:00')  # yesterday's batch leaves today alone
+    drained(store, '2026-10-28T04:02:00-07:00')
+    clocks(monkeypatch, '2026-10-28T04:30:00-07:00')
+    assert store.claim_deploy() is None
+    assert store.get(job['id'])['state'] == 'approved'
+    clocks(monkeypatch, '2026-10-29T04:05:00-07:00')
+    assert store.claim_deploy()['id'] == job['id']
+
+
+def test_rollbacks_neither_wait_for_nor_use_the_days_batch(store, monkeypatch):
+    clocks(monkeypatch, '2026-10-28T04:05:00-07:00')
+    first = approved(store, G, 'message-1')
+    claimed = store.claim_deploy()
+    store.finish_deploy(claimed['id'], claimed['lease'], True, 'Healthy')
+    clocks(monkeypatch, '2026-10-28T13:00:00-07:00')  # today's batch is used; restoring service isn't held
+    rollback = store.rollback('guild', 'owner')
+    claimed = store.claim_deploy()
+    assert claimed['id'] == rollback['id'] != first['id']
+    store.finish_deploy(claimed['id'], claimed['lease'], True, 'Healthy')
+    clocks(monkeypatch, '2026-10-29T01:00:00-07:00')
+    drained(store, '2026-10-28T23:59:59-07:00')
+    rollback = store.rollback('guild', 'owner')
+    claimed = store.claim_deploy()
+    assert claimed['id'] == rollback['id']
+    store.finish_deploy(claimed['id'], claimed['lease'], True, 'Healthy')
+    job = approved(store, 'e'*40, 'message-2')
+    clocks(monkeypatch, '2026-10-29T04:10:00-07:00')  # the night's rollback left the day's batch unused
+    assert store.claim_deploy()['id'] == job['id']
+
+
+def test_a_critical_fix_skips_the_cap_but_not_the_window(store, monkeypatch, tmp_path):
+    job = approved(store, G, 'message-1')
+    drained(store, '2026-10-28T04:02:00-07:00')
+    clocks(monkeypatch, '2026-10-28T04:20:00-07:00')
+    assert store.claim_deploy() is None
+    assert maintenance.mark_critical(store.path, job['id'], 'P0: replies leak a DM', 'maintainer:test') == G
+    clocks(monkeypatch, '2026-10-28T05:20:00-07:00')
+    assert store.claim_deploy() is None  # still only inside the window
+    clocks(monkeypatch, '2026-10-28T04:30:00-07:00')
+    assert store.claim_deploy()['id'] == job['id']
+    with store.connection() as db:
+        assert tuple(db.execute('SELECT actor,detail FROM audit WHERE action="critical_fix" AND target=?',
+                                (job['id'],)).fetchone()) == ('maintainer:test', f'{G}: P0: replies leak a DM')
+
+
+def test_a_critical_mark_holds_only_for_the_commit_it_named(store, monkeypatch):
+    job = approved(store, G, 'message-1')
+    with store.connection() as db:
+        db.execute('INSERT INTO critical_fixes VALUES (?,?,?,?,?)', (job['id'], 'e'*40, 'P0', 'test', 0))
+    drained(store, '2026-10-28T04:02:00-07:00')
+    clocks(monkeypatch, '2026-10-28T04:20:00-07:00')
+    assert store.claim_deploy() is None
+
+
+def test_an_unknown_clock_zone_or_history_counts_as_a_used_batch(store, monkeypatch):
+    job = store.get(approved(store, G, 'message-1')['id'])
+    clocks(monkeypatch, '2026-10-28T04:20:00-07:00')
+    with store.connection() as db:
+        assert maintenance.batch_used(db, job) is False
+        monkeypatch.setattr(maintenance, 'clock', lambda: float('nan'))
+        assert maintenance.batch_used(db, job) is True
+        clock(monkeypatch, '2026-10-28T04:20:00-07:00')
+        monkeypatch.setattr(maintenance, 'ZONE', 'Nowhere/Missing')
+        assert maintenance.batch_used(db, job) is True
+        monkeypatch.setattr(maintenance, 'ZONE', 'America/Los_Angeles')
+        # A deployment dated after now (the clock went back), or one whose job is gone, still counts.
+        db.execute('INSERT INTO deployments VALUES (?,?,?,?,?)', ('gone', G, OLD_G, 'deployed', at('2026-10-30T04:00:00-07:00')))
+        assert maintenance.batch_used(db, job) is True
+
+
+@pytest.mark.parametrize('reason,state,kind,error', [
+    ('', 'approved', 'feature', 'P0 reason'),
+    ('   ', 'approved', 'feature', 'P0 reason'),
+    ('P0: crash', 'review', 'feature', 'approved feature or repair'),
+    ('P0: crash', 'approved', 'rollback', 'approved feature or repair'),
+    ('P0: crash', 'deployed', 'repair', 'approved feature or repair'),
+])
+def test_marking_a_critical_fix_refuses_bad_input(store, reason, state, kind, error):
+    job = approved(store, G, 'message-1')
+    with store.connection() as db:
+        db.execute('UPDATE jobs SET state=?,kind=? WHERE id=?', (state, kind, job['id']))
+    with pytest.raises(ValueError, match=error):
+        maintenance.mark_critical(store.path, job['id'], reason, 'maintainer:test')
+    with pytest.raises(ValueError, match='approved feature or repair'):
+        maintenance.mark_critical(store.path, 'f'*12, 'P0: crash', 'maintainer:test')
+    with store.connection() as db:
+        assert not db.execute('SELECT 1 FROM critical_fixes').fetchone()
+        assert not db.execute('SELECT 1 FROM audit WHERE action="critical_fix"').fetchone()
+
+
+def test_the_critical_command_logs_its_reason_and_lists_marks_without_member_content(tmp_path, monkeypatch, capsys):
+    root = tmp_path/'srv/gene'
+    store = Store(root/'data/controller/gene.sqlite3')
+    store.bootstrap(OLD_G)
+    store.update_models([{'id': 'm', 'name': 'M', 'efforts': ['high'], 'default_effort': 'high'}])
+    store.select_model('m', 'high', 'owner')
+    store.set_paused(False, 'owner')
+    job = approved(store, G, 'message-1')
+    clocks(monkeypatch, '2026-10-28T10:00:00-07:00')
+    monkeypatch.setenv('SUDO_USER', 'mint')
+    maintenance.main(['--root', str(root), 'critical', job['id'], '--reason', 'P0: a crash on every reply'])
+    row = json.loads((root/'production-actions.jsonl').read_text().splitlines()[-1])
+    assert row['action'] == f"mark critical fix job {job['id']}" and row['outcome'] == 'ok'
+    assert row['exception'] == 'P0: a crash on every reply' and row['actor'] == 'mint'
+    assert row['at'].startswith('2026-10-28T10:00:00-07:00')
+    capsys.readouterr()
+    maintenance.main(['--root', str(root), 'critical-list'])
+    listed = json.loads(capsys.readouterr().out)
+    assert listed == [{'job_id': job['id'], 'kind': 'feature', 'state': 'approved', 'sha': G, 'current': True,
+                       'reason': 'P0: a crash on every reply', 'actor': 'maintainer:mint',
+                       'marked_at': '2026-10-28T10:00:00-07:00'}]
+    with pytest.raises(SystemExit, match='P0 reason'):
+        maintenance.main(['--root', str(root), 'critical', job['id'], '--reason', ' '])
+    assert json.loads((root/'production-actions.jsonl').read_text().splitlines()[-1])['outcome'].startswith('refused')
+    with pytest.raises(SystemExit):  # a wrong root never creates a database
+        maintenance.main(['--root', str(tmp_path/'nowhere'), 'critical', job['id'], '--reason', 'P0: crash'])
+    assert not (tmp_path/'nowhere/data/controller/gene.sqlite3').exists()
 
 
 def deployer(tmp_path):

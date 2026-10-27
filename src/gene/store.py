@@ -122,6 +122,7 @@ class Store:
             initialize_repairs(db)
             from .requester_notices import initialize as initialize_requester_notices
             initialize_requester_notices(db)
+            maintenance.initialize(db)
             columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
             for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref', 'progress'):
                 if name not in columns:
@@ -497,6 +498,8 @@ class Store:
                 job = self._job(row)
                 if not window and job['kind'] != 'rollback':
                     continue
+                if job['kind'] != 'rollback' and maintenance.batch_used(db, job):
+                    continue  # Today's one production batch is used: the job waits for a later day, untouched.
                 proposal = job['proposal']
                 if job['kind'] == 'repair':
                     from .repair_policy import ACTOR

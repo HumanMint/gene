@@ -5,11 +5,13 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 import time
 from pathlib import Path
 
+from . import maintenance
 from .client import ControllerClient
 from .policy import git, validate_commit
 from .privacy import clean
@@ -26,6 +28,7 @@ class Deployer:
         self.source = self.root / 'source'
         self.repository = os.getenv('GENE_REPOSITORY', 'HumanMint/gene')
         self.health_file = self.root / 'data/red/gene-health.json'
+        self.restart_s = None
 
     def compose(self, *args):
         subprocess.run(['docker', 'compose', '--project-name', 'gene', '--env-file',
@@ -97,10 +100,19 @@ class Deployer:
 
     def process(self, job):
         sha, previous = job['proposal']['sha'], job['proposal']['base_sha']
+        if job.get('kind') != 'rollback' and not maintenance.is_open():
+            # The controller claims only inside the window; a clock that disagrees still never starts a switch.
+            raise RuntimeError('Outside the maintenance window; nothing was changed. Approve it again for the next window.')
         self.prepare(job)
         backup_dir = self.root / 'backups' / job['id']
         backup_dir.mkdir(parents=True, mode=0o700)
         Store(self.root / 'data/controller/gene.sqlite3').backup(backup_dir / 'controller.sqlite3')
+        if job.get('kind') != 'rollback' and not maintenance.is_open():
+            # Preparing took past the close: take back the cogs this job just installed, switch nothing.
+            shutil.rmtree(self.root / 'releases' / sha, ignore_errors=True)
+            raise RuntimeError('The maintenance window closed before the switch; nothing was changed. '
+                               'Approve it again for the next window.')
+        stopped = time.time()
         self.compose('stop', 'red')
         try:
             with tarfile.open(backup_dir / 'red.tar.gz', 'w:gz') as archive:
@@ -109,12 +121,33 @@ class Deployer:
             self.activate(sha)
             if not self.healthy(sha, started):
                 raise RuntimeError('New release did not become healthy')
+            self.restart_s = time.time() - stopped
         except Exception:
             restored = time.time()
             self.activate(previous)
-            if not self.healthy(previous, restored):
+            healthy = self.healthy(previous, restored)
+            self.restart_s = time.time() - stopped
+            if not healthy:
                 raise RuntimeError('Release and automatic rollback both failed. Operator recovery required') from None
             raise RuntimeError('Release failed health checks; the previous code was restored') from None
+
+    def live_sha(self):
+        try:
+            return dict(line.split('=', 1) for line in (self.root / 'release.env').read_text().splitlines()
+                        if '=' in line).get('GENE_RELEASE_SHA')
+        except OSError:
+            return None
+
+    def record(self, job, success, started, before):
+        """The production-action log line for this deployment; it never decides the outcome."""
+        try:
+            maintenance.record(self.root / 'production-actions.jsonl', f"deploy {job['kind']} job {job['id']}",
+                               actor='gene-deployer', trigger='controller claim of an approved job',
+                               reason=f"approved {job['kind']} {job['proposal']['sha']}",
+                               outcome='ok' if success else 'failed', before={'gene': before},
+                               after={'gene': self.live_sha()}, started=started, restart_s=self.restart_s)
+        except Exception as exc:
+            LOG.error('Production-action record failed (%s)', type(exc).__name__)
 
     def finish_pending(self):
         """Retry only the durable completion receipt, never repeat its deployment."""
@@ -157,12 +190,14 @@ class Deployer:
         if not job:
             return False
         LOG.info('Deploying approved request %s', job['id'])
+        started, before, self.restart_s = time.time(), self.live_sha(), None
         try:
             self.process(job)
             success, detail = True, 'Deployed approved commit; Discord connection and Gene heartbeat healthy.'
         except Exception as exc:
             success, detail = False, str(exc)
             LOG.error('Deployment %s failed (%s)', job['id'], type(exc).__name__)
+        self.record(job, success, started, before)
         # Keep the result in memory as well, so a temporary disk failure cannot cause
         # the running process to forget it. A crash before persistence still fails closed.
         self.pending_result = {'job_id': job['id'], 'lease': job['lease'],

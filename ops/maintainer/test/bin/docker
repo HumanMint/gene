@@ -15,6 +15,9 @@ STATE = M+'/docker.json'
 args = sys.argv[1:]
 with open(M+'/docker.log', 'a') as log:
     log.write(' '.join(args)+'\n')
+# Tests can arm $MOCK/on-docker: it gets these args and is used up once it exits 0 (1 leaves it armed).
+if os.access(M+'/on-docker', os.X_OK) and subprocess.run([M+'/on-docker', *args]).returncode == 0:
+    os.rename(M+'/on-docker', M+'/on-docker.ran')
 st = json.load(open(STATE))
 
 

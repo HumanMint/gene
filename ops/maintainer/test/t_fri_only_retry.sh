@@ -8,6 +8,7 @@ expect new false up
 run 0 rollback-fri 1
 run 0 resume-old 1
 expect old false up
+next_day  # A retry is a new batch, and one batch drains per local day.
 export BATCH_ATTEMPT=2
 ST=$ST-2
 release

@@ -31,12 +31,15 @@ or expand feature-job paths to the Fri repository.
   live evals on the host or Fri's subscription, live config, restarts and patch-notes
   posts. Outside it: local work, offline tests, reviews and PR/merge work, plus
   read-only health/status/metadata reads that take no lock, start no container and
-  write nothing. Never begin a switch, eval or build at or after 05:00: a drained
-  batch takes its recovery or resume path instead, never leaving a service paused.
-  Rollback and restoring healthy service are allowed at any hour; any other exception
-  needs the owner's explicit words. Log every production action (time and zone, actor,
-  trigger, action, reason, before/after SHAs, restart duration, outcome, exception),
-  never secrets or member content. It binds both routes to production:
+  write nothing. At or after 05:00, restore healthy service instead of finishing the
+  deployment: begin no switch, eval or build. If nothing switched, run `resume-old`.
+  If a switch began and the evals haven't passed, roll back, then `resume-old`. Only
+  once the evals have passed may `verify-off`, then `resume`, restore service (if
+  `verify-off` fails, roll back). Never leave a service paused. Rollback and restoring
+  healthy service are allowed at any hour; any other exception needs the owner's
+  explicit words. Log every production action (time and zone, actor, trigger, action,
+  reason, before/after SHAs, restart duration, outcome, exception), never secrets or
+  member content. It binds both routes to production:
   `ops/maintainer/batch-release.sh` (with `gene.fri_release`) and the automatic
   deployer's `/deploy/claim`, including approved feature and repair jobs. Enforcing it
   in code is pending; until that ships, an approved job can still deploy at any hour.

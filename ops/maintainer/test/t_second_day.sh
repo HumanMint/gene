@@ -13,7 +13,7 @@ as_owner "$GENE_PY" -c '
 import sqlite3, sys, time
 from gene.fri_member_summary import initialize
 with sqlite3.connect(sys.argv[1]) as db:
-    initialize(db)  # As G's controller has it.
+    initialize(db)  # As the new controller has it.
     db.execute("INSERT INTO personal_note_removals VALUES (?,?,?,?,?)", ("444", "server", "9", "removed-after-release", 1))
     db.execute("INSERT INTO fri_reply_findings VALUES (1,?,?,?,?,?,?,?,?,?,?)",
                (time.time(), time.time(), "9", 0, "p", "space", "tone", "low", "topic", "fix"))

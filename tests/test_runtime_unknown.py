@@ -1,7 +1,9 @@
 """gene #48: a deployment whose restore also failed leaves the runtime unknown, not the old release live."""
 import json
 import re
+import sqlite3
 import time
+from contextlib import closing
 from unittest.mock import Mock
 
 import httpx
@@ -258,7 +260,7 @@ def test_the_deployer_reports_it_and_the_owner_sees_it_in_status(tmp_path):
                            ).status_code == 422
 
 
-def health(path, age=1.0, **changes):
+def health(path, age=0.0, **changes):
     path.write_text(json.dumps({'sha': 'b'*40, 'guild_connected': True, 'controls_running': True,
                                 'at': time.time()-age, **changes}))
 
@@ -276,7 +278,7 @@ def test_a_maintainer_clears_it_once_the_recorded_release_is_running_and_healthy
             ('b'*40, {'guild_connected': False}, 'heartbeat'),
             ('b'*40, {'controls_running': False}, 'heartbeat'),
             ('b'*40, {'age': 120}, 'heartbeat')):
-        age = beat_changes.pop('age', 1.0)
+        age = beat_changes.pop('age', 0.0)
         health(beat, age, **beat_changes)
         assert main(['clear', db, '--sha', sha, '--health', str(beat), *common]) != 0
         assert expected in capsys.readouterr().err
@@ -304,7 +306,7 @@ def test_clearing_waits_for_a_deployment_in_flight(store, tmp_path):
     store.rollback('123', 'owner')
     store.claim_deploy()
     with pytest.raises(Conflict, match='going out'), store.connection() as db:
-        reconcile(db, 'b'*40, 'maintainer:claude', 'checked')
+        reconcile(db, 'b'*40, 'maintainer:claude', 'checked', tmp_path/'gene-health.json')
 
 
 def an_older_controller_finishes(store, job, detail):
@@ -400,4 +402,50 @@ def test_late_evidence_never_rewinds_what_has_happened_since(store, tmp_path):
     assert main(['clear', str(store.path), '--sha', 'd'*40, '--health', str(tmp_path/'gene-health.json'),
                  '--actor', 'maintainer:claude', '--reason', 'Checked d by hand']) == 0
     store.finish_deploy(job['id'], job['lease'], False, UNKNOWN, runtime_unknown=True)
+    assert store.status()['runtime_unknown'] is None
+
+
+CLEAR = ['--actor', 'maintainer:claude', '--reason', 'Heartbeat checked']
+
+
+def test_a_heartbeat_from_before_the_runtime_became_unknown_clears_nothing(store, tmp_path):
+    from gene.runtime_state import main
+    beat = tmp_path/'gene-health.json'
+    health(beat)  # B, healthy, the moment before the rollback stopped Red. Both releases then failed at once.
+    unknown_after_failed_rollback(store)
+    assert time.time()-json.loads(beat.read_text())['at'] < 25  # Still fresh by age alone.
+    assert main(['clear', str(store.path), '--sha', 'b'*40, '--health', str(beat), *CLEAR]) != 0
+    assert store.status()['runtime_unknown'] is not None
+
+
+def test_a_heartbeat_from_before_a_newer_failure_clears_nothing(store, tmp_path):
+    from gene.runtime_state import main
+    first = deploying(store)
+    store.finish_deploy(first['id'], first['lease'], False, UNKNOWN, runtime_unknown=True)
+    beat = tmp_path/'gene-health.json'
+    health(beat, sha='a'*40)  # A proved running again after the first failure...
+    with store.connection() as db:
+        db.execute('UPDATE settings SET value=? WHERE key="previous_sha"', ('d'*40,))
+    rollback = store.rollback('guild', 'owner')
+    claimed = store.claim_deploy()
+    store.finish_deploy(claimed['id'], claimed['lease'], False, UNKNOWN, runtime_unknown=True)  # ...then this one.
+    assert main(['clear', str(store.path), '--sha', 'a'*40, '--health', str(beat), *CLEAR]) != 0
+    assert store.status()['runtime_unknown']['job_id'] == rollback['id']
+
+
+def test_the_heartbeat_is_read_under_the_lock_that_clears_it(store, tmp_path, monkeypatch):
+    from gene import runtime_state
+    unknown_after_failed_rollback(store)
+    beat = tmp_path/'gene-health.json'
+    health(beat)
+    read = runtime_state.heartbeat
+
+    def contended(*args):
+        # A deployment failing now can't mark the runtime unknown again between this read and the clear.
+        with closing(sqlite3.connect(store.path, timeout=0)) as other:
+            with pytest.raises(sqlite3.OperationalError, match='locked'):
+                other.execute('BEGIN IMMEDIATE')
+        return read(*args)
+    monkeypatch.setattr(runtime_state, 'heartbeat', contended)
+    assert runtime_state.main(['clear', str(store.path), '--sha', 'b'*40, '--health', str(beat), *CLEAR]) == 0
     assert store.status()['runtime_unknown'] is None

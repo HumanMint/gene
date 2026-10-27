@@ -13,7 +13,8 @@ Maintainers, on the host, once the live runtime is checked by hand:
         --reason '<what was checked>' --health /srv/gene/data/red/gene-health.json \\
         [--log /srv/gene/production-actions.jsonl]
 
-Clearing needs the release the controller records as live, running with a fresh healthy heartbeat.
+Clearing needs the release the controller records as live, running with a fresh healthy heartbeat written
+after the runtime became unknown.
 """
 
 import argparse
@@ -75,7 +76,7 @@ def known(db):
     db.execute("UPDATE settings SET value='' WHERE key=?", (KEY,))
 
 
-def reconcile(db, sha, actor, reason):
+def reconcile(db, sha, actor, reason, health):
     """A maintainer found the release the controller records as live running and healthy."""
     if not SHA.fullmatch(sha):
         raise ValueError('Name the full SHA of the release that is running')
@@ -94,21 +95,26 @@ def reconcile(db, sha, actor, reason):
     if sha != active:
         raise Conflict(f'The controller records {active} as live. Restore that release, or record the '
                        'running one through a maintainer release, before clearing')
+    # Read under the lock, against the state it clears: no failure can mark the runtime unknown again between
+    # the read and the clear, and a heartbeat from before the one being cleared proves nothing about now.
+    heartbeat(health, sha, state['since'])
     known(db)
     Store._audit(db, actor, 'runtime_reconciled', sha, f"{reason} (unknown since job {state['job_id']})")
     return state
 
 
-def heartbeat(path, sha):
-    """The same evidence the deployer accepts, read once: this release, connected, controls running, fresh."""
+def heartbeat(path, sha, since):
+    """The same evidence the deployer accepts, read once: this release, connected, controls running, fresh, and
+    written after the runtime became unknown."""
     try:
         report = json.loads(Path(path).read_text())
+        at = float(report['at'])
         if (report['sha'] == sha and report['guild_connected'] is True and report.get('controls_running') is True
-                and time.time()-float(report['at']) < FRESH):
+                and at > since and time.time()-at < FRESH):
             return
     except (OSError, ValueError, KeyError, TypeError):
         pass
-    raise ValueError(f'No fresh healthy Gene heartbeat for {sha} in {path}')
+    raise ValueError(f'No fresh healthy Gene heartbeat for {sha} since the runtime became unknown, in {path}')
 
 
 def main(argv=None):
@@ -133,9 +139,8 @@ def main(argv=None):
         return 0
     started = maintenance.clock()
     try:
-        heartbeat(args.health, args.sha)
         with closing(sqlite3.connect(path, timeout=30)) as db, db:
-            state = reconcile(db, args.sha, args.actor, args.reason)
+            state = reconcile(db, args.sha, args.actor, args.reason, args.health)
     except (ValueError, Conflict) as exc:
         print(exc, file=sys.stderr)
         return 1

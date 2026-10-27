@@ -338,7 +338,9 @@ sudo /srv/gene/venv/bin/python -m gene.runtime_state clear /srv/gene/data/contro
   --health /srv/gene/data/red/gene-health.json --log /srv/gene/production-actions.jsonl
 ```
 
-It refuses another SHA, a stale or unhealthy heartbeat, or a deployment in flight. If a
+It refuses another SHA, a stale or unhealthy heartbeat, one written before the runtime
+became unknown (or before a newer failure marked it again), or a deployment in flight. It
+reads the heartbeat under the controller's write lock, so no failure lands between. If a
 different release is what's running, record it through a maintainer release first.
 `batch-release.sh` doesn't read or clear the state; after its `resume`, clear it with the
 release it recorded. A deployer from before this change reports no runtime state, as before;

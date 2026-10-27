@@ -43,7 +43,8 @@ for Discord’s UTF-16 limits without clipping the accepted reminder body.
 
 Each member may have five pending/scheduled reminders, due between one minute and
 30 days from preparation. Previews expire after 15 minutes; receipts and reminder
-text expire seven days after the due time. Ask “list my reminders” or “cancel my
+text expire seven days after the due time, or a day after a late delivery settles if
+that is later, so it still shows in open loops for its day. Ask “list my reminders” or “cancel my
 reminder to update the mods” to inspect or cancel work in that same DM. Natural
 cancellation uses a bounded direct request from the current message. Negation,
 quoted commands, examples, hypothetical discussion and general capability questions do not

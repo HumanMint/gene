@@ -7,6 +7,7 @@ and its commit is still the live release. Fri claims only after its Discord read
 sends, so this claim is the send-time check.
 """
 
+import json
 import time
 import uuid
 
@@ -42,6 +43,11 @@ def claim(store, job_id, actor):
         # active_sha moves only once a deployment is recorded; the runtime may switch well before that.
         if db.execute('SELECT 1 FROM jobs WHERE state="deploying"').fetchone():
             raise Conflict('Another release is going out right now, so tap again once it lands')
+        # An approved rollback of this release goes out on the deployer's next pass: the reply would race it.
+        # The deployer fails one approved against an older release instead, so that one doesn't count.
+        for row in db.execute('SELECT proposal FROM jobs WHERE kind="rollback" AND state="approved"'):
+            if json.loads(row['proposal'])['base_sha'] == job['approved_sha']:
+                raise Conflict('A rollback is waiting to go out, so the fix may not stay live')
         row = db.execute('SELECT state FROM requester_notices WHERE job_id=?', (job_id,)).fetchone()
         if row and row['state'] == 'sent':
             raise Conflict('The reporter was already told')

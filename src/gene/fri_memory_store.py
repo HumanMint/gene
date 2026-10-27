@@ -226,8 +226,10 @@ def cleared(store, db, guild, user, scope, revision):
 
 def moved(db, guild, scope, user, row, place):
     """A move never pushes another note out: the member makes room first."""
+    # Only the same note already there (category and words, as save() matches) takes no new slot.
     full = db.execute('SELECT count(*), sum(category=?) FROM personal_notes WHERE guild_id=? AND channel_id=? '
-                      'AND user_id=? AND evidence<>?', (row['category'], guild, scope, user, row['evidence'])).fetchone()
+                      'AND user_id=? AND NOT (category=? AND evidence=?)',
+                      (row['category'], guild, scope, user, row['category'], row['evidence'])).fetchone()
     if full[0] >= limit(scope) or (full[1] or 0) >= PER_CATEGORY:
         raise ValueError(f"{place} is full for {row['category']}. Remove one there first.")
 

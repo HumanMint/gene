@@ -41,9 +41,11 @@ or expand feature-job paths to the Fri repository.
   reason, before/after SHAs, restart duration, outcome, exception), never secrets or
   member content. It binds both routes to production:
   `ops/maintainer/batch-release.sh` (with `gene.fri_release`) and the automatic
-  deployer's `/deploy/claim`, including approved feature and repair jobs. Enforcing it
-  in code is pending; until that ships, an approved job can still deploy at any hour.
-  Don't stop or reconfigure live services outside the window to cover that.
+  deployer's `/deploy/claim`, including approved feature and repair jobs. Code
+  enforces it on both routes once a release includes it
+  (`ops/maintainer/batch-release.md`). Until that release is live, an approved job can
+  still deploy at any hour; don't stop or reconfigure live services outside the window
+  to cover that.
 - The owner grants standing authorization for the controller's `existing-features-v1`
   repair policy. Fresh fault reports may enter isolated verification automatically.
   Before feature code changes, require a baseline test pass, a new regression failing

@@ -7,6 +7,15 @@ H=$(cd "$(dirname "$0")" && pwd)
 "$H/setup.sh" > "$MOCK.setup.log" 2>&1 || { cat "$MOCK.setup.log"; echo 'RESULT: FAIL (mock host setup)'; exit 1; }
 FAILED=0 RUNS=0
 JOURNAL=$ST/journal
+at() {  # local time with offset, e.g. 2026-10-28T04:05:00-07:00: the mock host's maintenance-window clock
+  echo "$(/bin/date -d "$1" +%s) $(/bin/date +%s)" > "$MOCK/clock"
+}
+next_day() {  # The same wall-clock time a day later, in the window's zone.
+  local base
+  read -r base _ < "$MOCK/clock"
+  at "$(TZ=America/Los_Angeles /bin/date -d "$(TZ=America/Los_Angeles /bin/date -d "@$base" '+%F %T') tomorrow" --iso-8601=seconds)"
+}
+at 2026-10-28T04:05:00-07:00  # Inside the window unless a test says otherwise.
 fail() { echo "ASSERT FAILED: $*"; FAILED=1; }
 run() {  # expected_rc phase [lines of output to show]
   local want=$1 phase=$2 lines=${3:-3} rc=0 out

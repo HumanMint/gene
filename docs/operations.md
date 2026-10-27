@@ -164,7 +164,8 @@ in the audio image for decoding, seeking, and timed sender checks without a comp
 ### Maintainer work requested in Codex
 
 The owner's direct request in this Codex chat authorizes implementation and deployment
-without a second approval. Test the change, commit and push it, record the complete
+without a second approval, inside the production maintenance window: [04:00, 05:00)
+America/Los_Angeles, one regular batch a day (`ops/maintainer/batch-release.md`). Test the change, commit and push it, record the complete
 release SHA, and retain the GitHub diff for review. Do not automatically merge to `main`.
 Before switching a release, pause the worker/deployer, confirm no job is building or
 deploying, and back up the controller, stopped Red state, previous source, and release

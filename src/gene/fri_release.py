@@ -16,6 +16,7 @@ import tarfile
 import time
 from pathlib import Path
 
+from . import maintenance
 from .private_files import private_json
 
 
@@ -35,6 +36,8 @@ class FriRelease:
         self.compose_file = self.gene / 'source/ops/fri-compose.yml'
         self.record = self.root / 'release.json'
         self.run = self._run
+        self.restart_s = None
+        self.permitted = lambda: True  # main() checks the maintenance window here, right before the switch
 
     @staticmethod
     def _run(args):
@@ -149,6 +152,8 @@ class FriRelease:
         if not before and legacy:
             health = json.loads((self.data/'fri-health.json').read_text())
             legacy_sha = health['sha']
+        if not self.permitted():
+            raise RuntimeError('The maintenance window closed before the Fri switch; nothing was changed')
         stopped = False
         try:
             stopped = True  # Even a partially failed stop needs recovery.
@@ -170,6 +175,7 @@ class FriRelease:
             self.compose('up', '-d', '--no-deps', '--force-recreate', 'runtime')
             if not self.healthy(sha, started):
                 raise RuntimeError('New Fri failed its health checks')
+            self.restart_s = time.time() - started
             self.audit(sha, 'deployed')
             private_json(self.record, {'sha': sha, 'previous': before['sha'] if before else None,
                 'legacy_sha': legacy_sha, 'backup': str(backup), 'at': time.time()})
@@ -199,13 +205,47 @@ class FriRelease:
             raise
 
 
+def recorded(root):
+    try:
+        return json.loads((Path(root)/'release.json').read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def permitted(sha, root, exception):
+    """Inside the maintenance window, a rollback to the Fri this one replaced, or the owner's exception."""
+    before = recorded(root)
+    return (maintenance.is_open() or bool(exception)
+            or (isinstance(before, dict) and before.get('previous') == sha))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('sha', help='full maintainer-reviewed Fri commit; earlier compatible SHAs can roll back')
     parser.add_argument('--root', type=Path, default=Path('/srv/fri'))
     parser.add_argument('--gene-root', type=Path, default=Path('/srv/gene'))
     args = parser.parse_args()
-    print(json.dumps(FriRelease(args.root, args.gene_root).deploy(args.sha)))
+    exception = os.environ.get('MAINTENANCE_EXCEPTION', '').strip()
+    previous = recorded(args.root)
+    before = previous.get('sha') if isinstance(previous, dict) else None
+    log = dict(actor=os.environ.get('SUDO_USER') or 'root', trigger='gene.fri_release', reason='Fri release '+args.sha,
+               before={'fri': before}, exception=exception)
+    if not permitted(args.sha, args.root, exception):
+        maintenance.record(args.gene_root/'production-actions.jsonl', 'fri_release', outcome='refused: outside the window',
+                           after={'fri': before}, **log)
+        raise SystemExit('Outside the maintenance window [04:00, 05:00) America/Los_Angeles; nothing was changed. '
+                         'Only a rollback to the previous Fri runs at any hour.')
+    release, started, outcome = FriRelease(args.root, args.gene_root), time.time(), 'failed'
+    release.permitted = lambda: permitted(args.sha, args.root, exception)
+    try:
+        result = release.deploy(args.sha)
+        outcome = 'ok'
+    finally:
+        with contextlib.suppress(Exception):  # The record never decides the release's outcome.
+            maintenance.record(args.gene_root/'production-actions.jsonl', 'fri_release', outcome=outcome,
+                               after={'fri': (recorded(args.root) or {}).get('sha')}, started=started,
+                               restart_s=release.restart_s, **log)
+    print(json.dumps(result))
 
 
 if __name__ == '__main__':

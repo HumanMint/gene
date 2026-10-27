@@ -5,7 +5,7 @@ CAPABILITIES = ('scoped-context', 'gene-controls', 'owner-reviews', 'privacy-rev
                 'workspace-outbox', 'social-outbox', 'research-receipts', 'agent-learning',
                 'event-mention-chat', 'turn-provenance')
 OPTIONAL = ('reply-checks', 'member-profiles', 'requester-notices',
-            'usage-window', 'memory-moves')  # Advertised; a controller without them is still compatible.
+            'usage-window', 'memory-moves', 'member-summaries')  # Advertised; a controller without them is still compatible.
 
 
 def contract():

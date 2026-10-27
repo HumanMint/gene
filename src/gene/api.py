@@ -112,6 +112,8 @@ class ChatScope(Actor):
     source: ChatSource | None = None
     # Sent by a Fri that understands member profiles. An older Fri gets this conversation's notes only.
     profiles: bool = False
+    # Sent by a Fri that understands the member summary. An older Fri never gets it.
+    summaries: bool = False
 
 
 class ChatTurn(ChatScope):
@@ -167,6 +169,13 @@ class PendingCancel(ChatScope):
 
 class PersonalControl(ChatScope):
     action: Literal['enable', 'disable']
+
+
+class SummaryEdit(ChatScope):
+    source: ChatSource
+    revision: int = Field(ge=0)
+    action: Literal['remove', 'replace']
+    text: str = Field(default='', max_length=500)
 
 
 class PersonalNoteEdit(ChatScope):
@@ -403,7 +412,7 @@ def create_app(settings: Settings | None = None):
             from .fri_mentions import context
             return context(store, body)
         chat_scope(body)
-        return store.chat_context(body.guild_id, body.conversation_id, body.user_id, body.profiles)
+        return store.chat_context(body.guild_id, body.conversation_id, body.user_id, body.profiles, body.summaries)
 
     @app.post('/chat/pending', dependencies=[auth('fri')])
     def chat_pending(body: ChatScope):
@@ -469,7 +478,14 @@ def create_app(settings: Settings | None = None):
     def personal_notes(body: ChatScope):
         chat_scope(body)
         from .fri_memory_store import entries
-        return entries(store, body.guild_id, body.conversation_id, body.user_id, body.profiles)
+        return entries(store, body.guild_id, body.conversation_id, body.user_id, body.profiles, body.summaries)
+
+    @app.post('/chat/memory/summary', dependencies=[auth('fri')])
+    def edit_summary(body: SummaryEdit):
+        chat_scope(body)
+        from .fri_member_summary import edit
+        return edit(store, body.guild_id, body.conversation_id, body.user_id, body.revision, body.source.model_dump(),
+                    body.action, body.text)
 
     @app.post('/chat/memory/notes/{identifier}', dependencies=[auth('fri')])
     def edit_personal_note(identifier: int, body: PersonalNoteEdit):

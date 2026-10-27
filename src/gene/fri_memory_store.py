@@ -117,7 +117,8 @@ def manageable(conversation, scope, profiles=True):
     return conversation.startswith('private:') or scope in visible(conversation)
 
 
-def entries(store, guild, conversation, user, profiles=True):
+def entries(store, guild, conversation, user, profiles=True, summaries=False):
+    """summaries: a Fri that shows the member's summary, which only a private conversation lists."""
     with store.connection() as db:
         profile = store._personal_context(db, guild, conversation, user, profiles)
         row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
@@ -131,8 +132,13 @@ def entries(store, guild, conversation, user, profiles=True):
         # The profile first, then this conversation, then anywhere else; newest first within each.
         order = {SERVER: 0, conversation: 1}
         notes.sort(key=lambda r: (order.get(r['scope'], 2), r['scope'], -r['at'], -r['id']))
-        return {'enabled': profile['enabled'], 'revision': row[0] if row else 0,
-                'entries': [{**row, 'expires_at': row['at']+TTL} for row in notes]}
+        listed = {'enabled': profile['enabled'], 'revision': row[0] if row else 0,
+                  'entries': [{**row, 'expires_at': row['at']+TTL} for row in notes]}
+        if summaries:
+            from .fri_member_summary import read, view
+            shown = view(read(db, guild, user)) if conversation.startswith('private:') else None
+            listed['summary'] = shown and {key: shown[key] for key in ('text', 'refreshed', 'expires_at')}
+        return listed
 
 
 def edit(store, guild, conversation, user, identifier, revision, source, action, evidence='', *, profiles=True):
@@ -185,30 +191,37 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
             if not save(db, guild, conversation, user, (row['category'], row['evidence']), time.time(), None,
                         None if row['provenance'] is None else json.loads(row['provenance'])):
                 raise ValueError('That preference can’t be moved now. Open My memory again.')
-        # Clear stale conversational copies, research receipts and requests included, and invalidate every
-        # in-flight derivation. A profile note reached every conversation in the server, so all of them go.
-        if scope == SERVER:
-            db.execute('DELETE FROM chat_turns WHERE guild_id=? AND user_id=?', (guild, user))
-            db.execute('DELETE FROM chat_pending WHERE guild_id=? AND user_id=?', (guild, user))
-            db.execute('DELETE FROM web_research WHERE guild_id=? AND user_id=?', (guild, user))
-            db.execute('DELETE FROM web_requests WHERE guild_id=? AND user_id=?', (guild, user))
-        else:
-            db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=?', (guild, scope, user))
-            db.execute('DELETE FROM chat_pending WHERE guild_id=? AND conversation_id=? AND user_id=?', (guild, scope, user))
-            db.execute('DELETE FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=?', (guild, scope, user))
-            db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=?', (guild, scope, user))
-        for summary in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
-            if user in json.loads(summary['authors']):
-                db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (summary['channel_id'],))
-        db.execute('DELETE FROM agent_reports')
-        from .fri_explore_store import erase
-        erase(db, user)
-        # A preference edit invalidates derivations, not an already explicit
-        # reminder confirmation. Global erasure follows its separate erase path.
-        from .fri_social_store import Social
-        Social.preserve_confirmed(db, user, revision)
-        store.advance_revision(db, user)
+        cleared(store, db, guild, user, scope, revision)
     return entries(store, guild, conversation, user, profiles)
+
+
+def cleared(store, db, guild, user, scope, revision):
+    """After an edit to what Fri keeps in scope: its stale copies go and every in-flight derivation is invalidated.
+
+    Conversational copies, research receipts and requests included. A profile note reached every
+    conversation in the server, so all of them go.
+    """
+    if scope == SERVER:
+        db.execute('DELETE FROM chat_turns WHERE guild_id=? AND user_id=?', (guild, user))
+        db.execute('DELETE FROM chat_pending WHERE guild_id=? AND user_id=?', (guild, user))
+        db.execute('DELETE FROM web_research WHERE guild_id=? AND user_id=?', (guild, user))
+        db.execute('DELETE FROM web_requests WHERE guild_id=? AND user_id=?', (guild, user))
+    else:
+        db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=?', (guild, scope, user))
+        db.execute('DELETE FROM chat_pending WHERE guild_id=? AND conversation_id=? AND user_id=?', (guild, scope, user))
+        db.execute('DELETE FROM web_research WHERE guild_id=? AND channel_id=? AND user_id=?', (guild, scope, user))
+        db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=?', (guild, scope, user))
+    for summary in db.execute('SELECT channel_id,authors FROM agent_summaries').fetchall():
+        if user in json.loads(summary['authors']):
+            db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (summary['channel_id'],))
+    db.execute('DELETE FROM agent_reports')
+    from .fri_explore_store import erase
+    erase(db, user)
+    # A preference edit invalidates derivations, not an already explicit
+    # reminder confirmation. Global erasure follows its separate erase path.
+    from .fri_social_store import Social
+    Social.preserve_confirmed(db, user, revision)
+    store.advance_revision(db, user)
 
 
 def moved(db, guild, scope, user, row, place):

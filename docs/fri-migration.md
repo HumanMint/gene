@@ -212,6 +212,21 @@ conversation where they were said, as before, and an erasure doesn't reach one t
 Profile notes stay stored, unseen, until a
 newer Fri returns or they expire; "forget me" still erases them.
 
+Rolling the controller back below `member-summaries` needs one step too, because an older controller
+can neither show, edit nor erase Fri's member summaries. With the controller stopped and backed up,
+run this from the current release before starting the older controller (`batch-release.sh` does it
+as a recorded downgrade):
+
+```sh
+python -m gene.fri_member_summary purge "$GENE_DB"
+```
+
+It drops the summaries and their daily call stamps; exchanges and notes stay. Rolling back Fri alone
+needs no cleanup: an older Fri doesn't send `summaries`, so the controller never gives it one and no
+builder runs. Summaries already stored stay unseen until a newer Fri returns, they expire (30 days),
+or the member's "forget me", memory off or Forget my chats removes them; run the purge as well if they
+should go at once.
+
 The complete `/srv/gene/data/fri` and `/srv/gene/secrets/fri-chatgpt` directories stay
 in place initially. Identity, read/write allowlists, memory, pending controls/reviews,
 reminders, reports and persistent buttons remain unchanged. See Fri's operations

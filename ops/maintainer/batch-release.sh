@@ -8,7 +8,9 @@
 # Prints no secrets: env files are passed to Docker, copied or compared, never read into output.
 # Every controller DB access runs as the DB owner in a throwaway container of the old runtime
 # image, so no root SQLite client leaves journal files the controller cannot open, and none
-# of it needs a working controller.
+# of it needs a working controller. The one exception is the daily cap's read-only check
+# (drained_today), which runs before anything else: a read-only connection creates no journal,
+# and SQLite gives a shared-memory file it creates as root to the DB owner.
 set -Eeuo pipefail
 umask 077
 
@@ -1486,14 +1488,18 @@ closed_during() {  # what: true, with a note, when the window closed during this
   log "the maintenance window closed during $1: no switch starts now; taking this batch's safe path"
 }
 drained_today() {  # True, naming why, when today's batch is used: another batch drained, or an automatic
-  # feature or repair deployment ran, on today's local date. Anything unknown counts as used.
+  # feature or repair deployment ran, on today's local date. Anything unknown counts as used. The
+  # controller's own deployment record decides for automatic deployments, as /deploy/claim's cap does
+  # (maintenance.batch_used); the action log only adds the lines a deployer wrote.
   local now rc=0
   now=$(now_epoch) && [[ $now =~ ^[0-9]+$ ]] || { echo 'the clock is unknown'; return 0; }
-  python3 - "$now" "$ROOT/staging" "$STAGE" "$ACTIONS" <<'PY' || rc=$?
-import datetime as dt, glob, json, os, re, sys
+  python3 - "$now" "$ROOT/staging" "$STAGE" "$ACTIONS" "$DB" <<'PY' || rc=$?
+import datetime as dt, glob, json, os, re, sqlite3, sys
+from contextlib import closing
+from pathlib import Path
 from zoneinfo import ZoneInfo
 zone = ZoneInfo('America/Los_Angeles')
-now, staging, stage, actions = int(sys.argv[1]), *sys.argv[2:5]
+now, staging, stage, actions, database = int(sys.argv[1]), *sys.argv[2:6]
 today = dt.datetime.fromtimestamp(now, zone).date()
 deployment = re.compile(r'deploy (\S+) job \S+$')  # gene.deploy's line, whatever its outcome
 def day(stamp):  # A deployment's local date from its time with offset; an undated one counts as today.
@@ -1528,6 +1534,19 @@ for journal in glob.glob(staging+'/batch-*/journal'):
     if today.isoformat() in dates:
         print('a batch already drained today:', os.path.basename(path))
         sys.exit(0)
+# Every deployment claimed since local midnight but a rollback, whatever its outcome, also one whose job is
+# gone or one dated later (the clock went back). Read-only (mode=ro): a missing DB is an error, never created.
+since = dt.datetime.combine(today, dt.time(0), tzinfo=zone).timestamp()
+try:
+    with closing(sqlite3.connect(Path(database).absolute().as_uri()+'?mode=ro', uri=True, timeout=30)) as db:
+        claimed = db.execute("SELECT d.job_id, j.kind FROM deployments d LEFT JOIN jobs j ON j.id=d.job_id "
+                             "WHERE d.at>=? AND j.kind IS NOT 'rollback' ORDER BY d.at LIMIT 1", (since,)).fetchone()
+except sqlite3.Error as exc:
+    print(f"the controller's deployment history could not be read ({exc}), so today's batch counts as used")
+    sys.exit(0)
+if claimed:
+    print('the controller claimed an automatic deployment today:', claimed[1] or 'unrecorded', 'job', claimed[0])
+    sys.exit(0)
 sys.exit(3)
 PY
   case $rc in

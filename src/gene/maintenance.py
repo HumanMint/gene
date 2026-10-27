@@ -100,7 +100,8 @@ def mark_critical(path, job_id, reason, actor):
     if not reason:
         raise ValueError('A critical fix needs its P0 reason: a crash, data loss, a privacy leak or a broken rollback')
     # mode=rw: a wrong path is an error, never a new empty database.
-    with closing(sqlite3.connect(f'file:{path}?mode=rw', uri=True, timeout=30, isolation_level=None)) as db:
+    with closing(sqlite3.connect(Path(path).absolute().as_uri()+'?mode=rw', uri=True, timeout=30,
+                                 isolation_level=None)) as db:
         db.execute('BEGIN IMMEDIATE')
         try:
             row = db.execute('SELECT kind,state,approved_sha FROM jobs WHERE id=?', (job_id,)).fetchone()
@@ -122,7 +123,7 @@ def mark_critical(path, job_id, reason, actor):
 
 def critical_marks(path):
     """Every critical mark with its job's kind and state; never the job's request text."""
-    with closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=30)) as db:
+    with closing(sqlite3.connect(Path(path).absolute().as_uri()+'?mode=ro', uri=True, timeout=30)) as db:
         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='critical_fixes'").fetchone():
             return []
         rows = db.execute('SELECT c.job_id,j.kind,j.state,c.sha,j.approved_sha,c.reason,c.actor,c.at '

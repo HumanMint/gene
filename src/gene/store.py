@@ -948,6 +948,19 @@ class Store:
             self._checked_provenance(db, user_id, provenance)
             return {'ok': True}
 
+    def check_authors(self, authors):
+        """Attention's last privacy check before its model call (fri #84): every author it is about to send still
+        allows it, at the revision their words were read under. Read under the write lock, so no erasure lands
+        between two authors' reads; the refusal names nobody."""
+        if not authors:
+            return {'ok': True}
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for item in authors:
+                if self._privacy_state(db, str(item['user_id'])) != (int(item['revision']), True):
+                    raise Conflict('Someone in that conversation changed their privacy settings.')
+            return {'ok': True}
+
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
                   *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=None,

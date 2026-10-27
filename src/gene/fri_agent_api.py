@@ -29,6 +29,18 @@ class Context(Identity):
     channel_id: str
 
 
+class Author(BaseModel):
+    user_id: str = Field(pattern=r'^\d{1,25}$')
+    revision: int = Field(ge=0)
+
+
+class AuthorCheck(BaseModel):
+    """Every member whose words attention is about to send, each at the revision Fri read them under."""
+    guild_id: str
+    channel_id: str
+    authors: list[Author] = Field(max_length=200)
+
+
 class LearningRecord(BaseModel):
     id: str = Field(pattern=r'^\d{1,25}$')
     user_id: str = Field(pattern=r'^\d{1,25}$')
@@ -108,6 +120,15 @@ def register(app, store, settings, auth, actor):
             profile = agent.context(body.channel_id, body.user_id, body.guild_id)
             return {key: profile[key] for key in ('enabled', 'revision', 'removed_at')}
         return agent.context(body.channel_id, body.user_id, body.guild_id)
+
+    @app.post('/agent/authors/check', dependencies=[auth('fri')])
+    def authors_check(body: AuthorCheck):
+        """One call for the per-author profile reads attention used to recheck with (fri #84), in their channels."""
+        history = body.guild_id == settings.guild_id and body.channel_id in settings.agent_history_channels.split(',')
+        if not body.channel_id or not (settings.chat_channel_allowed(body.guild_id, body.channel_id) or history or
+                                       settings.meme_channel_allowed(body.guild_id, body.channel_id)):
+            raise HTTPException(403, 'Channel is outside Fri scope')
+        return store.check_authors([author.model_dump() for author in body.authors])
 
     @app.post('/agent/learning/claim', dependencies=[auth('fri')])
     def claim():

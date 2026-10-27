@@ -863,7 +863,19 @@ fence() {  # Pause new work, let current work finish, then stop the worker and d
 drain() {
   need baseline; check_manifest
   fence
-  has drained || mark drained
+  if ! has drained; then
+    local used
+    # The fence waits out a deployment claimed before the pause, and that one used today's batch. This
+    # batch changed nothing but the fence, and the deployment may have moved Gene, so development
+    # resumes as it is, without the old-pair check resume-old makes. The batch never goes forward.
+    if [[ -z $EXCEPTION && -z $CRITICAL ]] && used=$(drained_today); then
+      resume_services "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)"
+      mark resumed_old
+      die "today's batch was used during the drain ($used); development resumed as it was, and this pair waits for a later day"
+    fi
+    audit "$DRAINED" "${STAGE##*/}"  # Before the journal line, so a drained batch always holds the controller's claims.
+    mark drained
+  fi
   if closed_during 'the drain'; then
     resume_old
     die 'the window closed during the drain; development resumed at the old release, and this pair waits for a later window'
@@ -1425,12 +1437,17 @@ cleanup() {
 }
 
 # Production maintenance window (owner policy, 2026-10-27). Forward phases start only in [04:00, 05:00)
-# America/Los_Angeles, following daylight saving, and only one batch drains per local day. A wait that
+# America/Los_Angeles, following daylight saving, and one production batch runs per local day across
+# both routes: a batch that drains here, or an automatic feature or repair deployment. A wait that
 # crosses the close takes the batch's safe path instead of switching. Recovery runs at any hour, and
 # an unknown clock or zone counts as closed. MAINTENANCE_EXCEPTION carries the owner's explicit
-# exception, which the log records. src/gene/maintenance.py holds the same window for the deployer.
+# exception; CRITICAL_FIX, a P0 fix's reason, lifts only the daily cap. The log records both.
+# src/gene/maintenance.py holds the same window and cap for the deployer.
 ACTIONS=$ROOT/production-actions.jsonl
 EXCEPTION=${MAINTENANCE_EXCEPTION:-}
+CRITICAL=${CRITICAL_FIX:-}
+[[ $CRITICAL =~ [^[:space:]] ]] || CRITICAL=''  # A blank reason is no reason.
+DRAINED=batch_drained  # The controller's audit action for a drained batch: maintenance.DRAINED holds claims for the day.
 STARTED_AT=$(date +%s 2>/dev/null || true)  # Instrumentation only: an unreadable clock never blocks recovery.
 RESTART_S='' REFUSED=''
 now_epoch() { TZ=UTC date +%s; }  # The window's clock; the offline tests shift only this call.
@@ -1468,15 +1485,23 @@ closed_during() {  # what: true, with a note, when the window closed during this
   [[ -z $EXCEPTION ]] && ! window_open || return 1
   log "the maintenance window closed during $1: no switch starts now; taking this batch's safe path"
 }
-drained_today() {  # True when another batch drained on today's local date. Anything unknown counts as drained.
-  local now
-  now=$(now_epoch) && [[ $now =~ ^[0-9]+$ ]] || return 0
-  python3 - "$now" "$ROOT/staging" "$STAGE" "$ACTIONS" <<'PY' && return 0
-import datetime as dt, glob, json, os, sys
+drained_today() {  # True, naming why, when today's batch is used: another batch drained, or an automatic
+  # feature or repair deployment ran, on today's local date. Anything unknown counts as used.
+  local now rc=0
+  now=$(now_epoch) && [[ $now =~ ^[0-9]+$ ]] || { echo 'the clock is unknown'; return 0; }
+  python3 - "$now" "$ROOT/staging" "$STAGE" "$ACTIONS" <<'PY' || rc=$?
+import datetime as dt, glob, json, os, re, sys
 from zoneinfo import ZoneInfo
 zone = ZoneInfo('America/Los_Angeles')
 now, staging, stage, actions = int(sys.argv[1]), *sys.argv[2:5]
-today = dt.datetime.fromtimestamp(now, zone).date().isoformat()
+today = dt.datetime.fromtimestamp(now, zone).date()
+deployment = re.compile(r'deploy (\S+) job \S+$')  # gene.deploy's line, whatever its outcome
+def day(stamp):  # A deployment's local date from its time with offset; an undated one counts as today.
+    try:
+        moment = dt.datetime.fromisoformat(stamp)
+    except (TypeError, ValueError):
+        return today
+    return moment.astimezone(zone).date() if moment.tzinfo else today
 logged = {}  # batch dir name -> local dates its drain completed, from the action log
 if os.path.exists(actions):
     for line in open(actions, errors='replace'):
@@ -1484,8 +1509,15 @@ if os.path.exists(actions):
             row = json.loads(line)
         except ValueError:
             continue
-        if isinstance(row, dict) and row.get('action') == 'batch-release drain' and row.get('outcome') == 'ok':
+        if not isinstance(row, dict):
+            continue
+        if row.get('action') == 'batch-release drain' and row.get('outcome') == 'ok':
             logged.setdefault(row.get('stage'), set()).add(row.get('local_date'))
+        found = deployment.match(row['action']) if isinstance(row.get('action'), str) else None
+        # A rollback never counts. One dated after today counts: the clock went back.
+        if found and found[1] != 'rollback' and day(row.get('at')) >= today:
+            print('an automatic deployment ran today:', row['action'])
+            sys.exit(0)
 for journal in glob.glob(staging+'/batch-*/journal'):
     path = os.path.dirname(journal)
     if path == stage or 'drained' not in open(journal).read().split():
@@ -1493,12 +1525,16 @@ for journal in glob.glob(staging+'/batch-*/journal'):
     # A batch drained before the log existed is dated by its journal's last change.
     dates = logged.get(os.path.basename(path)) or {
         dt.datetime.fromtimestamp(os.stat(journal).st_mtime, zone).date().isoformat()}
-    if today in dates:
-        print('drained today:', os.path.basename(path))
+    if today.isoformat() in dates:
+        print('a batch already drained today:', os.path.basename(path))
         sys.exit(0)
 sys.exit(3)
 PY
-  [[ $? != 3 ]]
+  case $rc in
+    0) return 0 ;;
+    3) return 1 ;;
+    *) echo "today's batches could not be read"; return 0 ;;
+  esac
 }
 touched() { has drained || has intent:pause; }  # This batch has paused development, or begun to.
 safe_path() {  # What this batch may do outside the window, from its journal.
@@ -1526,8 +1562,10 @@ gate() {
   fi
   if [[ -n $EXCEPTION ]]; then log "maintenance exception: $EXCEPTION"; return 0; fi
   window_open || refuse 'outside the maintenance window [04:00, 05:00) America/Los_Angeles, or the clock or zone is unknown'
-  if [[ $PHASE =~ ^(baseline|stage|rehearse|drain)$ ]] && ! has drained && drained_today; then
-    refuse 'a batch already drained today; one regular batch per local day'
+  local used
+  if [[ $PHASE =~ ^(baseline|stage|rehearse|drain)$ ]] && ! has drained && used=$(drained_today); then
+    [[ -n $CRITICAL ]] || refuse "$used; one production batch per local day. Only a P0 fix goes ahead, with CRITICAL_FIX='<reason>'"
+    log "critical fix: $CRITICAL ($used)"
   fi
 }
 live_sha() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n 1 || true; }
@@ -1545,7 +1583,7 @@ log_action() {  # rc: this command's line in the production-action log; it never
   if [[ -n $REFUSED ]]; then outcome="refused: $REFUSED"; elif (( rc )); then outcome="failed: exit $rc"; fi
   python3 - "$ACTIONS" "$(now_epoch)" "$PHASE" "$(basename "$STAGE")" "$BEFORE_G" "$BEFORE_F" \
     "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)" "$(live_sha "$FRI_ROOT/release.env" FRI_RELEASE_SHA)" \
-    "$(elapsed)" "$RESTART_S" "$outcome" "$EXCEPTION" "${SUDO_USER:-$(id -un)}" \
+    "$(elapsed)" "$RESTART_S" "$outcome" "$EXCEPTION${CRITICAL:+${EXCEPTION:+; }critical fix: $CRITICAL}" "${SUDO_USER:-$(id -un)}" \
     "${BATCH_TRIGGER:-maintainer}" "$G" "$F" <<'PY' || echo 'WARN: the production-action log was not written' >&2
 import datetime as dt, fcntl, json, os, sys
 (path, now, phase, stage, before_g, before_f, after_g, after_f, duration, restart, outcome, exception, actor,

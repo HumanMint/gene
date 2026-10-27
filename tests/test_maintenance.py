@@ -471,6 +471,70 @@ def test_one_batch_drains_per_local_day(tmp_path):
     assert 'REFUSED' not in out.stderr
 
 
+def deployed(when, kind='feature', job='a1b2c3d4e5f6', outcome='ok'):
+    """gene.deploy's line in the production-action log."""
+    return json.dumps({'action': f'deploy {kind} job {job}', 'at': when, 'actor': 'gene-deployer',
+                       'outcome': outcome})+'\n'
+
+
+@needs_bash4
+def test_the_daily_cap_counts_an_automatic_deployment(tmp_path):
+    root = tmp_path/'srv/gene'
+    root.mkdir(parents=True)
+    log = root/'production-actions.jsonl'
+    log.write_text(deployed('2026-10-28T04:02:00-07:00', kind='rollback')  # restoring service never counts
+                   + deployed('2026-10-27T04:10:00.250000-07:00'))  # yesterday's
+    out, _, _ = script(tmp_path, 'baseline', '2026-10-28T04:40:00-07:00')
+    assert 'REFUSED' not in out.stderr
+    with log.open('a') as lines:  # failed, and logged in UTC by a deployer without the zone: still today's
+        lines.write(deployed('2026-10-28T11:05:00+00:00', kind='repair', outcome='failed'))
+    out, root, rows = script(tmp_path, 'stage', '2026-10-28T04:40:00-07:00')
+    assert out.returncode == 4 and 'an automatic deployment ran today: deploy repair job a1b2c3d4e5f6' in out.stderr
+    assert "CRITICAL_FIX='<reason>'" in out.stderr
+    assert rows[-1]['action'] == 'batch-release stage' and rows[-1]['outcome'].startswith('refused')
+    out, _, _ = script(tmp_path, 'baseline', '2026-10-29T04:05:00-07:00')  # the next day's window
+    assert 'REFUSED' not in out.stderr
+
+
+@needs_bash4
+def test_a_critical_fix_lifts_only_the_daily_cap_and_is_logged(tmp_path):
+    root = tmp_path/'srv/gene'
+    other = root/f'staging/batch-{"e"*40}-{F}'
+    other.mkdir(parents=True)
+    (other/'journal').write_text('baseline\ndrained\nresumed\n')
+    (root/'production-actions.jsonl').write_text(json.dumps(
+        {'action': 'batch-release drain', 'outcome': 'ok', 'stage': other.name, 'local_date': '2026-10-28'})+'\n')
+    out, _, rows = script(tmp_path, 'baseline', '2026-10-28T04:40:00-07:00', extra_env={'CRITICAL_FIX': '  '})
+    assert out.returncode == 4 and 'a batch already drained today' in out.stderr  # a blank reason is none
+    out, _, rows = script(tmp_path, 'baseline', '2026-10-28T04:40:00-07:00',
+                          extra_env={'CRITICAL_FIX': 'P0: replies leak DMs'})
+    assert 'REFUSED' not in out.stderr and 'critical fix: P0: replies leak DMs (a batch already drained' in out.stdout
+    assert rows[-1]['action'] == 'batch-release baseline'
+    assert rows[-1]['exception'] == 'critical fix: P0: replies leak DMs'
+    out, _, rows = script(tmp_path, 'baseline', '2026-10-28T13:00:00-07:00',
+                          extra_env={'CRITICAL_FIX': 'P0: replies leak DMs'})
+    assert out.returncode == 4 and 'outside the maintenance window' in out.stderr  # never the window
+    out, _, rows = script(tmp_path, 'baseline', '2026-10-28T13:00:00-07:00',
+                          extra_env={'CRITICAL_FIX': 'P0: replies leak DMs', 'MAINTENANCE_EXCEPTION': 'owner, today'})
+    assert 'REFUSED' not in out.stderr
+    assert rows[-1]['exception'] == 'owner, today; critical fix: P0: replies leak DMs'
+
+
+@needs_bash4
+def test_unreadable_history_counts_as_a_used_batch(tmp_path):
+    root = tmp_path/'srv/gene'
+    other = root/f'staging/batch-{"e"*40}-{F}'
+    other.mkdir(parents=True)
+    (other/'journal').write_text('baseline\n')
+    (other/'journal').chmod(0)
+    try:
+        out, _, _ = script(tmp_path, 'baseline', '2026-10-28T04:40:00-07:00')
+    finally:
+        (other/'journal').chmod(0o600)
+    if os.geteuid() != 0:  # root reads it anyway
+        assert out.returncode == 4 and "today's batches could not be read" in out.stderr
+
+
 @needs_bash4
 def test_a_batch_drained_before_the_log_existed_counts_by_its_journal(tmp_path):
     root = tmp_path/'srv/gene'

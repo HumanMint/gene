@@ -315,6 +315,41 @@ Check for `deploy-result.json` when reconciling a stuck release. A valid pending
 will normally clear itself after controller connectivity returns. Preserve and inspect
 an invalid or conflicting receipt privately instead of deleting it to unblock claims.
 
+A deployment that stopped Red and then failed without any release proving healthy, its
+restore included (or whose restore couldn't start), reports `runtime_unknown` with its
+failure. While that result waits for the controller, `deploy-result.json` keeps the four
+fields every deployer reads and `deploy-runtime.json` beside it names the same job and lease,
+so a deployer downgraded below this change still finishes the receipt (without the runtime
+state) and claims again; the next receipt replaces the leftover file. Treat an invalid
+`deploy-runtime.json` like an invalid receipt. The controller keeps `active_sha` as the
+last release a health check proved and records the runtime as unknown: `/status` shows
+`runtime_unknown` (the job, the release it tried, the one it tried to restore and since
+when). Until it's cleared, approved feature and repair jobs wait unclaimed, and the
+reporter reply for a shipped repair refuses. An owner
+rollback can still go out at any hour: it backs up, proves its release healthy or restores
+the recorded one, as usual. A deployment that proves its release healthy makes the runtime
+known again. Otherwise, once a maintainer has the release `active_sha` names running with a
+fresh healthy heartbeat, they clear it on the host, which writes an audit row:
+
+```sh
+sudo /srv/gene/venv/bin/python -m gene.runtime_state status /srv/gene/data/controller/gene.sqlite3
+sudo /srv/gene/venv/bin/python -m gene.runtime_state clear /srv/gene/data/controller/gene.sqlite3 \
+  --sha <active_sha> --actor maintainer:<name> --reason '<what was checked>' \
+  --health /srv/gene/data/red/gene-health.json --log /srv/gene/production-actions.jsonl
+```
+
+It refuses another SHA, a stale or unhealthy heartbeat, one written before the runtime
+became unknown (or before a newer failure marked it again), or a deployment in flight. It
+reads the heartbeat under the controller's write lock, so no failure lands between. If a
+different release is what's running, record it through a maintainer release first.
+`batch-release.sh` doesn't read or clear the state; after its `resume`, clear it with the
+release it recorded. A deployer from before this change reports no runtime state, as before;
+an older controller ignores the field, and a Gene rollback below it leaves the setting in
+place, unread. Receipts compare on success and detail alone in every version, so a replay
+crosses an upgrade or rollback either way. When an older controller committed a receipt
+whose acknowledgement was lost, the upgraded one records the replay's `runtime_unknown`
+once, unless a later claim, a maintainer clear or a recorded release has come since.
+
 The trusted `gene` control cog should remain loadable. If a candidate breaks it, use
 SSH for recovery; Discord commands are not the only recovery path.
 

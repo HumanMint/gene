@@ -408,6 +408,26 @@ keeps nothing (`/chat/turn` answers `kept: false`); `/agent/context` reports the
 excerpts of the same words (one containing the other) go with the note, under any category; for a
 profile note, wherever a single conversation kept them, and its removal covers older messages in every
 conversation of the server. A fresh disclosure afterwards still counts.
+**Member summary.** Fri also keeps one short summary per member (at most 500 characters) of what they
+talked about with it lately, beside the six recent exchanges, so a topic that fell out of them can be
+picked back up. It is the only model-written text about a member the controller stores, and Fri's model
+sees it labelled as Fri's own untrusted summary, never instructions. Fri builds it in its background
+loop with the internal summary model (`summary_model` / `summary_effort`, Luna at medium by default),
+only while background work and learning are on, at most once per member a day and 50 times a day in
+all, once the member's latest exchange is an hour old and at least two new ones are kept
+(`/agent/member-summary/claim`, then `/finish`). It reads only the member's own words in exchanges saved
+from channels everyone in the server could read, at their current privacy revision, never Fri's replies,
+DMs, the /fri panel or a restricted channel, plus the previous summary, and Fri drops any whose channel
+is no longer readable by everyone before the call. The finish is fenced: it keeps nothing if the member's
+revision or that of anyone those words drew on changed since the claim (409). The summary carries that
+provenance and goes when any of them erases or changes their privacy settings; the member's own
+revision change (forget me, memory off, Forget my chats, any note edit) removes it too. It expires 30
+days after its last refresh. Fri shows it to its model in DMs and in channels everyone can read, while
+every channel it came from still is, and never in another member's turn; replies built on it inherit
+its provenance. In a DM, "what do you remember" and My memory show it, and My memory edits or clears it
+(`/chat/memory/summary`, private conversations only), which, like a profile note edit, clears the
+member's saved chats across the server and moves their revision. Only a Fri that sends `summaries`
+gets it in `/chat/context` and `/chat/memory/notes`; the contract advertises `member-summaries`.
 The item-storage upgrade preserves existing IDs and dates in one SQLite savepoint. A rollback to
 the earlier single-note release needs its matching database backup, because that older writer
 expects a different uniqueness constraint. Retain the pre-release database backup with the code SHA.

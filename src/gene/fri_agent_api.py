@@ -79,6 +79,8 @@ def register(app, store, settings, auth, actor):
     app.state.agent = agent
     from .fri_reply_checks import register as register_reply_checks
     register_reply_checks(app, agent, auth, actor, Identity)
+    from .fri_member_summary import register as register_summaries
+    register_summaries(app, agent, auth)
 
     @app.get('/agent/state', dependencies=[auth('fri')])
     def state():

@@ -136,6 +136,8 @@ class Store:
                 db.execute("ALTER TABLE chat_turns ADD COLUMN source TEXT NOT NULL DEFAULT ''")
             from .fri_memory_store import initialize as initialize_personal_notes
             initialize_personal_notes(db)
+            from .fri_member_summary import initialize as initialize_summaries
+            initialize_summaries(db)
             if 'burst' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
                 db.execute("ALTER TABLE chat_turns ADD COLUMN burst TEXT NOT NULL DEFAULT '[]'")
             columns = {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}
@@ -209,6 +211,8 @@ class Store:
             db.execute('DELETE FROM mention_grants WHERE expires<?', (time.time()-600,))
             from .fri_reply_checks import prune as prune_reply_checks
             prune_reply_checks(db)
+            from .fri_member_summary import prune as prune_summaries
+            prune_summaries(db)
             return {
                 'paused': self._setting(db, 'paused') == 'true',
                 'active_sha': self._setting(db, 'active_sha'),
@@ -602,8 +606,12 @@ class Store:
             db.execute('UPDATE jobs SET approved_by="deleted" WHERE approved_by=?', (user_id,))
             db.execute('UPDATE jobs SET intake_approved_by="deleted" WHERE intake_approved_by=?', (user_id,))
 
-    def chat_context(self, guild_id, channel_id, user_id, profiles=True):
-        """profiles=False is an older Fri: only this conversation's notes, as before profiles existed."""
+    def chat_context(self, guild_id, channel_id, user_id, profiles=True, summaries=False):
+        """profiles=False is an older Fri: only this conversation's notes, as before profiles existed.
+
+        summaries: a Fri that knows the member summary, which it alone may pass to its model and recheck.
+        An older one never gets it, so it can't reach a model that wasn't told what it is.
+        """
         with self.connection() as db:
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
             db.execute('DELETE FROM web_requests WHERE created<?', (time.time()-600,))
@@ -641,7 +649,14 @@ class Store:
                         (guild_id, channel_id, user_id))],
                     'personal_memory': profile,
                     **({'profile_origins': origins} if profiles else {}),
+                    **({'member_summary': self._member_summary(db, guild_id, user_id) if profile['enabled'] else None}
+                       if summaries else {}),
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
+
+    @staticmethod
+    def _member_summary(db, guild_id, user_id):
+        from .fri_member_summary import read, view
+        return view(read(db, guild_id, user_id))
 
     def _elsewhere(self, db, guild_id, conversation, user_id):
         """What the member said to Fri lately in the server's other everyone-readable conversations.
@@ -823,6 +838,8 @@ class Store:
                    "WHERE json_extract(p.value, '$.user_id')=?)", (user_id,))
         from .fri_reply_checks import erase as erase_reply_findings
         erase_reply_findings(db, user_id)
+        from .fri_member_summary import erase as erase_summaries
+        erase_summaries(db, user_id)
         Store._erase_jobs(db, db.execute("SELECT j.id,j.proposal FROM jobs j, json_each(j.provenance) p "
                                          "WHERE json_extract(p.value, '$.user_id')=?", (user_id,)).fetchall(),
                           '[Request withdrawn: someone it drew on changed their privacy settings]')

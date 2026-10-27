@@ -1,0 +1,265 @@
+"""Fri's own short summary of what each member talked about with it lately (memory v2, phase 3).
+
+The first model-written text about a member the controller keeps, so it is held to the narrowest rules.
+It is built only from the member's own words in exchanges said where everyone in the server could read
+them: never a DM, the /fri panel or a restricted channel. It carries whose words those drew on, and goes
+when any of them changes their privacy settings or the member's own revision moves (forget me, memory
+off, cleared chats, an edit). It lapses 30 days after its last refresh. Fri builds it in its background
+loop, since the controller has no model access: at most one call per member a day, kept only if nothing
+changed since the claim. Before a rollback to a controller without it:
+python -m gene.fri_member_summary purge <database>
+"""
+
+import json
+import re
+import sqlite3
+import sys
+import time
+import uuid
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
+from .fri_context import ChatSource
+from .privacy import clean
+
+TTL = 30*86400
+DAY = 86400
+SETTLE = 3600  # Built once the member's latest exchange is an hour old, so a day's one call covers the chat.
+NEW = 2  # Exchanges since the last build before another is worth a call.
+EXCHANGES = 24  # The newest a build reads.
+DAILY = 50  # Builds a day across the server, however many members are active.
+CLAIM_TIMEOUT = 600
+IDLE = 600  # Seconds before looking again when nobody is due.
+LENGTH = 500
+UNSAFE = re.compile(r'<[@#&:/]|://|```|\d{15,}')  # Mentions, links, code and ids never reach a summary.
+CLAIM, NEXT = 'member_summary_claim', 'next_member_summary'
+# The same exchanges a member's other conversations may see (Store._elsewhere).
+READABLE = ("guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND attributed=1 "
+            "AND response_kind='reply'")
+
+
+def initialize(db):
+    db.executescript('''
+        CREATE TABLE IF NOT EXISTS fri_member_summaries (
+            guild_id TEXT NOT NULL, user_id TEXT NOT NULL, body TEXT NOT NULL, revision INTEGER NOT NULL,
+            provenance TEXT NOT NULL, origins TEXT NOT NULL, refreshed REAL NOT NULL, through REAL NOT NULL,
+            PRIMARY KEY(guild_id, user_id));
+        CREATE TABLE IF NOT EXISTS fri_member_summary_calls (user_id TEXT PRIMARY KEY, at REAL NOT NULL);
+    ''')
+
+
+def prune(db, now=None):
+    now = now or time.time()
+    db.execute('DELETE FROM fri_member_summaries WHERE refreshed<?', (now-TTL,))
+    db.execute('DELETE FROM fri_member_summary_calls WHERE at<?', (now-DAY,))
+
+
+def erase(db, user_id):
+    """Any privacy change of the member, or of anyone whose words it drew on, takes it."""
+    db.execute("DELETE FROM fri_member_summaries WHERE user_id=? OR EXISTS (SELECT 1 FROM "
+               "json_each(fri_member_summaries.provenance) p WHERE json_extract(p.value, '$.user_id')=?)",
+               (user_id, user_id))
+
+
+def _current(db, row):
+    from .store import Store
+    return (row['refreshed'] >= time.time()-TTL and Store._privacy_state(db, row['user_id']) == (row['revision'], True)
+            and all(Store._privacy_state(db, s['user_id']) == (s['revision'], True) for s in json.loads(row['provenance'])))
+
+
+def read(db, guild, user):
+    """The member's summary row, or None. An empty body is a build that found nothing worth keeping."""
+    row = db.execute('SELECT * FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user)).fetchone()
+    if row and not _current(db, row):
+        db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+        return None
+    return row
+
+
+def view(row):
+    """What Fri gets. The origins are where its words were said, for Fri to recheck who can read them now."""
+    if not row or not row['body']:
+        return None
+    return {'text': row['body'], 'refreshed': row['refreshed'], 'expires_at': row['refreshed']+TTL,
+            'provenance': json.loads(row['provenance']), 'origins': json.loads(row['origins'])}
+
+
+def checked(text):
+    """One short paragraph, or None if it holds what a summary never may."""
+    text = ' '.join(clean(text, 4*LENGTH).split())
+    if len(text) > LENGTH:
+        text = text[:LENGTH].rsplit(' ', 1)[0]
+    return None if UNSAFE.search(text) else text
+
+
+def claim(agent):
+    """The next member due a summary, with their own recent words and what Fri kept before, or None."""
+    from .fri_reply_checks import neutral
+    from .store import Store
+    now = time.time()
+    with agent.store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        config = agent.config(db)
+        if not config['enabled'] or not config['learning_enabled']:
+            return None
+        pending = agent.get(db, CLAIM)
+        if (pending and now-pending['at'] < CLAIM_TIMEOUT) or now < agent.get(db, NEXT, 0):
+            return None
+        prune(db, now)
+        if db.execute('SELECT count(*) FROM fri_member_summary_calls').fetchone()[0] >= DAILY:
+            agent.put(db, NEXT, now+IDLE)
+            return None
+        guild = agent.settings.guild_id
+        due = db.execute(
+            "SELECT t.user_id FROM chat_turns t LEFT JOIN fri_member_summaries s ON s.guild_id=t.guild_id "
+            "AND s.user_id=t.user_id WHERE t.guild_id=? AND t.audience='server' AND t.channel_id LIKE 'public:%' "
+            "AND t.attributed=1 AND t.response_kind='reply' AND t.at>coalesce(s.through, 0) "
+            'AND t.user_id NOT IN (SELECT user_id FROM fri_member_summary_calls) '
+            'AND t.user_id NOT IN (SELECT user_id FROM personal_preferences WHERE enabled=0) '
+            'GROUP BY t.user_id HAVING count(*)>=? AND max(t.at)<? ORDER BY coalesce(max(s.refreshed), 0), t.user_id',
+            (guild, NEW, now-SETTLE)).fetchall()
+        for (user,) in due:
+            revision = Store._privacy_state(db, user)[0]
+            previous = read(db, guild, user)
+            # Only words said since the member's latest privacy change: one invalidates what came before.
+            turns = [dict(row) for row in db.execute(
+                f'SELECT id,channel_id,input,provenance,at FROM chat_turns WHERE {READABLE} AND at>? '
+                'AND speaker_revision=? ORDER BY at DESC, id DESC LIMIT ?',
+                (guild, user, previous['through'] if previous else 0, revision, EXCHANGES))][::-1]
+            turns = agent.store._current_turns(db, turns)
+            if len(turns) < NEW:
+                continue
+            sources = {}
+            for turn in turns:
+                sources.setdefault(turn['channel_id'], set()).update(
+                    (s['user_id'], s['revision']) for s in turn['provenance'])
+            shown = view(previous)
+            db.execute('INSERT INTO fri_member_summary_calls VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
+                       (user, now))  # Every call counts, whatever happens to it.
+            record = {'id': uuid.uuid4().hex, 'at': now, 'user_id': user, 'revision': revision,
+                      'through': max(turn['at'] for turn in turns),
+                      'sources': {c: sorted(map(list, s)) for c, s in sources.items()},
+                      'previous': {k: shown[k] for k in ('provenance', 'origins')} if shown else None}
+            agent.put(db, CLAIM, record)
+            return {'id': record['id'], 'model': config['summary_model'], 'effort': config['summary_effort'],
+                    'previous': {'text': shown['text'], 'origins': shown['origins']} if shown else None,
+                    'exchanges': [{'conversation_id': turn['channel_id'], 'message': neutral(turn['input'])}
+                                  for turn in turns]}
+        agent.put(db, NEXT, now+IDLE)
+        return None
+
+
+def finish(agent, claim_id, summary, status, conversations, previous):
+    """Keep a finished build, only if no one it draws on, the member included, changed anything since the claim.
+
+    conversations: those Fri still found everyone could read and sent to the model; previous: whether it
+    sent the earlier summary too. What it left out is left out of the provenance and origins as well.
+    """
+    from .store import Conflict, Store
+    now = time.time()
+    with agent.store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        record = agent.get(db, CLAIM)
+        if not record or record['id'] != claim_id:
+            raise ValueError('That summary build expired')
+        agent.put(db, CLAIM, None)
+        config = agent.config(db)
+        kept = sorted(set(record['sources']) & set(conversations))
+        earlier = record['previous'] if previous else None
+        text = checked(summary) if status == 'completed' else None
+        if text is None or not kept or not config['enabled'] or not config['learning_enabled']:
+            return {'kept': False}
+        provenance = {(user, revision) for c in kept for user, revision in record['sources'][c]}
+        provenance |= {(s['user_id'], s['revision']) for s in (earlier or {}).get('provenance', [])}
+        if Store._privacy_state(db, record['user_id']) != (record['revision'], True) or any(
+                Store._privacy_state(db, user) != (revision, True) for user, revision in provenance):
+            db.commit()  # The claim is spent either way.
+            raise Conflict('Memory changed while Fri was summarizing. Nothing was kept.')
+        origins = sorted(set(kept) | set((earlier or {}).get('origins', [])))
+        db.execute('INSERT INTO fri_member_summaries VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE '
+                   'SET body=excluded.body,revision=excluded.revision,provenance=excluded.provenance,'
+                   'origins=excluded.origins,refreshed=excluded.refreshed,through=excluded.through',
+                   (agent.settings.guild_id, record['user_id'], text, record['revision'],
+                    json.dumps([{'user_id': u, 'revision': r} for u, r in sorted(provenance)]), json.dumps(origins),
+                    now, record['through']))
+        return {'kept': bool(text)}
+
+
+def edit(store, guild, conversation, user, revision, source, action, text=''):
+    """The member's own edit or clear, from My memory in a private chat, where only they see it.
+
+    Like a profile note's, since it reached every conversation in the server: their saved chats there go,
+    and the revision moves, so nothing built on the old words (a build in flight included) outlives it.
+    An edit is in their own words, so it draws on no one and shows wherever a summary may.
+    """
+    source = ChatSource.model_validate(source).check(guild, conversation, user)
+    if not -5 <= time.time()-source.timestamp().timestamp() <= 300:
+        raise ValueError('Use a fresh memory control')
+    if not conversation.startswith('private:'):
+        raise ValueError('Change your summary from My memory in your DMs')
+    if action == 'replace':
+        text = checked(text)
+        if not text or len(text) < 5:
+            raise ValueError('Keep it to a short line, without links, mentions or code.')
+    elif action != 'remove' or text:
+        raise ValueError('Choose Edit or Clear for your summary')
+    from .fri_memory_store import SERVER, cleared, entries
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
+        if revision != (current[0] if current else 0):
+            raise ValueError('Memory changed. Open My memory again.')
+        if not view(read(db, guild, user)):
+            raise ValueError('There’s no summary to change now. Open My memory again.')
+        cleared(store, db, guild, user, SERVER, revision)
+        if action == 'replace':
+            now = time.time()
+            db.execute("INSERT INTO fri_member_summaries VALUES (?,?,?,?,'[]','[]',?,?)",
+                       (guild, user, text, store._privacy_state(db, user)[0], now, now))
+    return entries(store, guild, conversation, user, summaries=True)
+
+
+def purge(path):
+    """Run before rolling the controller back to a release that can neither show nor erase summaries."""
+    if not Path(path).is_file():
+        raise SystemExit(f'Nothing changed. {path} is not a controller database.')
+    db = sqlite3.connect(path)
+    try:
+        with db:
+            db.execute('DROP TABLE IF EXISTS fri_member_summaries')
+            db.execute('DROP TABLE IF EXISTS fri_member_summary_calls')
+            db.execute('DELETE FROM agent_state WHERE key IN (?,?)', (CLAIM, NEXT))
+    finally:
+        db.close()
+
+
+class Finish(BaseModel):
+    summary: str = Field(default='', max_length=4*LENGTH)
+    status: str = Field(pattern=r'^(completed|failed|incomplete|interrupted|invalid_output|skipped)$')
+    conversations: list[str] = Field(default_factory=list, max_length=EXCHANGES)
+    previous: bool = False
+
+
+def register(app, agent, auth):
+    @app.post('/agent/member-summary/claim', dependencies=[auth('fri')])
+    def claim_summary():
+        return claim(agent)
+
+    @app.post('/agent/member-summary/{claim_id}/finish', dependencies=[auth('fri')])
+    def finish_summary(claim_id: str, body: Finish):
+        if not re.fullmatch(r'[a-f0-9]{32}', claim_id):
+            raise ValueError('That summary build expired')
+        return finish(agent, claim_id, body.summary, body.status, body.conversations, body.previous)
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 2 or argv[0] != 'purge':
+        raise SystemExit('usage: python -m gene.fri_member_summary purge <database>')
+    purge(argv[1])
+    print('Member summaries removed.')
+
+
+if __name__ == '__main__':
+    main()

@@ -534,9 +534,10 @@ class Store:
         if success and runtime_unknown:
             raise ValueError('A release that proved healthy is a known runtime')
         detail = clean(detail)
-        # Present only when it holds, so receipts from a deployer that never sends it compare as before.
-        result = json.dumps({'success': success, 'detail': detail, **({'runtime_unknown': True} if runtime_unknown
-                                                                    else {})}, sort_keys=True)
+        # The receipt every controller records and compares a replay with; the runtime evidence stays outside it,
+        # so a receipt one side of an upgrade or rollback committed still matches its replay on the other.
+        result = json.dumps({'success': success, 'detail': detail}, sort_keys=True)
+        from . import runtime_state
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             receipt = db.execute('SELECT lease,result FROM deployment_receipts WHERE job_id=?',
@@ -544,10 +545,11 @@ class Store:
             if receipt:
                 if receipt['lease'] != lease or receipt['result'] != result:
                     raise Conflict('Deployment completion differs from the recorded receipt')
+                if runtime_unknown:  # Perhaps committed by a controller that ignored it.
+                    runtime_state.late(db, job_id)
                 return  # A lost acknowledgement must not reapply or rewind a release.
             row = self._leased(db, job_id, lease, 'deploying')
             proposal = json.loads(row['proposal'])
-            from . import runtime_state
             if success:
                 db.execute('UPDATE settings SET value=? WHERE key="previous_sha"', (proposal['base_sha'],))
                 db.execute('UPDATE settings SET value=? WHERE key="active_sha"', (proposal['sha'],))
@@ -556,8 +558,6 @@ class Store:
                     self._audit(db, 'deployer', 'runtime_known', job_id, proposal['sha'])
             elif runtime_unknown:
                 runtime_state.mark(db, dict(row), proposal)
-                self._audit(db, 'deployer', 'runtime_unknown', job_id,
-                            f"Switching to {proposal['sha']} failed and restoring {proposal['base_sha']} never proved healthy")
             state = 'deployed' if success else 'failed'
             db.execute('UPDATE jobs SET state=?,result=?,lease=NULL,updated=? WHERE id=?',
                        (state, clean(detail), time.time(), job_id))

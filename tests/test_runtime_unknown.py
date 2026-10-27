@@ -214,7 +214,7 @@ def test_an_unknown_runtime_receipt_is_idempotent_and_cannot_change(store):
     store.finish_deploy(first['id'], first['lease'], False, UNKNOWN, runtime_unknown=True)
     store.finish_deploy(first['id'], first['lease'], False, UNKNOWN, runtime_unknown=True)
     with pytest.raises(Conflict, match='differs'):
-        store.finish_deploy(first['id'], first['lease'], False, UNKNOWN)
+        store.finish_deploy(first['id'], first['lease'], False, 'Release failed health checks')
     with pytest.raises(ValueError):
         store.finish_deploy('f'*12, 'e'*32, True, 'Healthy', runtime_unknown=True)
     with store.connection() as db:
@@ -227,6 +227,14 @@ def api_client(tmp_path):
     return TestClient(create_app(settings))
 
 
+def deploy_post(client):
+    def post(path, data=None):
+        response = client.post(path, json=data or {}, headers={'Authorization': 'Bearer deploy-'+'x'*32})
+        response.raise_for_status()
+        return response.json()
+    return post
+
+
 def test_the_deployer_reports_it_and_the_owner_sees_it_in_status(tmp_path):
     with api_client(tmp_path) as client:
         store = client.app.state.store
@@ -237,12 +245,7 @@ def test_the_deployer_reports_it_and_the_owner_sees_it_in_status(tmp_path):
         store.approve(job['id'], 'b'*40, 'owner')
         (tmp_path/'data/red').mkdir(parents=True)
 
-        def post(path, data=None):
-            response = client.post(path, json=data or {}, headers={'Authorization': 'Bearer deploy-'+'x'*32})
-            response.raise_for_status()
-            return response.json()
-
-        worker = deployer(tmp_path, (False, False), api=Mock(post=post))
+        worker = deployer(tmp_path, (False, False), api=Mock(post=deploy_post(client)))
         assert worker.tick()
         status = client.get('/status', headers={'Authorization': 'Bearer fri-'+'x'*32}).json()
         assert status['active_sha'] == 'a'*40
@@ -302,3 +305,99 @@ def test_clearing_waits_for_a_deployment_in_flight(store, tmp_path):
     store.claim_deploy()
     with pytest.raises(Conflict, match='going out'), store.connection() as db:
         reconcile(db, 'b'*40, 'maintainer:claude', 'checked')
+
+
+def an_older_controller_finishes(store, job, detail):
+    """What a controller from before gene #48 commits for a failed deployment (4c51f3c, Store.finish_deploy): it
+    ignores runtime_unknown, so it records no state and its receipt holds only success and detail."""
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('UPDATE jobs SET state="failed",result=?,lease=NULL,updated=? WHERE id=?',
+                   (detail, time.time(), job['id']))
+        db.execute('UPDATE deployments SET state="failed" WHERE job_id=?', (job['id'],))
+        db.execute('INSERT INTO deployment_receipts VALUES (?,?,?)',
+                   (job['id'], job['lease'], json.dumps({'success': False, 'detail': detail}, sort_keys=True)))
+        Store._audit(db, 'deployer', 'failed', job['id'], detail)
+
+
+def deploying(store, sha='b'*40, source='message-1'):
+    job = proposed(store, sha=sha, source=source)
+    store.approve(job['id'], sha, 'owner')
+    return store.claim_deploy()
+
+
+def test_receipts_are_recorded_the_way_every_controller_compares_them(store):
+    job = deploying(store)
+    store.finish_deploy(job['id'], job['lease'], False, UNKNOWN, runtime_unknown=True)
+    with store.connection() as db:  # A Gene rollback below gene #48 compares a replay with exactly this.
+        result = db.execute('SELECT result FROM deployment_receipts WHERE job_id=?', (job['id'],)).fetchone()[0]
+    assert result == json.dumps({'success': False, 'detail': UNKNOWN}, sort_keys=True)
+    # So a deployer downgraded below it, replaying without the evidence, is acknowledged and changes nothing.
+    store.finish_deploy(job['id'], job['lease'], False, UNKNOWN)
+    assert store.status()['runtime_unknown']['job_id'] == job['id']
+
+
+def test_a_receipt_an_older_controller_committed_replays_after_the_upgrade(tmp_path):
+    with api_client(tmp_path) as client:
+        store = client.app.state.store
+        store.bootstrap('a'*40)
+        store.update_models([{'id': 'gpt-6.1-sol', 'name': 'Sol', 'efforts': ['high'], 'default_effort': 'high'}])
+        store.set_paused(False, 'owner')
+        job = deploying(store)
+        # The older controller committed the failure, ignoring runtime_unknown; its acknowledgement was lost.
+        an_older_controller_finishes(store, job, UNKNOWN)
+        (tmp_path/'deploy-result.json').write_text(json.dumps({'job_id': job['id'], 'lease': job['lease'],
+                                                               'success': False, 'detail': UNKNOWN}))
+        (tmp_path/'deploy-runtime.json').write_text(json.dumps({'job_id': job['id'], 'lease': job['lease'],
+                                                                'runtime_unknown': True}))
+        worker = deployer(tmp_path, (), api=Mock(post=deploy_post(client)))
+        assert worker.tick()
+        assert not (tmp_path/'deploy-result.json').exists()  # Acknowledged, so the deployer claims again.
+        state = store.status()['runtime_unknown']  # The evidence the older controller dropped still counts.
+        assert (state['job_id'], state['restore_sha']) == (job['id'], 'a'*40)
+        assert store.get(job['id'])['state'] == 'failed'
+        store.finish_deploy(job['id'], job['lease'], False, UNKNOWN, runtime_unknown=True)  # Lost again.
+        with store.connection() as db:
+            assert db.execute('SELECT count(*) FROM audit WHERE action="runtime_unknown"').fetchone()[0] == 1
+            assert db.execute('SELECT count(*) FROM audit WHERE action="failed"').fetchone()[0] == 1
+        for lease, detail in (('0'*32, UNKNOWN), (job['lease'], 'Something else')):
+            with pytest.raises(Conflict, match='differs'):
+                store.finish_deploy(job['id'], lease, False, detail, runtime_unknown=True)
+
+
+def test_late_evidence_never_rewinds_what_has_happened_since(store, tmp_path):
+    from gene.runtime_state import main
+    # A later deployment went out healthy.
+    job = deploying(store)
+    an_older_controller_finishes(store, job, UNKNOWN)
+    later = deploying(store, source='message-2')
+    store.finish_deploy(later['id'], later['lease'], True, 'Deployed approved commit; healthy.')
+    store.finish_deploy(job['id'], job['lease'], False, UNKNOWN, runtime_unknown=True)
+    assert store.status()['runtime_unknown'] is None
+    # A later deployment was claimed, even one whose own restore proved healthy.
+    job = deploying(store, sha='c'*40, source='message-5')
+    an_older_controller_finishes(store, job, UNKNOWN)
+    later = deploying(store, sha='c'*40, source='message-6')
+    store.finish_deploy(later['id'], later['lease'], False, 'Release failed health checks; restored')
+    assert store.status()['active_sha'] == job['proposal']['base_sha']
+    store.finish_deploy(job['id'], job['lease'], False, UNKNOWN, runtime_unknown=True)
+    assert store.status()['runtime_unknown'] is None
+    # A maintainer release recorded another one as live.
+    job = deploying(store, sha='c'*40, source='message-3')
+    an_older_controller_finishes(store, job, UNKNOWN)
+    with store.connection() as db:
+        db.execute('UPDATE settings SET value=? WHERE key="active_sha"', ('d'*40,))
+    store.finish_deploy(job['id'], job['lease'], False, UNKNOWN, runtime_unknown=True)
+    assert store.status()['runtime_unknown'] is None
+    # A maintainer found the recorded release running and healthy.
+    first = deploying(store, sha='e'*40, source='message-4')
+    store.finish_deploy(first['id'], first['lease'], False, UNKNOWN, runtime_unknown=True)
+    rollback = store.rollback('123', 'owner')
+    job = store.claim_deploy()
+    assert job['id'] == rollback['id']
+    an_older_controller_finishes(store, job, UNKNOWN)
+    health(tmp_path/'gene-health.json', sha='d'*40)
+    assert main(['clear', str(store.path), '--sha', 'd'*40, '--health', str(tmp_path/'gene-health.json'),
+                 '--actor', 'maintainer:claude', '--reason', 'Checked d by hand']) == 0
+    store.finish_deploy(job['id'], job['lease'], False, UNKNOWN, runtime_unknown=True)
+    assert store.status()['runtime_unknown'] is None

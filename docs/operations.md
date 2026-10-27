@@ -343,7 +343,10 @@ different release is what's running, record it through a maintainer release firs
 `batch-release.sh` doesn't read or clear the state; after its `resume`, clear it with the
 release it recorded. A deployer from before this change reports no runtime state, as before;
 an older controller ignores the field, and a Gene rollback below it leaves the setting in
-place, unread.
+place, unread. Receipts compare on success and detail alone in every version, so a replay
+crosses an upgrade or rollback either way. When an older controller committed a receipt
+whose acknowledgement was lost, the upgraded one records the replay's `runtime_unknown`
+once, unless a later claim, a maintainer clear or a recorded release has come since.
 
 The trusted `gene` control cog should remain loadable. If a candidate breaks it, use
 SSH for recovery; Discord commands are not the only recovery path.

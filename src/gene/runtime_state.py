@@ -48,6 +48,27 @@ def mark(db, job, proposal):
     db.execute('UPDATE settings SET value=? WHERE key=?', (json.dumps({
         'job_id': job['id'], 'kind': job['kind'], 'sha': proposal['sha'], 'restore_sha': proposal['base_sha'],
         'since': time.time()}, sort_keys=True), KEY))
+    Store._audit(db, 'deployer', KEY, job['id'],
+                 f"Switching to {proposal['sha']} failed and restoring {proposal['base_sha']} never proved healthy")
+
+
+def late(db, job_id):
+    """A replayed receipt's evidence that its deployment left the runtime unknown, which the controller that
+    committed the receipt ignored (one from before this). It counts once, and only while nothing has proved a
+    release since that deployment was claimed: no later claim, no maintainer reconciliation, and active_sha still
+    the release it tried to restore. It never replays the deployment."""
+    if db.execute('SELECT 1 FROM audit WHERE action=? AND target=?', (KEY, job_id)).fetchone():
+        return  # Already recorded.
+    job = db.execute('SELECT j.*, d.at AS claimed FROM jobs j JOIN deployments d ON d.job_id=j.id WHERE j.id=?',
+                     (job_id,)).fetchone()
+    proposal = json.loads(job['proposal'])
+    active = db.execute("SELECT value FROM settings WHERE key='active_sha'").fetchone()[0]
+    if (active != proposal['base_sha']
+            or db.execute('SELECT 1 FROM deployments WHERE at>?', (job['claimed'],)).fetchone()
+            or db.execute("SELECT 1 FROM audit WHERE action='runtime_reconciled' AND at>?",
+                          (job['claimed'],)).fetchone()):
+        return
+    mark(db, job, proposal)
 
 
 def known(db):

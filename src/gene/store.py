@@ -123,6 +123,8 @@ class Store:
             from .requester_notices import initialize as initialize_requester_notices
             initialize_requester_notices(db)
             maintenance.initialize(db)
+            from .runtime_state import initialize as initialize_runtime_state
+            initialize_runtime_state(db)
             columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
             for name in ('model', 'effort', 'intake_approved_by', 'intake_approved_ref', 'progress'):
                 if name not in columns:
@@ -215,10 +217,13 @@ class Store:
             prune_reply_checks(db)
             from .fri_member_summary import prune as prune_summaries
             prune_summaries(db)
+            from .runtime_state import current as runtime_unknown
             return {
                 'paused': self._setting(db, 'paused') == 'true',
                 'active_sha': self._setting(db, 'active_sha'),
                 'previous_sha': self._setting(db, 'previous_sha'),
+                # Set when a failed deployment's restore never proved healthy: active_sha may not be running.
+                'runtime_unknown': runtime_unknown(db),
                 'model': self._setting(db, 'code_model'),
                 'effort': self._setting(db, 'code_effort') or 'model default',
                 'chat_model': self._setting(db, 'chat_model'),
@@ -494,9 +499,15 @@ class Store:
             # Outside the maintenance window approved work waits for the next one, untouched; an owner's
             # rollback restores service at any hour. Claims stop early enough for the switch to start in time.
             window = maintenance.is_open(margin=maintenance.CLAIM_MARGIN)
+            from .runtime_state import current as runtime_unknown
+            unknown = runtime_unknown(db)
             for row in rows:
                 job = self._job(row)
                 if not window and job['kind'] != 'rollback':
+                    continue
+                # Nothing proves which release is running, so approved work waits for a maintainer, untouched.
+                # A rollback still restores service: it proves its release healthy or puts the last one back.
+                if unknown and job['kind'] != 'rollback':
                     continue
                 if job['kind'] != 'rollback' and maintenance.batch_used(db, job):
                     continue  # Today's one production batch is used: the job waits for a later day, untouched.
@@ -521,9 +532,15 @@ class Store:
                 return self._job(db.execute('SELECT * FROM jobs WHERE id=?', (job['id'],)).fetchone())
             return None
 
-    def finish_deploy(self, job_id, lease, success, detail):
+    def finish_deploy(self, job_id, lease, success, detail, runtime_unknown=False):
+        """runtime_unknown: the deployer stopped Red and no release proved healthy after, restore included."""
+        if success and runtime_unknown:
+            raise ValueError('A release that proved healthy is a known runtime')
         detail = clean(detail)
+        # The receipt every controller records and compares a replay with; the runtime evidence stays outside it,
+        # so a receipt one side of an upgrade or rollback committed still matches its replay on the other.
         result = json.dumps({'success': success, 'detail': detail}, sort_keys=True)
+        from . import runtime_state
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             receipt = db.execute('SELECT lease,result FROM deployment_receipts WHERE job_id=?',
@@ -531,12 +548,19 @@ class Store:
             if receipt:
                 if receipt['lease'] != lease or receipt['result'] != result:
                     raise Conflict('Deployment completion differs from the recorded receipt')
+                if runtime_unknown:  # Perhaps committed by a controller that ignored it.
+                    runtime_state.late(db, job_id)
                 return  # A lost acknowledgement must not reapply or rewind a release.
             row = self._leased(db, job_id, lease, 'deploying')
             proposal = json.loads(row['proposal'])
             if success:
                 db.execute('UPDATE settings SET value=? WHERE key="previous_sha"', (proposal['base_sha'],))
                 db.execute('UPDATE settings SET value=? WHERE key="active_sha"', (proposal['sha'],))
+                if runtime_state.current(db):  # The deployer just saw this release healthy: what's running is known.
+                    runtime_state.known(db)
+                    self._audit(db, 'deployer', 'runtime_known', job_id, proposal['sha'])
+            elif runtime_unknown:
+                runtime_state.mark(db, dict(row), proposal)
             state = 'deployed' if success else 'failed'
             db.execute('UPDATE jobs SET state=?,result=?,lease=NULL,updated=? WHERE id=?',
                        (state, clean(detail), time.time(), job_id))
@@ -925,6 +949,19 @@ class Store:
             if self._privacy_state(db, user_id)[0] != revision:
                 raise Conflict('This conversation was cleared while Fri was replying. Start again.')
             self._checked_provenance(db, user_id, provenance)
+            return {'ok': True}
+
+    def check_authors(self, authors):
+        """Attention's last privacy check before its model call (fri #84): every author it is about to send still
+        allows it, at the revision their words were read under. Read under the write lock, so no erasure lands
+        between two authors' reads; the refusal names nobody."""
+        if not authors:
+            return {'ok': True}
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            for item in authors:
+                if self._privacy_state(db, str(item['user_id'])) != (int(item['revision']), True):
+                    raise Conflict('Someone in that conversation changed their privacy settings.')
             return {'ok': True}
 
     def save_chat(self, guild_id, channel_id, user_id, revision, text, reply, model, effort,

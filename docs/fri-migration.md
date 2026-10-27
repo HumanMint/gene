@@ -79,6 +79,13 @@ built from other members' messages.
   without writing. The companion calls it immediately before delivering and saves only after
   Discord accepts the reply, so the save is no longer the only fence and an undelivered reply is
   never stored as said. Mention-grant turns keep their own fences and placeholder storage.
+- **Attention's author check.** The optional `author-fence` capability adds `/agent/authors/check`
+  (Fri credential): `guild_id`, `channel_id` and up to 200 `authors`, each a `user_id` and the
+  `revision` Fri read their words under. It answers `{"ok": true}` only if every author is still at
+  that revision with memory on, and otherwise refuses with a 409 that names nobody. It reads them all
+  under the controller's write lock, so no erasure through Gene, Red or Fri lands between two authors'
+  reads, which one `/agent/context` call per author couldn't promise (fri #84). It takes the same
+  channels as `/agent/context`. An older controller lacks it and Fri keeps its per-author reads.
 
 Provenance also reaches what follow-ups inherit:
 

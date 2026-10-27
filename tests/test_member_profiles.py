@@ -705,7 +705,7 @@ def test_the_member_can_share_what_they_are_working_on(store):
     assert (note['scope'], note['category']) == ('public:1', 'projects')
     result = edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
     assert [(row['scope'], row['category'], row['evidence'], row['origin']) for row in result['entries']] == [
-        ('server', 'projects', "I'm working on a Factorio mod", 'public:1')]
+        ('server', 'projects', "I'm working on a Factorio mod", 'private:9')]
     assert notes(store, 'public:2') == [('server', "I'm working on a Factorio mod")]
     # Edited where it now shows, it stays a project there; a preference in its place is refused.
     edited = edit(store, '123', 'private:9', '20', result['entries'][0]['id'], 0, private_source(), 'replace',
@@ -718,9 +718,12 @@ def test_the_member_can_share_what_they_are_working_on(store):
 def test_a_restricted_channel_note_can_be_shared_from_dms(store):
     say(store, 'I like restricted chess', conversation='public:5', audience='conversation')
     note = entries(store, '123', 'private:9', '20')['entries'][0]
-    edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
+    result = edit(store, '123', 'private:9', '20', note['id'], 0, private_source(), 'share')
     assert notes(store, 'public:2') == [('server', 'I like restricted chess')]
     assert notes(store, 'public:5') == [('server', 'I like restricted chess')]
+    # Its origin is where they pressed Share, so a Fri that hides notes said in restricted channels keeps it.
+    assert [row['origin'] for row in result['entries']] == ['private:9']
+    assert store.chat_context('123', 'public:2', '20', True)['profile_origins'] == ['private:9']
 
 
 @pytest.mark.parametrize('provenance', [None, [ASH]])

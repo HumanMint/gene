@@ -246,3 +246,24 @@ def test_no_reply_while_another_release_is_going_out(store, next_release):
     store.finish_deploy(deploying['id'], deploying['lease'], False, 'Health check failed.')
     assert store.status()['active_sha'] == 'b'*40
     assert claim(store, job['id'], 'owner')['job']['id'] == job['id']  # It never landed, so the repair is still live.
+
+
+def test_no_reply_while_an_approved_rollback_waits_for_the_deployer(store):
+    job = shipped(store)
+    rollback = store.rollback('123', 'owner')  # Goes out on the deployer's next pass, or once development resumes.
+    with pytest.raises(Conflict, match='rollback is waiting'):
+        claim(store, job['id'], 'owner')
+    with store.connection() as db:
+        assert db.execute('SELECT count(*) FROM requester_notices').fetchone()[0] == 0
+    deploying = store.claim_deploy()
+    assert deploying['id'] == rollback['id']
+    store.finish_deploy(deploying['id'], deploying['lease'], False, 'Health check failed.')
+    assert claim(store, job['id'], 'owner')['job']['id'] == job['id']  # It never landed, so the repair is still live.
+
+
+def test_a_stale_approved_rollback_does_not_hold_the_reply(store):
+    job = shipped(store)
+    rollback = store.rollback('123', 'owner')
+    with store.connection() as db:  # Approved against an older release: the deployer fails it rather than run it.
+        db.execute('UPDATE jobs SET proposal=json_set(proposal,"$.base_sha",?) WHERE id=?', ('c'*40, rollback['id']))
+    assert claim(store, job['id'], 'owner')['job']['id'] == job['id']

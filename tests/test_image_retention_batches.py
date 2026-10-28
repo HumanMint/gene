@@ -1113,40 +1113,123 @@ def test_a_saved_fri_record_must_pass_the_next_rollbacks_check(batch_host, monke
 REPO = retention.Path(__file__).parents[1]
 
 
-def script_check(function):
-    """The Python program batch-release.sh runs for one of its pair checks, taken from the script itself."""
-    text = (REPO / 'ops/maintainer/batch-release.sh').read_text()
-    start = text.index(f'\n{function}() {{')
-    body = text[text.index("<<'PY'\n", start) + len("<<'PY'\n"):]
-    return body[:body.index('\nPY\n')] + '\n'
+SCRIPT = REPO / 'ops/maintainer/batch-release.sh'
+# Stand-ins only for what reaches outside the host's files: Docker, curl and the controller DB container.
+STUBS = r"""
+docker() { [[ $* == *State.Health.Status* ]] && echo healthy; }
+curl() { echo 200; }
+db_py() { cat > /dev/null; printf '%s\n' "$DB_JSON"; }
+container_image() {
+  case $1 in gene-controller-1) echo "$CONTROLLER_IMAGE" ;; gene-red-1) echo "$RED_IMAGE" ;; fri-runtime-1) echo "$FRI_IMAGE" ;; esac
+}
+container_running() { [[ ($1 == gene-red-1 && $RED_IMAGE != none) || ($1 == fri-runtime-1 && $FRI_IMAGE != none) ]]; }
+"""
 
 
-def script_state(state, record):
-    """The JSON state() would print for the files and records in a simulated state."""
-    def env(data):
-        values = dict(line.split('=', 1) for line in (data or b'').decode().splitlines() if '=' in line)
-        return {key: values.get(key) for key in ('GENE_RELEASE_SHA', 'GENE_RUNTIME_IMAGE')}
-    pin = 'unknown'
-    for sha in (record['gene'], record['old_gene']):
-        if state['worker.env'] is not None and \
-                state['worker.env'].split(b'\n').count(f'GENE_WORKER_IMAGE=gene-worker:{sha}'.encode()) == 1:
-            pin = 'gene-worker:' + sha
-    return json.dumps({'settings': state['settings'], 'source': state['source'], 'gene_env': env(state['release.env']),
-                       'worker_pin': pin, 'controller': {'image': state['controller']}, 'red': {'image': state['red']},
-                       'fri_container': {'image': state['fri']}})
+def script_function(name):
+    """A shell function from batch-release.sh, exactly as written."""
+    lines = SCRIPT.read_text().split('\n')
+    start = next(i for i, line in enumerate(lines) if line.startswith(name + '() {'))
+    if lines[start].rstrip().endswith('}'):
+        return lines[start]
+    return '\n'.join(lines[start:next(i for i in range(start, len(lines)) if lines[i] == '}') + 1])
 
 
-def run_script_check(function, args):
+def script_lines(function, first, last):
+    """The lines of a script function from the one starting with first up to the one starting with last."""
+    body = script_function(function).split('\n')
+    begin = next(i for i, line in enumerate(body) if line.strip().startswith(first))
+    return '\n'.join(body[begin:next(i for i in range(begin, len(body)) if body[i].strip().startswith(last))])
+
+
+def run_script(tmp, functions, body, env):
+    """Run batch-release.sh's own functions under bash, with python3 being this interpreter."""
+    import shutil
     import subprocess
     import sys
-    return subprocess.run([sys.executable, '-I', '-', *args], input=script_check(function), text=True,
-                          capture_output=True).returncode == 0
+    tools = tmp / 'tools'
+    if not tools.exists():
+        tools.mkdir()
+        (tools / 'python3').symlink_to(sys.executable)
+    program = '\n'.join(['set -Eeuo pipefail', 'SWITCHING=0', 'CONTROLLER=gene-controller-1', 'RED=gene-red-1',
+                          'FRI=fri-runtime-1', STUBS, *(script_function(name) for name in functions), body])
+    done = subprocess.run([shutil.which('bash'), '-c', program], capture_output=True, text=True,
+                          env={'PATH': f'{tools}:/usr/bin:/bin', 'LC_ALL': 'C', **env})
+    return done.returncode, done.stdout
+
+
+def put_state(batch_host, state, health_dir, expect):
+    """Make the host's files, source tree and stubs show a simulated state; expect is the release whose
+    health the stubs report (rollback health is the live release's own, not under test)."""
+    import shutil
+    root, fri_root = batch_host.root, batch_host.fri_root
+    for path, key in ((root / 'release.env', 'release.env'), (root / 'secrets/worker.env', 'worker.env'),
+                      (fri_root / 'release.env', 'fri release.env'), (fri_root / 'release.json', 'fri release.json')):
+        path.unlink(missing_ok=True)
+        if state[key] is not None:
+            path.write_bytes(state[key])
+    source = root / 'source'
+    if state['source_tree'] != source:  # a restored tree: its own entries, moved as rename(2) moves them
+        if source.is_symlink() or source.is_file():
+            source.unlink()
+        elif source.exists():
+            shutil.rmtree(source)
+        if state['source_tree'] is not None:
+            shutil.copytree(state['source_tree'], source, symlinks=True)
+    health_dir.mkdir(exist_ok=True)
+    gene_sha, fri_sha, baseline = expect
+    (health_dir / 'gene.json').write_text(json.dumps({
+        'sha': gene_sha, 'guild_id': baseline['gene']['guild_id'], 'presence': baseline['gene']['presence'],
+        'guild_connected': True, 'controls_running': True, 'at': retention.time.time()}))
+    (health_dir / 'fri.json').write_text(json.dumps({
+        'sha': fri_sha, 'guild_id': baseline['fri']['guild_id'], 'presence': baseline['fri']['presence'],
+        'guild_connected': True, 'agent_heartbeat': {'running': True, 'failed': []}, 'at': retention.time.time()}))
+    settings = {key: value for key, value in state['settings'].items() if value is not None}
+    return {'ROOT': str(root), 'FRI_ROOT': str(fri_root), 'GENE_HEALTH': str(health_dir / 'gene.json'),
+            'FRI_HEALTH': str(health_dir / 'fri.json'), 'DB_JSON': json.dumps({'settings': settings, 'busy_jobs': 0}),
+            'CONTROLLER_IMAGE': state['controller'], 'RED_IMAGE': state['red'], 'FRI_IMAGE': state['fri']}
+
+
+def batch_env(root, record):
+    stage = root / 'staging' / record['name']
+    return {'MANIFEST': str(stage / 'manifest.json'), 'BASELINE': str(stage / 'baseline.json'), 'G': record['gene'],
+            'F': record['fri'], 'OLD_G': record['old_gene'], 'OLD_F': record['old_fri']}
+
+
+def source_case(batch_host, case):
+    """The source-marker cases: how the script reads and moves the marker, not how Python would."""
+    root = batch_host.root
+    saved = backup_of(stage_of(root, 4)) / 'installed-source'
+    if case == 'source_crlf_live':
+        (root / 'source/.release-sha').write_bytes(gene(4).encode() + b'\r\n')
+    elif case == 'source_space_saved':
+        (saved / '.release-sha').write_text(' ' + gene(3) + '\n')
+    elif case == 'source_symlink_saved':  # fine where it is, dangling once installed-source moves to source/
+        (saved / '.release-sha').unlink()
+        (saved.parent / 'source-sha').write_text(gene(3) + '\n')
+        (saved / '.release-sha').symlink_to('../source-sha')
+    elif case == 'source_trailing_newlines_saved':  # $(cat …) strips every trailing newline
+        (saved / '.release-sha').write_text(gene(3) + '\n\n\n')
+    elif case == 'quoted_pins':  # verify old reads release.env with nothing stripped
+        (backup_of(stage_of(root, 3)) / 'release.env').write_text(
+            f'GENE_RELEASE_SHA="{gene(2)}"\nGENE_ROOT={root}\nGENE_RUNTIME_IMAGE=gene-runtime:{gene(2)}\n')
+    elif case == 'worker_space':  # verify old's worker pin is grep -Fx: the whole line, exactly
+        (backup_of(stage_of(root, 3)) / 'worker.env').write_text(
+            f'GENE_WORKER_IMAGE=gene-worker:{gene(2)} \nGENE_WORKER_TOKEN=tok-3f9a-secret\n')
+
+
+REFUSED = {'fri_only_missing_previous', 'gene_wrong_previous', 'feature', 'source_crlf_live', 'source_space_saved',
+           'source_symlink_saved', 'quoted_pins', 'worker_space'}
 
 
 @pytest.mark.parametrize('case', ['plain', 'fri_only', 'two_stacked', 'between_levels', 'owner_rollback',
-                                  'fri_only_missing_previous', 'gene_wrong_previous', 'feature'])
-def test_retention_and_the_release_script_agree_on_every_rollback_check(batch_host, monkeypatch, case):
-    """Each simulated check runs again through the script's own program, on the same files and state."""
+                                  'source_trailing_newlines_saved', 'fri_only_missing_previous', 'gene_wrong_previous',
+                                  'feature', 'source_crlf_live', 'source_space_saved', 'source_symlink_saved',
+                                  'quoted_pins', 'worker_space'])
+def test_retention_and_the_release_script_agree_on_every_rollback_check(batch_host, monkeypatch, tmp_path, case):
+    """Each check retention simulates runs again through batch-release.sh's own functions, on the same files,
+    trees and settings: state, pair_check, fri_pair_check and gene_unmoved, rollback-gene's source restore, and
+    verify old. A change to either side that makes them disagree fails here."""
     root, images = batch_host.root, batch_host.images
     if case in ('fri_only', 'two_stacked', 'fri_only_missing_previous'):
         record = {'sha': fri(4)} if case == 'fri_only_missing_previous' else None
@@ -1160,6 +1243,7 @@ def test_retention_and_the_release_script_agree_on_every_rollback_check(batch_ho
         latest = stage_of(root, 4)
         edit_manifest(latest, lambda m: [m.update(old_fri=fri(7)),
                                          m['old']['fri'].update(tag='fri-runtime:' + fri(7), id=iid(FRI + 7))])
+        edit_baseline(latest, lambda b: b['settings'].update(fri_active_sha=fri(7)))
         (backup_of(latest) / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(7)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(7)}\n')
         (backup_of(latest) / 'fri-release.json').write_text(json.dumps({'sha': fri(7), 'previous': fri(3)}))
         write_fri_only(root, images, 3, 7, 3, NOW - 1.5 * DAY)
@@ -1168,40 +1252,92 @@ def test_retention_and_the_release_script_agree_on_every_rollback_check(batch_ho
         (backup_of(stage_of(root, 4)) / 'fri-release.json').write_text(json.dumps({'sha': fri(3), 'previous': fri(1)}))
     elif case in ('owner_rollback', 'feature'):
         cog_on_top(batch_host, 'rollback' if case == 'owner_rollback' else 'feature')
-    checked, mirror = [], retention.pair_mirror
+    else:
+        source_case(batch_host, case)
+    checked = []
+    for name in ('pair_mirror', 'restore_source', 'verify_mirror'):
+        original = getattr(retention, name)
 
-    def recording(kind, step, state, root_text):
-        failing = mirror(kind, step, state, root_text)
-        checked.append((kind, step, copy.deepcopy(state), failing))
-        return failing
-
-    monkeypatch.setattr(retention, 'pair_mirror', recording)
+        def recording(*args, _name=name, _original=original):
+            outcome = _original(*args)
+            checked.append((_name, copy.deepcopy(args), copy.deepcopy(outcome)))
+            return outcome
+        monkeypatch.setattr(retention, name, recording)
     monkeypatch.setattr(retention, 'command', removing(images))
-    refused = case in ('fri_only_missing_previous', 'gene_wrong_previous', 'feature')
     try:
         retention.run(root)
     except ValueError as error:
-        assert refused and 'would refuse' in str(error)
+        assert case in REFUSED and 'Batch ' in str(error) or 'cog job' in str(error), str(error)
     else:
-        assert not refused
-    assert checked and [bool(failing) for *_, failing in checked] == [False] * (len(checked) - refused) + [True] * refused
-    for kind, step, state, failing in checked:
-        record, stage = step['record'], root / 'staging' / step['record']['name']
-        # Put the simulated live files in place, then ask the script.
-        for path, key in ((root / 'release.env', 'release.env'), (root / 'secrets/worker.env', 'worker.env'),
-                          (batch_host.fri_root / 'release.env', 'fri release.env'),
-                          (batch_host.fri_root / 'release.json', 'fri release.json')):
-            path.unlink(missing_ok=True)
-            if state[key] is not None:
-                path.write_bytes(state[key])
-        state_json = script_state(state, record)
-        manifest, baseline, backup = str(stage / 'manifest.json'), str(stage / 'baseline.json'), str(step['backup'])
-        if kind == 'gene':
-            accepted = run_script_check('pair_check', [state_json, manifest, baseline, backup, str(root),
-                                                       str(batch_host.fri_root), record['gene'], record['fri'],
-                                                       record['old_gene'], record['old_fri']])
-        else:
-            accepted = (run_script_check('fri_pair_check', [state_json, manifest, backup, str(batch_host.fri_root),
-                                                            record['fri'], record['old_fri']])
-                        and run_script_check('gene_unmoved', [state_json, manifest, baseline, record['gene']]))
-        assert accepted == (not failing), (record['name'], failing)
+        assert case not in REFUSED
+    failing = [bool(outcome[0] if name == 'restore_source' else outcome) for name, _, outcome in checked]
+    assert checked and failing == [False] * (len(failing) - (case in REFUSED)) + [True] * (case in REFUSED)
+    for number, (name, args, outcome) in enumerate(checked):
+        if name == 'pair_mirror':
+            kind, step, state, _ = args
+            env = put_state(batch_host, state, tmp_path / 'health', (step['record']['gene'], step['record']['fri'],
+                                                                     step['baseline']))
+            env |= batch_env(root, step['record'])
+            body = 'pair_check' if kind == 'gene' else 'fri_pair_check && gene_unmoved'
+            functions = ['jget', 'backup_dir', 'source_state', 'state', 'pair_check', 'fri_pair_check', 'gene_unmoved']
+            returncode, _ = run_script(tmp_path, functions, body, env)
+            assert (returncode == 0) == (not outcome), (number, name, outcome)
+        elif name == 'restore_source':  # rollback-gene's own lines, on copies of the trees it moves
+            import shutil
+            step, state = args
+            scratch = tmp_path / f'restore-{number}'
+            (scratch / 'root').mkdir(parents=True)
+            if state['source_tree'] is not None:
+                shutil.copytree(state['source_tree'], scratch / 'root/source', symlinks=True)
+            shutil.copytree(step['backup'], scratch / 'B', symlinks=True)
+            body = ('restore() {\n' + script_lines('rollback_gene', "log 'rollback: source'",
+                                                    "log 'rollback: old controller and Red'")
+                    + '\n}\nrestore\nprintf "SOURCE<%s>" "$(source_state)"')
+            returncode, out = run_script(tmp_path, ['log', 'die', 'jget', 'rename_tree', 'source_state'], body,
+                                         {'ROOT': str(scratch / 'root'), 'B': str(scratch / 'B'),
+                                          'BASELINE': batch_env(root, step['record'])['BASELINE'],
+                                          'G': step['record']['gene']})
+            failing_checks, source, _ = outcome
+            assert (returncode == 0) == (not failing_checks), (number, name, outcome)
+            if returncode == 0:
+                assert out.endswith(f'SOURCE<{source}>'), (out, source)
+        else:  # verify old, on the state the rollback leaves
+            step, state = args
+            record = step['record']
+            env = put_state(batch_host, state, tmp_path / 'health', (record['old_gene'], record['old_fri'],
+                                                                     step['baseline']))
+            env |= batch_env(root, record)
+            returncode, _ = run_script(tmp_path, ['jget', 'source_state', 'state', 'verify'], 'verify old', env)
+            assert (returncode == 0) == (not outcome), (number, name, outcome)
+
+
+@pytest.mark.parametrize('case', ['source_crlf_live', 'source_space_saved', 'source_symlink_saved',
+                                  'source_trailing_newlines_saved', 'quoted_pins', 'worker_space', 'journal_crlf',
+                                  'unknown_downgrade'])
+def test_recovery_reads_files_as_the_release_script_does(batch_host, monkeypatch, case):
+    root = batch_host.root
+    if case == 'journal_crlf':  # has() is grep -x: "resumed\r" is not resumed
+        journal = stage_of(root, 4) / 'journal'
+        at = journal.stat().st_mtime
+        journal.write_bytes(journal.read_bytes().replace(b'\n', b'\r\n'))
+        os.utime(journal, (at, at))
+    elif case == 'unknown_downgrade':  # downgrade_step dies on a module it has no step for, mid-rollback
+        edit_manifest(stage_of(root, 4), lambda m: m.update(downgrades='gene.not_a_step'))
+    else:
+        source_case(batch_host, case)
+    monkeypatch.setattr(retention, 'command', removing(batch_host.images))
+    if case == 'source_trailing_newlines_saved':
+        assert [step['record'] for step in retention.run(root)['lineage']][:1] == ['batch ' + stage_of(root, 4).name]
+        return
+    with pytest.raises(ValueError):
+        retention.run(root, apply=True)
+    assert not (root / 'maintenance/image-retention-plan.json').exists()
+
+
+def test_the_known_downgrades_are_the_release_scripts():
+    import re
+    text = SCRIPT.read_text()
+    listed = set(re.search(r'^DOWNGRADE_MODULES=\(([^)]*)\)', text, re.M)[1].split())
+    stepped = set(re.findall(r'^    (gene\.[a-z_]+)\)', script_function('downgrade_step'), re.M))
+    assert retention.DOWNGRADE_STEPS == listed == stepped
+

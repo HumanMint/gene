@@ -6,6 +6,7 @@ sends the generation is refused once it has moved, in the write's own transactio
 """
 
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -380,3 +381,80 @@ def test_a_turn_without_a_summary_leaves_a_lapsed_one_to_the_next_read(world):
     lapsed(store)
     assert check(client, turn(source(age=1, channel='51'), 'hello')).json() == {'ok': True}
     assert summary_generation_now(store) == generation
+
+
+@pytest.fixture
+def older(monkeypatch):
+    """The controller before gene #112, run in a rollback window: the same privacy changes and drops, retiring
+    nothing. Its saves leave the generation column empty."""
+    import gene.fri_member_summary as summaries
+
+    @contextmanager
+    def running():
+        with monkeypatch.context() as patched:
+            patched.setattr(summaries, 'retire', lambda *args, **kwargs: None)
+            yield
+    return running
+
+
+def note_edited_elsewhere(store, user='20'):
+    """A note edit in another of the member's conversations: its chats go and their revision moves; these stay."""
+    from gene.fri_memory_store import cleared
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        cleared(store, db, '123', user, 'private:8', store._privacy_state(db, user)[0])
+
+
+def test_a_restart_retires_a_reply_whose_generation_an_older_controller_erased(world, older):
+    """gene #114's repro: a generation-zero reply is saved, the older controller runs and a note edit elsewhere erases
+    the summary and the member's generation with it, and the newer controller starts again."""
+    client, store = world
+    _, generation = summarized(client, store)
+    assert generation == 0
+    quoted(store, generation)
+    quoted(store, None, reply='an older fri said '+MARKER, message_id='701')
+    with older():
+        note_edited_elsewhere(store)
+    with store.connection() as db:
+        assert db.execute('SELECT count(*) FROM fri_member_summary_generations').fetchone()[0] == 0
+    assert replies(store)[-2] == QUOTING  # As the older controller left it.
+    Store(store.path)
+    assert retired(replies(store)[-2]) and replies(store)[-1] == 'an older fri said '+MARKER
+    assert referenced(store) is None  # Its revision moved too, so a reference fails closed as before.
+
+
+def test_a_restart_retires_a_reply_whose_generation_came_back_under_a_newer_revision(world, older):
+    """The older controller erased the generation, then a drop there wrote it again at the number the reply carries.
+    The erasure moved the member's revision, which the reply was saved under, so it still can't be confirmed."""
+    from gene.fri_member_summary import advance, drop
+    client, store = world
+    summarized(client, store)
+    with store.connection() as db:
+        advance(db, '123', '20')
+    quoted(store, summary_generation_now(store))
+    assert summary_generation_now(store) == 1
+    with older():
+        note_edited_elsewhere(store)
+        with store.connection() as db:  # Another build there, dropped: its generation starts again at one.
+            drop(db, '123', '20')
+    assert summary_generation_now(store) == 1 and replies(store)[-1] == QUOTING
+    Store(store.path)
+    assert retired(replies(store)[-1])
+
+
+def test_a_plain_restart_keeps_current_summary_derived_replies(world):
+    """No rollback in between: a generation-zero reply, and one a rebuild sent the old summary carried forward."""
+    from gene.fri_member_summary import finish
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, generation, message_id='706')
+    Store(store.path)
+    assert replies(store)[-1] == QUOTING and referenced(store, '706')['verbatim'] is True
+    readable(store, 'new plans over here', 5000, conversation='public:52')
+    readable(store, 'and more of them', 4900, conversation='public:52')
+    with store.connection() as db:
+        db.execute('DELETE FROM fri_member_summary_calls')
+    claim_id, conversations, _ = claimed(client.app.state.agent)
+    assert finish(client.app.state.agent, claim_id, 'they made new plans', 'completed', conversations, True)['kept']
+    Store(store.path)
+    assert replies(store)[-1] == QUOTING and referenced(store, '706')['verbatim'] is True

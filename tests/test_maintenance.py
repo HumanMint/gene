@@ -635,15 +635,30 @@ def test_missing_or_unreadable_deployment_history_holds_the_batch(tmp_path, hist
 def pausing(tmp_path, *steps):
     """batch-release.sh's pause and resume on their own, against a controller DB at tmp_path/data, and the
     paused setting after: each step is `ours` (the fence's pause), `lost-id` (that pause, killed before its
-    audit id reached the journal), `owner-pause`, `owner-resume`, `resume` (resume_services) or `lost-done` (that
-    resume, killed before its journal line)."""
+    audit id reached the journal), `legacy` (the fence's pause as the script before audit ids made it),
+    `late-baseline` (this batch's baseline taken after that), `owner-pause`, `owner-resume`, `resume`
+    (resume_services) or `lost-done` (that resume, killed before its journal line)."""
     store = Store(tmp_path/'data/gene.sqlite3')
     store.set_paused(False, 'owner')
+    (tmp_path/'staging/batch-x').mkdir(parents=True)
+    (tmp_path/'staging/batch-x/baseline.json').write_text('{}')
+    stamp = time.time() - 60  # the batch's baseline, a minute before its drain
+    os.utime(tmp_path/'staging/batch-x/baseline.json', (stamp, stamp))
     owner = f'"{sys.executable}" -c "import sys; from pathlib import Path; from gene.store import Store; ' \
             'Store(Path(sys.argv[1])).set_paused(sys.argv[2] == \'pause\', \'555\')" "$DATA/gene.sqlite3"'
     calls = {
         'ours': 'mark intent:pause; pause_development',
         'lost-id': "mark intent:pause; pause_development; sed -i '/^paused:/d' \"$JOURNAL\"",
+        # 8deef14's fence: the intent line, then Store.set_paused's writes with an audit row that names no batch.
+        'legacy': f"""mark intent:pause
+"{sys.executable}" - "$DATA/gene.sqlite3" <<'PY'
+import sqlite3, sys, time
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute("UPDATE settings SET value='true' WHERE key='paused'")
+    db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
+               (time.time(), 'maintainer:claude', 'pause', '', ''))
+PY""",
+        'late-baseline': 'touch -d "@$(( $(date +%s) + 60 ))" "$BASELINE"',
         'owner-pause': owner + ' pause',  # /pause, as the controller records it
         'owner-resume': owner + ' resume',
         'resume': 'resume_services ' + G,
@@ -652,6 +667,7 @@ def pausing(tmp_path, *steps):
     stubs = f'''
 set -Eeuo pipefail
 DATA={tmp_path}/data JOURNAL={tmp_path}/journal STAGE={tmp_path}/staging/batch-x NOTE=''
+BASELINE=$STAGE/baseline.json
 db_py() {{ local code; code=$(cat); "{sys.executable}" -c "${{code//\\/data\\//$DATA/}}" "$@"; }}
 systemctl() {{ :; }}
 audit() {{ :; }}
@@ -685,7 +701,7 @@ def test_resume_leaves_a_pause_the_owner_made_after_the_batchs(tmp_path):
     out, paused, events, journal = pausing(tmp_path, 'ours', 'owner-pause', 'resume')
     assert out.returncode == 0, out.stderr
     assert paused == 'true' and events == [('maintainer:claude', 'pause'), ('555', 'pause')]
-    assert 'development stays paused: a newer pause' in out.stdout and 'done:unpause' not in journal
+    assert 'development stays paused: the latest pause' in out.stdout and 'done:unpause' not in journal
 
 
 @needs_bash4
@@ -703,6 +719,30 @@ def test_a_pause_whose_id_never_reached_the_journal_is_known_by_its_batch(tmp_pa
     assert paused == 'false' and journal == ['intent:pause', 'done:unpause']
     out, paused, _, _ = pausing(tmp_path/'owner', 'lost-id', 'owner-pause', 'resume')
     assert paused == 'true' and 'development stays paused' in out.stdout
+
+
+@needs_bash4
+def test_resume_lifts_the_pause_an_older_script_made_for_this_batch(tmp_path):
+    # gene #71 review B1: before audit ids, the pause row named no batch and the journal had no paused:<id>.
+    out, paused, events, journal = pausing(tmp_path, 'legacy', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and events == [('maintainer:claude', 'pause'), ('maintainer:claude', 'resume')]
+    assert journal == ['intent:pause', 'done:unpause']
+    out, paused, _, journal = pausing(tmp_path/'owner', 'legacy', 'owner-pause', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'true' and 'development stays paused: the latest pause' in out.stdout and 'done:unpause' not in journal
+    out, paused, _, journal = pausing(tmp_path/'older', 'legacy', 'late-baseline', 'resume')  # from before this batch
+    assert out.returncode == 0, out.stderr
+    assert paused == 'true' and 'development stays paused: the latest pause' in out.stdout
+
+
+@needs_bash4
+def test_a_pause_the_owner_made_just_before_the_batchs_is_not_the_batchs(tmp_path):
+    # gene #71 review S1: the owner paused after the fence read the setting and before the batch's pause.
+    out, paused, events, journal = pausing(tmp_path, 'owner-pause', 'ours', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'true' and events == [('555', 'pause')]
+    assert journal == ['intent:pause', 'skipped:pause']
 
 
 @needs_bash4

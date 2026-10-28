@@ -6,14 +6,6 @@
 # and resume after a full release the owner paused during.
 . "$(dirname "$0")/common.sh"
 DB=$BATCH_ROOT/data/controller/gene.sqlite3
-owner() {  # pause|resume: the owner's /pause, written as Store.set_paused writes it
-  as_owner "$GENE_PY" - "$DB" "$1" <<'PY'
-import sqlite3, sys, time
-with sqlite3.connect(sys.argv[1]) as db:
-    db.execute("UPDATE settings SET value=? WHERE key='paused'", ('true' if sys.argv[2] == 'pause' else 'false',))
-    db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)', (time.time(), '555', sys.argv[2], '', ''))
-PY
-}
 noted() {  # phase: the phase's last production-action line says development stays paused
   python3 - "$BATCH_ROOT/production-actions.jsonl" "batch-release $1" <<'PY' || fail "the $1 line in the action log does not say development stays paused"
 import json, sys
@@ -45,7 +37,7 @@ chmod +x "$MOCK/on-sleep"
 run 1 drain 2
 [[ -e $MOCK/on-sleep.ran ]] || fail 'the deployment never finished during the fence'
 output_has 'an automatic deployment ran today: deploy feature job a1b2c3d4e5f6'
-output_has 'development stays paused: a newer pause'
+output_has 'development stays paused: the latest pause'
 journal_has intent:pause; journal_has resumed_old; journal_lacks drained; journal_lacks done:unpause
 expect old true up
 noted drain
@@ -53,12 +45,12 @@ noted drain
 next_day  # A batch that resumed the old release doesn't go forward again: a retry is a new batch.
 export BATCH_ATTEMPT=2
 ST=$ST-2 JOURNAL=$ST/journal  # left to right: JOURNAL sees the new ST
-owner resume
+owner_sets resume
 prep
 journal_has intent:pause
-owner pause
+owner_sets pause
 run 0 resume-old 2
-output_has 'development stays paused: a newer pause'
+output_has 'development stays paused: the latest pause'
 journal_lacks done:unpause
 expect old true up
 noted resume-old
@@ -66,11 +58,11 @@ noted resume-old
 next_day
 export BATCH_ATTEMPT=3
 ST=${ST%-2}-3 JOURNAL=$ST/journal
-owner resume
+owner_sets resume
 prep
-owner pause
+owner_sets pause
 run 0 gene 0; run 0 fri 0; run 0 evals 0; run 0 verify-off 0; run 0 resume 2
-output_has 'development stays paused: a newer pause'
+output_has 'development stays paused: the latest pause'
 journal_lacks done:unpause
 expect new true up
 noted resume

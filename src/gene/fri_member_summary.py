@@ -8,8 +8,8 @@ off, cleared chats, an edit), or when a message of theirs it may have read is wi
 30 days after its last refresh. Fri builds it in its background loop, since the controller has no
 model access: at most one call per member a day, kept only if nothing changed since the claim. A
 withdrawal that drops it moves the member's summary generation, so a reply that already drew on it is
-refused (gene #91). Before a rollback to a controller without it:
-python -m gene.fri_member_summary purge <database>
+refused (gene #91), and a saved reply that drew on it keeps only a breadcrumb (fri #172). Before a rollback to a
+controller without it: python -m gene.fri_member_summary purge <database>
 """
 
 import json
@@ -37,6 +37,8 @@ IDLE = 600  # Seconds before looking again when nobody is due.
 LENGTH = 500
 UNSAFE = re.compile(r'<[@#&:/]|://|```|\d{15,}')  # Mentions, links, code and ids never reach a summary.
 CLAIM, NEXT = 'member_summary_claim', 'next_member_summary'
+# What a saved reply that drew on a summary since gone keeps instead of its words (fri #172).
+RETIRED = 'Earlier answer drawing on an older summary of them. Nothing from it is retained here.'
 # The same exchanges a member's other conversations may see (Store._elsewhere).
 READABLE = ("guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND attributed=1 "
             "AND response_kind='reply'")
@@ -57,9 +59,26 @@ def initialize(db):
 
 def advance(db, guild, user):
     """The member's summary generation moves: a reply that drew on the summary it had fails its check and save (gene
-    #91). Whatever took or replaced that summary, since once it's gone a later withdrawal finds nothing to move."""
+    #91), and one already saved keeps only a breadcrumb (fri #172). Whatever took or replaced that summary, since once
+    it's gone a later withdrawal finds nothing to move."""
     db.execute('INSERT INTO fri_member_summary_generations VALUES (?,?,1) ON CONFLICT(guild_id, user_id) '
                'DO UPDATE SET generation=generation+1', (guild, user))
+    retire(db, 'guild_id=? AND user_id=?', (guild, user))
+
+
+def retire(db, where, args=()):
+    """Saved replies that drew on a summary now gone keep a breadcrumb, not its words: a later turn reads them back as
+    history (fri #172). Not verbatim, so a reference to Fri's message fails closed, and reply checks pass over it.
+    The member's own words stay. A turn that drew on no summary, or came from an older Fri, says so and stays."""
+    db.execute(f'UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL WHERE ({where}) '
+               'AND summary_generation IS NOT NULL', (RETIRED, *args))
+
+
+def settle(db):
+    """At start: what an older controller left while it ran (a rollback window), which moved generations without
+    retiring the replies that drew on them."""
+    retire(db, 'summary_generation <> coalesce((SELECT generation FROM fri_member_summary_generations g '
+               'WHERE g.guild_id=chat_turns.guild_id AND g.user_id=chat_turns.user_id), 0)')
 
 
 def drop(db, guild, user):
@@ -84,6 +103,7 @@ def erase(db, user_id):
         drop(db, row[0], row[1])
     db.execute('DELETE FROM fri_member_summaries WHERE user_id=?', (user_id,))
     db.execute('DELETE FROM fri_member_summary_generations WHERE user_id=?', (user_id,))
+    retire(db, 'user_id=?', (user_id,))  # Their saved chats a change leaves in place, say a note edited elsewhere.
 
 
 def generation(db, guild, user):
@@ -292,6 +312,9 @@ def purge(path):
     db = sqlite3.connect(path)
     try:
         with db:
+            # An older controller can't tell which saved replies drew on a summary, so none keeps its words.
+            if 'summary_generation' in {row[1] for row in db.execute('PRAGMA table_info(chat_turns)')}:
+                retire(db, '1')
             db.execute('DROP TABLE IF EXISTS fri_member_summaries')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_calls')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_generations')

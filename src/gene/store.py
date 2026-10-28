@@ -178,6 +178,11 @@ class Store:
                 # server: said where everyone in the server could read it, so the member's other
                 # conversations there may see it. Everything saved before stays where it was said.
                 db.execute("ALTER TABLE chat_turns ADD COLUMN audience TEXT NOT NULL DEFAULT 'conversation'")
+            if 'summary_generation' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
+                # The member summary's generation the saved reply drew on, if it drew on one (fri #172).
+                db.execute('ALTER TABLE chat_turns ADD COLUMN summary_generation INTEGER')
+            from .fri_member_summary import settle as settle_summaries
+            settle_summaries(db)
             # Existing queued requests have never received intake approval. Fail closed
             # during migration; completed/running jobs and release approvals retain their history.
             db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
@@ -663,6 +668,8 @@ class Store:
             # Where each profile note was said, beside the notes rather than in them: an older Fri passes the
             # notes to its model whole. A newer one drops a note said where not everyone can read now (fri #98).
             origins = [note.pop('origin') for note in profile['notes']] if profiles else None
+            # Before the turns: a summary that lapses as it's read retires the replies that drew on it (fri #172).
+            summary = self._member_summary(db, guild_id, user_id) if summaries and profile['enabled'] else None
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
             turns = [dict(row) for row in db.execute(
                 'SELECT id,input,reply,source,at,response_kind,reaction,allow_closing,burst,provenance,attributed '
@@ -692,8 +699,7 @@ class Store:
                         (guild_id, channel_id, user_id))],
                     'personal_memory': profile,
                     **({'profile_origins': origins} if profiles else {}),
-                    **({'member_summary': self._member_summary(db, guild_id, user_id) if profile['enabled'] else None}
-                       if summaries else {}),
+                    **({'member_summary': summary} if summaries else {}),
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
 
     @staticmethod
@@ -1085,14 +1091,15 @@ class Store:
                        'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
                        (guild_id, scope, user_id, guild_id, scope, user_id, limit(scope)))
+            # With the summary generation it drew on: once that moves, the reply keeps only a breadcrumb (fri #172).
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
                        'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
-                       'reply_message_id,verbatim,speaker_revision,attributed,audience) '
-                       'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       'reply_message_id,verbatim,speaker_revision,attributed,audience,summary_generation) '
+                       'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
                         time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind,
                         reaction, allow_closing, json.dumps(burst), json.dumps(provenance), reply_message_id,
-                        bool(verbatim), revision, attributed, audience))
+                        bool(verbatim), revision, attributed, audience, summary_generation))
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',

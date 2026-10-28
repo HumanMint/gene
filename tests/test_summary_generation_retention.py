@@ -128,6 +128,17 @@ def test_every_way_the_summary_goes_retires_what_drew_on_it(world):
     assert summary(store) is None and all(retired(reply) for reply in replies(store))
 
 
+def test_a_summary_lapsing_as_context_is_read_retires_its_replies_in_that_same_read(world):
+    from gene.fri_member_summary import TTL
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, generation)
+    with store.connection() as db:
+        db.execute('UPDATE fri_member_summaries SET refreshed=?', (time.time()-TTL-60,))
+    context = store.chat_context('123', 'private:9', '20', True, True)
+    assert context['member_summary'] is None and retired(context['turns'][-1]['reply'])
+
+
 def test_the_members_own_privacy_change_retires_it_where_their_chats_stay(world):
     """A change that takes the summary but leaves a conversation's saved chats, as a note edit elsewhere does."""
     from gene.fri_member_summary import erase
@@ -171,8 +182,10 @@ def test_a_restart_retires_what_an_older_controller_left(world):
     _, generation = summarized(client, store)
     quoted(store, generation)
     quoted(store, None, reply='an older fri said '+MARKER, message_id='701')
-    with store.connection() as db:
-        db.execute('UPDATE fri_member_summary_generations SET generation=generation+1')
+    with store.connection() as db:  # As gene #97's advance() does, without retiring anything.
+        db.execute("INSERT INTO fri_member_summary_generations VALUES ('123','20',1) ON CONFLICT(guild_id, user_id) "
+                   'DO UPDATE SET generation=generation+1')
+    assert replies(store)[-2] == QUOTING
     Store(store.path)
     assert retired(replies(store)[-2]) and replies(store)[-1] == 'an older fri said '+MARKER
 

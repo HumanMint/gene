@@ -70,7 +70,7 @@ def window_settings():
 
 def functions(*names):
     """The named shell functions from batch-release.sh, to run on their own."""
-    out, keep = [], False
+    out, keep, heredoc = [], False, None
     for line in SCRIPT.read_text().splitlines():
         starts = any(line.startswith(name+'() {') for name in names)
         if starts and line.split('  #')[0].rstrip().endswith('}'):
@@ -79,7 +79,12 @@ def functions(*names):
         keep = keep or starts
         if keep:
             out.append(line)
-            keep = line != '}'
+            if heredoc:  # A heredoc's own lines, a Python dict's closing brace included, never end the function.
+                heredoc = None if line == heredoc else heredoc
+            elif match := re.search(r"<<'(\w+)'", line):
+                heredoc = match.group(1)
+            else:
+                keep = line != '}'
     return '\n'.join(out)
 
 
@@ -348,6 +353,22 @@ def test_sizing_a_tree_stops_on_an_io_error_for_a_path_du_cant_reach(tmp_path):
     (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:abort'], 'replays'),
     # A rollback that ran after such a stop: what it restored is checked again.
     (['baseline', 'drained', 'intent:abort', 'resumed_old', 'intent:rollback', 'fri_rolled_back'], 'checked'),
+    # A rollback's restore steps before its stop are older than the stop, and stay as it is.
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:restore', 'intent:fri_restore', 'fri_restored',
+      'intent:rollback', 'intent:pause', 'intent:abort', 'resumed_old'], 'as-is'),
+    # A later rollback that only fenced, killed before it restored anything: still as it is.
+    (['baseline', 'drained', 'intent:abort', 'resumed_old', 'intent:pause', 'paused:7'], 'as-is'),
+    # gene #121 round 1: journals from the script before it, which journaled intent:rollback once per batch. A
+    # rollback-fri after the stop was killed once it stopped Fri: its restore steps, not a new intent:rollback,
+    # say a rollback ran, so the old pair is checked again rather than resumed as it is with Fri stopped.
+    (['baseline', 'drained', 'fri_backup', 'gene_recorded', 'intent:fri', 'fri_switched', 'resumed', 'intent:pause',
+      'intent:rollback', 'intent:fri_restore', 'fri_restored', 'fri_rolled_back', 'intent:services_old', 'done:unpause',
+      'resumed_old', 'intent:pause', 'intent:abort', 'done:unpause', 'resumed_old', 'intent:pause',
+      'intent:fri_restore'], 'checked'),
+    (['baseline', 'drained', 'intent:rollback', 'intent:abort', 'resumed_old', 'intent:fri_restore', 'fri_restored'],
+     'checked'),
+    (['baseline', 'drained', 'intent:rollback', 'intent:abort', 'resumed_old', 'done:downgrade'], 'checked'),
+    (['baseline', 'drained', 'intent:rollback', 'intent:abort', 'resumed_old', 'gene_rolled_back'], 'checked'),
 ])
 def test_resume_old_stays_as_it_is_after_a_stop_until_a_rollback_runs(tmp_path, journal, mode):
     (tmp_path/'journal').write_text(''.join(line+'\n' for line in journal))
@@ -355,6 +376,101 @@ def test_resume_old_stays_as_it_is_after_a_stop_until_a_rollback_runs(tmp_path, 
              + '\nif aborting; then echo replays; elif as_is; then echo as-is; else echo checked; fi\n')
     out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30)
     assert out.returncode == 0 and out.stdout.split() == [mode], out.stderr
+
+
+@pytest.mark.parametrize('journal,fenced', [
+    (['baseline', 'drained', 'resumed'], False),  # no rollback has started since development resumed
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:pause', 'paused:7'], True),  # its fence held
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:pause', 'paused:7', 'intent:restore'], False),
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:fri_restore'], False),
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:abort', 'resumed_old'], False),  # resumed as it is
+    (['baseline', 'drained', 'gene_attempted', 'intent:rollback', 'intent:pause'], False),  # never resumed: mid-switch
+    # A second rollback after the first one finished and development resumed at the old release.
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:restore', 'gene_rolled_back', 'resumed_old',
+      'intent:rollback', 'intent:pause', 'paused:9'], True),
+])
+def test_a_rollback_that_only_fenced_is_known_from_the_journal(tmp_path, journal, fenced):
+    (tmp_path/'journal').write_text(''.join(line+'\n' for line in journal))
+    shell = (f'set -Eeuo pipefail\nJOURNAL={tmp_path}/journal\n' + functions('fenced_by_rollback')
+             + '\nif fenced_by_rollback; then echo fenced; else echo not; fi\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0 and out.stdout.split() == ['fenced' if fenced else 'not'], out.stderr
+
+
+H = 'e' * 40
+
+
+def pair_shell(tmp_path, changes):
+    """pair_check on a batch that switched to G and resumed, after the changes a rollback's fence waited out."""
+    root, fri_root, backup = tmp_path/'srv', tmp_path/'fri', tmp_path/'backup'
+    for path in root/'secrets', fri_root, backup/'db', backup/'installed-source':
+        path.mkdir(parents=True)
+    (backup/'db/controller.sqlite3').touch()
+    (backup/'release.env').write_text(f'GENE_RELEASE_SHA={OLD_G}\nGENE_ROOT=/srv/gene\nGENE_RUNTIME_IMAGE=gene-runtime:{OLD_G}\n')
+    (backup/'worker.env').write_text(f'GENE_WORKER_IMAGE=gene-worker:{OLD_G}\n')
+    (backup/'fri-release.env').write_text(f'FRI_RELEASE_SHA={OLD_F}\nFRI_RUNTIME_IMAGE=fri-runtime:{OLD_F}\n')
+    (backup/'fri-release.json').write_text(json.dumps({'sha': OLD_F}))
+    release = f'GENE_RELEASE_SHA={G}\nGENE_ROOT={root}\nGENE_RUNTIME_IMAGE=gene-runtime:{G}\n'
+    settings = {'active_sha': G, 'previous_sha': OLD_G, 'fri_active_sha': F}
+    record, runtime, deployment = {'sha': F, 'previous': OLD_F}, 'new-runtime', None
+    if 'deployed' in changes:  # As the deployer and the controller leave a feature deployment of H from G.
+        release = release.replace(G, H, 1)
+        settings |= {'active_sha': H, 'previous_sha': G}
+        (root/f'releases/{H}/cogs/gene').mkdir(parents=True)
+        (root/f'releases/{H}/cogs/gene/__init__.py').touch()
+        deployment = {'sha': H, 'previous_sha': G, 'state': 'deployed'}
+    if 'runtime image' in changes:
+        release = release.replace(f'gene-runtime:{G}', f'gene-runtime:{OLD_G}')
+    if 'extra line' in changes:
+        release += 'GENE_EXTRA=1\n'
+    if 'settings unchanged' in changes:
+        settings |= {'active_sha': G, 'previous_sha': OLD_G}
+    if 'no cogs' in changes:
+        (root/f'releases/{H}/cogs/gene/__init__.py').unlink()
+    if 'deployment failed' in changes:
+        deployment |= {'state': 'failed'}
+    if 'no deployment' in changes:
+        deployment = None
+    if 'red on the old image' in changes:
+        runtime = 'old-runtime'
+    if 'fri record' in changes:
+        record = {'sha': 'f' * 40, 'previous': F}
+    (root/'release.env').write_text(release)
+    (root/'secrets/worker.env').write_text(f'GENE_WORKER_IMAGE=gene-worker:{G}\n')
+    (fri_root/'release.env').write_text(f'FRI_RELEASE_SHA={F}\nFRI_RUNTIME_IMAGE=fri-runtime:{F}\n')
+    (fri_root/'release.json').write_text(json.dumps(record))
+    (tmp_path/'state.json').write_text(json.dumps({
+        'settings': settings, 'busy_jobs': 0, 'source': G, 'deployment': deployment,
+        'controller': {'health': 'healthy', 'http': '200', 'image': 'new-runtime'},
+        'red': {'image': runtime, 'running': True}, 'fri_container': {'image': 'new-fri', 'running': True}}))
+    (tmp_path/'manifest.json').write_text(json.dumps({
+        'old': {'runtime': {'tag': f'gene-runtime:{OLD_G}', 'id': 'old-runtime'}, 'fri': {'id': 'old-fri'}},
+        'new': {'runtime': {'tag': f'gene-runtime:{G}', 'id': 'new-runtime'}, 'fri': {'id': 'new-fri'}}}))
+    (tmp_path/'baseline.json').write_text(json.dumps({'settings': {'previous_sha': '1' * 40}, 'source': 'unmarked'}))
+    shell = (functions('pair_check') + f'\nstate() {{ cat {tmp_path}/state.json; }}\nbackup_dir() {{ echo {backup}; }}\n'
+             f'MANIFEST={tmp_path}/manifest.json BASELINE={tmp_path}/baseline.json ROOT={root} FRI_ROOT={fri_root}\n'
+             f'G={G} F={F} OLD_G={OLD_G} OLD_F={OLD_F}\npair_check\n')
+    return subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.parametrize('changes,rc', [
+    ((), 0),
+    (('deployed',), 3),  # a deployment the fence waited out moved Gene: the rollback may resume as it is
+    # gene #121 round 1: any change no deployment explains keeps the fence (exit 1), release.env included.
+    (('runtime image',), 1),  # the same Gene under another runtime image
+    (('deployed', 'fri record'), 1),  # a deployment, and a Fri record from outside the pair
+    (('deployed', 'runtime image'), 1),  # a deployment inherits the runtime image; it never picks one
+    (('deployed', 'extra line'), 1),
+    (('deployed', 'settings unchanged'), 1),  # release.env moved, but the controller recorded no deployment
+    (('deployed', 'no cogs'), 1),  # nothing installed the release's cogs
+    (('deployed', 'deployment failed'), 1),
+    (('deployed', 'no deployment'), 1),
+    (('deployed', 'red on the old image'), 1),
+])
+def test_only_a_deployment_explains_gene_moving_during_the_fence(tmp_path, changes, rc):
+    out = pair_shell(tmp_path, changes)
+    assert out.returncode == rc, out.stderr
+    assert ('outside the recorded old/new pair' in out.stderr) is (rc != 0), out.stderr
 
 
 def test_claims_wait_for_the_window_and_an_owner_rollback_does_not(store, monkeypatch):

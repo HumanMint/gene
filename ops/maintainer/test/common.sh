@@ -40,6 +40,33 @@ setting() {  # key: the controller's setting, read as the DB owner
   as_owner "$GENE_PY" -c 'import sqlite3, sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT value FROM settings WHERE key=?", (sys.argv[2],)).fetchone()[0])' \
     "$BATCH_ROOT/data/controller/gene.sqlite3" "$1"
 }
+deployment_in_flight() {  # job sha base: the controller has claimed a feature deployment of sha over base
+  as_owner "$GENE_PY" - "$BATCH_ROOT/data/controller/gene.sqlite3" "$@" <<'PY'
+import sqlite3, sys, time
+path, job, sha, base = sys.argv[1:5]
+with sqlite3.connect(path) as db:
+    db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,state,created,updated) '
+               'VALUES (?,?,?,?,?,?,?,?,?)', (job, '444', '1', 'src-'+job, '', 'in flight', 'deploying', time.time(), time.time()))
+    db.execute('INSERT INTO deployments VALUES (?,?,?,?,?)', (job, sha, base, 'deploying', time.time()))
+PY
+}
+deployment_lands() {  # job sha base: what Deployer.process and Store.finish_deploy leave once sha proved healthy
+  mkdir -p "$BATCH_ROOT/releases/$2/cogs/gene"; touch "$BATCH_ROOT/releases/$2/cogs/gene/__init__.py"
+  sed -i "s/^GENE_RELEASE_SHA=.*/GENE_RELEASE_SHA=$2/" "$BATCH_ROOT/release.env"  # the runtime image stays
+  as_owner "$GENE_PY" - "$BATCH_ROOT/data/controller/gene.sqlite3" "$@" <<'PY'
+import sqlite3, sys
+path, job, sha, base = sys.argv[1:5]
+with sqlite3.connect(path) as db:
+    db.execute("UPDATE settings SET value=? WHERE key='previous_sha'", (base,))
+    db.execute("UPDATE settings SET value=? WHERE key='active_sha'", (sha,))
+    db.execute("UPDATE jobs SET state='deployed' WHERE id=?", (job,))
+    db.execute("UPDATE deployments SET state='deployed' WHERE job_id=?", (job,))
+PY
+}
+on_sleep() {  # < commands: run once at the script's next sleep (the fence's wait), with the helpers above
+  { echo '#!/usr/bin/env bash'; declare -f as_owner deployment_in_flight deployment_lands; cat; } > "$MOCK/on-sleep"
+  chmod +x "$MOCK/on-sleep"
+}
 units() {  # up|down: whether the worker and deployer are running
   local want=''
   [[ $1 == up ]] && want='gene-deployer gene-worker '

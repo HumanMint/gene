@@ -3,7 +3,9 @@
 # meanwhile: the second pair check stops before anything is restored. gene #93: the rollback changed nothing but
 # its fence, so it journals its stop, starts the worker and deployer again and lifts its own pause, leaving Gene
 # at H; a repeated resume-old stays at H. When that restore fails, a repeated rollback-gene refuses and names
-# resume-old, which, after the window, resumes development at H; a repeat of it is safe.
+# resume-old, which, after the window, resumes development at H; a repeat of it is safe. The deployment leaves
+# what the deployer and controller leave (release.env, cogs, settings, the deployment's record), which is what
+# lets the rollback tell it from any other change (gene #121 round 1).
 . "$(dirname "$0")/common.sh"
 DB=$BATCH_ROOT/data/controller/gene.sqlite3
 H=$(printf 'b%.0s' {1..40})
@@ -11,26 +13,13 @@ release
 fri_before=$(cd "$BATCH_FRI_ROOT" && sha256sum release.env release.json)
 in_flight() {  # job: back at G, with H in flight; the rollback's fence waits for it, and it lands meanwhile
   as_owner "$GENE_PY" -c '
-import sqlite3, sys, time
+import sqlite3, sys
 with sqlite3.connect(sys.argv[1]) as db:
     db.execute("UPDATE settings SET value=? WHERE key=\"previous_sha\"", (sys.argv[2],))
-    db.execute("UPDATE settings SET value=? WHERE key=\"active_sha\"", (sys.argv[3],))
-    db.execute("INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,state,created,updated) "
-               "VALUES (?,\"444\",\"1\",?,\"\",\"in flight\",\"deploying\",?,?)", (sys.argv[4], "src-"+sys.argv[4], time.time(), time.time()))' \
-    "$DB" "$OLD_G" "$G" "$1"
+    db.execute("UPDATE settings SET value=? WHERE key=\"active_sha\"", (sys.argv[3],))' "$DB" "$OLD_G" "$G"
   sed -i "s/^GENE_RELEASE_SHA=.*/GENE_RELEASE_SHA=$G/" "$BATCH_ROOT/release.env"
-  cat > "$MOCK/on-sleep" <<X
-#!/usr/bin/env bash
-# The deployer finishes: Gene moves to H.
-setpriv --reuid=10001 --regid=10001 --clear-groups "$GENE_PY" -c '
-import sqlite3
-with sqlite3.connect("$DB") as db:
-    db.execute("UPDATE jobs SET state=\"live\" WHERE id=\"$1\"")
-    db.execute("UPDATE settings SET value=\"$G\" WHERE key=\"previous_sha\"")
-    db.execute("UPDATE settings SET value=\"$H\" WHERE key=\"active_sha\"")'
-sed -i "s/^GENE_RELEASE_SHA=.*/GENE_RELEASE_SHA=$H/" "$BATCH_ROOT/release.env"
-X
-  chmod +x "$MOCK/on-sleep"
+  deployment_in_flight "$1" "$H" "$G"
+  on_sleep <<< "deployment_lands $1 $H $G"
 }
 at_h() {  # Gene where the deployment left it, and nothing the rollback restores touched
   grep -qx "GENE_RELEASE_SHA=$H" "$BATCH_ROOT/release.env" || fail 'release.env no longer names H'

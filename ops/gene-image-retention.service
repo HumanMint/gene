@@ -1,18 +1,24 @@
 [Unit]
-Description=Retain current, planned and rollback Gene images; remove proven past versions
+Description=Plan, then remove proven superseded Gene images, inside the maintenance window
 After=docker.service
 Requires=docker.service
 
 [Service]
 Type=oneshot
+# Removal also needs "apply_enabled": true in the retention policy; until then each run only plans.
 ExecStart=/usr/bin/python3 /srv/gene/maintenance/current/gene_image_retention.py --apply
+Environment=RETENTION_TRIGGER=gene-image-retention.service RETENTION_ACTOR=gene-image-retention
+# 4: refused outside the window, or skipped while a release holds the host. Nothing changed, and
+# --status reports it as stale once no run has succeeded for two windows.
+SuccessExitStatus=4
 UMask=0077
 NoNewPrivileges=true
 ProtectHome=true
 ProtectSystem=strict
 # SQLite mode=ro readers still need WAL shared-memory/lock access beside the database.
 # The tool sets query_only and never opens a write connection to controller state.
-ReadWritePaths=/srv/gene/maintenance /srv/gene/data/controller
+# It appends to the production-action log; batch-release.sh and the deployer trim it.
+ReadWritePaths=/srv/gene/maintenance /srv/gene/data/controller -/srv/gene/production-actions.jsonl
 PrivateTmp=true
 Nice=15
 IOSchedulingClass=idle

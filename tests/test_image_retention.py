@@ -8,7 +8,7 @@ import pytest
 
 from scripts import gene_image_retention as retention
 
-NOW = 200000.0
+NOW = 1793185800.0  # 2026-10-28 04:10 America/Los_Angeles, inside the maintenance window
 PAST = NOW - retention.GRACE - 1
 
 
@@ -112,12 +112,14 @@ def host(tmp_path, monkeypatch):
     db.execute('INSERT INTO jobs(state,proposal,approved_sha) VALUES (?,?,?)',
                ('review', json.dumps({'sha': f'{4:040x}'}), None))
     db.commit()
-    policy = {'version': 1, 'keep_images': [], 'retired_images': {
+    policy = {'version': 1, 'keep_images': [], 'apply_enabled': True, 'retired_images': {
         k: evidence(v['tags']) for k, v in images.items() if k not in [iid(21), iid(22), iid(99)]}}
     retention.save_json(tmp_path / 'maintenance/image-retention-policy.json', policy)
     monkeypatch.setattr(retention, 'docker_inventory', lambda: (copy.deepcopy(images), {}))
     monkeypatch.setattr(retention, 'process_refs', lambda: [])
     monkeypatch.setattr(retention, 'image_metadata', lambda ref: {'id': ref, 'parent': '', 'tags': []})
+    monkeypatch.setattr(retention, 'image_details', lambda ids: {
+        image: {'parent': '', 'size': 1000, 'layers': ['sha256:' + image[-64:]]} for image in ids})
     monkeypatch.setattr(retention.time, 'time', lambda: NOW)
     return tmp_path, images, policy, db
 

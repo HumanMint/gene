@@ -33,6 +33,10 @@ def release_images(n):
             'fri': ('fri-runtime:' + fri(n), iid(FRI + n))}
 
 
+def chain(layers, size, parent=''):
+    return {'parent': parent, 'size': size, 'layers': ['sha256:' + layer for layer in layers]}
+
+
 def write_batch(root, new, old, at, marks=LIVE, legacy_format=False, backup=True):
     """A batch the way batch-release.sh leaves it: manifest, journal, switch backup and old cogs."""
     stage = root / 'staging' / ('batch-' + gene(new) + ('' if legacy_format else '-' + fri(new)))
@@ -49,7 +53,7 @@ def write_batch(root, new, old, at, marks=LIVE, legacy_format=False, backup=True
         (folder / 'installed-source').mkdir()
         (folder / 'release.env').write_text(f'GENE_RELEASE_SHA={gene(old)}\nGENE_ROOT=/srv/gene\n'
                                             f'GENE_RUNTIME_IMAGE=gene-runtime:{gene(old)}\n')
-        (folder / 'worker.env').write_text(f'GENE_WORKER_IMAGE=gene-worker:{gene(old)}\nGENE_WORKER_TOKEN=private\n')
+        (folder / 'worker.env').write_text(f'GENE_WORKER_IMAGE=gene-worker:{gene(old)}\nGENE_WORKER_TOKEN=tok-3f9a-secret\n')
         (folder / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(old)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(old)}\n')
         (folder / 'fri-release.json').write_text(json.dumps({'sha': fri(old)}))
         for name in ('db/controller.sqlite3', 'red.tar.gz'):
@@ -72,7 +76,7 @@ def batch_host(tmp_path, monkeypatch):
     fri_root.mkdir()
     (root / 'release.env').write_text(f'GENE_RELEASE_SHA={gene(4)}\nGENE_ROOT=/srv/gene\n'
                                       f'GENE_RUNTIME_IMAGE=gene-runtime:{gene(4)}\n')
-    (root / 'secrets/worker.env').write_text(f'GENE_WORKER_IMAGE=gene-worker:{gene(4)}\nGENE_WORKER_TOKEN=private\n')
+    (root / 'secrets/worker.env').write_text(f'GENE_WORKER_IMAGE=gene-worker:{gene(4)}\nGENE_WORKER_TOKEN=tok-3f9a-secret\n')
     (root / 'audio-release.env').write_text(f'GENE_AUDIO_SHA={AUDIO}\n')
     (fri_root / 'release.env').write_text(f'FRI_RELEASE_SHA={fri(4)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(4)}\n')
     images = {}
@@ -83,6 +87,7 @@ def batch_host(tmp_path, monkeypatch):
     images[iid(202)] = {'tags': ['gene-audio-resolver:' + AUDIO]}
     images[iid(203)] = {'tags': ['wordpress:latest']}
     images[iid(300)] = {'tags': []}  # an unnamed object nothing recorded
+    images[iid(204)] = {'tags': ['python:3.11-slim']}  # the base every Gene image is built on
     for n, old in [(1, 0), (2, 1), (3, 2), (4, 3)]:
         write_batch(root, n, old, NOW - (5 - n) * DAY, legacy_format=n < 3)
     db = sqlite3.connect(root / 'data/controller/gene.sqlite3')
@@ -96,15 +101,26 @@ def batch_host(tmp_path, monkeypatch):
     # Classic builder: each worker is a child of its runtime image.
     metadata = {image: {'id': image, 'parent': '', 'tags': row['tags']} for image, row in images.items()}
     for n in range(5):
+        metadata[iid(RUNTIME + n)]['parent'] = iid(204)
         metadata[iid(WORKER + n)]['parent'] = iid(RUNTIME + n)
     monkeypatch.setattr(retention, 'docker_inventory', lambda: (copy.deepcopy(images), dict(containers)))
     monkeypatch.setattr(retention, 'process_refs', lambda: [])
     monkeypatch.setattr(retention, 'image_metadata', lambda ref: copy.deepcopy(metadata[ref]))
+    # Layer chains as the classic builder leaves them: one base under every Gene image, a runtime layer,
+    # then the worker's layer on top of its runtime.
+    details = {iid(201): chain(['audio'], 900), iid(202): chain(['resolver'], 800),
+               iid(203): chain(['wordpress'], 1000), iid(300): chain(['orphan'], 70),
+               iid(204): chain(['base'], 500)}
+    for n in range(5):
+        details[iid(RUNTIME + n)] = chain(['base', f'runtime-{n}'], 600, iid(204))
+        details[iid(WORKER + n)] = chain(['base', f'runtime-{n}', f'worker-{n}'], 650, iid(RUNTIME + n))
+        details[iid(FRI + n)] = chain(['fri-base', f'fri-{n}'], 350)
+    monkeypatch.setattr(retention, 'image_details', lambda ids: {i: copy.deepcopy(details[i]) for i in ids}, raising=False)
     monkeypatch.setattr(retention, 'lock_held', lambda path: False, raising=False)
     monkeypatch.setattr(retention, 'FRI_ROOT', fri_root, raising=False)
     monkeypatch.setattr(retention.time, 'time', lambda: NOW)
     return SimpleNamespace(root=root, fri_root=fri_root, images=images, policy=policy, db=db,
-                           containers=containers, metadata=metadata)
+                           containers=containers, metadata=metadata, details=details)
 
 
 def legacy_level(root, db, sha, previous, at, complete):
@@ -154,3 +170,541 @@ def test_an_incomplete_legacy_level_blocks_only_inside_the_rollback_depth(batch_
         retention.run(root)
     assert not (root / 'maintenance/image-retention-plan.json').exists()
 
+
+def stage_of(root, n):
+    return next((root / 'staging').glob('batch-' + gene(n) + '*'))
+
+
+def set_marks(stage, marks):
+    at = (stage / 'journal').stat().st_mtime
+    (stage / 'journal').write_text(''.join(mark + '\n' for mark in marks))
+    os.utime(stage / 'journal', (at, at))
+
+
+def edit_manifest(stage, change):
+    path = stage / 'manifest.json'
+    manifest = json.loads(path.read_text())
+    change(manifest)
+    path.write_text(json.dumps(manifest))
+
+
+def backup_of(stage):
+    return retention.Path(json.loads((stage / 'manifest.json').read_text())['backup'])
+
+
+def test_the_plan_lists_exact_removals_reasons_for_every_kept_image_and_a_byte_estimate(batch_host):
+    root = batch_host.root
+    result = retention.run(root)
+    plan = retention.read_json(root / 'maintenance/image-retention-plan.json')
+    assert plan == json.loads(json.dumps(result))
+    assert [(row['id'], row['tags']) for row in plan['delete']] == [
+        (iid(WORKER + 0), ['gene-worker:' + gene(0)]), (iid(RUNTIME + 0), ['gene-runtime:' + gene(0)])]
+    assert plan['delete'][0]['evidence'] == f'Superseded in batch release history ({stage_of(root, 1).name})'
+    assert plan['delete_parents'] == []
+    # Every image object Docker lists is either planned for removal or kept with a reason.
+    assert set(plan['keep']) | {row['id'] for row in plan['delete']} == set(batch_host.images)
+    assert all(row['reason'] for row in plan['keep'].values())
+    reasons = {image: row['reason'] for image, row in plan['keep'].items()}
+    assert reasons[iid(RUNTIME + 4)].startswith(retention.CONTAINER + '; ' + retention.CURRENT)
+    assert reasons[iid(WORKER + 4)].startswith(retention.CURRENT)
+    assert reasons[iid(RUNTIME + 3)].startswith(f'{retention.ROLLBACK} (batch {stage_of(root, 4).name})')
+    assert reasons[iid(WORKER + 2)].startswith(f'{retention.ROLLBACK} (batch {stage_of(root, 3).name})')
+    assert reasons[iid(WORKER + 1)] == f'{retention.RECENT} ({stage_of(root, 2).name})'
+    assert reasons[iid(FRI + 2)].startswith(retention.ROLLBACK) and reasons[iid(FRI + 1)].startswith(retention.RECENT)
+    assert reasons[iid(FRI + 0)] == retention.FRI_OWNED
+    assert reasons[iid(FRI + 4)].startswith(retention.CONTAINER)
+    assert reasons[iid(201)].startswith(retention.AUDIO) and reasons[iid(203)] == retention.OUTSIDE
+    assert reasons[iid(300)] == retention.UNCLASSIFIED
+    assert plan['keep_summary'][retention.FRI_OWNED] == 1 and sum(plan['keep_summary'].values()) == len(plan['keep'])
+    # The worker's and runtime's own layers; the shared base stays with the kept images.
+    assert plan['bytes']['lower_bytes'] == plan['bytes']['upper_bytes'] == 150 and plan['bytes']['exact']
+    # With no image ending at the shared base, its size is bounded only by the runtimes above it (600).
+    del batch_host.details[iid(204)]
+    batch_host.images.pop(iid(204))
+    bounds = retention.run(root)['bytes']
+    assert (bounds['lower_bytes'], bounds['upper_bytes'], bounds['exact']) == (50, 650, False)
+    assert plan['live'] == {'gene': gene(4), 'fri': fri(4)}
+    assert [(step['sha'], step['previous'], step['previous_fri']) for step in plan['lineage']] == [
+        (gene(4), gene(3), fri(3)), (gene(3), gene(2), fri(2))]
+    assert plan['deletion'] == 'plan only' and plan['version'] == 2
+    assert 'tok-3f9a-secret' not in (root / 'maintenance/image-retention-plan.json').read_text()
+    assert not (root / 'maintenance/image-retention-state.json').exists()
+
+
+def test_apply_removes_only_the_planned_tags_with_no_force_or_prune(batch_host, monkeypatch):
+    root, images = batch_host.root, batch_host.images
+    calls = []
+
+    def docker(*args):
+        calls.append(args)
+        if args[:3] == ('docker', 'image', 'inspect'):
+            return json.dumps([{'Id': next(i for i, row in images.items() if args[3] in row['tags'])}])
+        assert args[:4] == ('docker', 'image', 'rm', '--no-prune')
+        images.pop(next(i for i, row in images.items() if args[4] in row['tags']))
+        return ''
+
+    monkeypatch.setattr(retention, 'command', docker)
+    result = retention.run(root, apply=True)
+    assert result['removed_tags'] == ['gene-worker:' + gene(0), 'gene-runtime:' + gene(0)]
+    assert [c for c in calls if c[2] == 'rm'] == [('docker', 'image', 'rm', '--no-prune', 'gene-worker:' + gene(0)),
+                                                 ('docker', 'image', 'rm', '--no-prune', 'gene-runtime:' + gene(0))]
+    assert iid(FRI + 0) in images and result['deletion'] == 'enabled'
+
+
+def test_apply_waits_for_the_policy_to_enable_deletion(batch_host, monkeypatch):
+    root, policy = batch_host.root, batch_host.policy
+    policy['apply_enabled'] = False
+    retention.save_json(root / 'maintenance/image-retention-policy.json', policy)
+    monkeypatch.setattr(retention, 'command', lambda *args: pytest.fail(f'unexpected {args}'))
+    result = retention.run(root, apply=True)
+    assert result['deletion'] == 'disabled in the policy' and result['removed_tags'] == []
+    assert len(result['delete']) == 2
+    assert not (root / 'maintenance/image-retention-state.json').exists()
+    policy['apply_enabled'] = 'yes'
+    retention.save_json(root / 'maintenance/image-retention-policy.json', policy)
+    with pytest.raises(ValueError, match='Unsupported retention policy'):
+        retention.run(root, apply=True)
+
+
+def test_removals_stop_when_the_window_closes(batch_host, monkeypatch):
+    root, images = batch_host.root, batch_host.images
+    clock = iter([NOW] * 6 + [NOW + 3600] * 100)  # the plan and first removal at 04:10, then 05:10
+    monkeypatch.setattr(retention.time, 'time', lambda: next(clock))
+
+    def docker(*args):
+        if args[:3] == ('docker', 'image', 'inspect'):
+            return json.dumps([{'Id': next(i for i, row in images.items() if args[3] in row['tags'])}])
+        images.pop(next(i for i, row in images.items() if args[4] in row['tags']))
+        return ''
+
+    monkeypatch.setattr(retention, 'command', docker)
+    result = retention.run(root, apply=True)
+    assert result['removed_tags'] == ['gene-worker:' + gene(0)]
+    assert 'window closed' in result['deferred']
+    assert iid(RUNTIME + 0) in images
+
+
+def remove_journal_marks(root, n, *marks):
+    stage = stage_of(root, n)
+    set_marks(stage, [m for m in (stage / 'journal').read_text().split() if m not in marks])
+
+
+@pytest.mark.parametrize('mutation, message', [
+    ('rolled_back', 'Missing successful rollback lineage for ' + gene(4)),
+    ('unrecorded', 'Missing successful rollback lineage for ' + gene(4)),
+    ('different_release', 'Malformed batch record .*different release'),
+    ('unreadable_manifest', 'Malformed batch record .*unreadable manifest'),
+    ('symlinked_manifest', 'unreadable manifest'),
+    ('invalid_image', 'Malformed batch record .*invalid old runtime image'),
+    ('missing_backup_file', 'is missing db/controller.sqlite3'),
+    ('missing_source', 'is missing installed-source'),
+    ('backup_outside', 'switch backup is missing or outside backups/'),
+    ('backup_disagrees', 'disagrees with its manifest'),
+    ('old_image_changed', 'old runtime image gene-runtime:.* is missing or changed'),
+    ('new_fri_missing', 'new fri image fri-runtime:.* is missing or changed'),
+    ('missing_cogs', 'rollback cogs releases/' + gene(2) + ' are missing'),
+    ('pointer', 'Controller rollback pointer disagrees with batch'),
+    ('live_pins', 'Live Gene image pins disagree with batch'),
+    ('live_fri', 'Live Fri is not the release batch'),
+    ('ambiguous', 'Ambiguous rollback lineage for ' + gene(4)),
+    ('unknown_dir', 'Unrecognized batch record'),
+])
+def test_malformed_unfinished_rolled_back_or_ambiguous_history_refuses(batch_host, mutation, message):
+    root, images, db = batch_host.root, batch_host.images, batch_host.db
+    live, behind = stage_of(root, 4), stage_of(root, 3)
+    if mutation == 'rolled_back':
+        set_marks(live, LIVE + ['intent:rollback', 'fri_restored', 'done:downgrade', 'gene_rolled_back',
+                                'intent:services_old', 'resumed_old'])
+    elif mutation == 'unrecorded':
+        remove_journal_marks(root, 4, 'gene_recorded')
+    elif mutation == 'different_release':
+        edit_manifest(live, lambda m: m.update(gene=gene(7)))
+    elif mutation == 'unreadable_manifest':
+        (live / 'manifest.json').write_text('{"gene": ')
+    elif mutation == 'symlinked_manifest':
+        (live / 'manifest.json').rename(live / 'real.json')
+        (live / 'manifest.json').symlink_to(live / 'real.json')
+    elif mutation == 'invalid_image':
+        edit_manifest(live, lambda m: m['old']['runtime'].update(id='sha256:short'))
+    elif mutation == 'missing_backup_file':
+        (backup_of(behind) / 'db/controller.sqlite3').unlink()
+    elif mutation == 'missing_source':
+        (backup_of(behind) / 'installed-source').rmdir()
+    elif mutation == 'backup_outside':
+        edit_manifest(live, lambda m: m.update(backup=str(root / 'backups' / '..' / 'staging')))
+    elif mutation == 'backup_disagrees':
+        (backup_of(live) / 'worker.env').write_text('GENE_WORKER_IMAGE=gene-worker:' + gene(1) + '\n')
+    elif mutation == 'old_image_changed':
+        images[iid(RUNTIME + 2)]['tags'] = []
+        images[iid(400)] = {'tags': ['gene-runtime:' + gene(2)]}
+    elif mutation == 'new_fri_missing':
+        images[iid(FRI + 4)]['tags'] = []
+    elif mutation == 'missing_cogs':
+        (root / 'releases' / gene(2) / 'cogs').rmdir()
+    elif mutation == 'pointer':
+        db.execute("UPDATE settings SET value=? WHERE key='previous_sha'", (gene(2),))
+        db.commit()
+    elif mutation == 'live_pins':
+        (root / 'release.env').write_text(f'GENE_RELEASE_SHA={gene(4)}\nGENE_RUNTIME_IMAGE=gene-runtime:{gene(3)}\n')
+    elif mutation == 'live_fri':
+        (batch_host.fri_root / 'release.env').write_text(
+            f'FRI_RELEASE_SHA={fri(3)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(3)}\n')
+    elif mutation == 'ambiguous':
+        copy_dir = root / 'staging' / (live.name + '-2')
+        copy_dir.mkdir()
+        (copy_dir / 'manifest.json').write_text((live / 'manifest.json').read_text())
+        (copy_dir / 'journal').write_text((live / 'journal').read_text())
+        at = (live / 'journal').stat().st_mtime
+        os.utime(copy_dir / 'journal', (at, at))
+    elif mutation == 'unknown_dir':
+        (root / 'staging' / 'batch-notes').mkdir()
+        (root / 'staging' / 'batch-notes' / 'journal').write_text('baseline\n')
+    with pytest.raises(ValueError, match=message):
+        retention.run(root, apply=True)
+    assert not (root / 'maintenance/image-retention-plan.json').exists()
+    assert not (root / 'maintenance/image-retention-state.json').exists()
+
+
+@pytest.mark.parametrize('marks', [
+    LIVE[:5],  # drained, then stopped before the switch
+    LIVE[:15],  # switching
+    LIVE + ['intent:rollback', 'fri_restored'],  # a rollback after resume, not finished
+    ['baseline', 'staged', 'rehearsed', 'intent:pause'],  # a drain that paused and timed out
+])
+def test_a_batch_in_flight_holds_retention_until_it_resumes(batch_host, marks):
+    root = batch_host.root
+    write_batch(root, 5, 4, NOW - 60, marks=marks)
+    with pytest.raises(retention.Busy, match='mid-release or mid-rollback'):
+        retention.run(root, apply=True)
+    assert not (root / 'maintenance/image-retention-plan.json').exists()
+
+
+def test_a_staged_batch_keeps_every_image_it_names_without_blocking(batch_host):
+    root, images = batch_host.root, batch_host.images
+    for tag, image in release_images(5).values():
+        images[image] = {'tags': [tag]}
+    write_batch(root, 5, 4, NOW - 60, marks=['baseline', 'staged', 'rehearsed'], backup=False)
+    result = retention.run(root)
+    for _, image in release_images(5).values():
+        assert result['keep'][image]['reason'].startswith(retention.UNFINISHED)
+    assert [row['id'] for row in result['delete']] == [iid(WORKER + 0), iid(RUNTIME + 0)]
+
+
+def test_a_rolled_back_batch_is_not_lineage_and_its_images_need_evidence(batch_host):
+    root, images = batch_host.root, batch_host.images
+    for tag, image in release_images(5).values():
+        images[image] = {'tags': [tag]}
+    write_batch(root, 5, 4, NOW - 60, marks=LIVE + ['intent:rollback', 'gene_rolled_back', 'resumed_old'])
+    result = retention.run(root)
+    assert [step['sha'] for step in result['lineage']] == [gene(4), gene(3)]
+    # Its new images went into service and back out, with no supersession evidence of their own.
+    assert result['keep'][iid(RUNTIME + 5)]['reason'].startswith(retention.RECENT)
+    # cleanup's recent window counts any batch that resumed, so release 1 leaves it, as cleanup would.
+    assert [row['id'] for row in result['delete']] == [iid(WORKER + 0), iid(WORKER + 1), iid(RUNTIME + 0),
+                                                      iid(RUNTIME + 1)]
+    assert result['keep'][iid(RUNTIME + 2)]['reason'].startswith(retention.ROLLBACK)
+
+
+def test_cleanup_recent_releases_are_kept_and_older_batch_evidence_waits_out_the_grace(batch_host):
+    root = batch_host.root
+    result = retention.run(root)
+    assert result['keep'][iid(RUNTIME + 1)]['reason'] == f'{retention.RECENT} ({stage_of(root, 2).name})'
+    assert result['keep'][iid(RUNTIME + 2)]['reason'].startswith(retention.ROLLBACK)
+    journal = stage_of(root, 1) / 'journal'
+    os.utime(journal, (NOW - 60, NOW - 60))
+    for n in (2, 3, 4):  # keep the order: every later batch resumed later still
+        os.utime(stage_of(root, n) / 'journal', (NOW - 50 + n, NOW - 50 + n))
+    result = retention.run(root)
+    assert result['delete'] == []
+    assert result['keep'][iid(RUNTIME + 0)]['reason'] == '24-hour supersession grace period'
+
+
+def test_a_cog_job_on_top_of_batches_and_a_batch_above_a_legacy_level(batch_host):
+    root, db = batch_host.root, batch_host.db
+    cog = 'c' * 40
+    (root / 'release.env').write_text(f'GENE_RELEASE_SHA={cog}\nGENE_RUNTIME_IMAGE=gene-runtime:{gene(4)}\n')
+    (root / 'releases' / gene(4) / 'cogs').mkdir(parents=True)
+    (root / 'backups/cog-job').mkdir()
+    for name in ('controller.sqlite3', 'red.tar.gz'):
+        (root / 'backups/cog-job' / name).touch()
+    db.execute("UPDATE settings SET value=? WHERE key='active_sha'", (cog,))
+    db.execute("UPDATE settings SET value=? WHERE key='previous_sha'", (gene(4),))
+    db.execute('INSERT INTO jobs VALUES (?,?,?,?,?)',
+               ('cog-job', 'feature', 'deployed', json.dumps({'sha': cog, 'base_sha': gene(4)}), cog))
+    db.execute('INSERT INTO deployments VALUES (?,?,?,?,?)', ('cog-job', cog, gene(4), NOW - 3600, 'deployed'))
+    db.commit()
+    result = retention.run(root)
+    assert [step['record'].split()[0] for step in result['lineage']] == ['cog', 'batch', 'batch']
+    # Batch 3 and its predecessors replaced by one legacy install: batch above a complete legacy level.
+    for n in (1, 2, 3):
+        (stage_of(root, n) / 'journal').unlink()
+    legacy_level(root, db, gene(3), gene(2), NOW - 3 * DAY, complete=True)
+    result = retention.run(root)
+    assert [step['record'].split()[0] for step in result['lineage']] == ['cog', 'batch', 'deployment']
+    assert result['keep'][iid(RUNTIME + 2)]['reason'].startswith(retention.ROLLBACK + ' (deployment')
+
+
+def test_fri_only_and_gene_only_batches(batch_host):
+    root, images = batch_host.root, batch_host.images
+    images[iid(FRI + 5)] = {'tags': ['fri-runtime:' + fri(5)]}
+    stage = root / 'staging' / f'batch-{gene(4)}-{fri(5)}'
+    stage.mkdir()
+    old = {role: {'tag': t, 'id': i} for role, (t, i) in release_images(4).items()}
+    new = copy.deepcopy(old) | {'fri': {'tag': 'fri-runtime:' + fri(5), 'id': iid(FRI + 5)}}
+    (stage / 'manifest.json').write_text(json.dumps({'gene': gene(4), 'fri': fri(5), 'old_gene': gene(4),
+                                                     'old_fri': fri(4), 'old': old, 'new': new}))
+    (stage / 'journal').write_text('\n'.join(['baseline', 'staged', 'rehearsed', 'intent:pause', 'drained',
+                                              'gene_recorded', 'fri_backup', 'intent:fri', 'fri_switched',
+                                              'resumed']) + '\n')
+    with pytest.raises(ValueError, match='Live Fri is not the release batch ' + stage.name):
+        retention.run(root)
+    (batch_host.fri_root / 'release.env').write_text(f'FRI_RELEASE_SHA={fri(5)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(5)}\n')
+    result = retention.run(root)
+    assert [step['sha'] for step in result['lineage']] == [gene(4), gene(3)]  # Fri-only moves no Gene
+    assert result['keep'][iid(FRI + 5)]['reason'].startswith(retention.RECENT)
+    assert result['live'] == {'gene': gene(4), 'fri': fri(5)}
+
+
+def test_held_locks_and_receipts_skip_the_run(batch_host, monkeypatch):
+    root = batch_host.root
+    monkeypatch.setattr(retention, 'lock_held', lambda path: path == root / 'batch-release.lock')
+    with pytest.raises(retention.Busy, match='batch-release command holds its lock'):
+        retention.run(root, apply=True)
+    monkeypatch.setattr(retention, 'lock_held', lambda path: False)
+    (root / 'deploy-result.json').write_text('{}')
+    with pytest.raises(retention.Busy, match='receipt'):
+        retention.run(root, apply=True)
+
+
+def test_lock_held_reads_the_kernel_table_without_taking_the_lock(tmp_path):
+    lock = tmp_path / 'batch-release.lock'
+    table = tmp_path / 'locks'
+    assert not retention.lock_held(lock, table)  # never created: nothing holds it
+    lock.touch()
+    info = lock.stat()
+    device = f'{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}'
+    table.write_text(f'1: POSIX  ADVISORY  WRITE 99 {device} 0 EOF\n2: FLOCK  ADVISORY  WRITE 10 00:00:1 0 EOF\n')
+    assert not retention.lock_held(lock, table)
+    table.write_text(table.read_text() + f'3: FLOCK  ADVISORY  WRITE 1234 {device} 0 EOF\n')
+    assert retention.lock_held(lock, table)
+
+
+@pytest.mark.parametrize('case', ['exact', 'unknown_junction', 'shared_removed', 'branch', 'kept_child',
+                                  'inconsistent'])
+def test_byte_estimate_never_double_counts_shared_layers(case):
+    def image(layers, size):
+        return {'parent': '', 'size': size, 'layers': ['sha256:' + layer for layer in layers]}
+    kept, removed = {}, {}
+    if case == 'exact':
+        kept['k'], removed['r'] = image(['a'], 60), image(['a', 'b'], 100)
+        expected = (40, 40)
+    elif case == 'unknown_junction':  # no image ends at the shared layer: its size is only bounded
+        kept['k'], removed['r'] = image(['a', 'c'], 80), image(['a', 'b'], 100)
+        expected = (20, 100)
+    elif case == 'shared_removed':  # one removed layer under two removed images counts once
+        kept['k'] = image(['a'], 60)
+        removed |= {'r1': image(['a', 'b'], 100), 'r2': image(['a', 'b', 'd'], 130)}
+        expected = (70, 70)
+    elif case == 'branch':
+        kept['k'] = image(['a'], 60)
+        removed |= {'r1': image(['a', 'b', 'e'], 120), 'r2': image(['a', 'b', 'f'], 110)}
+        expected = (60, 110)
+    elif case == 'kept_child':  # a kept image built on the removed one frees nothing
+        kept['k'], removed['r'] = image(['a', 'b'], 100), image(['a'], 60)
+        expected = (0, 0)
+    else:
+        kept['k'], removed['r'] = image(['a'], 60), image(['a'], 70)
+        expected = (0, 70)
+    details = kept | removed
+    result = retention.estimate_bytes(details, set(removed))
+    assert (result['lower_bytes'], result['upper_bytes']) == expected
+    assert result['exact'] is (expected[0] == expected[1] and case != 'inconsistent')
+    if case == 'inconsistent':
+        assert result['method'].startswith('coarse')
+
+
+def test_the_plan_says_when_docker_will_keep_a_planned_image_and_when_sizes_are_unavailable(batch_host, monkeypatch):
+    root, details = batch_host.root, batch_host.details
+    batch_host.images[iid(301)] = {'tags': ['gene-tool:special']}
+    details[iid(301)] = chain(['base', 'runtime-0', 'tool'], 700, iid(RUNTIME + 0))
+    result = retention.run(root)
+    planned = {row['id']: row for row in result['delete']}
+    assert 'docker_keeps' in planned[iid(RUNTIME + 0)] and 'docker_keeps' not in planned[iid(WORKER + 0)]
+    assert result['bytes']['lower_bytes'] == result['bytes']['upper_bytes'] == 50  # only the worker's layer
+    monkeypatch.setattr(retention, 'image_details', lambda ids: (_ for _ in ()).throw(
+        retention.subprocess.CalledProcessError(1, 'docker')))
+    result = retention.run(root)
+    assert result['bytes']['lower_bytes'] is None and result['bytes']['method'].startswith('unavailable')
+    assert result['keep'][iid(300)]['reason'] == retention.UNCLASSIFIED
+
+
+def test_an_untagged_parent_of_a_kept_image_is_explained(batch_host):
+    root, details = batch_host.root, batch_host.details
+    batch_host.images[iid(302)] = {'tags': []}
+    details[iid(302)] = chain(['base'], 500)
+    details[iid(RUNTIME + 4)]['parent'] = iid(302)
+    result = retention.run(root)
+    assert result['keep'][iid(302)]['reason'] == retention.KEPT_PARENT
+
+
+# The window: the run as the timer starts it.
+
+def actions(root):
+    path = root / 'production-actions.jsonl'
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_outside_the_window_a_run_takes_no_lock_and_writes_only_its_log_line(batch_host, monkeypatch):
+    root = batch_host.root
+    monkeypatch.setattr(retention.time, 'time', lambda: NOW + 3600)  # 05:10
+    assert retention.execute(root, apply=True) == (retention.REFUSED, None)
+    assert sorted(p.name for p in (root / 'maintenance').iterdir()) == ['image-retention-policy.json']
+    [line] = actions(root)
+    assert line['action'] == 'image-retention apply' and line['outcome'].startswith('refused: outside the maintenance')
+    assert line['tz'] == 'America/Los_Angeles' and line['local_date'] == '2026-10-28'
+    monkeypatch.setattr(retention.time, 'time', lambda: float('nan'))
+    assert retention.execute(root)[0] == retention.REFUSED
+
+
+def test_an_owner_exception_runs_outside_the_window_and_is_logged(batch_host, monkeypatch):
+    root = batch_host.root
+    monkeypatch.setattr(retention.time, 'time', lambda: NOW + 6 * 3600)
+    code, result = retention.execute(root, exception='owner, 2026-10-28 10:10, disk at 95%')
+    assert code == 0 and result['deletion'] == 'plan only'
+    assert actions(root)[-1]['exception'] == 'owner, 2026-10-28 10:10, disk at 95%'
+
+
+def test_each_run_is_logged_with_exact_images_and_no_secrets(batch_host, monkeypatch):
+    root, images = batch_host.root, batch_host.images
+    monkeypatch.setenv('RETENTION_TRIGGER', 'gene-image-retention.timer')
+    monkeypatch.setenv('RETENTION_ACTOR', 'gene-image-retention.service')
+    monkeypatch.delenv('SUDO_USER', raising=False)
+
+    def docker(*args):
+        if args[:3] == ('docker', 'image', 'inspect'):
+            return json.dumps([{'Id': next(i for i, row in images.items() if args[3] in row['tags'])}])
+        images.pop(next(i for i, row in images.items() if args[4] in row['tags']))
+        return ''
+
+    monkeypatch.setattr(retention, 'command', docker)
+    assert retention.execute(root)[0] == 0
+    assert retention.execute(root, apply=True)[0] == 0
+    plan, apply = actions(root)
+    assert plan['action'] == 'image-retention plan' and plan['outcome'] == 'ok'
+    assert plan['images']['delete'] == {iid(WORKER + 0): ['gene-worker:' + gene(0)],
+                                        iid(RUNTIME + 0): ['gene-runtime:' + gene(0)]}
+    assert apply['images']['removed_tags'] == ['gene-worker:' + gene(0), 'gene-runtime:' + gene(0)]
+    assert apply['before'] == apply['after'] == {'gene': gene(4), 'fri': fri(4)}
+    assert apply['actor'] == 'gene-image-retention.service' and apply['trigger'] == 'gene-image-retention.timer'
+    assert {'at', 'local_date', 'tz', 'actor', 'trigger', 'action', 'reason', 'before', 'after', 'duration_s',
+            'restart_s', 'outcome', 'exception'} <= apply.keys()
+    for name in ('production-actions.jsonl', 'maintenance/image-retention-status.json',
+                 'maintenance/image-retention-plan.json', 'maintenance/image-retention-result.json'):
+        assert 'tok-3f9a-secret' not in (root / name).read_text()
+
+
+def test_status_records_success_failure_and_skips(batch_host, monkeypatch):
+    root = batch_host.root
+    path = root / 'maintenance/image-retention-status.json'
+    assert retention.execute(root)[0] == 0
+    first = retention.read_json(path)
+    assert first['last_success']['mode'] == 'plan' and first['consecutive_failures'] == 0
+    assert first['last_success']['delete'] == {iid(WORKER + 0): ['gene-worker:' + gene(0)],
+                                               iid(RUNTIME + 0): ['gene-runtime:' + gene(0)]}
+    (stage_of(root, 3) / 'manifest.json').write_text('[')
+    for _ in range(2):
+        with pytest.raises(ValueError):
+            retention.execute(root)
+    record = retention.read_json(path)
+    assert record['consecutive_failures'] == 2 and record['last_run']['outcome'] == 'failed'
+    assert 'Malformed batch record' in record['last_run']['detail']
+    assert record['last_success'] == first['last_success']
+    assert actions(root)[-1]['outcome'].startswith('failed: ValueError: Malformed batch record')
+    (stage_of(root, 3) / 'manifest.json').write_text((stage_of(root, 4) / 'manifest.json').read_text())
+    lock = (root / 'maintenance/image-retention.lock').open('a')
+    retention.fcntl.flock(lock, retention.fcntl.LOCK_EX | retention.fcntl.LOCK_NB)
+    try:
+        assert retention.execute(root) == (retention.REFUSED, None)
+    finally:
+        lock.close()
+    record = retention.read_json(path)
+    assert record['last_run']['outcome'] == 'skipped' and record['consecutive_failures'] == 2
+    assert actions(root)[-1]['outcome'] == 'skipped: Another image-retention run holds its lock'
+
+
+def systemctl(timer='enabled', active='active', result='success', status='0'):
+    def show(*args):
+        assert args[:2] == ('systemctl', 'show')
+        if args[2] == 'gene-image-retention.timer':
+            return f'UnitFileState={timer}\nActiveState={active}\nLastTriggerUSec=x\nNextElapseUSecRealtime=y\n'
+        return f'ActiveState=inactive\nResult={result}\nExecMainStatus={status}\nExecMainExitTimestamp=z\n'
+    return show
+
+
+@pytest.mark.parametrize('case, state', [('ok', 'ok'), ('service_failed', 'failing'), ('run_failed', 'failing'),
+                                         ('stale', 'stale'), ('disabled', 'disabled'), ('never', 'never-run'),
+                                         ('no_systemd', 'unknown')])
+def test_status_reports_an_enabled_but_failing_timer_as_unhealthy(batch_host, monkeypatch, case, state):
+    root = batch_host.root
+    if case != 'never':
+        assert retention.execute(root)[0] == 0
+    monkeypatch.setattr(retention, 'command', systemctl(
+        timer='disabled' if case == 'disabled' else 'enabled',
+        result='exit-code' if case == 'service_failed' else 'success',
+        status='1' if case == 'service_failed' else '0'))
+    if case == 'run_failed':
+        (stage_of(root, 4) / 'manifest.json').write_text('{}')
+        with pytest.raises(ValueError):
+            retention.execute(root)
+    if case == 'no_systemd':
+        monkeypatch.setattr(retention, 'command', lambda *args: (_ for _ in ()).throw(FileNotFoundError()))
+    now = NOW + (retention.STALE + 60 if case == 'stale' else 60)
+    report = retention.status(root, now)
+    assert report['status'] == state and report['healthy'] is (state == 'ok')
+    if case != 'never':
+        assert report['last_success_at'].startswith('2026-10-28T04:10:00-07:00')
+    if case == 'service_failed':
+        assert report['reasons'] == ['the last service run ended with exit-code (exit status 1)']
+    assert json.dumps(report)  # what the status command prints
+
+
+def test_the_status_command_is_read_only(batch_host, monkeypatch, capsys):
+    root = batch_host.root
+    assert retention.execute(root)[0] == 0
+    before = {p.name: p.stat().st_mtime_ns for p in (root / 'maintenance').iterdir()}
+    monkeypatch.setattr(retention.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(retention, 'command', systemctl())
+    monkeypatch.setattr(retention.time, 'time', lambda: NOW + 12 * 3600)  # any hour
+    assert retention.main(['--status', '--root', str(root), '--fri-root', str(batch_host.fri_root)]) == 0
+    assert json.loads(capsys.readouterr().out)['status'] == 'ok'
+    assert {p.name: p.stat().st_mtime_ns for p in (root / 'maintenance').iterdir()} == before
+    assert len(actions(root)) == 1
+
+
+def test_the_window_matches_the_controllers_copy():
+    from gene import maintenance
+    day, hour = 24 * 3600, 3600
+    moments = [retention.EARLIEST - 1, float('nan'), float('inf')]
+    # The daylight-saving ends of 2026 and 2027 and an ordinary day, by the quarter hour and at the edges.
+    for start in (1793145600, 1793664000, 1804982400):  # 2026-10-28, 2026-11-01, 2027-03-14 at 00:00Z
+        moments += [start + step * 900 for step in range(4 * 24 * 2)]
+        moments += [start + offset for h in range(0, 2 * day, hour) for offset in (h - 1, h, h + 1)]
+    for moment in moments:
+        assert retention.window_open(moment) is maintenance.is_open(moment), moment
+
+
+def test_the_units_run_once_a_day_inside_the_window_and_skips_are_not_failures():
+    from configparser import ConfigParser
+    units = retention.Path(__file__).parents[1] / 'ops'
+    timer, service = ConfigParser(strict=False), ConfigParser(strict=False)
+    timer.read(units / 'gene-image-retention.timer')
+    service.read(units / 'gene-image-retention.service')
+    calendar = timer['Timer']['OnCalendar']
+    assert calendar.endswith(' America/Los_Angeles')
+    hour, minute, _ = calendar.split()[1].split(':')
+    delay = int(timer['Timer']['RandomizedDelaySec'].removesuffix('min'))
+    assert int(hour) == 4 and int(minute) + delay < 50  # starts with room before 05:00
+    assert timer['Timer']['Persistent'] == 'false'
+    assert service['Service']['SuccessExitStatus'] == str(retention.REFUSED)
+    assert service['Service']['ExecStart'].endswith('gene_image_retention.py --apply')
+    assert '-/srv/gene/production-actions.jsonl' in service['Service']['ReadWritePaths'].split()

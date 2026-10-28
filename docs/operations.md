@@ -167,78 +167,146 @@ in the audio image for decoding, seeking, and timed sender checks without a comp
 It does not rebuild or restart Gene, change controller approvals, delete backup/source/data
 directories, or touch another application's images, containers, volumes or build cache.
 The only removable tags are `gene-runtime:<full-sha>` and `gene-worker:<full-sha>`.
-Unclassified untagged images and images with bootstrap, custom/function-specific, audio,
-base-image or other-application tags are outside cleanup scope. Inactivity is never
-retirement evidence. The classic Docker builder also retains unnamed intermediate images.
-Only exact unnamed ancestors of an approved retired Gene version may be collected; their
-ancestry evidence is saved before deleting the release. Tagged ancestors and configured
-references stay protected. Docker's normal dependency checks preserve any parent with
-remaining child images or containers. There is no forced removal or implicit parent prune.
-If Docker retains the exact retired runtime object after removing its last managed tag,
-that recorded ID remains eligible for a later reviewed plan after its worker children are
-collected. Unknown untagged images never gain eligibility from this retry behavior.
-Exact-ID removal intent is synced before invoking Docker, so acknowledgement loss or a
-process interruption cannot orphan a managed untagged version. Reconciliation still checks
-current protections, aliases and the normal saved plan before attempting removal.
+Inactivity, age and an empty tag list are never retirement evidence.
+
+**Release history.** Releases are recorded two ways, and the tool reads both:
+
+- `batch-release.sh` (the daily release): `staging/batch-<G>-<F>[-N]/manifest.json` plus its
+  `journal` (`staging/batch-<G>/` before `1ad1493`, whose manifest names no old pair). A batch is
+  in service when its journal has `gene_recorded`, `fri_switched` and `resumed`, and neither
+  `intent:rollback` nor `resumed_old`. A batch that changed Gene is one rollback level; a Fri-only
+  batch moves no Gene. These releases write no controller `deployments` row.
+- Older installs: the controller's successful `deployments` rows, with `backups/maintainer-<sha>`
+  or, for cog-only feature/repair/rollback jobs, `backups/<job>`.
+
+From the controller's `active_sha`, each step back is the latest earlier release of that SHA in
+either record; two at the same time refuse as ambiguous. The tool keeps two complete rollback
+levels behind the live release. Cog-only steps are traversed without counting. A batch level is
+complete by the checks its own `rollback-gene` makes before changing anything: the controller's
+`previous_sha` names its old Gene (first step), the live runtime and worker pins are its new
+images (first level), every tag in its manifest (old and new runtime, worker and Fri) still names
+the recorded image ID, its switch backup under `backups/` has `release.env`, `worker.env`,
+`fri-release.env`, `fri-release.json`, `db/controller.sqlite3` and `installed-source/`, the
+backup's pins are the manifest's old pair, and `releases/<old Gene>/cogs` exists. The live Fri
+pins must be the Fri of the latest batch in service. A legacy maintainer level is complete with
+`installed-source/`, `controller.sqlite3`, `red.tar.gz`, `fri.tar.gz`, pins naming the previous
+release, and its cogs. An incomplete level inside the two protected levels refuses and names what
+is missing; levels beyond them are not consulted.
+
+A malformed, unreadable or symlinked record, an unrecognized `staging/batch-*` directory, a missing
+or retagged image, an incomplete backup, disagreeing pointers or pins, a live release whose batch
+rolled back or never recorded its switch, and ambiguous history all refuse (exit 1). A batch in
+flight (drained or paused without resuming, or mid-rollback), a held `batch-release.lock` (read
+from `/proc/locks` without taking it), a Gene build or deployment, a Docker build, a pending
+deployment receipt or another retention run skip the run instead (exit 4): nothing changes and the
+next window tries again.
+
+**What it keeps and what it removes.** It removes a release tag only with supersession evidence
+past a 24-hour grace period: a successful deployment's backup, a batch in service (its old Gene
+images retired when it resumed, dated by its journal), a configured version the tool saw replaced,
+or an explicit `retired_images` entry. It always keeps container references (including stopped
+containers), the current pins and running services' images, every image of both rollback levels,
+pending proposal/approval versions, holds, configured references, audio and other repositories.
+It also keeps every image in the manifests of the three most recently resumed batches and of any
+unfinished batch, which is `batch-release.sh cleanup`'s own keep rule (`KEEP_RELEASES`, default 3),
+so the two tools never disagree about a rollback. Reactivation renews the grace period.
+
+Ownership between the two cleanups (owner request, gene #76):
+
+- `fri-runtime:<sha>` release tags belong to `batch-release.sh cleanup`. This tool never removes
+  them; its plan lists them as kept, with that reason.
+- `cleanup` removes release tags with a plain `docker image rm`, so Docker also prunes that image's
+  unnamed parents. This tool removes with `--no-prune`, then only the exact unnamed ancestors it
+  recorded from a retired Gene image before untagging it. Tagged ancestors stay. If Docker keeps a
+  retired runtime object after its last managed tag for worker children, that recorded ID stays
+  eligible for a later plan. Exact-ID removal intent is synced before invoking Docker.
+- Untagged objects neither tool recorded (dangling rebuilds, intermediates of kept images) are never
+  removed automatically. The plan names each one either the parent of a kept image or unclassified,
+  for a maintainer to review separately rather than widening the deletion rule.
+- There is no `docker system prune`, no forced removal, and no implicit parent prune. Docker's normal
+  dependency checks keep any parent with remaining children or containers.
+
+**The plan.** Every run writes `image-retention-plan.json` (version 2) before it removes anything:
+`delete` (exact image IDs, their tags, evidence and retirement time), `delete_parents` (exact
+unnamed ancestor IDs), `keep` (every image object `docker image ls -a` lists, with the reasons it
+stays), `keep_summary` (counts by first reason), `lineage` (each rollback level and its record),
+`live`, `deletion` (`enabled`, `disabled in the policy` or `plan only`) and `bytes`. A planned image
+a kept image is built on carries `docker_keeps`. `bytes` counts the layer bytes the removals free
+without counting a shared layer twice: images share a layer only at the same place in their chain,
+an image's size fixes the cumulative size where its chain ends, and the removals free the chain
+prefixes no kept image uses. Where no image ends at a prefix (BuildKit leaves no intermediates)
+its size is bounded by the images around it, so the plan gives `lower_bytes` and `upper_bytes`,
+equal (`exact`) once every prefix is known. They assume every removal succeeds, and they are
+Docker's uncompressed sizes: with the containerd image store, compressed blobs are freed too.
+Measure `df` before and after. Docker's own reclaimable figure is not used.
+
+**Schedule and the window.** The timer starts the service daily at 04:40 America/Los_Angeles, with up
+to five minutes' delay and no catch-up (`Persistent=false`). Planning and removal both run only
+inside the maintenance window, [04:00, 05:00): a plan run takes the tool's lock and writes the plan
+and status files, so it is a production action too. Outside the window a run takes no lock, writes
+nothing but its log line and exits 4; `MAINTENANCE_EXCEPTION='<who, when, why>'`, on the owner's
+explicit words, lets it run and is logged. The window is checked again before each removal; at the
+close the rest wait for the next window (`deferred`). Removal needs both `--apply` (the service
+passes it) and `"apply_enabled": true` in the policy. Without the policy flag every run only plans,
+so a newly installed or repaired tool removes nothing until a maintainer has reviewed its plan.
+
+**Health.** Each run inside the window updates `image-retention-status.json`: the last run (mode,
+outcome `ok`, `skipped` or `failed`, detail), the last success with its exact plan and removals, and
+the failures since. `gene_image_retention.py --status` is read-only (no lock, no writes, no
+container), so it can run at any hour. It combines that record with the timer's and service's
+systemd state and reports `status`: `ok`, `failing` (the last service run or recorded run failed),
+`disabled` (the timer is not enabled and active), `never-run`, `stale` (no success for 50 hours, two
+missed windows) or `unknown`, with `healthy`, `reasons` and `last_success_at`. It exits 0 only when
+healthy. An enabled timer whose service keeps failing reads as failing, not healthy.
+
+**Production-action log.** Every run, refused, skipped, failed or successful, appends one line to
+`/srv/gene/production-actions.jsonl` beside `batch-release.sh`'s and the deployer's: local time and
+zone, actor, trigger, `image-retention plan|apply`, reason, live Gene/Fri SHAs (unchanged by this
+tool), duration, outcome, exception, the maintenance release, and the exact planned and removed
+tags and IDs. It holds no secrets or member content. It only appends; the release tools trim it.
 
 The maintenance policy and state live privately under `/srv/gene/maintenance/`:
 
 - `image-retention-policy.json`: version 1, `keep_images` (explicit planned/on-demand image
-  references or IDs) and `retired_images` (exact image IDs with `tags`, `retired_at`, and
-  `evidence`). The initial retirement inventory was checked against offline Git ancestry
-  and successful historical releases, not merely image timestamps or container counts.
-- `image-retention-state.json`: previously configured versions and their supersession
-  evidence. Subsequent successful maintainer backup records also identify replaced images,
-  including releases between timer runs. New, unclassified builds stay intact.
-- `image-retention-plan.json` and `image-retention-result.json`: latest planned and completed
-  removals. Dry runs also save the reviewable plan, without updating retirement state.
-  These contain image metadata, never environment credentials or conversation data.
+  references or IDs), `retired_images` (exact image IDs with `tags`, `retired_at`, and
+  `evidence`) and `apply_enabled` (default false).
+- `image-retention-state.json`: previously configured versions, retirement evidence, removal intents
+  and recorded ancestors. Only a removal run updates it.
+- `image-retention-plan.json`, `image-retention-result.json` and `image-retention-status.json`: the
+  latest plan, removals and health record. They contain image metadata, never environment
+  credentials or conversation data.
+- `image-retention.lock`: held across discovery and cleanup.
 
-Always preserve all container references (including stopped containers), configured image
-references (including an idle worker and the running worker's inherited environment), pending
-proposal/approval versions, and explicit holds. Also retain the controller's current release
-and two previous successful maintainer image configurations, with their exact runtime/worker
-images, cog directories, source, configuration and database/Red/Fri backups. Ordinary cog-only
-feature/repair/rollback releases retain those installed images; their own controller/Red
-backup and previous cog directory are checked while traversing back to the two complete
-maintainer configurations. Missing or inconsistent rollback metadata,
-an active build/deployment, or an unacknowledged deployment receipt aborts cleanup.
-Superseded images receive a 24-hour grace period. Reactivation renews the grace period after
-the next supersession. Unknown aliases and candidates are never classified as obsolete by age.
+The hardened service allows controller-directory access for SQLite's WAL shared-memory and
+locking files, and appends to the action log. Controller queries use `mode=ro` and `query_only`;
+retention does not modify requests, approvals, usage, conversations or release records. Do not use
+SQLite `immutable=1` or copy an active database without its WAL to work around reader access, since
+that could hide current release references. Env files are read only for `*_IMAGE` and release SHA
+lines, never printed.
 
-Install the reviewed script in an immutable directory
-`/srv/gene/maintenance/releases/<maintenance-sha>/gene_image_retention.py`; point `current`
-to that directory and record the maintenance SHA separately from the running bot SHA.
-Install `ops/gene-image-retention.service` and `.timer`, verify with
-`systemd-analyze verify`, and enable the timer only after reviewing a dry run:
+`batch-release.sh` does not take this tool's lock. Instead the tool skips while a batch command holds
+`batch-release.lock` or a batch is in flight, and rechecks every reference, the staging journals
+included, before each removal. Before planning to reuse an old version, add its tag or exact image
+ID to `keep_images`, and keep that hold until the function is retired. Never authorize image deletion
+from Discord text, imported history, or a feature job.
+
+**Install or update, in the window only.** Install the reviewed script in an immutable directory
+`/srv/gene/maintenance/releases/<maintenance-sha>/gene_image_retention.py` and point `current` to it;
+record the maintenance SHA separately from the running bot SHA. Install the two unit files, then
+check them: `systemd-analyze verify` and `systemd-analyze calendar '*-*-* 04:40 America/Los_Angeles'`
+(a zone in `OnCalendar` needs systemd 235 or later), then `systemctl daemon-reload`. Run a plan:
 
 ```sh
 sudo python3 /srv/gene/maintenance/current/gene_image_retention.py
-sudo python3 /srv/gene/maintenance/current/gene_image_retention.py --apply
-sudo systemctl enable --now gene-image-retention.timer
 ```
 
-The timer runs hourly with up to five minutes of jitter. There is no broad Docker prune or
-forced image removal. References and exact image IDs are checked again before each image;
-container/configuration changes abort the remainder. A failed delete retains retry evidence.
-The hardened service allows controller-directory access for SQLite's WAL shared-memory and
-locking files. Controller queries use `mode=ro` and `query_only`; retention does not modify
-requests, approvals, usage, conversations or release records. Do not use SQLite `immutable=1`
-or copy an active database without its WAL to work around reader access, since that could
-hide current release references.
-
-Maintainers must acquire `/srv/gene/maintenance/image-retention.lock` with `flock` before
-building, retagging or changing deployment image references, and hold it through the switch
-and health checks. This coordinates manual releases with the timer; the tool's own lock is
-held across discovery and cleanup. Before planning to reuse an old version, add its tag or
-exact image ID to `keep_images` under that lock. Keep that hold until the function is retired.
-Never authorize image deletion from Discord text, imported history, or a feature job.
-The timer does not infer the purpose of an image that was never configured or explicitly
-retired by a maintainer. Review such images separately instead of widening the deletion rule.
-
+It takes `maintenance/image-retention.lock`, writes `image-retention-plan.json` and
+`image-retention-status.json`, and appends one action-log line. It reads Docker metadata, the
+controller DB read-only and the staging records; it starts no container and removes nothing.
+Review the plan; only then set `"apply_enabled": true` in the policy, in a window, and log it.
 To disable retention, stop/disable only `gene-image-retention.timer` and wait for any current
 oneshot service to finish. Preserve its policy and audit files. The bot's services and the
-two retained rollback bundles do not depend on this maintenance tool.
+retained rollback bundles do not depend on this maintenance tool.
 
 ### Maintainer work requested in Codex
 

@@ -1,6 +1,7 @@
 """A member putting right the song Gene just played for them ("not that one, X") gets X queued, once."""
 import asyncio
 import datetime as dt
+import time
 from types import SimpleNamespace
 
 import discord
@@ -127,15 +128,21 @@ FIX = 'not the one, i meant join us for a bite'
     ("wrong song, 'Love Story, don't play rockin' robin", "Love Story, don't play rockin'", False),
     ("wrong song, 'Love Story' 'nope'", 'Love Story', False),
     ("wrong song, 'Love Story, 'nope'", 'Love Story Nope', False),  # A second quote opening inside: ambiguous.
+    ("wrong song, 'Love Story ' nope'", 'Love Story Nope', False),  # So is a loose mark.
     ("wrong song, 'Rockin' Robin'", "Rockin' Robin", True),
     ("wrong song, 'Rockin' Robin' by Bobby Day", "Rockin' Robin Bobby Day", True),
     ("wrong song, 'Don't Stop Believin'", "Don't Stop Believin'", True),
+    ('wrong song, https://youtu.be/dont-nope', 'https://youtu.be/dont-nope', True),  # A link keeps every word too.
+    ('wrong song, https://youtu.be/abc, nope', 'https://youtu.be/abc', False),
+    ('wrong song, https://youtu.be/x', 'https://youtu.be', False),
     # gene #111 (2): a withdrawal word right after "by" names the artist.
     ('wrong song, Love Story by Nope', 'Love Story', True),
     ('wrong song, Love Story by Nope', 'Love Story by Nope', True),
     ('wrong song, Love Story by Nope', 'Love Story Nope', True),
     ('wrong song, Love Story by Taylor Swift, nope', 'Love Story Taylor Swift', False),
     ('wrong song, Love Story by Taylor Swift nope', 'Love Story', False),
+    ('wrong song, Love Story by. no', 'Love Story by', False),  # "by." ends a sentence.
+    ('not that one, ft. nope', 'ft nope', False),  # An artist follows a title, never starts one.
     # gene #111 (3): punctuation and closing filler don't hide a withdrawal.
     ('wrong song, Love Story, no thanks', 'Love Story', False),
     ('wrong song, Love Story, nah, lol', 'Love Story', False),
@@ -162,11 +169,25 @@ FIX = 'not the one, i meant join us for a bite'
     ('wrong song, Love Story according to alex', 'Love Story', False),
     ("wrong song, 'Love Story' is what i said", 'Love Story', True),
     ('wrong song, Love Story, like i said', 'Love Story', True),
+    ("wrong song, Love Story, i've literally just said", 'Love Story', True),
     ('wrong song, Love Story by Example', 'Love Story', True),
     ('wrong song, Simon Says', 'Simon Says', True),
 ])
 def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argument, expected):
     assert correction(text, argument) is expected
+
+
+def test_a_long_message_is_read_without_backtracking():
+    """Each check runs in about linear time, so a 4000-character worst case takes milliseconds, not minutes."""
+    shapes = ["'"+"a' "*1330, "'"+"rockin' "*498, "''a "*997, "' "*1994, '"'+'a '*1993, 'love story nah'+' lol'*990+' x',
+              'love story'+', no lol'*497+' x', 'love story'+' ,'*1990+'x', 'love story'+', a b said'*398, 'love '+'by '*1328,
+              'love'+' from x'*568, 'love story'+' i just'*664+' said', "love story "+"don't "*664, 'i meant '+'to '*1328]
+    for shape in shapes:
+        text = ('wrong song, '+shape)[:4000]
+        began = time.perf_counter()
+        for argument in ('love story', 'a', text[12:200]):
+            correction(text, argument)
+        assert time.perf_counter()-began < 0.5, shape[:20]
 
 
 def played(store, **changes):

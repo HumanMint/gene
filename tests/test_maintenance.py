@@ -1,6 +1,8 @@
 import datetime as dt
 import json
 import os
+import re
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -28,21 +30,25 @@ def clock(monkeypatch, text):
     monkeypatch.setattr(maintenance, 'clock', lambda: at(text))
 
 
+# Owner policy, 2026-10-28: [03:30, 07:30) America/Los_Angeles.
 BOUNDARIES = [
-    ('2026-10-28T03:59:59-07:00', False),
-    ('2026-10-28T04:00:00-07:00', True),
-    ('2026-10-28T04:59:59-07:00', True),
-    ('2026-10-28T05:00:00-07:00', False),
+    ('2026-10-28T03:29:59-07:00', False),
+    ('2026-10-28T03:30:00-07:00', True),
+    ('2026-10-28T07:29:59-07:00', True),
+    ('2026-10-28T07:30:00-07:00', False),
     ('2026-10-28T16:30:00-07:00', False),  # an overdue wake is no daytime catch-up
-    # Fall back (2026-11-01 02:00 PDT -> 01:00 PST): the window opens at 12:00Z, not 11:00Z.
-    ('2026-11-01T11:30:00+00:00', False),
-    ('2026-11-01T04:00:00-08:00', True),
-    ('2026-11-01T04:59:59-08:00', True),
-    ('2026-11-01T05:00:00-08:00', False),
-    # Spring forward (2027-03-14 02:00 PST -> 03:00 PDT): the window opens at 11:00Z, not 12:00Z.
-    ('2027-03-13T04:30:00-08:00', True),
-    ('2027-03-14T11:00:00+00:00', True),
-    ('2027-03-14T12:30:00+00:00', False),
+    # Fall back (2026-11-01 02:00 PDT -> 01:00 PST): the window opens at 11:30Z, not 10:30Z.
+    ('2026-11-01T10:30:00+00:00', False),
+    ('2026-11-01T11:29:59+00:00', False),
+    ('2026-11-01T03:30:00-08:00', True),
+    ('2026-11-01T07:29:59-08:00', True),
+    ('2026-11-01T07:30:00-08:00', False),
+    # Spring forward (2027-03-14 02:00 PST -> 03:00 PDT): the window opens at 10:30Z, not 11:30Z.
+    ('2027-03-13T03:30:00-08:00', True),
+    ('2027-03-14T10:29:59+00:00', False),
+    ('2027-03-14T10:30:00+00:00', True),
+    ('2027-03-14T14:29:59+00:00', True),
+    ('2027-03-14T14:30:00+00:00', False),
 ]
 
 
@@ -55,6 +61,11 @@ def bash_major():
 
 
 needs_bash4 = pytest.mark.skipif(bash_major() < 4, reason='batch-release.sh needs bash 4 or later')
+
+
+def window_settings():
+    """The release script's own copy of the window: the lines that set it, which window() reads."""
+    return '\n'.join(line for line in SCRIPT.read_text().splitlines() if re.match(r'WINDOW(_OPENS|_CLOSES)?=', line))
 
 
 def functions(*names):
@@ -91,9 +102,37 @@ def test_window_boundaries_and_daylight_saving(when, inside):
 @needs_bash4
 @pytest.mark.parametrize('when,inside', BOUNDARIES)
 def test_the_release_script_keeps_the_same_window(when, inside):
-    out = subprocess.run(['bash', '-c', functions('window') + f'\nwindow {int(at(when))}'],
+    out = subprocess.run(['bash', '-c', window_settings() + '\n' + functions('window') + f'\nwindow {int(at(when))}'],
                          capture_output=True, text=True, check=True)
     assert out.stdout.split()[0] == ('open' if inside else 'closed')
+
+
+def test_every_copy_of_the_window_is_the_same():
+    """The release script and image retention run without this package, so each keeps its own copy."""
+    from scripts import gene_image_retention as retention
+    assert (maintenance.OPENS, maintenance.CLOSES) == (dt.time(3, 30), dt.time(7, 30))  # owner policy, 2026-10-28
+    assert maintenance.WINDOW == '[03:30, 07:30) America/Los_Angeles'
+    settings = dict(line.split('  #')[0].split('=', 1) for line in window_settings().splitlines())
+    assert settings['WINDOW_OPENS'] == f'{maintenance.OPENS:%H:%M}'
+    assert settings['WINDOW_CLOSES'] == f'{maintenance.CLOSES:%H:%M}'
+    assert (retention.OPENS, retention.CLOSES, retention.ZONE) == (maintenance.OPENS, maintenance.CLOSES, maintenance.ZONE)
+    assert retention.WINDOW == maintenance.WINDOW
+
+
+def test_the_docs_and_messages_name_the_window_the_code_keeps():
+    """Every [hh:mm, hh:mm) in the docs, scripts and code is the window or the deployer's claim window."""
+    root = SCRIPT.parents[2]
+    window = f'[{maintenance.OPENS:%H:%M}, {maintenance.CLOSES:%H:%M})'
+    claims = f'[{maintenance.OPENS:%H:%M}, {maintenance.closes(maintenance.CLAIM_MARGIN):%H:%M})'
+    assert claims == '[03:30, 07:20)'
+    found = {}
+    for path in [root/'AGENTS.md', root/'README.md', *(root/'docs').rglob('*.md'), *(root/'ops').rglob('*'),
+                 *(root/'src').rglob('*.py'), *(root/'scripts').rglob('*.py'), *(root/'tests').rglob('*.py')]:
+        if path.is_file():
+            for text in re.findall(r'\[\d\d:\d\d, \d\d:\d\d\)', path.read_text(errors='replace')):
+                found.setdefault(text, set()).add(str(path.relative_to(root)))
+    assert set(found) <= {window, claims}, found
+    assert 'ops/maintainer/batch-release.md' in found[claims]
 
 
 def test_an_unknown_clock_or_zone_is_closed(monkeypatch):
@@ -109,28 +148,184 @@ def test_an_unknown_clock_or_zone_is_closed(monkeypatch):
 
 @needs_bash4
 def test_the_release_script_refuses_a_clock_it_cannot_trust(tmp_path):
-    out = subprocess.run(['bash', '-c', functions('window') + '\nwindow 1000000000'], capture_output=True, text=True)
+    out = subprocess.run(['bash', '-c', window_settings() + '\n' + functions('window') + '\nwindow 1000000000'],
+                         capture_output=True, text=True)
     assert out.returncode != 0
-    out = subprocess.run(['bash', '-c', functions('now_epoch', 'window', 'window_open') + '\nwindow_open'],
+    out = subprocess.run(['bash', '-c', window_settings() + '\n' + functions('now_epoch', 'window', 'window_open') + '\nwindow_open'],
                          capture_output=True, text=True, env=fake_date(tmp_path, 'not-a-number'))
     assert out.returncode != 0
+
+
+# A running controller's SQLite creates and removes the DB's journal files at any moment. On 2026-10-28
+# one vanished between repair_sidecars' look and its stat, and the chown that followed failed the Gene switch.
+FAKE_STAT = '''#!/usr/bin/env bash
+for file; do :; done  # stat -c %u:%g FILE; owners come from $CTL/<name>.owner
+if [[ $file == "$(cat "$CTL/vanish-at-stat" 2>/dev/null)" ]]; then rm -f "$file"; fi
+[[ -e $file ]] || { echo "stat: cannot statx '$file': No such file or directory" >&2; exit 1; }
+if [[ $file == "$(cat "$CTL/stat-eio" 2>/dev/null)" ]]; then echo "stat: cannot statx '$file': Input/output error" >&2; exit 1; fi
+if [[ $file == "$(cat "$CTL/reappear-at-stat" 2>/dev/null)" ]]; then  # Gone at stat, a new one there after.
+  echo "stat: cannot statx '$file': No such file or directory" >&2; exit 1
+fi
+cat "$CTL/${file##*/}.owner" 2>/dev/null || echo 10001:10001
+'''
+FAKE_CHOWN = '''#!/usr/bin/env bash
+echo "$1 ${2##*/}" >> "$CTL/chowned"
+if [[ $2 == "$(cat "$CTL/vanish-at-chown" 2>/dev/null)" ]]; then rm -f "$2"; fi
+[[ -e $2 ]] || { echo "chown: cannot dereference '$2': No such file or directory" >&2; exit 1; }
+[[ ! -e $CTL/chown-denied ]] || { echo "chown: changing ownership of '$2': Operation not permitted" >&2; exit 1; }
+echo "$1" > "$CTL/${2##*/}.owner"
+'''
+
+
+def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False, eio=False, reappear=False):
+    """repair_sidecars on a root-owned or owner-owned WAL that SQLite removes at the chosen moment."""
+    ctl, data, bin_dir = tmp_path/'ctl', tmp_path/'data', tmp_path/'bin'
+    for path in ctl, data, bin_dir:
+        path.mkdir()
+    db = data/'gene.sqlite3'
+    db.touch()
+    (data/'gene.sqlite3-wal').touch()
+    (ctl/'gene.sqlite3-wal.owner').write_text(wal_owner+'\n')
+    if vanish:
+        (ctl/f'vanish-at-{vanish}').write_text(f'{db}-wal')
+    if denied:
+        (ctl/'chown-denied').touch()
+    if eio:
+        (ctl/'stat-eio').write_text(f'{db}-wal')
+    if reappear:
+        (ctl/'reappear-at-stat').write_text(f'{db}-wal')
+    for name, body in ('stat', FAKE_STAT), ('chown', FAKE_CHOWN):
+        (bin_dir/name).write_text(body)
+        (bin_dir/name).chmod(0o755)
+    shell = (f'set -Eeuo pipefail\nPHASE=gene DB={db} SWITCHING=0\n'
+             + functions('log', 'die', 'db_owner', 'sidecar_owner', 'repair_sidecars')
+             + '\nrepair_sidecars\necho repaired\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, 'CTL': str(ctl), 'PATH': f'{bin_dir}:{os.environ["PATH"]}'})
+    chowned = (ctl/'chowned').read_text().splitlines() if (ctl/'chowned').exists() else []
+    return out, chowned, data/'gene.sqlite3-wal'
+
+
+@pytest.mark.parametrize('wal_owner,vanish', [('0:0', 'stat'), ('0:0', 'chown'), ('10001:10001', 'stat')])
+def test_a_journal_file_that_vanishes_mid_repair_needs_nothing(tmp_path, wal_owner, vanish):
+    out, chowned, wal = sidecar_shell(tmp_path, wal_owner, vanish)
+    assert out.returncode == 0 and out.stdout.split() == ['repaired'], out.stderr
+    assert not wal.exists()
+    assert chowned == (['10001:10001 gene.sqlite3-wal'] if vanish == 'chown' else [])
+
+
+def test_a_root_owned_journal_file_goes_back_to_the_db_owner(tmp_path):
+    out, chowned, wal = sidecar_shell(tmp_path, '0:0')
+    assert out.returncode == 0 and 'giving gene.sqlite3-wal back to the database owner' in out.stderr
+    assert chowned == ['10001:10001 gene.sqlite3-wal'] and wal.exists()
+
+
+def test_a_chown_that_fails_on_a_journal_file_still_there_stops_the_script(tmp_path):
+    out, chowned, wal = sidecar_shell(tmp_path, '0:0', denied=True)
+    assert out.returncode != 0 and 'repaired' not in out.stdout
+    assert 'FAIL: could not give gene.sqlite3-wal back to the database owner' in out.stderr
+    assert wal.exists()
+
+
+def test_a_journal_file_that_cant_be_read_but_is_there_stops_the_script(tmp_path):
+    """Review: only a file that's gone counts as gone; an I/O error on one still there isn't skipped."""
+    out, chowned, wal = sidecar_shell(tmp_path, '0:0', eio=True)
+    assert out.returncode != 0 and 'repaired' not in out.stdout
+    assert 'FAIL: could not read the owner of gene.sqlite3-wal' in out.stderr
+    assert chowned == [] and wal.exists()
+
+
+def test_a_journal_file_gone_at_stat_and_back_after_needs_nothing(tmp_path):
+    """2026-10-28, second release: SQLite removed -shm at stat and made a new one before a recheck. Gone at
+    stat is gone: the new one is the controller's own, so the repair skips it and the switch goes on."""
+    out, chowned, wal = sidecar_shell(tmp_path, '0:0', reappear=True)
+    assert out.returncode == 0 and out.stdout.split() == ['repaired'], out.stderr
+    assert chowned == [] and wal.exists()
+
+
+@pytest.mark.parametrize('error', ["du: cannot read directory '{root}/sub': Permission denied",
+                                   "du: fts_read failed: Input/output error"])
+def test_sizing_a_tree_stops_on_any_error_but_a_file_gone(tmp_path, error):
+    """Review: a partial total after a permission or I/O error would undercount; it stops instead."""
+    bin_dir = tmp_path/'bin'
+    bin_dir.mkdir()
+    message = error.format(root=tmp_path).replace("'", "'\\''")
+    (bin_dir/'du').write_text('#!/usr/bin/env bash\n'
+                              'printf "%s\\t%s\\n" 4096 "$2"\n'
+                              f"echo '{message}' >&2\n"
+                              'exit 1\n')
+    (bin_dir/'du').chmod(0o755)
+    shell = ('set -Eeuo pipefail\nSWITCHING=0\n' + functions('log', 'die', 'du_bytes')
+             + f'\nsize=$(du_bytes {tmp_path})\necho "size=$size"\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'})
+    assert out.returncode != 0 and 'size=' not in out.stdout
+    assert 'FAIL: could not measure' in out.stderr
+
+
+@pytest.mark.parametrize('printed,stops,back', [('4096', False, False), ('', True, False), ('4096', False, True)])
+def test_sizing_a_tree_counts_a_file_that_vanishes_as_gone(tmp_path, printed, stops, back):
+    bin_dir = tmp_path/'bin'
+    bin_dir.mkdir()
+    if back:  # A new one there by the time anyone looks again: still counted as gone.
+        (tmp_path/'gene.sqlite3-wal').touch()
+    # GNU du prints the total, then fails, when a file goes between its readdir and its stat.
+    (bin_dir/'du').write_text('#!/usr/bin/env bash\n'
+                              f'[[ -z "{printed}" ]] || printf "%s\\t%s\\n" "{printed}" "$2"\n'
+                              'echo "du: cannot access \'$2/gene.sqlite3-wal\': No such file or directory" >&2\n'
+                              'exit 1\n')
+    (bin_dir/'du').chmod(0o755)
+    shell = ('set -Eeuo pipefail\nSWITCHING=0\n' + functions('log', 'die', 'du_bytes')
+             + f'\nsize=$(du_bytes {tmp_path})\necho "size=$size"\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'})
+    if stops:
+        assert out.returncode != 0 and 'size=' not in out.stdout
+    else:
+        assert out.returncode == 0 and out.stdout.split() == ['size=4096'], out.stderr
 
 
 def test_claims_wait_for_the_window_and_an_owner_rollback_does_not(store, monkeypatch):
     job = proposed(store)
     store.approve(job['id'], G, 'owner')
-    for when in ('2026-10-28T03:59:59-07:00', '2026-10-28T04:50:00-07:00', '2026-10-28T05:20:00-07:00',
+    for when in ('2026-10-28T03:29:59-07:00', '2026-10-28T07:20:00-07:00', '2026-10-28T07:50:00-07:00',
                  '2026-10-28T16:00:00-07:00'):
         clock(monkeypatch, when)
         assert store.claim_deploy() is None
     assert store.get(job['id'])['state'] == 'approved'  # deferred, untouched
-    clock(monkeypatch, '2026-10-29T04:49:59-07:00')  # the last claim leaves time for the switch
+    clock(monkeypatch, '2026-10-29T07:19:59-07:00')  # the last claim leaves time for the switch
     release = store.claim_deploy()
     assert release['id'] == job['id']
     store.finish_deploy(release['id'], release['lease'], True, 'Healthy')
     clock(monkeypatch, '2026-10-29T13:00:00-07:00')
     rollback = store.rollback('guild', 'owner')
     assert store.claim_deploy()['id'] == rollback['id']
+
+
+CLAIM_EDGES = [
+    ('2026-10-28T03:29:59-07:00', False),
+    ('2026-10-28T03:30:00-07:00', True),
+    ('2026-10-28T07:19:59-07:00', True),
+    ('2026-10-28T07:20:00-07:00', False),  # ten minutes before the close, so a claimed switch starts in time
+    # The days daylight saving ends and starts: the same local edges.
+    ('2026-11-01T11:29:59+00:00', False),
+    ('2026-11-01T03:30:00-08:00', True),
+    ('2026-11-01T07:19:59-08:00', True),
+    ('2026-11-01T07:20:00-08:00', False),
+    ('2027-03-14T10:29:59+00:00', False),
+    ('2027-03-14T10:30:00+00:00', True),
+    ('2027-03-14T14:19:59+00:00', True),
+    ('2027-03-14T14:20:00+00:00', False),
+]
+
+
+@pytest.mark.parametrize('when,claimed', CLAIM_EDGES)
+def test_automatic_claims_run_from_the_open_until_ten_minutes_before_the_close(store, monkeypatch, when, claimed):
+    job = approved(store, G, 'message-1')
+    clocks(monkeypatch, when)
+    result = store.claim_deploy()
+    assert (result and result['id']) == (job['id'] if claimed else None)
+    assert store.get(job['id'])['state'] == ('deploying' if claimed else 'approved')
 
 
 def test_an_unknown_zone_defers_every_claim_but_a_rollback(store, monkeypatch):
@@ -213,7 +408,7 @@ def test_a_critical_fix_skips_the_cap_but_not_the_window(store, monkeypatch, tmp
     clocks(monkeypatch, '2026-10-28T04:20:00-07:00')
     assert store.claim_deploy() is None
     assert maintenance.mark_critical(store.path, job['id'], 'P0: replies leak a DM', 'maintainer:test') == G
-    clocks(monkeypatch, '2026-10-28T05:20:00-07:00')
+    clocks(monkeypatch, '2026-10-28T07:50:00-07:00')
     assert store.claim_deploy() is None  # still only inside the window
     clocks(monkeypatch, '2026-10-28T04:30:00-07:00')
     assert store.claim_deploy()['id'] == job['id']
@@ -309,7 +504,7 @@ def deployer(tmp_path):
 
 
 def test_the_deployer_never_starts_a_feature_switch_outside_the_window(tmp_path, monkeypatch):
-    clock(monkeypatch, '2026-10-28T05:00:00-07:00')
+    clock(monkeypatch, '2026-10-28T07:30:00-07:00')
     worker = deployer(tmp_path)
     job = {'id': 'job', 'kind': 'feature', 'proposal': {'sha': G, 'base_sha': OLD_G}}
     with pytest.raises(RuntimeError, match='Outside the maintenance window'):
@@ -318,6 +513,25 @@ def test_the_deployer_never_starts_a_feature_switch_outside_the_window(tmp_path,
     worker.compose.assert_not_called()
     worker.process(job | {'kind': 'rollback'})  # restoring service runs at any hour
     worker.compose.assert_called_once_with('stop', 'red')
+
+
+@pytest.mark.parametrize('when,switches', [
+    ('2026-10-28T03:29:59-07:00', False),
+    ('2026-10-28T03:30:00-07:00', True),
+    ('2026-10-28T07:29:59-07:00', True),  # a job claimed before 07:20 still switches until the close
+    ('2026-10-28T07:30:00-07:00', False),
+])
+def test_a_claimed_feature_switches_only_inside_the_window(tmp_path, monkeypatch, when, switches):
+    clock(monkeypatch, when)
+    worker = deployer(tmp_path)
+    job = {'id': 'job', 'kind': 'feature', 'proposal': {'sha': G, 'base_sha': OLD_G}}
+    if switches:
+        worker.process(job)
+        worker.compose.assert_any_call('stop', 'red')
+    else:
+        with pytest.raises(RuntimeError, match='Outside the maintenance window'):
+            worker.process(job)
+        worker.compose.assert_not_called()
 
 
 def test_each_deployment_leaves_a_bounded_record_without_member_content(tmp_path, monkeypatch):
@@ -329,7 +543,8 @@ def test_each_deployment_leaves_a_bounded_record_without_member_content(tmp_path
     row = json.loads((tmp_path/'production-actions.jsonl').read_text().splitlines()[-1])
     assert row['action'] == 'deploy feature job a1b2c3d4e5f6' and row['outcome'] == 'ok'
     assert row['before'] == {'gene': OLD_G} and row['after'] == {'gene': G}
-    assert row['tz'] == 'America/Los_Angeles' and row['at'].startswith('2026-10-28T04:05:00-07:00')
+    assert row['tz'] == 'America/Los_Angeles' and row['at'] == maintenance.local().isoformat()  # The window's clock.
+    assert maintenance.is_open()
     assert row['restart_s'] is not None and row['actor'] == 'gene-deployer' and row['exception'] is None
     assert 'private' not in (tmp_path/'production-actions.jsonl').read_text()
     assert stat.S_IMODE((tmp_path/'production-actions.jsonl').stat().st_mode) == 0o600
@@ -354,9 +569,9 @@ def fri_root(tmp_path, record):
 
 @pytest.mark.parametrize('when,sha,exception,allowed', [
     ('2026-10-28T04:30:00-07:00', F, '', True),
-    ('2026-10-28T05:00:00-07:00', F, '', False),
-    ('2026-10-28T05:00:00-07:00', OLD_F, '', True),  # rolling back to the Fri this one replaced
-    ('2026-10-28T05:00:00-07:00', F, 'owner: emergency fix, 2026-10-28', True),
+    ('2026-10-28T07:30:00-07:00', F, '', False),
+    ('2026-10-28T07:30:00-07:00', OLD_F, '', True),  # rolling back to the Fri this one replaced
+    ('2026-10-28T07:30:00-07:00', F, 'owner: emergency fix, 2026-10-28', True),
 ])
 def test_fri_releases_start_only_in_the_window(tmp_path, monkeypatch, when, sha, exception, allowed):
     clock(monkeypatch, when)
@@ -364,13 +579,13 @@ def test_fri_releases_start_only_in_the_window(tmp_path, monkeypatch, when, sha,
 
 
 def test_a_refused_fri_release_changes_nothing_and_is_recorded(tmp_path, monkeypatch):
-    clock(monkeypatch, '2026-10-28T05:10:00-07:00')
+    clock(monkeypatch, '2026-10-28T07:40:00-07:00')
     root, gene_root = fri_root(tmp_path, {'sha': OLD_F, 'previous': None}), tmp_path/'gene'
     gene_root.mkdir()
     monkeypatch.setattr(sys, 'argv', ['fri_release', F, '--root', str(root), '--gene-root', str(gene_root)])
     monkeypatch.delenv('MAINTENANCE_EXCEPTION', raising=False)
     monkeypatch.setattr(fri_release, 'FriRelease', Mock(side_effect=AssertionError('no release object')))
-    with pytest.raises(SystemExit, match='Outside the maintenance window'):
+    with pytest.raises(SystemExit, match=re.escape('Outside the maintenance window [03:30, 07:30) America/Los_Angeles')):
         fri_release.main()
     row = json.loads((gene_root/'production-actions.jsonl').read_text())
     assert row['outcome'].startswith('refused') and row['before'] == {'fri': OLD_F} == row['after']
@@ -379,9 +594,11 @@ def test_a_refused_fri_release_changes_nothing_and_is_recorded(tmp_path, monkeyp
 
 # The release script itself, run against an empty root: the gate runs before its lock, staging or
 # anything else, so a refusal leaves only its log line.
-def script(tmp_path, phase, when, journal=(), extra_env=None, g=G):
+def script(tmp_path, phase, when, journal=(), extra_env=None, g=G, db=True):
     root = tmp_path/'srv/gene'
     root.mkdir(parents=True, exist_ok=True)
+    if db and not (root/'data/controller/gene.sqlite3').exists():
+        Store(root/'data/controller/gene.sqlite3')  # The daily cap reads the controller's deployments.
     if journal:
         stage = root/f'staging/batch-{g}-{F}'
         stage.mkdir(parents=True, exist_ok=True)
@@ -401,11 +618,12 @@ def script(tmp_path, phase, when, journal=(), extra_env=None, g=G):
 
 
 @needs_bash4
-@pytest.mark.parametrize('when', ['2026-10-28T03:59:59-07:00', '2026-10-28T05:00:00-07:00',
+@pytest.mark.parametrize('when', ['2026-10-28T03:29:59-07:00', '2026-10-28T07:30:00-07:00',
                                   '2026-10-28T13:00:00-07:00'])
 def test_baseline_outside_the_window_takes_no_lock_and_writes_no_staging(tmp_path, when):
     out, root, rows = script(tmp_path, 'baseline', when)
-    assert out.returncode == 4 and 'REFUSED: outside the maintenance window' in out.stderr
+    assert out.returncode == 4
+    assert 'REFUSED: outside the maintenance window [03:30, 07:30) America/Los_Angeles' in out.stderr
     assert not (root/'batch-release.lock').exists() and not (root/'staging').exists()
     assert rows[-1]['action'] == 'batch-release baseline' and rows[-1]['outcome'].startswith('refused')
     assert rows[-1]['tz'] == 'America/Los_Angeles' and rows[-1]['at'].startswith(when[:16])
@@ -422,6 +640,7 @@ def test_baseline_outside_the_window_takes_no_lock_and_writes_no_staging(tmp_pat
     ('resume', ('baseline', 'drained', 'gene_recorded', 'fri_switched', 'evaluated', 'verified_off'), False),
     ('status', ('baseline', 'intent:pause'), False),
     ('verify-off', ('baseline', 'intent:pause'), False),
+    ('status', ('baseline', 'intent:abort'), False),  # gene #70: an abort's fence may have left development paused
     ('accept-evals', ('baseline', 'drained', 'evals_ran'), False),
     ('accept-evals', ('baseline', 'drained'), True),
     ('gene', ('baseline', 'drained'), True),
@@ -432,7 +651,7 @@ def test_baseline_outside_the_window_takes_no_lock_and_writes_no_staging(tmp_pat
     ('resume-old', ('baseline', 'drained'), False),
 ])
 def test_after_the_close_only_the_restore_path_runs(tmp_path, phase, journal, gated):
-    out, _, rows = script(tmp_path, phase, '2026-10-28T05:20:00-07:00', journal)
+    out, _, rows = script(tmp_path, phase, '2026-10-28T07:50:00-07:00', journal)
     if gated:
         assert out.returncode == 4 and 'REFUSED' in out.stderr
     else:
@@ -443,9 +662,9 @@ def test_after_the_close_only_the_restore_path_runs(tmp_path, phase, journal, ga
 
 @needs_bash4
 def test_a_refusal_names_the_batchs_safe_path(tmp_path):
-    out, _, _ = script(tmp_path, 'gene', '2026-10-28T05:20:00-07:00', ('baseline', 'drained'))
+    out, _, _ = script(tmp_path, 'gene', '2026-10-28T07:50:00-07:00', ('baseline', 'drained'))
     assert 'Run resume-old.' in out.stderr
-    out, _, _ = script(tmp_path, 'evals', '2026-10-28T05:20:00-07:00', ('baseline', 'drained', 'intent:fri'))
+    out, _, _ = script(tmp_path, 'evals', '2026-10-28T07:50:00-07:00', ('baseline', 'drained', 'intent:fri'))
     assert 'Run rollback-fri, then resume-old.' in out.stderr
 
 
@@ -551,10 +770,226 @@ def test_a_batch_drained_before_the_log_existed_counts_by_its_journal(tmp_path):
     assert 'REFUSED' not in out.stderr
 
 
+def controller(root):
+    """The controller DB at the path batch-release.sh reads, set up like the store fixture."""
+    result = Store(root/'data/controller/gene.sqlite3')
+    result.bootstrap(OLD_G)
+    result.update_models([{'id': 'gpt-6-astra', 'name': 'GPT-6 Astra',
+                           'efforts': ['medium', 'high'], 'default_effort': 'medium'}])
+    result.select_model('gpt-6-astra', 'medium', 'owner')
+    result.set_paused(False, 'owner')
+    return result
+
+
+def deploy(store, job, success):
+    """The deployer claims the job and finishes it, without writing a line to the production-action log."""
+    claimed = store.claim_deploy()
+    assert claimed['id'] == job['id']
+    store.finish_deploy(claimed['id'], claimed['lease'], success, 'Healthy' if success else 'Failed')
+
+
+@needs_bash4
+def test_the_daily_cap_counts_a_deployment_the_controller_claimed_without_a_log_line(tmp_path, monkeypatch):
+    # gene #68: the controller's own deployment record decides, whatever reached the action log.
+    root = tmp_path/'srv/gene'
+    store = controller(root)
+    clocks(monkeypatch, '2026-10-27T04:10:00-07:00')
+    deploy(store, approved(store, G, 'message-1'), True)  # yesterday's
+    clocks(monkeypatch, '2026-10-28T04:02:00-07:00')
+    deploy(store, store.rollback('guild', 'owner'), True)  # restoring service never counts
+    out, _, rows = script(tmp_path, 'baseline', '2026-10-28T04:40:00-07:00')
+    assert 'REFUSED' not in out.stderr
+    clocks(monkeypatch, '2026-10-28T04:41:00-07:00')
+    job = approved(store, 'e'*40, 'message-2')
+    deploy(store, job, False)  # claimed today and failed
+    out, _, rows = script(tmp_path, 'stage', '2026-10-28T04:45:00-07:00')
+    assert not [row for row in rows if row['action'].startswith('deploy ')]
+    assert out.returncode == 4
+    assert f'the controller claimed an automatic deployment today: feature job {job["id"]}' in out.stderr
+    assert "CRITICAL_FIX='<reason>'" in out.stderr
+    assert rows[-1]['action'] == 'batch-release stage' and rows[-1]['outcome'].startswith('refused')
+    out, _, _ = script(tmp_path, 'baseline', '2026-10-29T04:05:00-07:00')  # the next day's window
+    assert 'REFUSED' not in out.stderr
+
+
+@needs_bash4
+@pytest.mark.parametrize('job_kind, claimed_at', [
+    (None, '2026-10-28T00:00:00-07:00'),  # its job is gone: it counts, as for the controller
+    ('repair', '2026-10-29T01:00:00-07:00'),  # dated later than now: the clock went back
+])
+def test_the_daily_cap_counts_deployments_as_the_controller_does(tmp_path, job_kind, claimed_at):
+    root = tmp_path/'srv/gene'
+    controller(root)
+    with sqlite3.connect(root/'data/controller/gene.sqlite3') as db:
+        if job_kind:
+            db.execute('INSERT INTO jobs(id,guild_id,user_id,source_id,source_url,body,state,created,updated,kind) '
+                       "VALUES ('job-1','guild','member','src-1','','request','deployed',?,?,?)",
+                       (at(claimed_at), at(claimed_at), job_kind))
+        db.execute("INSERT INTO deployments VALUES ('job-1',?,?,'deployed',?)", (G, OLD_G, at(claimed_at)))
+    out, _, _ = script(tmp_path, 'baseline', '2026-10-28T04:40:00-07:00')
+    assert out.returncode == 4
+    assert f'the controller claimed an automatic deployment today: {job_kind or "unrecorded"} job job-1' in out.stderr
+
+
+@needs_bash4
+@pytest.mark.parametrize('history', ['missing', 'not a database', 'no deployments table'])
+def test_missing_or_unreadable_deployment_history_holds_the_batch(tmp_path, history):
+    path = tmp_path/'srv/gene/data/controller/gene.sqlite3'
+    path.parent.mkdir(parents=True)
+    if history == 'not a database':
+        path.write_bytes(b'not a database, but long enough to be read as one' * 4)
+    elif history == 'no deployments table':
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+    out, root, rows = script(tmp_path, 'baseline', '2026-10-28T04:40:00-07:00', db=False)
+    assert out.returncode == 4 and "the controller's deployment history could not be read" in out.stderr
+    assert not (root/'batch-release.lock').exists() and not (root/'staging').exists()
+    assert rows[-1]['action'] == 'batch-release baseline' and rows[-1]['outcome'].startswith('refused')
+    assert path.exists() is (history != 'missing')  # read-only: a missing DB is never created
+
+
+def pausing(tmp_path, *steps):
+    """batch-release.sh's pause and resume on their own, against a controller DB at tmp_path/data, and the
+    paused setting after: each step is `ours` (the fence's pause), `lost-id` (that pause, killed before its
+    audit id reached the journal), `legacy` (the fence's pause as the script before audit ids made it),
+    `late-baseline` (this batch's baseline taken after that), `owner-pause`, `owner-resume`, `resume`
+    (resume_services) or `lost-done` (that resume, killed before its journal line)."""
+    store = Store(tmp_path/'data/gene.sqlite3')
+    store.set_paused(False, 'owner')
+    (tmp_path/'staging/batch-x').mkdir(parents=True)
+    (tmp_path/'staging/batch-x/baseline.json').write_text('{}')
+    stamp = time.time() - 60  # the batch's baseline, a minute before its drain
+    os.utime(tmp_path/'staging/batch-x/baseline.json', (stamp, stamp))
+    owner = f'"{sys.executable}" -c "import sys; from pathlib import Path; from gene.store import Store; ' \
+            'Store(Path(sys.argv[1])).set_paused(sys.argv[2] == \'pause\', \'555\')" "$DATA/gene.sqlite3"'
+    calls = {
+        'ours': 'mark intent:pause; pause_development',
+        'lost-id': "mark intent:pause; pause_development; sed -i '/^paused:/d' \"$JOURNAL\"",
+        # 8deef14's fence: the intent line, then Store.set_paused's writes with an audit row that names no batch.
+        'legacy': f"""mark intent:pause
+"{sys.executable}" - "$DATA/gene.sqlite3" <<'PY'
+import sqlite3, sys, time
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute("UPDATE settings SET value='true' WHERE key='paused'")
+    db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
+               (time.time(), 'maintainer:claude', 'pause', '', ''))
+PY""",
+        'late-baseline': 'touch -d "@$(( $(date +%s) + 60 ))" "$BASELINE"',
+        'owner-pause': owner + ' pause',  # /pause, as the controller records it
+        'owner-resume': owner + ' resume',
+        'resume': 'resume_services ' + G,
+        'lost-done': "sed -i '/^done:unpause$/d' \"$JOURNAL\"",  # resume killed before its journal line
+    }
+    stubs = f'''
+set -Eeuo pipefail
+DATA={tmp_path}/data JOURNAL={tmp_path}/journal STAGE={tmp_path}/staging/batch-x NOTE=''
+BASELINE=$STAGE/baseline.json
+db_py() {{ local code; code=$(cat); "{sys.executable}" -c "${{code//\\/data\\//$DATA/}}" "$@"; }}
+systemctl() {{ :; }}
+audit() {{ :; }}
+die() {{ echo "FAIL: $*" >&2; exit 1; }}
+'''
+    body = functions('log', 'mark', 'pause_mark', 'owns_pause', 'pause_id', 'pause_development', 'unpause_if_ours',
+                     'pause_kept', 'resume_services')
+    out = subprocess.run(['bash', '-c', stubs + body + '\n' + '\n'.join(calls[step] for step in steps)],
+                         capture_output=True, text=True, timeout=60)
+    with sqlite3.connect(tmp_path/'data/gene.sqlite3') as db:
+        paused = db.execute("SELECT value FROM settings WHERE key='paused'").fetchone()[0]
+        events = db.execute("SELECT actor,action FROM audit WHERE action IN ('pause','resume') ORDER BY id").fetchall()
+    journal = (tmp_path/'journal').read_text().split() if (tmp_path/'journal').exists() else []
+    return out, paused, events[1:], journal  # the fixture's own first resume left out
+
+
+@needs_bash4
+def test_resume_lifts_only_the_batchs_own_latest_pause(tmp_path):
+    out, paused, events, journal = pausing(tmp_path, 'ours', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and events == [('maintainer:claude', 'pause'), ('maintainer:claude', 'resume')]
+    assert journal[-1] == 'done:unpause' and journal[1].startswith('paused:')
+    out, paused, events, journal = pausing(tmp_path/'repeat', 'ours', 'resume', 'lost-done', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and events == [('maintainer:claude', 'pause'), ('maintainer:claude', 'resume')]
+    assert journal[-1] == 'done:unpause' and 'development already resumed by this batch' in out.stdout
+
+
+@needs_bash4
+def test_resume_leaves_a_pause_the_owner_made_after_the_batchs(tmp_path):
+    # gene #69: the owner paused through /pause while the fence waited.
+    out, paused, events, journal = pausing(tmp_path, 'ours', 'owner-pause', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'true' and events == [('maintainer:claude', 'pause'), ('555', 'pause')]
+    assert 'development stays paused: the latest pause' in out.stdout and 'done:unpause' not in journal
+
+
+@needs_bash4
+def test_resume_leaves_development_the_owner_resumed_after_the_batchs_pause(tmp_path):
+    out, paused, events, journal = pausing(tmp_path, 'ours', 'owner-resume', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and events == [('maintainer:claude', 'pause'), ('555', 'resume')]
+    assert 'resumed (audit' in out.stdout and 'after this batch paused it' in out.stdout and 'done:unpause' not in journal
+
+
+@needs_bash4
+def test_a_pause_whose_id_never_reached_the_journal_is_known_by_its_batch(tmp_path):
+    out, paused, events, journal = pausing(tmp_path, 'lost-id', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and journal == ['intent:pause', 'done:unpause']
+    out, paused, _, _ = pausing(tmp_path/'owner', 'lost-id', 'owner-pause', 'resume')
+    assert paused == 'true' and 'development stays paused' in out.stdout
+
+
+@needs_bash4
+def test_resume_lifts_the_pause_an_older_script_made_for_this_batch(tmp_path):
+    # gene #71 review B1: before audit ids, the pause row named no batch and the journal had no paused:<id>.
+    out, paused, events, journal = pausing(tmp_path, 'legacy', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and events == [('maintainer:claude', 'pause'), ('maintainer:claude', 'resume')]
+    assert journal == ['intent:pause', 'done:unpause']
+    out, paused, _, journal = pausing(tmp_path/'owner', 'legacy', 'owner-pause', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'true' and 'development stays paused: the latest pause' in out.stdout and 'done:unpause' not in journal
+    out, paused, _, journal = pausing(tmp_path/'older', 'legacy', 'late-baseline', 'resume')  # from before this batch
+    assert out.returncode == 0, out.stderr
+    assert paused == 'true' and 'development stays paused: the latest pause' in out.stdout
+
+
+@needs_bash4
+def test_a_pause_the_owner_made_just_before_the_batchs_is_not_the_batchs(tmp_path):
+    # gene #71 review S1: the owner paused after the fence read the setting and before the batch's pause.
+    out, paused, events, journal = pausing(tmp_path, 'owner-pause', 'ours', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'true' and events == [('555', 'pause')]
+    assert journal == ['intent:pause', 'skipped:pause']
+    # gene #78: the pause it kept is reported, though the batch never owned it.
+    assert 'development stays paused: someone else paused it first (audit' in out.stdout
+
+
+@needs_bash4
+def test_resume_reports_a_pause_from_before_the_batch_and_leaves_it(tmp_path):
+    out, paused, events, journal = pausing(tmp_path, 'owner-pause', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'true' and events == [('555', 'pause')] and journal == []
+    assert "development stays paused: the latest pause (audit" in out.stdout and "is not this batch's" in out.stdout
+    out, paused, _, _ = pausing(tmp_path/'resumed', 'owner-pause', 'owner-resume', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and 'stays paused' not in out.stdout  # nothing to report once it is lifted
+
+
 @needs_bash4
 def test_a_batch_that_resumed_the_old_release_does_not_go_forward_again(tmp_path):
     out, _, _ = script(tmp_path, 'gene', '2026-10-29T04:10:00-07:00', ('baseline', 'drained', 'resumed_old'))
     assert out.returncode == 4 and 'already resumed the old release' in out.stderr
+
+
+@needs_bash4
+@pytest.mark.parametrize('phase', ['drain', 'gene', 'fri', 'evals'])
+def test_a_batch_that_stopped_after_its_fence_only_restores(tmp_path, phase):
+    # gene #70: a stop journaled before restoring services, whose restore didn't finish. Inside the window
+    # and under the cap, the forward phases still refuse and name resume-old, which replays it.
+    out, _, rows = script(tmp_path, phase, '2026-10-28T04:10:00-07:00', ('baseline', 'intent:pause', 'intent:abort'))
+    assert out.returncode == 4 and 'stopped after its fence' in out.stderr
+    assert 'Run resume-old: it resumes development as it is' in out.stderr
+    assert rows[-1]['action'] == 'batch-release '+phase and rows[-1]['outcome'].startswith('refused')
 
 
 @needs_bash4
@@ -591,16 +1026,16 @@ def test_an_unreadable_clock_never_blocks_recovery(tmp_path):
 @needs_bash4
 def test_the_eval_rules_decision_is_recorded_with_its_reason(tmp_path):
     journal = ('baseline', 'drained', 'gene_recorded', 'fri_switched', 'evals_ran')
-    out, root, _ = script(tmp_path, 'accept-evals', '2026-10-28T05:20:00-07:00', journal)
+    out, root, _ = script(tmp_path, 'accept-evals', '2026-10-28T07:50:00-07:00', journal)
     assert out.returncode == 1 and 'set EVALS_ACCEPTED' in out.stderr
-    out, root, rows = script(tmp_path, 'accept-evals', '2026-10-28T05:20:00-07:00', journal,
+    out, root, rows = script(tmp_path, 'accept-evals', '2026-10-28T07:50:00-07:00', journal,
                              {'EVALS_ACCEPTED': 'known sass miss; rerun passed'})
     assert out.returncode == 0 and 'evals accepted: known sass miss' in out.stdout
     assert (root/f'staging/batch-{G}-{F}/journal').read_text().splitlines()[-1] == 'evaluated'
 
 
 def test_the_deployer_takes_back_a_feature_whose_preparation_ran_past_the_close(tmp_path, monkeypatch):
-    times = iter([at('2026-10-28T04:49:00-07:00'), at('2026-10-28T05:00:30-07:00')])
+    times = iter([at('2026-10-28T07:19:00-07:00'), at('2026-10-28T07:30:30-07:00')])
     monkeypatch.setattr(maintenance, 'clock', lambda: next(times))
     worker = deployer(tmp_path)
     worker.prepare = Mock(side_effect=lambda job: (tmp_path/'releases'/G/'cogs').mkdir(parents=True))
@@ -628,12 +1063,12 @@ def test_fri_release_rechecks_the_window_right_before_its_switch(tmp_path):
     (('baseline', 'drained', 'evals_started', 'evals_ran', 'verified_off', 'evals_started'), True),
 ])
 def test_only_the_last_evals_runs_result_admits_resume_after_the_close(tmp_path, journal, gated):
-    out, _, _ = script(tmp_path, 'resume', '2026-10-28T05:20:00-07:00', journal)
+    out, _, _ = script(tmp_path, 'resume', '2026-10-28T07:50:00-07:00', journal)
     assert ('REFUSED' in out.stderr) is gated
 
 
 @needs_bash4
 def test_accepting_needs_the_last_evals_run_finished(tmp_path):
     journal = ('baseline', 'drained', 'evals_started', 'evals_ran', 'evals_started')
-    out, _, _ = script(tmp_path, 'accept-evals', '2026-10-28T05:20:00-07:00', journal, {'EVALS_ACCEPTED': 'why'})
+    out, _, _ = script(tmp_path, 'accept-evals', '2026-10-28T07:50:00-07:00', journal, {'EVALS_ACCEPTED': 'why'})
     assert out.returncode == 4

@@ -6,14 +6,6 @@
 # and resume after a full release the owner paused during.
 . "$(dirname "$0")/common.sh"
 DB=$BATCH_ROOT/data/controller/gene.sqlite3
-noted() {  # phase: the phase's last production-action line says development stays paused
-  python3 - "$BATCH_ROOT/production-actions.jsonl" "batch-release $1" <<'PY' || fail "the $1 line in the action log does not say development stays paused"
-import json, sys
-rows = [json.loads(line) for line in open(sys.argv[1])]
-row = [row for row in rows if row.get('action') == sys.argv[2]][-1]
-sys.exit(0 if 'development stays paused' in (row.get('note') or '') else 1)
-PY
-}
 run 0 baseline 0; upload; run 0 stage 0; run 0 rehearse 0
 as_owner "$GENE_PY" - "$DB" <<'PY'
 import sqlite3, sys, time

@@ -233,7 +233,7 @@ def main():
     if not permitted(args.sha, args.root, exception):
         maintenance.record(args.gene_root/'production-actions.jsonl', 'fri_release', outcome='refused: outside the window',
                            after={'fri': before}, **log)
-        raise SystemExit('Outside the maintenance window [04:00, 05:00) America/Los_Angeles; nothing was changed. '
+        raise SystemExit(f'Outside the maintenance window {maintenance.WINDOW}; nothing was changed. '
                          'Only a rollback to the previous Fri runs at any hour.')
     release, started, outcome = FriRelease(args.root, args.gene_root), time.time(), 'failed'
     release.permitted = lambda: permitted(args.sha, args.root, exception)

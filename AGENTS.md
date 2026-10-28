@@ -30,14 +30,14 @@ or expand feature-job paths to the Fri repository.
   maintainer work. Implement, test, commit, push, and deploy them (inside the
   maintenance window below) without asking for a second approval. Record the exact
   released SHA and retain backups, health checks, and rollback protection.
-- Production maintenance window (owner, 2026-10-27): production changes happen only in
-  [04:00, 05:00) America/Los_Angeles (DST-aware), with at most one regular release
+- Production maintenance window (owner, 2026-10-27; widened 2026-10-28): production changes
+  happen only in [03:30, 07:30) America/Los_Angeles (DST-aware), with at most one regular release
   batch per local day. That covers release phases (`baseline` too: it takes the lock
   and writes staging), uploads, host image builds and rehearsals, eval containers and
   live evals on the host or Fri's subscription, live config, restarts and patch-notes
   posts. Outside it: local work, offline tests, reviews and PR/merge work, plus
   read-only health/status/metadata reads that take no lock, start no container and
-  write nothing. At or after 05:00, restore healthy service instead of finishing the
+  write nothing. At or after 07:30, restore healthy service instead of finishing the
   deployment: begin no switch, eval or build. If nothing switched, run `resume-old`.
   If a switch began and the evals haven't passed, roll back, then `resume-old`. Only
   once the evals have passed may `verify-off`, then `resume`, restore service (if

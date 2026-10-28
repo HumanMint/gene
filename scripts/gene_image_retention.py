@@ -2,8 +2,8 @@
 
 Release history comes from batch-release.sh's staging manifests and journals and from the controller's
 legacy deployments rows with their backups. A run, plan or apply, takes a lock and writes files, so it starts
-only in the production maintenance window, [04:00, 05:00) America/Los_Angeles (owner policy, 2026-10-27).
---status is a read-only health check for any hour.
+only in the production maintenance window, [03:30, 07:30) America/Los_Angeles (owner policy, 2026-10-27;
+widened 2026-10-28). --status is a read-only health check for any hour.
 """
 from __future__ import annotations
 
@@ -49,6 +49,8 @@ DOWNGRADE_STEPS = {'gene.fri_reply_checks', 'gene.profile_downgrade', 'gene.fri_
 # a symlink among them would mean something else after the move.
 MOVED_ENTRIES = ('', '.release-sha', 'ops', 'ops/compose.yml', 'ops/fri-compose.yml')
 ZONE = 'America/Los_Angeles'
+OPENS, CLOSES = dt.time(3, 30), dt.time(7, 30)  # src/gene/maintenance.py's window; a test keeps the two equal
+WINDOW = f'[{OPENS:%H:%M}, {CLOSES:%H:%M}) {ZONE}'
 EARLIEST = 1793059200  # 2026-10-27T00:00Z: a clock before the window policy existed is not trusted
 STALE = 50 * 60 * 60  # two missed daily windows
 LOCK_BUDGET = 10 * 60  # longest a run keeps batch-release.lock, from taking it to its last removal
@@ -167,9 +169,9 @@ def local(now):
 
 
 def window_open(now):
-    """[04:00, 05:00) local, following daylight saving. src/gene/maintenance.py holds the same window."""
+    """Inside WINDOW, local time, following daylight saving."""
     moment = local(now)
-    return moment is not None and dt.time(4) <= moment.time() < dt.time(5)
+    return moment is not None and OPENS <= moment.time() < CLOSES
 
 
 def docker_inventory():
@@ -1545,8 +1547,7 @@ def execute(root, apply=False, exception=''):
     """
     mode, started = ('apply' if apply else 'plan'), time.time()
     if not exception and not window_open(started):
-        why = ('outside the maintenance window [04:00, 05:00) America/Los_Angeles, '
-               'or the clock or zone is unknown')
+        why = f'outside the maintenance window {WINDOW}, or the clock or zone is unknown'
         log_action(root, mode, started, 'refused: ' + why)
         print('REFUSED: ' + why + '. Nothing changed; the next window runs it.', file=sys.stderr)
         return REFUSED, None

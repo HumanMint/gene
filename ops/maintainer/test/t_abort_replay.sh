@@ -40,7 +40,7 @@ output_has "today's batch was used during the drain (the controller claimed an a
 journal_has intent:abort; journal_lacks resumed_old; journal_lacks drained
 units down
 [[ $(setting paused) == true ]] || fail 'the fence did not pause development'
-at 2026-10-28T05:30:00-07:00  # Restoring service runs at any hour.
+at 2026-10-28T08:00:00-07:00  # Restoring service runs at any hour.
 run 4 drain 1
 output_has 'Run resume-old: it resumes development as it is'
 run 0 resume-old 2

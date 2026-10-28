@@ -1,9 +1,9 @@
 # shellcheck shell=bash
-# The drain pauses at 04:50 and a job keeps building past its wait, so it stops before `drained`, with
-# development paused. After 05:00 a new drain is refused, but resume-old still restores service.
+# The drain pauses at 07:20 and a job keeps building past its wait, so it stops before `drained`, with
+# development paused. After 07:30 a new drain is refused, but resume-old still restores service.
 . "$(dirname "$0")/common.sh"
 run 0 baseline 0; upload; run 0 stage 0; run 0 rehearse 0
-at 2026-10-28T04:50:00-07:00
+at 2026-10-28T07:20:00-07:00
 as_owner "$GENE_PY" - "$BATCH_ROOT/data/controller/gene.sqlite3" <<'PY'
 import sqlite3, sys, time
 with sqlite3.connect(sys.argv[1]) as db:
@@ -17,7 +17,7 @@ as_owner "$GENE_PY" -c "
 import sqlite3
 with sqlite3.connect('$BATCH_ROOT/data/controller/gene.sqlite3') as db:
     db.execute('UPDATE jobs SET state=\"failed\" WHERE id=\"job-t\"')"
-at 2026-10-28T05:30:00-07:00
+at 2026-10-28T08:00:00-07:00
 run 4 drain 1
 output_has 'Run resume-old.'
 run 0 resume-old 1

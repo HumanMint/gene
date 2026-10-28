@@ -1238,6 +1238,44 @@ def source_case(batch_host, case):
             f'GENE_WORKER_IMAGE=gene-worker:{gene(2)} \nGENE_WORKER_TOKEN=tok-3f9a-secret\n')
 
 
+# db_py for the script's settings writers: their own program, run against a scratch controller DB.
+WRITERS_DB = r"""
+db_py() {
+  python3 -c '
+import os, sqlite3, sys
+connect = sqlite3.connect
+sqlite3.connect = lambda path, *a, **kw: connect(os.environ["TEST_DB"] if path == "/data/gene.sqlite3" else path, *a, **kw)
+program = sys.stdin.read()
+sys.argv = ["-", *sys.argv[1:]]
+exec(compile(program, "<db_py>", "exec"))
+' "$@"
+}
+"""
+
+
+def script_settings(batch_host, scratch, kind, step, before):
+    """The controller settings a rollback writes, by the script's own restore_old_fri decision, set_fri_active
+    and (rollback-gene) settings_transition with prev=$(jget "$BASELINE" settings.previous_sha)."""
+    import sqlite3
+    scratch.mkdir()
+    db = sqlite3.connect(scratch / 'gene.sqlite3')
+    db.executescript('CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT); '
+                     'CREATE TABLE audit(at, actor, action, target, detail);')
+    db.executemany('INSERT INTO settings VALUES (?,?)', [(k, v) for k, v in before['settings'].items() if v is not None])
+    db.commit()
+    record = step['record']
+    env = put_state(batch_host, before, scratch / 'health', (record['gene'], record['fri'], step['baseline']))
+    env |= batch_env(batch_host.root, record) | {'TEST_DB': str(scratch / 'gene.sqlite3')}
+    body = WRITERS_DB + 'old_fri_pinned || set_fri_active "$OLD_F"\n'
+    if kind == 'gene':
+        body += 'prev=$(jget "$BASELINE" settings.previous_sha)\nsettings_transition "$G" "$OLD_G" "$OLD_G" "$prev" r\n'
+    functions = ['jget', 'backup_dir', 'source_state', 'state', 'old_fri_pinned', 'set_fri_active', 'settings_transition']
+    returncode, out = run_script(scratch, functions, body, env)
+    assert returncode == 0, out[-800:]
+    stored = dict(db.execute('SELECT key,value FROM settings'))
+    return {key: stored.get(key) for key in ('active_sha', 'previous_sha', 'fri_active_sha')}
+
+
 REFUSED = {'fri_only_missing_previous', 'gene_wrong_previous', 'feature', 'source_crlf_live', 'source_space_saved',
            'source_symlink_saved', 'quoted_pins', 'worker_space'}
 
@@ -1321,11 +1359,15 @@ def test_retention_and_the_release_script_agree_on_every_rollback_check(batch_ho
             assert (returncode == 0) == (not failing_checks), (number, name, outcome, out[-800:])
             if returncode == 0:
                 assert out.endswith(f'SOURCE<{source}>'), (out, source)
-        else:  # verify old, on the state the rollback leaves
+        else:  # the settings the rollback's own writers leave, then verify old on that state
             step, state = args
             record = step['record']
-            env = put_state(batch_host, state, tmp_path / 'health', (record['old_gene'], record['old_fri'],
-                                                                     step['baseline']))
+            before = next(args for check, args, _ in reversed(checked[:number]) if check == 'pair_mirror')[2]
+            kind = next(args for check, args, _ in reversed(checked[:number]) if check == 'pair_mirror')[0]
+            settings = script_settings(batch_host, tmp_path / f'settings-{number}', kind, step, before)
+            assert settings == state['settings'], (number, settings, state['settings'])
+            env = put_state(batch_host, state | {'settings': settings}, tmp_path / 'health',
+                            (record['old_gene'], record['old_fri'], step['baseline']))
             env |= batch_env(root, record)
             returncode, out = run_script(tmp_path, ['jget', 'source_state', 'state', 'verify'], 'verify old', env)
             assert (returncode == 0) == (not outcome), (number, name, outcome, out[-800:])
@@ -1360,4 +1402,66 @@ def test_the_known_downgrades_are_the_release_scripts():
     listed = set(re.search(r'^DOWNGRADE_MODULES=\(([^)]*)\)', text, re.M)[1].split())
     stepped = set(re.findall(r'^    (gene\.[a-z_]+)\)', script_function('downgrade_step'), re.M))
     assert retention.DOWNGRADE_STEPS == listed == stepped
+
+
+# Sol round 5 on gene #80: persisted fields must have the types the script writes.
+
+@pytest.mark.parametrize('case', ['previous_sha_number', 'gene_guild_number', 'fri_guild_number', 'presence_number',
+                                  'fri_active_number', 'manifest_fri_number'])
+def test_persisted_fields_need_the_types_the_script_writes(batch_host, monkeypatch, case):
+    root = batch_host.root
+    if case == 'previous_sha_number':  # jget prints it and settings_transition stores the text
+        edit_baseline(stage_of(root, 3), lambda b: b['settings'].update(previous_sha=int('1' * 40)))
+    elif case in ('gene_guild_number', 'fri_guild_number'):  # state() writes str(guild_id)
+        edit_baseline(stage_of(root, 4), lambda b: b[case.split('_')[0]].update(guild_id=123))
+    elif case == 'presence_number':  # both health files write str(status)
+        edit_baseline(stage_of(root, 4), lambda b: b['gene'].update(presence=1))
+    elif case == 'fri_active_number':  # a controller setting: text or absent
+        edit_baseline(stage_of(root, 4), lambda b: b['settings'].update(fri_active_sha=5))
+    else:  # the manifest's Fri SHA, which jget would print as digits
+        edit_manifest(stage_of(root, 1), lambda m: m.update(fri=int('1' * 40)))
+    monkeypatch.setattr(retention, 'command', removing(batch_host.images))
+    with pytest.raises(ValueError):
+        retention.run(root, apply=True)
+    assert not (root / 'maintenance/image-retention-plan.json').exists()
+
+
+@pytest.mark.parametrize('case', ['previous_sha', 'gene_guild', 'fri_guild'])
+def test_the_mirror_and_the_script_both_refuse_numeric_baseline_values(batch_host, tmp_path, case):
+    """Past the structural type checks, recovery itself fails on these values, in the mirror and in the script:
+    settings_transition stores previous_sha as text, and state() compares str(guild_id)."""
+    root = batch_host.root
+    n, change = {'previous_sha': (3, lambda b: b['settings'].update(previous_sha=int('1' * 40))),
+                 'gene_guild': (4, lambda b: b['gene'].update(guild_id=123)),
+                 'fri_guild': (4, lambda b: b['fri'].update(guild_id=123))}[case]
+    by_tag = {tag: image for image, row in batch_host.images.items() for tag in row['tags']}
+    records = {r['name']: r for r in retention.batch_records(root)}
+    settings, *_ = retention.controller_refs(root)
+    state = retention.live_pair_state(root, settings)
+    for level in (4, 3):
+        step = retention.batch_step(root, records[stage_of(root, level).name], by_tag)  # before the change
+        if level == n:
+            edit_baseline(stage_of(root, n), change)
+            step['baseline'] = json.loads((stage_of(root, n) / 'baseline.json').read_text())
+            before = state
+        why, state = retention.recover('gene', step, state, str(root))
+        if level == n:
+            break
+        assert why is None
+    assert why and 'verify old' in why
+    # The script: its own settings writers, then verify old, on the state the rollback leaves.
+    record = step['record']
+    restored = dict(before, **{'release.env': step['saved']['release.env'], 'worker.env': step['saved']['worker.env'],
+                              'fri release.env': step['saved']['fri-release.env'],
+                              'fri release.json': step['saved']['fri-release.json'],
+                              'controller': record['images']['old']['runtime'][1],
+                              'red': record['images']['old']['runtime'][1], 'fri': record['images']['old']['fri'][1],
+                              'source': step['baseline']['source'],
+                              'source_tree': step['backup'] / 'installed-source'})
+    settings = script_settings(batch_host, tmp_path / 'settings', 'gene', step, before)
+    env = put_state(batch_host, restored | {'settings': settings}, tmp_path / 'health',
+                    (record['old_gene'], record['old_fri'], step['baseline']))
+    env |= batch_env(root, record)
+    returncode, out = run_script(tmp_path, ['jget', 'source_state', 'state', 'verify'], 'verify old', env)
+    assert returncode != 0, out[-800:]
 

@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # gene #71 review S1: the owner pauses through /pause after the drain's fence read the setting and before the
 # batch's pause. The batch's own transaction finds development already paused, so it takes no pause and lifts
-# none: after resume-old development stays paused.
+# none: after resume-old development stays paused. gene #78: resume-old says so in its log, its action-log
+# note and its exit message.
 . "$(dirname "$0")/common.sh"
 DB=$BATCH_ROOT/data/controller/gene.sqlite3
 run 0 baseline 0; upload; run 0 stage 0; run 0 rehearse 0
@@ -23,4 +24,7 @@ journal_has intent:pause; journal_has skipped:pause; journal_has drained
 run 0 resume-old 1
 journal_lacks done:unpause
 expect old true up
+output_has 'development stays paused: someone else paused it first (audit'
+tail -n 1 "$MOCK/out-$RUNS-resume-old" | grep -q '^== development stays paused' || fail 'the exit message does not say development stays paused'
+noted resume-old 'development stays paused: someone else paused it first'
 finish

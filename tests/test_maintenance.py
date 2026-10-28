@@ -425,6 +425,7 @@ def test_baseline_outside_the_window_takes_no_lock_and_writes_no_staging(tmp_pat
     ('resume', ('baseline', 'drained', 'gene_recorded', 'fri_switched', 'evaluated', 'verified_off'), False),
     ('status', ('baseline', 'intent:pause'), False),
     ('verify-off', ('baseline', 'intent:pause'), False),
+    ('status', ('baseline', 'intent:abort'), False),  # gene #70: an abort's fence may have left development paused
     ('accept-evals', ('baseline', 'drained', 'evals_ran'), False),
     ('accept-evals', ('baseline', 'drained'), True),
     ('gene', ('baseline', 'drained'), True),
@@ -673,7 +674,8 @@ systemctl() {{ :; }}
 audit() {{ :; }}
 die() {{ echo "FAIL: $*" >&2; exit 1; }}
 '''
-    body = functions('log', 'mark', 'owns_pause', 'pause_id', 'pause_development', 'unpause_if_ours', 'resume_services')
+    body = functions('log', 'mark', 'pause_mark', 'owns_pause', 'pause_id', 'pause_development', 'unpause_if_ours',
+                     'pause_kept', 'resume_services')
     out = subprocess.run(['bash', '-c', stubs + body + '\n' + '\n'.join(calls[step] for step in steps)],
                          capture_output=True, text=True, timeout=60)
     with sqlite3.connect(tmp_path/'data/gene.sqlite3') as db:
@@ -743,12 +745,36 @@ def test_a_pause_the_owner_made_just_before_the_batchs_is_not_the_batchs(tmp_pat
     assert out.returncode == 0, out.stderr
     assert paused == 'true' and events == [('555', 'pause')]
     assert journal == ['intent:pause', 'skipped:pause']
+    # gene #78: the pause it kept is reported, though the batch never owned it.
+    assert 'development stays paused: someone else paused it first (audit' in out.stdout
+
+
+@needs_bash4
+def test_resume_reports_a_pause_from_before_the_batch_and_leaves_it(tmp_path):
+    out, paused, events, journal = pausing(tmp_path, 'owner-pause', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'true' and events == [('555', 'pause')] and journal == []
+    assert "development stays paused: the latest pause (audit" in out.stdout and "is not this batch's" in out.stdout
+    out, paused, _, _ = pausing(tmp_path/'resumed', 'owner-pause', 'owner-resume', 'resume')
+    assert out.returncode == 0, out.stderr
+    assert paused == 'false' and 'stays paused' not in out.stdout  # nothing to report once it is lifted
 
 
 @needs_bash4
 def test_a_batch_that_resumed_the_old_release_does_not_go_forward_again(tmp_path):
     out, _, _ = script(tmp_path, 'gene', '2026-10-29T04:10:00-07:00', ('baseline', 'drained', 'resumed_old'))
     assert out.returncode == 4 and 'already resumed the old release' in out.stderr
+
+
+@needs_bash4
+@pytest.mark.parametrize('phase', ['drain', 'gene', 'fri', 'evals'])
+def test_a_batch_that_stopped_after_its_fence_only_restores(tmp_path, phase):
+    # gene #70: a stop journaled before restoring services, whose restore didn't finish. Inside the window
+    # and under the cap, the forward phases still refuse and name resume-old, which replays it.
+    out, _, rows = script(tmp_path, phase, '2026-10-28T04:10:00-07:00', ('baseline', 'intent:pause', 'intent:abort'))
+    assert out.returncode == 4 and 'stopped after its fence' in out.stderr
+    assert 'Run resume-old: it resumes development as it is' in out.stderr
+    assert rows[-1]['action'] == 'batch-release '+phase and rows[-1]['outcome'].startswith('refused')
 
 
 @needs_bash4

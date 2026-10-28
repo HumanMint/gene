@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
+# Tests can arm $MOCK/start-fails: the next start fails and starts nothing.
 f=$MOCK/units; touch "$f"
 case $1 in
   stop) shift; for u; do sed -i "/^$u$/d" "$f"; done ;;
-  start) shift; for u; do grep -qx "$u" "$f" || echo "$u" >> "$f"; done ;;
+  start)
+    shift
+    if [[ -e $MOCK/start-fails ]]; then rm -f "$MOCK/start-fails"; echo "mock systemctl: $* failed to start" >&2; exit 1; fi
+    for u; do grep -qx "$u" "$f" || echo "$u" >> "$f"; done ;;
   is-active) shift; [[ $1 == -q ]] && shift; grep -qx "$1" "$f" ;;
 esac

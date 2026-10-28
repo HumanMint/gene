@@ -121,9 +121,9 @@ built from other members' messages.
   #172). Whenever the member's generation moves (a withdrawal, a rebuild, an expiry, another member's
   privacy change), and when their own privacy change erases the summary, every saved reply of theirs
   that drew on a summary is replaced in the same transaction by a breadcrumb ("Earlier answer drawing
-  on an older summary of them. Nothing from it is retained here.") and marked not verbatim. History,
-  a reference to Fri's message and reply checks then carry none of its words; the member's own words
-  stay. A turn saved without a generation (an older Fri, or no summary in its request) is untouched.
+  on an older summary of them. Nothing from it is retained here.") and marked not verbatim, and a
+  question it left pending goes. History, a reference to Fri's message and reply checks then carry
+  none of its words; the member's own words stay. A turn saved without a generation (an older Fri, or no summary in its request) is untouched.
   A controller start retires any an older controller left behind with a moved generation during a
   rollback window, and the purge below retires all of them first. The cost: a rebuild (at most daily)
   also turns the member's earlier summary-derived replies into breadcrumbs, as gene #97 accepted

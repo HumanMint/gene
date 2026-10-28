@@ -69,9 +69,12 @@ def advance(db, guild, user):
 def retire(db, where, args=()):
     """Saved replies that drew on a summary now gone keep a breadcrumb, not its words: a later turn reads them back as
     history (fri #172). Not verbatim, so a reference to Fri's message fails closed, and reply checks pass over it.
-    The member's own words stay. A turn that drew on no summary, or came from an older Fri, says so and stays."""
-    db.execute(f'UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL WHERE ({where}) '
-               'AND summary_generation IS NOT NULL', (RETIRED, *args))
+    A question such a turn left open goes too, as its words were the model's. The member's own words stay. A turn
+    that drew on no summary, or came from an older Fri, says so and stays."""
+    turns = f'({where}) AND summary_generation IS NOT NULL'
+    db.execute("DELETE FROM chat_pending WHERE (guild_id,user_id,source_id) IN (SELECT guild_id,user_id,"
+               f"json_extract(NULLIF(source,''),'$.id') FROM chat_turns WHERE {turns})", args)
+    db.execute(f'UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL WHERE {turns}', (RETIRED, *args))
 
 
 def settle(db):

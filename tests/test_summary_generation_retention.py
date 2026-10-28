@@ -128,6 +128,21 @@ def test_every_way_the_summary_goes_retires_what_drew_on_it(world):
     assert summary(store) is None and all(retired(reply) for reply in replies(store))
 
 
+def test_a_question_a_summary_derived_turn_left_open_goes_with_it(world):
+    """Its words are the model's too, and a later turn reads them back as what's pending."""
+    client, store = world
+    taken, generation = summarized(client, store)
+    asked = {'goal': 'play', 'topic': '', 'question': 'the '+MARKER+' song or another one?'}
+    for dm, kept_generation in (('9', generation), ('8', None)):  # The second: an older Fri's turn.
+        store.save_chat('123', f'private:{dm}', '20', 0, 'fri play a song', asked['question'], 'model', 'high',
+                        source=source(age=1, channel=dm, guild=None), provenance=[], clarification=asked,
+                        summary_generation=kept_generation)
+        assert store.chat_context('123', f'private:{dm}', '20', True, True)['pending']['question'] == asked['question']
+    withdraw(client, taken)
+    assert store.chat_context('123', 'private:9', '20', True, True)['pending'] is None
+    assert store.chat_context('123', 'private:8', '20', True, True)['pending']['question'] == asked['question']
+
+
 def test_a_summary_lapsing_as_context_is_read_retires_its_replies_in_that_same_read(world):
     from gene.fri_member_summary import TTL
     client, store = world

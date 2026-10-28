@@ -329,7 +329,8 @@ def test_each_deployment_leaves_a_bounded_record_without_member_content(tmp_path
     row = json.loads((tmp_path/'production-actions.jsonl').read_text().splitlines()[-1])
     assert row['action'] == 'deploy feature job a1b2c3d4e5f6' and row['outcome'] == 'ok'
     assert row['before'] == {'gene': OLD_G} and row['after'] == {'gene': G}
-    assert row['tz'] == 'America/Los_Angeles' and row['at'].startswith('2026-10-28T04:05:00-07:00')
+    assert row['tz'] == 'America/Los_Angeles' and row['at'] == maintenance.local().isoformat()  # The window's clock.
+    assert maintenance.is_open()
     assert row['restart_s'] is not None and row['actor'] == 'gene-deployer' and row['exception'] is None
     assert 'private' not in (tmp_path/'production-actions.jsonl').read_text()
     assert stat.S_IMODE((tmp_path/'production-actions.jsonl').stat().st_mode) == 0o600

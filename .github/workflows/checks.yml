@@ -23,6 +23,7 @@ jobs:
         run: |
           chmod -R go-rwx src cogs tests
           docker build -f ops/Dockerfile --target dependencies -t gene-dependencies:check .
+          docker build -f ops/Dockerfile --target worker-dependencies -t gene-worker-dependencies:check .
           docker build -f ops/Dockerfile --target runtime --label org.opencontainers.image.revision=${{ github.sha }} -t gene-runtime:check .
           docker build -f ops/Dockerfile --target worker --label org.opencontainers.image.revision=${{ github.sha }} -t gene-worker:check .
       - name: Check the runtime and offline worker as UID 10001
@@ -35,21 +36,26 @@ jobs:
         run: |
           printf '\n# Source-only cache regression probe.\n' >> src/gene/api.py
           docker build -f ops/Dockerfile --target runtime --label org.opencontainers.image.revision=${{ github.sha }} -t gene-runtime:source-check .
+          docker build -f ops/Dockerfile --target worker --label org.opencontainers.image.revision=${{ github.sha }} -t gene-worker:source-check .
           python3 - <<'PY'
           import json, subprocess
           def inspect(name):
               return json.loads(subprocess.check_output(['docker', 'image', 'inspect', name]))[0]
           dependencies = inspect('gene-dependencies:check')['RootFS']['Layers']
+          worker_dependencies = inspect('gene-worker-dependencies:check')['RootFS']['Layers']
           layers = []
-          for name in ('gene-runtime:check', 'gene-worker:check', 'gene-runtime:source-check'):
+          for name in ('gene-runtime:check', 'gene-worker:check', 'gene-runtime:source-check', 'gene-worker:source-check'):
               image = inspect(name)
               assert image['Config']['User'] == '10001:10001', name
               assert image['Config']['Labels']['org.opencontainers.image.revision'] == '${{ github.sha }}', name
               current = image['RootFS']['Layers']
               assert current[:len(dependencies)] == dependencies, name
+              if name.startswith('gene-worker:'):
+                  assert current[:len(worker_dependencies)] == worker_dependencies, name
               layers.append(current)
           assert layers[0] != layers[2], 'probe did not rebuild the source layer'
-          print('Both targets and a source-only rebuild share the dependency layers')
+          assert layers[1] != layers[3], 'probe did not rebuild the worker source layer'
+          print('Source-only rebuilds share production and worker dependency layers')
           PY
   tests:
     runs-on: ubuntu-latest

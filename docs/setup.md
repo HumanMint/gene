@@ -1,4 +1,9 @@
-# Setup
+# Host installation (operators)
+
+This installs Gene on a Linux server the way production runs it: Docker images pinned to
+a reviewed commit, systemd units and service credentials under `/srv/gene`. To try Gene
+or develop on your own machine, use the [quickstart](quickstart.md) instead.
+[Architecture](architecture.md) explains the parts.
 
 ## Prerequisites
 
@@ -24,9 +29,10 @@ uv run --no-sync python scripts/configure.py
 ```
 
 The interactive configuration validates the bot identity and channel IDs and writes
-an ignored `.env.local`. Keep its tokens private. If using a fork, set
-`GENE_REPOSITORY` in the worker/deployer environment to that fork before enabling
-coding; the current installer defaults to this project's private repository.
+an ignored `.env.local` with new service tokens; it asks before replacing an existing
+one. Keep its tokens private. If using a fork, set `GENE_REPOSITORY` in the
+worker/deployer environment to that fork before enabling coding; the current installer
+defaults to this project's repository.
 
 ## Install Gene's runtime/controller
 

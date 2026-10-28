@@ -12,6 +12,8 @@ or expand feature-job paths to the Fri repository.
 ## Working here
 
 - Python 3.11; `uv sync`, `uv run pytest`, `uv run ruff check .`.
+- Local controller (and optional Red) for development or a local Fri: `scripts/dev.py`,
+  documented in `docs/quickstart.md`. `docs/architecture.md` is the overview.
 - `cogs/`: live Red extensions; `src/gene/`: trusted controller/worker/deployer.
 - `ops/` and `scripts/`: installation and operations. See `docs/operations.md`.
 - Keep Discord tokens, Codex auth, raw history, databases, and private user context

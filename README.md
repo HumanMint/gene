@@ -1,47 +1,120 @@
 # Gene
 
-Gene provides established Discord commands, music and meme highlights through
-**upstream Red-DiscordBot 3.5.24**. The custom interface and integrations live in
-separate cogs and adapters; Red's installed source is not forked or edited.
+Gene is the Discord bot and trusted controller behind
+[Fri](https://github.com/HumanMint/fri), a companion bot for one friend server. It has
+two parts:
 
-[Fri](https://github.com/HumanMint/fri) is the separate conversational companion.
-Gene continues to host the trusted controller, coding worker and deployment authority.
-Fri now owns its runtime, dependencies and releases in its own private repository.
+- **Red cogs** (`cogs/`): Gene's own bot on upstream
+  [Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot) 3.5.24, with music
+  through Lavalink, meme highlights and the `/gene menu` panel. Red itself isn't forked.
+- **The controller** (`src/gene/`, FastAPI + SQLite): stored conversations and memory,
+  privacy controls, settings, member requests and owner approvals, jobs and releases.
+  Fri has no database; everything it keeps goes through here. A coding worker, a
+  deployer and the release tooling sit around it, and the controller is the only
+  deployment authority.
+
+**Try it:** the [quickstart](docs/quickstart.md) runs the controller locally in a few
+commands, with no Discord account needed, then pairs it with a local Fri.
+
+```mermaid
+flowchart TB
+    members(["Discord members"])
+    fri["<b>Fri runtime</b> (HumanMint/fri)<br/>Discord, model calls, personality, context, tools"]
+    controller[("<b>Gene controller</b><br/>conversations, memory, privacy, settings,<br/>requests, approvals, jobs, releases")]
+    red["<b>Gene on Red</b><br/>music and server commands"]
+
+    members <--> fri
+    members <--> red
+    fri <-->|"authenticated HTTP API, contract gene-fri/1"| controller
+    controller <--> red
+```
+
+<details>
+<summary>Plain-text version</summary>
+
+```
+Discord members
+      ↕
+Fri runtime: Discord, model calls, personality, context, tools
+      ↕  authenticated controller API (contract gene-fri/1)
+Gene controller: conversations, memory, privacy, settings, requests, approvals, jobs, releases
+      ↕
+Gene / Red: music and server commands
+```
+
+</details>
+
+Fri checks the controller's `/fri/contract` and its capabilities at startup. A Fri change
+that needs controller changes pins the Gene commit in Fri's `docs/integration-pair.json`;
+Gene merges and releases first, then Fri. [Architecture](docs/architecture.md) has the
+details.
+
+## Quickstart
+
+You need `git` and [uv](https://docs.astral.sh/uv/getting-started/installation/), which
+fetches Python 3.11 if needed.
+
+```sh
+git clone https://github.com/HumanMint/gene.git
+cd gene
+uv sync --frozen
+uv run python scripts/dev.py init        # .env.local with four random service tokens
+uv run python scripts/dev.py check       # validate it and dry-run the controller, offline
+uv run python scripts/dev.py controller  # http://127.0.0.1:8787
+```
+
+Then, in [the quickstart](docs/quickstart.md):
+
+- **Pair with a local Fri**: add your test server's IDs to `.env.local` and hand Fri the
+  same values (`dev.py fri-env`).
+- **Add Gene's Red bot** (optional): `uv sync --frozen --extra red`, a bot token, then
+  `dev.py red`.
+- **Music** (advanced) needs a Red-compatible Lavalink node.
+
+Real credentials come in only at those steps: a Discord bot token for each bot, and Fri's
+model access on the Fri side. Installing on a server is [host installation](docs/setup.md).
 
 ## Features
 
 - `/gene menu`: music and server tools with one private, reusable panel per member.
 - Red's normal playback, queue, permissions, DJ checks and cooldowns.
-- Meme voting/highlights with unique voters, self-vote exclusion and persistent IDs.
-- A private controller with scoped service credentials and SQLite persistence.
-- Owner-reviewed feature requests, isolated development, exact-commit releases,
-  backups and code rollback. Verified automatic repairs stay within existing features.
-- Optional Hostinger audio services and a lightweight home-network download relay.
-  The home machine downloads and transfers files; playback and the bounded week-long
-  media cache stay on the server. The relay deletes temporary files after transfers.
+- Meme voting and highlights with unique voters, self-vote exclusion and persistent IDs.
+- Fri can run Gene's existing non-admin commands for a member, with the same permission
+  checks. For music, join a voice channel before queuing a track.
+- Owner-reviewed feature requests, isolated development, exact-commit releases, backups
+  and code rollback. Verified automatic repairs stay within existing features.
+- Optional audio services and a lightweight home-network download relay. The home machine
+  downloads and transfers files; playback and the bounded week-long media cache stay on
+  the server, and the relay deletes temporary files after transfers.
 
-For music, join a voice channel before queuing a track. Fri can also invoke Gene's
-existing non-admin commands on a member's behalf, with the same permission checks.
-Discord Lab cannot control another server's music.
+## Repository layout
 
-## Choose your setup
+| Path | What |
+| --- | --- |
+| `cogs/` | Red extensions: the Gene panel and commands, meme highlights |
+| `src/gene/` | controller, coding worker, deployer, Red integration, audio adapters |
+| `scripts/` | local development (`dev.py`), configuration, host install, audio and history tools |
+| `ops/` | Dockerfiles, Compose files, systemd units, the maintainer release script |
+| `audio-plugin/` | the Lavalink source plugin and playback probes |
+| `tests/` | state, authorization, persistence, failure-recovery and feature tests |
+| `docs/` | guides, listed below |
 
-**Gene without Fri:** run Red and the controller. Chat, background learning and the
-Fri subscription connection are not required for music or meme tools. Leave the
-coding worker/deployer stopped unless you want the development workflow.
+## Documentation
 
-**Gene with Fri:** add the independent Fri runtime and its distinct Discord
-application. The first split retains Fri's settings, context and delivery records
-in Gene's controller so existing approvals and privacy transactions remain intact.
-
-Start with [setup](docs/setup.md). [Operations](docs/operations.md) describes the
-current private host, audio pipeline, worker setup and recovery. The project's
-scripts target Linux/systemd and `/srv/gene`; adapt those paths deliberately on
-other hosts. Neither repository is a general hosted bot service.
+| Guide | For |
+| --- | --- |
+| [Quickstart](docs/quickstart.md) | running Gene locally, pairing with Fri, adding Red |
+| [Architecture](docs/architecture.md) | the parts, service tokens, the Fri contract, jobs and releases |
+| [Host installation](docs/setup.md) | operators: a production-style Linux install |
+| [Operations](docs/operations.md) | operators: the production host, audio, releases, recovery, privacy |
+| [Maintainer release](ops/maintainer/batch-release.md) | operators: the Gene + Fri batch release script |
+| [Fri migration](docs/fri-migration.md) | what moved to the Fri repository and what stays here |
+| [Fri workspace](docs/fri-foundation.md), [Fri tool results](docs/fri-reliability.md) | Fri behaviour the controller backs: images, reminders, plans, receipts |
+| [Feature notes](docs/features/) | notes for individual features |
+| [Direction](docs/roadmap.md) | where the project is headed |
+| [AGENTS.md](AGENTS.md) | rules for maintainers and coding agents |
 
 ## Development
-
-Use Python 3.11 and `uv`:
 
 ```sh
 uv sync --frozen --extra red
@@ -49,36 +122,31 @@ uv run --no-sync pytest -q
 uv run --no-sync ruff check .
 ```
 
-- `cogs/`: live Red extensions and panels.
-- `src/gene/`: trusted controller, worker, deployer and audio adapters.
-- `audio-plugin/`: external Lavalink source and playback probes.
-- `ops/`, `scripts/`: deployment and local/host configuration.
-- `tests/`: state, authorization, failure recovery and functional checks.
+Tests run without credentials or network access. CI runs the same checks on pull
+requests that change code.
 
-The feature worker may change only `cogs/`, `tests/features/` and `docs/features/`.
-It cannot change its own approvals, controller, dependencies or deployment code.
-New Discord feature requests still need owner intake approval and exact-commit
-release approval. The controller's existing-feature repair policy requires a proven
-baseline failure, frozen regression and independent reviews. Discord messages,
-imported history and reactions never grant authority.
+The feature worker may change only `cogs/`, `tests/features/` and `docs/features/`. It
+cannot change its own approvals, controller, dependencies or deployment code. New
+Discord feature requests still need owner intake approval and exact-commit release
+approval. The controller's existing-feature repair policy requires a proven baseline
+failure, a frozen regression and independent reviews. Discord messages, imported history
+and reactions never grant authority. User-facing success must be verified separately
+from a healthy process or a queued track.
 
-Changes requested directly by the owner in the maintainer chat can be tested,
-reviewed and deployed without a second approval. Tests/review run without production
-credentials or network access. User-facing success must be verified separately from
-a healthy process or a queued track.
-
-## Fri migration boundary
+## Fri boundary
 
 The current protocol is `gene-fri/1`, exposed only to Fri's credential at
-`/fri/contract`. The new client checks compatibility before starting and includes the
-version on subsequent calls. The Gene feature deployer only restarts Red; Fri uses a
-separate release file and a maintainer-only coordinator, `gene.fri_release`.
+`/fri/contract`. The Gene feature deployer only restarts Red; Fri uses a separate release
+file and a maintainer-only coordinator, `gene.fri_release`.
 
 Some `fri_*` modules remain active controller contracts and persistence. The old
 companion implementation is retained temporarily as a compatibility/rollback
 baseline; future companion features belong in the Fri repository. See
 [ownership and migration](docs/fri-migration.md) for the precise boundary.
 
+## Privacy
+
 Tokens, auth sessions, raw history, databases and private context stay in ignored
-private paths. `gene forgetme true` erases stored user context and cancels pending
-proposals; existing Discord/GitHub messages, code and backups are separate records.
+private paths (`.env.local`, `.secrets/`, `.state/`) and never in Git. `gene forgetme
+true` erases stored user context and cancels pending proposals; existing Discord and
+GitHub messages, code and backups are separate records.

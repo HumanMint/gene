@@ -1,6 +1,8 @@
+import datetime as dt
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,13 +14,19 @@ from gene.store import Store
 
 gene_test_config = TemporaryDirectory(prefix='gene-test-config-')
 os.environ['XDG_CONFIG_HOME'] = gene_test_config.name
-INSIDE_WINDOW = 1793185500.0  # 2026-10-28T04:05:00-07:00
+# Tomorrow's window, not a fixed date: gene #65 allows one deployment per local day, counted from rows the store
+# dates with the real clock. Real rows always fall on an earlier day than the window, so a test's own deployments
+# never use up that day (a fixed date broke every test with two deployments once it arrived).
+def inside_window():
+    """Tomorrow's 04:05, worked out on every call, so a run that crosses midnight still dates its rows the day before."""
+    zone = ZoneInfo('America/Los_Angeles')
+    return dt.datetime.combine(dt.datetime.now(zone).date()+dt.timedelta(days=1), dt.time(4, 5), zone).timestamp()
 
 
 @pytest.fixture(autouse=True)
 def inside_maintenance_window(monkeypatch):
     """Deployments start only in the production window; tests not about the window run inside it."""
-    monkeypatch.setattr('gene.maintenance.clock', lambda: INSIDE_WINDOW)
+    monkeypatch.setattr('gene.maintenance.clock', inside_window)
 
 
 @pytest.fixture

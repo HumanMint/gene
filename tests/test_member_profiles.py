@@ -181,10 +181,10 @@ def test_elsewhere_drops_turns_built_on_someone_who_changed_their_privacy(store)
 
 
 @pytest.mark.parametrize('change', ['erase', 'clear', 'revision'])
-def test_a_note_quoting_another_member_goes_with_their_privacy_change(store, change):
-    for text, provenance in (('ash said: I like Minecraft modpacks', [ASH]), ('I like chess', [])):
+def test_a_note_drawing_on_another_member_goes_with_their_privacy_change(store, change):
+    for text, provenance in (('same as ash, I like Minecraft modpacks', [ASH]), ('I like chess', [])):
         store.save_chat('123', 'public:1', '20', 0, text, 'noted', 'model', 'high', audience='server',
-                        notes=[{'category': 'games', 'evidence': text.removeprefix('ash said: ')}],
+                        notes=[{'category': 'games', 'evidence': text.removeprefix('same as ash, ')}],
                         source=source(user='20', channel='1'), provenance=provenance)
     assert notes(store, 'public:2') == [('server', 'I like chess'), ('server', 'I like Minecraft modpacks')]
     if change == 'erase':
@@ -199,8 +199,8 @@ def test_a_note_quoting_another_member_goes_with_their_privacy_change(store, cha
         assert db.execute("SELECT count(*) FROM personal_notes WHERE evidence LIKE '%Minecraft%'").fetchone()[0] == 0
 
 
-def test_a_reply_built_on_a_quoting_note_inherits_its_provenance(store):
-    store.save_chat('123', 'public:1', '20', 0, 'ash said: I like Minecraft modpacks', 'noted', 'model', 'high',
+def test_a_reply_built_on_a_note_drawing_on_another_member_inherits_its_provenance(store):
+    store.save_chat('123', 'public:1', '20', 0, 'same as ash, I like Minecraft modpacks', 'noted', 'model', 'high',
                     audience='server', notes=[{'category': 'games', 'evidence': 'I like Minecraft modpacks'}],
                     source=source(user='20', channel='1'), provenance=[ASH])
     with store.connection() as db:  # The exchange that saved it expires; the note stays.
@@ -466,9 +466,9 @@ def test_an_older_fri_gets_only_this_conversations_notes(store):
 
 
 def test_an_older_fri_never_gets_a_note_that_drew_on_someone_else(store):
-    for text, provenance in (('ash said: I like Minecraft modpacks', [ASH]), ('I like chess', [])):
+    for text, provenance in (('same as ash, I like Minecraft modpacks', [ASH]), ('I like chess', [])):
         store.save_chat('123', 'public:5', '20', 0, text, 'noted', 'model', 'high', audience='conversation',
-                        notes=[{'category': 'games', 'evidence': text.removeprefix('ash said: ')}],
+                        notes=[{'category': 'games', 'evidence': text.removeprefix('same as ash, ')}],
                         source=source(user='20', channel='5'), provenance=provenance)
     # It can't carry provenance into a reply, so a reply built on the note would outlive ash's erasure.
     assert notes(store, 'public:5', profiles=False) == [('here', 'I like chess')]

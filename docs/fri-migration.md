@@ -86,6 +86,19 @@ built from other members' messages.
   under the controller's write lock, so no erasure through Gene, Red or Fri lands between two authors'
   reads, which one `/agent/context` call per author couldn't promise (fri #84). It takes the same
   channels as `/agent/context`. An older controller lacks it and Fri keeps its per-author reads.
+- **Withdrawn messages.** The optional `turn-withdrawal` capability adds `/chat/turn/withdraw`
+  (Fri credential, the scope of `/chat/turn` without a mention grant): `guild_id`, `channel_id`,
+  `conversation_id`, `user_id` and a Discord `message_id`. It deletes that member's saved turns in
+  that conversation whose source, or a message of whose burst, is that message, with any pending
+  clarification or research permit the message or those turns left (a burst's name its final
+  message, gene #84). The member's summary, and a build of it in flight, go too if they could have
+  read the message: it was said in a conversation the summary or build drew on, before the newest
+  exchange it read (with five minutes' allowance for clock skew), even if its turn has been trimmed
+  since (gene #83). It answers `{"ok": true, "removed": n}`, so a repeat is harmless, and moves no
+  revision. Fri calls it when a member's message it saved a turn for is edited or deleted while
+  withdrawn, so the old words stop coming back as history (fri #129). Other members' turns and
+  summaries that drew on the message are untouched, as is a summary the member wrote in My memory.
+  An older controller lacks it and Fri doesn't ask.
 
 Provenance also reaches what follow-ups inherit:
 

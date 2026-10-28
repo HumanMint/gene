@@ -1139,6 +1139,32 @@ class Store:
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
             self.advance_revision(db, user_id)
 
+    def withdraw_turn(self, guild_id, conversation_id, user_id, message_id):
+        """A member's message edited or deleted after Fri saved their exchange with it (fri #129): the exchanges
+        holding it go, as erasure removes them, so its old words don't come back as history. Fri's reply goes too,
+        since it may repeat them. Only that member's, in that conversation, and a repeat finds nothing. Not a
+        privacy change: their revision stays, so replies to their other messages still save. Their summary goes if
+        it may have read the message (gene #83). Other members' replies and summaries that drew on it stay (fri #101)."""
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            turns = db.execute(
+                "SELECT id,json_extract(NULLIF(source,''),'$.id') AS source_id,at FROM chat_turns WHERE guild_id=? "
+                "AND channel_id=? AND user_id=? AND (json_extract(NULLIF(source,''),'$.id')=? OR EXISTS (SELECT 1 "
+                "FROM json_each(chat_turns.burst) b WHERE json_extract(b.value,'$.source.id')=?))",
+                (guild_id, conversation_id, user_id, message_id, message_id)).fetchall()
+            db.executemany('DELETE FROM chat_turns WHERE id=?', [(turn['id'],) for turn in turns])
+            # A question it left open, and the research it permitted, go with it. A burst's are its final message's
+            # (gene #84).
+            sources = sorted({message_id, *(turn['source_id'] for turn in turns if turn['source_id'])})
+            marks = ','.join('?'*len(sources))
+            db.execute(f'DELETE FROM chat_pending WHERE guild_id=? AND conversation_id=? AND user_id=? '
+                       f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
+            db.execute(f'DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? '
+                       f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
+            from .fri_member_summary import withdrawn
+            withdrawn(db, guild_id, user_id, conversation_id, message_id, [turn['at'] for turn in turns])
+            return {'ok': True, 'removed': len(turns)}
+
     def chat_models(self):
         with self.connection() as db:
             return {'selected': self._setting(db, 'chat_model'),

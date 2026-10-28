@@ -523,3 +523,67 @@ def test_the_contract_offers_summary_generations_as_optional():
     assert 'summary-generations' in advertised['capabilities']
     assert compatible({**advertised, 'capabilities': [c for c in advertised['capabilities']
                                                      if c != 'summary-generations']})
+
+
+# gene #97 review round 1.
+
+def drawn_on(client, store):
+    """A summary built on a message, and a reply already drawing on it: the message's ID and the reply's body."""
+    agent = background(client)
+    taken = readable(store, 'raid tonight, bring the '+MARKER, 7300)
+    readable(store, 'what build for the raid', 7250)
+    built(agent, 'they planned a raid with the '+MARKER)
+    shown = store.chat_context('123', 'public:51', '20', True, True)['member_summary']
+    return taken, turn(source(age=1, channel='51'), 'what did i plan', reply='your raid with the '+MARKER,
+                       summary_generation=shown['generation'])
+
+
+@pytest.mark.parametrize('how', ['prune', 'read'])
+def test_a_summary_expired_before_the_withdrawal_still_refuses_the_reply(world, how):
+    """The summary expired while the reply was written, so the withdrawal found none to drop: the expiry moved the
+    generation instead."""
+    from gene.fri_member_summary import TTL, prune
+    client, store = world
+    taken, body = drawn_on(client, store)
+    with store.connection() as db:
+        db.execute('UPDATE fri_member_summaries SET refreshed=?', (time.time()-TTL-60,))
+        if how == 'prune':
+            prune(db)
+    if how == 'read':
+        assert store.chat_context('123', 'public:51', '20', True, True)['member_summary'] is None
+    assert withdraw(client, taken).json() == {'ok': True, 'removed': 1}
+    refused = check(client, body)
+    assert refused.status_code == 409 and MARKER not in refused.text
+    assert post_turn(client, body).status_code == 409
+
+
+def test_another_members_privacy_change_taking_the_summary_refuses_a_reply_holding_it(world):
+    client, store = world
+    _, body = drawn_on(client, store)
+    with store.connection() as db:  # It drew on member 30's words too.
+        db.execute("UPDATE fri_member_summaries SET provenance=json_array(json_object('user_id','30','revision',0))")
+    store.personal_control('30', 'disable')
+    assert summary(store) is None
+    assert check(client, body).status_code == 409
+    assert check(client, {**body, 'summary_generation': summary_generation_now(store)}).json() == {'ok': True}
+
+
+def summary_generation_now(store, user='20'):
+    from gene.fri_member_summary import generation
+    with store.connection() as db:
+        return generation(db, '123', user)
+
+
+def test_a_late_save_of_a_withdrawn_message_leaves_a_newer_question_pending(world):
+    """Withdraw A; B, newer, leaves a question pending; then A's save arrives late. It keeps nothing, and B's question
+    is still pending, neither cleared nor replaced by A's."""
+    client, store = world
+    first, later = source(age=4, channel='51'), source(age=2, channel='51')
+    withdraw(client, first['id'])
+    asked = {'goal': 'play', 'topic': '', 'question': 'which song?'}
+    assert post_turn(client, turn(later, 'fri play music', reply='which song?', clarification=asked)).json()['ok']
+    late = turn(first, 'fri turn it up '+MARKER, reply='how loud?',
+                clarification={'goal': 'volume', 'topic': '', 'question': 'how loud?'})
+    assert post_turn(client, late).json() == {'ok': True, 'first_memory': False, 'kept': False}
+    pending = store.chat_context('123', 'public:51', '20', True, True)['pending']
+    assert pending and pending['question'] == 'which song?' and MARKER not in str(pending)

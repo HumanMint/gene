@@ -1049,9 +1049,11 @@ class Store:
             # theirs withdrawn before this save landed (gene #90): its exchange went, and this would be it again.
             from .fri_memory_store import predates
             first = ChatSource.model_validate(burst[0]['source']) if burst else source  # A burst's earliest.
-            stale = predates(db, guild_id, channel_id, user_id, first) or self.taken_back(
+            fenced = self.taken_back(
                 db, guild_id, user_id, [*([source.id] if source else []), *(row['source']['id'] for row in burst)])
-            if response_kind == 'reply':
+            stale = fenced or predates(db, guild_id, channel_id, user_id, first)
+            # A withdrawn message's late save leaves what's pending as it is: a newer turn may have left a question.
+            if response_kind == 'reply' and not fenced:
                 save_pending(db, guild_id, channel_id, user_id, revision, text, source,
                              None if stale else clarification, provenance if attributed else None)
             profile = self._personal_context(db, guild_id, channel_id, user_id)

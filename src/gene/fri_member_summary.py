@@ -55,18 +55,30 @@ def initialize(db):
     ''')
 
 
+def drop(db, guild, user):
+    """The member's summary goes, and its generation moves, whatever took it: a reply that already drew on it fails its
+    check and save (gene #91), as once it's gone a later withdrawal finds nothing to move."""
+    db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+    db.execute('INSERT INTO fri_member_summary_generations VALUES (?,?,1) ON CONFLICT(guild_id, user_id) '
+               'DO UPDATE SET generation=generation+1', (guild, user))
+
+
 def prune(db, now=None):
     now = now or time.time()
-    db.execute('DELETE FROM fri_member_summaries WHERE refreshed<?', (now-TTL,))
+    for row in db.execute('SELECT guild_id,user_id FROM fri_member_summaries WHERE refreshed<?', (now-TTL,)).fetchall():
+        drop(db, row[0], row[1])
     db.execute('DELETE FROM fri_member_summary_calls WHERE at<?', (now-DAY,))
 
 
 def erase(db, user_id):
     """Any privacy change of the member, or of anyone whose words it drew on, takes it. Their generation goes too:
-    their revision moves with it, so a turn that drew on an older summary still fails, on the revision."""
-    db.execute("DELETE FROM fri_member_summaries WHERE user_id=? OR EXISTS (SELECT 1 FROM "
-               "json_each(fri_member_summaries.provenance) p WHERE json_extract(p.value, '$.user_id')=?)",
-               (user_id, user_id))
+    their revision moves with it, so a turn that drew on an older summary still fails, on the revision. Another member's
+    summary that drew on their words goes too, and its generation moves, as that member's revision doesn't."""
+    for row in db.execute("SELECT guild_id,user_id FROM fri_member_summaries WHERE user_id<>? AND EXISTS (SELECT 1 FROM "
+                          "json_each(fri_member_summaries.provenance) p WHERE json_extract(p.value, '$.user_id')=?)",
+                          (user_id, user_id)).fetchall():
+        drop(db, row[0], row[1])
+    db.execute('DELETE FROM fri_member_summaries WHERE user_id=?', (user_id,))
     db.execute('DELETE FROM fri_member_summary_generations WHERE user_id=?', (user_id,))
 
 
@@ -94,11 +106,8 @@ def withdrawn(db, guild, user, conversation, message_id, saved):
     row = db.execute('SELECT origins,through FROM fri_member_summaries WHERE guild_id=? AND user_id=?',
                      (guild, user)).fetchone()
     gone = bool(row) and drew(json.loads(row['origins']), row['through'])
-    if gone:
-        db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
-        # A reply already drawing on it fails its check and save (gene #91). A repeat finds no summary, so moves nothing.
-        db.execute('INSERT INTO fri_member_summary_generations VALUES (?,?,1) ON CONFLICT(guild_id, user_id) '
-                   'DO UPDATE SET generation=generation+1', (guild, user))
+    if gone:  # A repeat finds no summary, so moves nothing.
+        drop(db, guild, user)
     record = AgentStore.get(db, CLAIM)
     # The build in flight may have been sent the summary as well as its own exchanges.
     if record and record['user_id'] == user and (gone or drew(
@@ -116,7 +125,7 @@ def read(db, guild, user):
     """The member's summary row, or None. An empty body is a build that found nothing worth keeping."""
     row = db.execute('SELECT * FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user)).fetchone()
     if row and not _current(db, row):
-        db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+        drop(db, guild, user)  # Expired, say, while a reply holding it was still being written.
         return None
     return row
 

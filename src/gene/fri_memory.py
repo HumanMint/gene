@@ -1,5 +1,6 @@
 """Bounded personal notes, never permissions, shared server facts, or worker input."""
 
+import bisect
 import re
 
 from .privacy import clean
@@ -9,10 +10,18 @@ CONVERSATION_ONLY = ('projects',)  # Kept where it was said; only the member's o
 MAX_NOTES = 10
 PER_CATEGORY = 3
 TTL = 90 * 86400
+MAX_SPOTS = 8  # The same words more often than this in one message keep nothing.
 QUOTED = ('"', "'", '“', '‘', '>', '`')
 SENTENCE = re.compile(r'[!?;\n]+|(?<![.\d])\.(?![.\d])')
-# Common fillers that only look like a denial or a report: "not gonna lie, i like chess".
-FILLER = re.compile(r"(?i)\b(?:not (?:gonna|going to) lie|not to brag|no (?:cap|lie|offen[cs]e)|"
+# Single quotes open after a non-word and close before one; "don't", "i'm", "'cause" and "'90s" are neither.
+SINGLE = re.compile(r"(?<!\w)(['‘])(?=\S)(?!(?i:cause|cuz|coz|bout|til|till|em|n|round)\b|\d\ds?\b)|(?<=\S)'(?!\w)")
+# A sentence ending in "she said:", so the next one is her words.
+PRIOR = re.compile(r"(?i)(?:\b(?:said|says|wrote|writes|texted|asked|goes|told me|tells me)\b\W*|:\s*)$")
+# Common fillers that only look like a denial or a report, on their own or after "i": "not gonna lie, i like
+# chess", "i have to say i like chess". After anyone else, "they have to say …" stays a report.
+FILLER = re.compile(r"(?i)(^\W*|\b(?:lol|lmao|haha|ok|okay|yeah|yea|ya|so|and|but|also|honestly|tbh|fri|bro|dude|"
+                    r"hey|yo|oh|well|btw)\W+|\b(?:i|i'd|i'll|i'm|im|i've|ive)\s+(?:(?:really|just|honestly)\s+)?)"
+                    r"(?:not (?:gonna|going to) lie|not to brag|no (?:cap|lie|offen[cs]e)|"
                     r"(?:gotta|got to|have to|must|needless to) say|if (?:i'm|im|i am) honest|if you ask me)\b")
 # Someone else's words, a supposition or a quotation: nothing after it in the sentence is the member's claim.
 FRAMED = re.compile(
@@ -53,8 +62,15 @@ def personal_note(candidate, text):
     if clean(evidence, 180) != evidence or any(s in evidence for s in ('\n', '`', '<@', '://')):
         return None
     # Every place these words stand as whole words must be the member's own plain claim; any doubt keeps nothing.
-    spots = [m.start() for m in re.finditer(f'(?={re.escape(evidence)})', text) if whole(text, m.start(), evidence)]
-    if not spots or not all(claimed(text, at, evidence) for at in spots):
+    spots, at = [], text.find(evidence)
+    while at >= 0 and len(spots) <= MAX_SPOTS:
+        if whole(text, at, evidence):
+            spots.append(at)
+        at = text.find(evidence, at + 1)
+    if not spots or len(spots) > MAX_SPOTS:
+        return None
+    source = Source(text)
+    if not all(source.claims(at, evidence) for at in spots):
         return None
     # What a member is doing is only ever a projects note, and a projects note only ever says what they're doing.
     if candidate['category'] == 'projects':
@@ -77,37 +93,61 @@ def whole(text, at, evidence):
                 or (re.match(r'\w', evidence[-1]) and re.match(r'\w', text[end:end + 1])))
 
 
-def claimed(text, at, evidence):
-    """Whether the words at text[at:] are the member's own claim, not quoted, reported, denied, asked or taken back."""
-    before, after = text[:at].replace('’', "'"), text[at + len(evidence):].replace('’', "'")
-    # Single quotes open after a non-word and close before one; "don't", "i'm", "'cause" and "'90s" are neither.
-    single = [m.group(1) for m in re.finditer(r"(?<!\w)(['‘])(?=\S)(?!(?i:cause|cuz|coz|bout|til|till|em|n|round)\b"
-                                              r"|\d\ds?\b)|(?<=\S)'(?!\w)", before)]
-    if (before.rstrip().endswith(QUOTED) or before.rsplit('\n', 1)[-1].lstrip().startswith('>')
-            or re.search(r'(?m)^\s*>>>', before) or before.count('`') % 2 or before.count('"') % 2
-            or before.count('“') > before.count('”') or (single and single[-1])
-            or after.lstrip()[:1] in ('"', '”') or re.match(r"\s*'(?!\w)", after)):
-        return False  # Quoted, code or a blockquote.
-    *earlier, lead = SENTENCE.split(before)
-    prior = next((part for part in reversed(earlier) if part.strip()), '')
-    if re.search(r"(?i)(?:\b(?:said|says|wrote|writes|texted|asked|goes|told me|tells me)\b\W*|:\s*)$", prior):
-        return False  # "she said:" and then the words on their own line.
-    lead = FILLER.sub(' ', lead)
-    if FRAMED.search(lead) or NEGATED.search(lead) or re.search(r'\w:(?:\s|$)', lead):
-        return False  # "she said honestly …", "dont ever …", "bob: …".
-    stop = SENTENCE.search(after)
-    rest, end, following = (after[:stop.start()], stop.group(), after[stop.end():]) if stop else (after, '', '')
-    if '?' in end and not (evidence.lower().startswith('call me') and POLITE.fullmatch(lead)
-                           and re.fullmatch(r'(?i)\W*(?:(?:please|pls|plz|from now on|instead|now)\W*)*', rest)):
-        return False  # "i like chess?" asks.
-    if RETRACTED.search(evidence + rest) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest):
-        return False  # "… jk", "… said no one ever".
-    if TAKEN_BACK.fullmatch(next((part for part in SENTENCE.split(following) if part.strip()), '')):
-        return False  # "… . jk"
-    if evidence.lower().startswith('call me'):
-        return bool(ASKING.search(lead)) and not IDIOM.match(evidence + rest)
-    words = re.findall(r"[\w']+", lead.lower())
-    return not words or words[-1] not in ASKED
+class Source:
+    """One read of a member's message: its sentences, lines and quotes, so no occurrence rescans it."""
+
+    def __init__(self, text):
+        self.text = t = text.replace('’', "'")
+        # Sentence k is starts[k]:ends[k], then its terminator up to stops[k].
+        found = list(SENTENCE.finditer(t))
+        self.starts = [0] + [m.end() for m in found]
+        self.ends = [m.start() for m in found] + [len(t)]
+        self.stops = [m.end() for m in found] + [len(t)]
+        self.filled = [k for k, (a, b) in enumerate(zip(self.starts, self.ends)) if t[a:b].strip()]
+        self.reported = [bool(PRIOR.search(t[self.starts[k]:self.ends[k]])) for k in self.filled]
+        # Whether each line is a blockquote or follows a ">>>" one.
+        self.lines, self.blocked, deep = [0] + [m.end() for m in re.finditer('\n', t)], [], False
+        for a, b in zip(self.lines, self.lines[1:] + [len(t)]):
+            line = t[a:b].lstrip()
+            deep = deep or line.startswith('>>>')
+            self.blocked.append(deep or line.startswith('>'))
+        self.marks = {c: [m.start() for m in re.finditer(re.escape(c), t)] for c in '`"“”'}
+        found = list(SINGLE.finditer(t))
+        self.quotes, self.opens = [m.start() for m in found], [bool(m.group(1)) for m in found]
+
+    def claims(self, at, evidence):
+        """Whether the words at `at` are the member's own claim, not quoted, reported, denied, asked or taken back."""
+        t, end = self.text, at + len(evidence)
+        k = bisect.bisect_right(self.stops, at)
+        if bisect.bisect_right(self.stops, end - 1) != k:
+            return False  # Within one sentence: "i like chess. no" is two.
+        seen = {c: bisect.bisect_left(found, at) for c, found in self.marks.items()}
+        quote, after = bisect.bisect_left(self.quotes, at), t[end:].lstrip()
+        if (t[:at].rstrip().endswith(QUOTED) or self.blocked[bisect.bisect_right(self.lines, at) - 1]
+                or seen['`'] % 2 or seen['"'] % 2 or seen['“'] > seen['”'] or (quote and self.opens[quote - 1])
+                or after[:1] in ('"', '”') or re.match(r"'(?!\w)", after)):
+            return False  # Quoted, code or a blockquote.
+        lead = FILLER.sub(r'\1 ', t[self.starts[k]:at])
+        rest = t[end:self.ends[k]]  # Empty when the evidence takes in the terminator.
+        before = bisect.bisect_left(self.filled, k)
+        if ((before and self.reported[before - 1]) or FRAMED.search(lead) or NEGATED.search(lead)
+                or re.search(r'\w:(?:\s|$)', lead)):
+            return False  # "she said:" the line before, "she said honestly …", "dont ever …", "bob: …".
+        call = evidence.lower().startswith('call me')
+        if '?' in t[self.ends[k]:self.stops[k]] and not (
+                call and POLITE.fullmatch(lead)
+                and re.fullmatch(r'(?i)\W*(?:(?:please|pls|plz|from now on|instead|now)\W*)*', rest)):
+            return False  # "i like chess?" asks.
+        claim, later = t[at:end] + rest, bisect.bisect_right(self.filled, k)
+        following = (t[self.starts[self.filled[later]]:self.ends[self.filled[later]]]
+                     if later < len(self.filled) else '')
+        if (RETRACTED.search(claim) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest)
+                or TAKEN_BACK.fullmatch(following)):
+            return False  # "… jk", "… said no one ever", "… . jk".
+        if call:
+            return bool(ASKING.search(lead)) and not IDIOM.match(claim)
+        words = re.findall(r"[\w']+", lead.lower())
+        return not words or words[-1] not in ASKED
 
 
 def memory_intent(text):

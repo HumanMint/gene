@@ -1,4 +1,5 @@
 import asyncio
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -121,6 +122,10 @@ def test_projects_notes_keep_every_other_rule(candidate, text):
     ('games', 'i like chess', "i can't say i like chess"),
     ('games', 'i like chess', 'not that i like chess'),
     ('games', 'i like chess', 'no way i like chess'),
+    ('games', 'i like chess', 'they have to say i like chess'),
+    ('games', 'i like chess', 'people gotta say i like chess'),
+    ('games', 'i like chess', 'my mom must say i like chess'),
+    ('games', 'i like chess', 'they, have to say i like chess'),
     # Someone else's words, or a claim that isn't one.
     ('games', 'i like chess', 'she said honestly i like chess'),
     ('games', 'i play valorant too much', 'my mom says i play valorant too much'),
@@ -147,6 +152,11 @@ def test_projects_notes_keep_every_other_rule(candidate, text):
     ('games', 'i like chess', 'i like chess\nlol no'),
     ('games', 'i like chess', 'i like chess. /s'),
     ('games', 'i like chess', 'i like chess. not really'),
+    # The evidence itself holds the question or the retraction.
+    ('games', 'i like chess?', 'i like chess?'),
+    ('games', 'i like chess. no', 'i like chess. no'),
+    ('games', 'i like chess. jk', 'i like chess. jk'),
+    ('games', 'i like chess. not really', 'lol i like chess. not really'),
     ('music', 'i love mondays', 'i love mondays said no one ever'),
     ('games', 'i like chess', 'bob: i like chess'),
     ('games', 'i like chess', 'she said:\ni like chess'),
@@ -183,6 +193,10 @@ def test_notes_are_the_members_own_plain_claim(category, evidence, text):
     ('games', 'i like chess', 'not gonna lie, i like chess'),
     ('games', 'i like chess', 'no cap i like chess'),
     ('games', 'i like chess', 'gotta say i like chess'),
+    ('games', 'i like chess', 'i have to say i like chess'),
+    ('games', 'i like chess', "i've got to say i like chess"),
+    ('games', 'i like chess', "i'm not gonna lie, i like chess"),
+    ('games', 'i like chess', 'lol no cap i like chess'),
     ('music', 'i love trance', 'ngl i love trance'),
     ('games', 'i play valorant', 'fri i play valorant'),
     ('games', 'i play valorant', 'yeah, i play valorant'),
@@ -214,6 +228,9 @@ def test_notes_are_the_members_own_plain_claim(category, evidence, text):
     ('nickname', 'call me dan', 'could you call me dan?'),
     ('nickname', 'call me dan', 'would you call me dan?'),
     ('nickname', 'call me dan', 'can you please call me dan?'),
+    ('nickname', 'call me dan?', 'can you call me dan?'),
+    ('games', 'i like chess!', 'i like chess!'),
+    ('games', 'i like chess.', 'lol i like chess.'),
     ('nickname', 'call me dan', 'can u call me dan from now on?'),
     ('nickname', 'call me dan', 'i want you to call me dan'),
     ('nickname', 'call me dan', 'from now on just call me dan'),
@@ -225,6 +242,24 @@ def test_notes_are_the_members_own_plain_claim(category, evidence, text):
 ])
 def test_harmless_lead_ins_still_keep_a_note(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
+
+
+def test_a_long_repetitive_message_is_read_once_not_per_occurrence():
+    text = ('i play ' * 572)[:4000]
+    long = ('blah ' * 90 + 'i like chess ') * 8  # One 3,700-character sentence, at the cap.
+    started = time.perf_counter()
+    for evidence in ('i play', 'i play i play', 'i play i play i play'):
+        personal_note({'category': 'games', 'evidence': evidence}, text)
+    personal_note({'category': 'games', 'evidence': 'i like chess'}, long)
+    assert time.perf_counter() - started < 0.25
+
+
+def test_the_same_words_too_many_times_keep_nothing():
+    note = {'category': 'games', 'evidence': 'i like chess'}
+    assert personal_note(note, 'i like chess. ' * 8) == ('games', 'i like chess')
+    assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
+    assert personal_note(note, 'i like chess. ' * 9) is None
+    assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
 
 
 def test_a_denied_nickname_keeps_no_note_when_saved(store):

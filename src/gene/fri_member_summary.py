@@ -6,8 +6,9 @@ them: never a DM, the /fri panel or a restricted channel. It carries whose words
 when any of them changes their privacy settings or the member's own revision moves (forget me, memory
 off, cleared chats, an edit), or when a message of theirs it may have read is withdrawn. It lapses
 30 days after its last refresh. Fri builds it in its background loop, since the controller has no
-model access: at most one call per member a day, kept only if nothing changed since the claim. Before
-a rollback to a controller without it:
+model access: at most one call per member a day, kept only if nothing changed since the claim. A
+withdrawal that drops it moves the member's summary generation, so a reply that already drew on it is
+refused (gene #91). Before a rollback to a controller without it:
 python -m gene.fri_member_summary purge <database>
 """
 
@@ -48,20 +49,49 @@ def initialize(db):
             provenance TEXT NOT NULL, origins TEXT NOT NULL, refreshed REAL NOT NULL, through REAL NOT NULL,
             PRIMARY KEY(guild_id, user_id));
         CREATE TABLE IF NOT EXISTS fri_member_summary_calls (user_id TEXT PRIMARY KEY, at REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS fri_member_summary_generations (
+            guild_id TEXT NOT NULL, user_id TEXT NOT NULL, generation INTEGER NOT NULL,
+            PRIMARY KEY(guild_id, user_id));
     ''')
+
+
+def advance(db, guild, user):
+    """The member's summary generation moves: a reply that drew on the summary it had fails its check and save (gene
+    #91). Whatever took or replaced that summary, since once it's gone a later withdrawal finds nothing to move."""
+    db.execute('INSERT INTO fri_member_summary_generations VALUES (?,?,1) ON CONFLICT(guild_id, user_id) '
+               'DO UPDATE SET generation=generation+1', (guild, user))
+
+
+def drop(db, guild, user):
+    db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+    advance(db, guild, user)
 
 
 def prune(db, now=None):
     now = now or time.time()
-    db.execute('DELETE FROM fri_member_summaries WHERE refreshed<?', (now-TTL,))
+    for row in db.execute('SELECT guild_id,user_id FROM fri_member_summaries WHERE refreshed<?', (now-TTL,)).fetchall():
+        drop(db, row[0], row[1])
     db.execute('DELETE FROM fri_member_summary_calls WHERE at<?', (now-DAY,))
 
 
 def erase(db, user_id):
-    """Any privacy change of the member, or of anyone whose words it drew on, takes it."""
-    db.execute("DELETE FROM fri_member_summaries WHERE user_id=? OR EXISTS (SELECT 1 FROM "
-               "json_each(fri_member_summaries.provenance) p WHERE json_extract(p.value, '$.user_id')=?)",
-               (user_id, user_id))
+    """Any privacy change of the member, or of anyone whose words it drew on, takes it. Their generation goes too:
+    their revision moves with it, so a turn that drew on an older summary still fails, on the revision. Another member's
+    summary that drew on their words goes too, and its generation moves, as that member's revision doesn't."""
+    for row in db.execute("SELECT guild_id,user_id FROM fri_member_summaries WHERE user_id<>? AND EXISTS (SELECT 1 FROM "
+                          "json_each(fri_member_summaries.provenance) p WHERE json_extract(p.value, '$.user_id')=?)",
+                          (user_id, user_id)).fetchall():
+        drop(db, row[0], row[1])
+    db.execute('DELETE FROM fri_member_summaries WHERE user_id=?', (user_id,))
+    db.execute('DELETE FROM fri_member_summary_generations WHERE user_id=?', (user_id,))
+
+
+def generation(db, guild, user):
+    """How many times a withdrawal has dropped the member's summary. Chat context returns it with the summary, and a
+    turn that drew on that summary sends it back: once it moves, that turn's reply may hold withdrawn words."""
+    row = db.execute('SELECT generation FROM fri_member_summary_generations WHERE guild_id=? AND user_id=?',
+                     (guild, user)).fetchone()
+    return row[0] if row else 0
 
 
 def withdrawn(db, guild, user, conversation, message_id, saved):
@@ -80,8 +110,8 @@ def withdrawn(db, guild, user, conversation, message_id, saved):
     row = db.execute('SELECT origins,through FROM fri_member_summaries WHERE guild_id=? AND user_id=?',
                      (guild, user)).fetchone()
     gone = bool(row) and drew(json.loads(row['origins']), row['through'])
-    if gone:
-        db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+    if gone:  # A repeat finds no summary, so moves nothing.
+        drop(db, guild, user)
     record = AgentStore.get(db, CLAIM)
     # The build in flight may have been sent the summary as well as its own exchanges.
     if record and record['user_id'] == user and (gone or drew(
@@ -99,7 +129,7 @@ def read(db, guild, user):
     """The member's summary row, or None. An empty body is a build that found nothing worth keeping."""
     row = db.execute('SELECT * FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user)).fetchone()
     if row and not _current(db, row):
-        db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+        drop(db, guild, user)  # Expired, say, while a reply holding it was still being written.
         return None
     return row
 
@@ -204,6 +234,9 @@ def finish(agent, claim_id, summary, status, conversations, previous):
             db.commit()  # The claim is spent either way.
             raise Conflict('Memory changed while Fri was summarizing. Nothing was kept.')
         origins = sorted(set(kept) | set((earlier or {}).get('origins', [])))
+        if db.execute('SELECT 1 FROM fri_member_summaries WHERE guild_id=? AND user_id=?',
+                      (agent.settings.guild_id, record['user_id'])).fetchone():
+            advance(db, agent.settings.guild_id, record['user_id'])  # Replacing one a reply may hold.
         db.execute('INSERT INTO fri_member_summaries VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE '
                    'SET body=excluded.body,revision=excluded.revision,provenance=excluded.provenance,'
                    'origins=excluded.origins,refreshed=excluded.refreshed,through=excluded.through',
@@ -261,6 +294,7 @@ def purge(path):
         with db:
             db.execute('DROP TABLE IF EXISTS fri_member_summaries')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_calls')
+            db.execute('DROP TABLE IF EXISTS fri_member_summary_generations')
             db.execute('DELETE FROM agent_state WHERE key IN (?,?)', (CLAIM, NEXT))
     finally:
         db.close()

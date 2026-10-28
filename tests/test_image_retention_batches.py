@@ -184,7 +184,9 @@ def test_an_incomplete_legacy_level_blocks_only_inside_the_rollback_depth(batch_
 
 
 def stage_of(root, n):
-    return next((root / 'staging').glob('batch-' + gene(n) + '*'))
+    """Batch n's own record, whichever format; never a Fri-only batch on the same Gene."""
+    return next(path for path in (root / 'staging' / f'batch-{gene(n)}-{fri(n)}', root / 'staging' / f'batch-{gene(n)}')
+                if path.exists())
 
 
 def set_marks(stage, marks):
@@ -870,18 +872,18 @@ def test_an_interrupted_removal_run_still_logs_what_it_removed(batch_host, monke
 
 def test_a_run_keeps_the_batch_lock_for_a_bounded_time(batch_host, monkeypatch):
     root, images = batch_host.root, batch_host.images
-    clock = [NOW]
-    monkeypatch.setattr(retention.time, 'time', lambda: clock[0])
+    clock = [1000.0]
+    monkeypatch.setattr(retention, 'monotonic', lambda: clock[0])
     calls = []
 
-    def slow(tag):  # still inside the window, but past the budget once the first tag is done
+    def slow(tag):  # still inside the window, but too little of the hold is left once the first tag is done
         if calls:
-            clock[0] = NOW + retention.LOCK_BUDGET
+            clock[0] += retention.LOCK_BUDGET - retention.REMOVAL_MARGIN + 1
 
     monkeypatch.setattr(retention, 'command', removing(images, calls, on_inspect=slow))
     result = retention.run(root, apply=True)
-    assert calls == ['gene-worker:' + gene(0)] and 'held batch-release.lock' in result['deferred']
-    assert retention.window_open(clock[0])
+    assert calls == ['gene-worker:' + gene(0)] and 'hold on batch-release.lock' in result['deferred']
+    assert retention.window_open(retention.time.time())
 
 
 def test_a_batch_record_written_during_discovery_stops_the_run(batch_host, monkeypatch):

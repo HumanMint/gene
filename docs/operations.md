@@ -198,7 +198,20 @@ only when everything its `rollback-gene` and `resume-old` read is present and co
 - on the first level, the controller's `previous_sha` naming its old Gene and the live runtime and
   worker pins naming its new images.
 
-The live Fri pins must be the Fri of the latest batch in service. A legacy maintainer level is complete with
+A Fri-only batch on top of a Gene level must be undone by `rollback-fri` before that level's
+`rollback-gene` can start, since `pair_check` accepts only the level's own Fri. So every Fri-only batch
+in service above a level, newest first, must also be complete before the level counts:
+
+- the manifest's old pair, only its Fri changed, and every tag still naming its recorded image;
+- the journal's `fri_backup`, `drained`, `gene_recorded`, `fri_switched` and `resumed`;
+- `baseline.json` for its Gene, whose `previous_sha` and source are the Gene release it sits on's;
+- its backup's `fri-release.env` and `fri-release.json` naming its old Fri;
+- its Gene images being the ones that Gene release put in service.
+
+The pair must continue down the chain: each Fri-only batch's Fri is the Fri rolled back to so far, and
+each step's new images are the ones the release after it replaced. The live Fri pins must be the Fri
+of the latest batch in service. The plan lists Fri-only steps in `lineage` with `fri_only`; they don't
+count as levels. A legacy maintainer level is complete with
 `installed-source/`, `controller.sqlite3`, `red.tar.gz`, `fri.tar.gz`, pins naming the previous
 release, and its cogs. An incomplete level inside the two protected levels refuses and names what
 is missing; levels beyond them are not consulted.
@@ -216,8 +229,11 @@ command holds it, the run skips. While retention holds it, a batch command that 
 included, stops at its lock check (`another batch-release command ... still is running`, exit 1,
 logged `failed: exit 1`) before it reads or changes anything; `fuser -v` shows the holder, and the
 command is repeated once retention finishes. So nothing a batch stages can name an image mid-removal.
-To keep that wait short, a run stops removing 10 minutes after it took the lock and the rest wait for
-the next window (`deferred`); the service's 20-minute timeout bounds a stuck run.
+To keep that wait short, a run gives the lock back within 10 minutes of taking it, measured on a
+monotonic clock. Every command it starts, discovery and planning included, times out at the time left;
+when that runs out it stops without saving a plan and skips (exit 4). A removal starts only with two
+minutes left, so the rest wait for the next window (`deferred`). The service's 20-minute timeout bounds
+anything else.
 
 **What it keeps and what it removes.** It removes a release tag only with supersession evidence
 past a 24-hour grace period: a successful deployment's backup, a batch in service (its old Gene
@@ -274,7 +290,7 @@ so a newly installed or repaired tool removes nothing until a maintainer has rev
 outcome `ok`, `skipped` or `failed`, detail), the last success with its exact plan and removals, and
 the failures since. `gene_image_retention.py --status` is read-only (no lock, no writes, no
 container), so it can run at any hour. It combines that record with the timer's and service's
-systemd state and reports `status`: `ok`, `failing` (the last service run or recorded run failed),
+systemd state and reports `status`: `ok`, `failing` (the last service run failed, or a run failed since the last success: a skip clears nothing),
 `disabled` (the timer is not enabled and active), `never-run`, `stale` (no success for 50 hours, two
 missed windows) or `unknown`, with `healthy`, `reasons` and `last_success_at`. It exits 0 only when
 healthy. An enabled timer whose service keeps failing reads as failing, not healthy.

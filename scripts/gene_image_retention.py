@@ -37,13 +37,17 @@ ROLES = {'runtime', 'worker', 'fri'}
 LIVE = {'gene_recorded', 'fri_switched', 'resumed'}
 # What batch-release.sh's rollback-gene and resume-old read from a batch, besides its manifest and images.
 LEVEL_MARKS = LIVE | {'gene_attempted', 'drained'}
+FRI_ONLY_MARKS = LIVE | {'fri_backup', 'drained'}  # what rollback-fri and resume-old need from a Fri-only batch
 BACKUP_FILES = ('release.env', 'worker.env', 'fri-release.env', 'fri-release.json', 'db/controller.sqlite3',
                 'installed-source/ops/compose.yml', 'installed-source/ops/fri-compose.yml')
 DOWNGRADES = re.compile(r'(?:gene\.[a-z_]+(?: gene\.[a-z_]+)*)?')
 ZONE = 'America/Los_Angeles'
 EARLIEST = 1793059200  # 2026-10-27T00:00Z: a clock before the window policy existed is not trusted
 STALE = 50 * 60 * 60  # two missed daily windows
-LOCK_BUDGET = 10 * 60  # longest a run keeps batch-release.lock before deferring the rest of its removals
+LOCK_BUDGET = 10 * 60  # longest a run keeps batch-release.lock, from taking it to its last removal
+REMOVAL_MARGIN = 120  # a removal starts only with a full command timeout left on the budget
+monotonic = time.monotonic  # the budget's clock
+DEADLINE = None  # while a run holds batch-release.lock: the monotonic time it must give the lock back by
 REFUSED = 4  # exit status of a refused or skipped run: nothing changed, the next window tries again
 FRI_ROOT = Path('/srv/fri')
 RELEASE = Path(__file__).resolve().parent.name  # maintenance/releases/<sha>/ when installed
@@ -69,8 +73,28 @@ class Busy(ValueError):
     """Another release step holds the host. Nothing changed; the next window tries again."""
 
 
+def spent():
+    return Busy(f'This run used its {LOCK_BUDGET // 60}-minute hold on batch-release.lock; the rest waits for the '
+                'next window')
+
+
+def check_deadline():
+    if DEADLINE is not None and DEADLINE - monotonic() <= 0:
+        raise spent()
+
+
 def command(*args):
-    return subprocess.check_output(args, text=True, timeout=120)
+    """Every command a run starts ends within the time left on its hold of batch-release.lock."""
+    left = math.inf if DEADLINE is None else DEADLINE - monotonic()
+    if left <= 0:
+        raise spent()
+    timeout = min(120, left)
+    try:
+        return subprocess.check_output(args, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        if timeout < 120:
+            raise spent() from None
+        raise
 
 
 def read_env(path):
@@ -213,11 +237,12 @@ def process_refs():
 
 @contextmanager
 def batch_lock(root):
-    """batch-release.sh's own lock, taken non-blocking and held for the whole run.
+    """batch-release.sh's own lock, taken non-blocking and held for the whole run, for at most LOCK_BUDGET.
 
     No batch command starts while retention discovers and removes. One that tries exits 1 at its lock
     check having changed nothing (batch_lock in batch-release.sh), and is repeated once this run ends.
     """
+    global DEADLINE
     path = root / 'batch-release.lock'
     try:
         descriptor = os.open(path, os.O_RDONLY)
@@ -228,8 +253,10 @@ def batch_lock(root):
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise Busy('A batch-release command holds its lock; retry in the next window') from None
+        DEADLINE = monotonic() + LOCK_BUDGET
         yield
     finally:
+        DEADLINE = None
         os.close(descriptor)
 
 
@@ -387,6 +414,53 @@ def batch_step(root, record, by_tag):
     return old_fri, baseline['settings']['previous_sha']
 
 
+def fri_step(root, record, by_tag, restores, source, gene_images):
+    """A Fri-only batch above a Gene level, which rollback-fri undoes before that level's rollback-gene can run:
+    everything its rollback-fri and resume-old read.
+
+    restores is the controller previous_sha of the Gene release it sits on, source that release's source
+    marker when known, and gene_images that release's runtime and worker images when known.
+    """
+    name, old, new = record['name'], record['images']['old'], record['images']['new']
+
+    def incomplete(why):
+        return ValueError(f'Batch {name} is not a complete Fri-only rollback: {why}')
+    if not record['old_pair']:
+        raise incomplete('its manifest names no old pair, so this batch-release.sh cannot roll it back')
+    missing = sorted(FRI_ONLY_MARKS - record['marks'])
+    if missing:
+        raise incomplete('its journal has no ' + ', '.join(missing))
+    if (record['fri'] == record['old_fri'] or new['runtime'] != old['runtime'] or new['worker'] != old['worker']
+            or new['fri'] != ('fri-runtime:' + record['fri'], new['fri'][1])):
+        raise incomplete('its images are not a Fri-only release')
+    if gene_images is not None and (old['runtime'], old['worker']) != gene_images:
+        raise incomplete('its Gene images are not the ones the Gene release it sits on put in service')
+    for kind, entries in (('old', old), ('new', new)):
+        for role, (tag, iid) in sorted(entries.items()):
+            if by_tag.get(tag) != iid:
+                raise incomplete(f'{kind} {role} image {tag} is missing or changed')
+    baseline = baseline_of(root, record, incomplete)
+    if baseline['settings']['previous_sha'] != restores:
+        raise incomplete(f"its baseline.json previous_sha {baseline['settings']['previous_sha']} is not the Gene "
+                         f"release it sits on's ({restores})")
+    if source is not None and baseline['source'] != source:
+        raise incomplete('its baseline.json source is not the Gene release it sits on')
+    backup = switch_backup(root, record)
+    if backup is None:
+        raise incomplete('its switch backup is missing or outside backups/')
+    missing = [path for path in ('fri-release.env', 'fri-release.json') if not (backup / path).is_file()]
+    if missing:
+        raise incomplete(f'backup {backup.name} is missing ' + ', '.join(missing))
+    try:
+        fri_record = json.loads((backup / 'fri-release.json').read_text())
+    except ValueError:
+        fri_record = None
+    if (read_pins(backup / 'fri-release.env', {'FRI_RELEASE_SHA', 'FRI_RUNTIME_IMAGE'})
+            != {'FRI_RELEASE_SHA': record['old_fri'], 'FRI_RUNTIME_IMAGE': old['fri'][0]}
+            or not isinstance(fri_record, dict) or fri_record.get('sha') != record['old_fri']):
+        raise incomplete(f'backup {backup.name} disagrees with its manifest')
+
+
 def baseline_of(root, record, incomplete):
     """baseline.json, the pre-batch state rollback-gene restores and verify old compares against."""
     path = root / 'staging' / record['name'] / 'baseline.json'
@@ -487,8 +561,14 @@ def snapshot(root, policy):
     for record in live:
         for tag in batch_evidence(root, record, by_tag):
             superseded(tag, record['at'], 'Superseded in batch release history (' + record['name'] + ')')
+    fri_pins = {}
+    if records:
+        # Fri images are batch cleanup's to remove, but the batch records must still lead back from the live Fri.
+        fri_pins = read_pins(FRI_ROOT / 'release.env', {'FRI_RELEASE_SHA', 'FRI_RUNTIME_IMAGE'})
     rollback_files, lineage = {}, []
-    cursor, before, complete = settings['active_sha'], float('inf'), 0
+    cursor, before, complete, steps = settings['active_sha'], float('inf'), 0, 0
+    # The release pair a rollback lands on, carried down the chain: its Fri, and the images it runs.
+    fri_cursor, carried = fri_pins.get('FRI_RELEASE_SHA') if records else None, None
     # Preserve two complete rollback configurations, rather than guessing by image age. Each step back is
     # the latest earlier release of the cursor, from either history; a tie between them is ambiguous.
     while complete < ROLLBACK_DEPTH:
@@ -500,13 +580,45 @@ def snapshot(root, policy):
         if len(events) > 1 and events[0][0] == events[1][0]:
             raise ValueError('Ambiguous rollback lineage for ' + cursor)
         at, event = events[0]
-        if isinstance(event, dict):
-            name, previous = event['name'], event['old_gene']
-            if before == float('inf') and previous != settings.get('previous_sha'):
+        batch = isinstance(event, dict)
+        previous = event['old_gene'] if batch else event[2]
+        # Fri-only releases on this Gene come back first, newest first, by rollback-fri: each must be complete
+        # and continue the pair, or this level's rollback-gene can never start.
+        stacked = sorted((r for r in live if not r['gene_changes'] and r['gene'] == cursor and at < r['at'] < before),
+                         key=lambda r: r['at'], reverse=True)
+        for fri_only, after in zip(stacked, stacked[1:] + [None]):
+            name = fri_only['name']
+            if after is not None and after['at'] == fri_only['at']:
+                raise ValueError('Ambiguous Fri-only history for ' + cursor)
+            if fri_cursor is not None and fri_only['fri'] != fri_cursor:
+                raise ValueError(f"Batch {name} Fri {fri_only['fri'][:7]} does not continue Fri {fri_cursor[:7]}")
+            if carried is not None and fri_only['images']['new'] != carried:
+                raise ValueError(f'Batch {name} images are not the ones the release after it replaced')
+            fri_step(root, fri_only, by_tag, previous, cursor if batch else None,
+                     (event['images']['new']['runtime'], event['images']['new']['worker']) if batch else None)
+            for entries in fri_only['images'].values():
+                for _, iid in entries.values():
+                    hold(iid, f'{ROLLBACK} (batch {name})')
+            rollback_files[name] = {'backup': fri_only['backup'], 'fri': fri_only['old_fri']}
+            lineage.append({'sha': cursor, 'previous': cursor, 'record': 'batch ' + name, 'fri': fri_only['fri'],
+                            'previous_fri': fri_only['old_fri'], 'fri_only': True})
+            fri_cursor, carried, before = fri_only['old_fri'], fri_only['images']['old'], fri_only['at']
+        if batch:
+            name = event['name']
+            if steps == 0 and previous != settings.get('previous_sha'):
                 raise ValueError('Controller rollback pointer disagrees with batch ' + name)
             new = event['images']['new']
             if complete == 0 and current_refs != [new['runtime'][0], new['worker'][0]]:
                 raise ValueError('Live Gene image pins disagree with batch ' + name)
+            if fri_cursor is not None and event['fri'] != fri_cursor:
+                if not lineage:
+                    raise ValueError(f'Live Fri is not the release batch {name} put in service, and no complete '
+                                     'Fri-only release leads back to it')
+                raise ValueError(f"Batch {name} is not a complete rollback configuration: the Fri {fri_cursor[:7]} "
+                                 f"its later releases roll back to does not continue its Fri {event['fri'][:7]}")
+            if carried is not None and new != carried:
+                raise ValueError(f'Batch {name} is not a complete rollback configuration: its new images are not '
+                                 'the ones the release after it replaced')
             old_fri, restores = batch_step(root, event, by_tag)
             for entries in event['images'].values():
                 for _, iid in entries.values():
@@ -515,11 +627,14 @@ def snapshot(root, policy):
             lineage.append({'sha': cursor, 'previous': previous, 'record': 'batch ' + name,
                             'fri': event['fri'], 'previous_fri': old_fri, 'restores_previous': restores})
             protected_shas.add(previous)
+            fri_cursor, carried = old_fri, event['images']['old']
             cursor, before = previous, at
             complete += 1
+            steps += 1
             continue
+        fri_cursor = carried = None  # Older installs recorded no Fri release.
         job, _, previous, at = event
-        if before == float('inf') and previous != settings.get('previous_sha'):
+        if steps == 0 and previous != settings.get('previous_sha'):
             raise ValueError('Controller rollback pointer disagrees with deployment history')
         if not SHA.fullmatch(previous):
             raise ValueError('Invalid rollback lineage')
@@ -539,6 +654,7 @@ def snapshot(root, policy):
             lineage.append({'sha': cursor, 'previous': previous, 'record': 'cog job ' + job})
             protected_shas.add(previous)
             cursor, before = previous, at
+            steps += 1
             continue
         missing = [] if (backup / 'installed-source').is_dir() else ['installed-source']
         missing += [name for name in ('controller.sqlite3', 'red.tar.gz', 'fri.tar.gz')
@@ -557,16 +673,15 @@ def snapshot(root, policy):
         protected_shas.add(previous)
         cursor, before = previous, at
         complete += 1
+        steps += 1
     # Rolling a batch back restores baseline.json's previous_sha, which the next level's rollback then checks.
-    for step, below in zip(lineage, lineage[1:]):
+    gene_levels = [step for step in lineage if not step.get('fri_only')]
+    for step, below in zip(gene_levels, gene_levels[1:]):
         if 'restores_previous' in step and step['restores_previous'] != below['previous']:
             raise ValueError(f"Batch {step['record'].removeprefix('batch ')} is not a complete rollback configuration: "
                              f"its baseline.json previous_sha {step['restores_previous']} is not the next rollback "
                              f"level's {below['previous']}")
-    fri_pins = {}
     if records:
-        # Fri images are batch cleanup's to remove, but the batch record must still name the live Fri.
-        fri_pins = read_pins(FRI_ROOT / 'release.env', {'FRI_RELEASE_SHA', 'FRI_RUNTIME_IMAGE'})
         if live:
             latest = max(live, key=lambda record: record['at'])
             tag, iid = latest['images']['new']['fri']
@@ -845,23 +960,22 @@ def plan_parents(view, state, result, now):
         result['keep'].pop(iid, None)
 
 
-def window_closed(result, exception, since):
-    """Checked right before each removal: once the window has closed, or this run has held the batch lock
-    for LOCK_BUDGET seconds, the rest waits for the next window."""
-    now = time.time()
-    if not exception and not window_open(now):
+def window_closed(result, exception):
+    """Checked right before each removal: once the window has closed, or too little of this run's hold on
+    batch-release.lock is left for a removal to finish, the rest waits for the next window."""
+    if not exception and not window_open(time.time()):
         result['deferred'] = 'The maintenance window closed; the remaining removals wait for the next window'
-    elif not now - since < LOCK_BUDGET:
-        result['deferred'] = (f'This run held batch-release.lock for {LOCK_BUDGET // 60} minutes; the remaining removals '
-                              'wait for the next window')
+    elif DEADLINE is not None and DEADLINE - monotonic() < REMOVAL_MARGIN:
+        result['deferred'] = (f'This run is near the end of its {LOCK_BUDGET // 60}-minute hold on batch-release.lock; '
+                              'the remaining removals wait for the next window')
     return 'deferred' in result
 
 
-def remove_parents(root, state, fingerprint, result, exception, since):
+def remove_parents(root, state, fingerprint, result, exception):
     """No implicit pruning: attempt only exact ancestors listed in the saved plan."""
     for row in result['delete_parents']:
         iid = row['id']
-        if window_closed(result, exception, since):
+        if window_closed(result, exception):
             return
         fresh = snapshot(root, read_json(root / 'maintenance/image-retention-policy.json'))
         if fresh['fingerprint'] != fingerprint:
@@ -874,7 +988,7 @@ def remove_parents(root, state, fingerprint, result, exception, since):
             continue
         if metadata['id'] != iid or metadata.get('tags'):
             continue
-        if window_closed(result, exception, since):
+        if window_closed(result, exception):
             return
         try:
             command('docker', 'image', 'rm', '--no-prune', iid)
@@ -889,10 +1003,10 @@ def remove_parents(root, state, fingerprint, result, exception, since):
 def run(root, apply=False, exception='', progress=None):
     """Discovery and removal, all under batch-release.sh's lock."""
     with batch_lock(root):
-        return retain(root, apply, exception, progress, time.time())
+        return retain(root, apply, exception, progress)
 
 
-def retain(root, apply, exception, progress, since):
+def retain(root, apply, exception, progress):
     folder = root / 'maintenance'
     policy = read_json(folder / 'image-retention-policy.json')
     if (policy.get('version') != 1 or not isinstance(policy.get('keep_images'), list)
@@ -946,8 +1060,11 @@ def retain(root, apply, exception, progress, since):
     try:
         ids = sorted(view['images'].keys() | {row['id'] for row in result['delete_parents']})
         describe(result, image_details(ids))
+    except Busy:
+        raise
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
         describe(result, None, f'image inspection failed ({type(exc).__name__})')
+    check_deadline()  # a plan from a run past its hold is not saved; the next window plans again
     save_json(folder / 'image-retention-plan.json', result)
     if progress is not None:
         progress['result'] = result  # so an interrupted removal run still logs what it removed
@@ -963,7 +1080,7 @@ def retain(root, apply, exception, progress, since):
             if row['id'] not in eligible or eligible[row['id']]['tags'] != row['tags']:
                 raise ValueError('Image tags or protection changed; remaining removals aborted')
             for tag in row['tags']:
-                if window_closed(result, exception, since):
+                if window_closed(result, exception):
                     break
                 fresh = snapshot(root, read_json(folder / 'image-retention-policy.json'))
                 if fresh['fingerprint'] != view['fingerprint'] or row['id'] in fresh['protected']:
@@ -974,7 +1091,7 @@ def retain(root, apply, exception, progress, since):
                     raise ValueError('Image was retagged; removal aborted')
                 state.setdefault('removal_intents', {})[tag] = {'id': row['id'], 'at': time.time()}
                 save_json(state_path, state)
-                if window_closed(result, exception, since):
+                if window_closed(result, exception):
                     state['removal_intents'].pop(tag)  # nothing was attempted
                     save_json(state_path, state)
                     break
@@ -991,7 +1108,7 @@ def retain(root, apply, exception, progress, since):
             if result.get('deferred'):
                 break
         if not result.get('deferred'):
-            remove_parents(root, state, view['fingerprint'], result, exception, since)
+            remove_parents(root, state, view['fingerprint'], result, exception)
         save_json(folder / 'image-retention-result.json', result)
     return result
 
@@ -1034,6 +1151,7 @@ def record_status(folder, mode, outcome, detail, result=None):
         record['consecutive_failures'] = 0
     elif outcome == 'failed':
         record['consecutive_failures'] = record.get('consecutive_failures', 0) + 1
+        record['last_failure'] = stamp(now) | {'mode': mode, 'detail': detail[:500]}
     try:
         save_json(path, record)
     except OSError as exc:
@@ -1075,8 +1193,11 @@ def status(root, now=None):
                                     f"(exit status {service.get('ExecMainStatus')})"))
     if record.get('unreadable'):
         problems.append(('failing', 'the status file is unreadable'))
-    if last.get('outcome') == 'failed':
-        problems.append(('failing', 'the last run failed: ' + str(last.get('detail'))))
+    if record.get('consecutive_failures'):
+        # A skip (exit 4, a success to systemd) resolves nothing; only a successful run clears a failure.
+        failure = record.get('last_failure') or (last if last.get('outcome') == 'failed' else {})
+        problems.append(('failing', f"{record['consecutive_failures']} run(s) failed since the last success; the latest: "
+                                    + str(failure.get('detail'))))
     if 'error' not in timer and (timer.get('UnitFileState') != 'enabled' or timer.get('ActiveState') != 'active'):
         problems.append(('disabled', 'the timer is not enabled and active'))
     if succeeded is None:

@@ -225,28 +225,34 @@ PY
 
 unpause_if_ours() {  # Unpause only while this batch's pause is still the latest pause or resume, checked and
   # changed in one transaction, so a pause the owner made since (/pause) stays. Exit 3: left as it is, and why.
-  db_py "$(pause_id)" "${STAGE##*/}" <<'PY'
+  # The baseline's time bounds a pause from the script before audit ids (8deef14), whose row names no batch.
+  db_py "$(pause_id)" "${STAGE##*/}" "$(stat -c %Y "$BASELINE" 2>/dev/null || true)" <<'PY'
 import sqlite3, sys, time
-mine, stage = sys.argv[1:3]
+mine, stage, baseline = sys.argv[1:4]
 db = sqlite3.connect('/data/gene.sqlite3', timeout=30, isolation_level=None)
 db.execute('BEGIN IMMEDIATE')
 try:
-    latest = db.execute("SELECT id,action,actor,target FROM audit WHERE action IN ('pause','resume') "
+    latest = db.execute("SELECT id,action,actor,target,at FROM audit WHERE action IN ('pause','resume') "
                         'ORDER BY id DESC LIMIT 1').fetchone()
     # A repeat of a resume killed before its journal line: the latest resume is this batch's own.
-    if latest is not None and latest[1:] == ('resume', 'maintainer:claude', stage):
+    if latest is not None and latest[1:4] == ('resume', 'maintainer:claude', stage):
         db.execute('ROLLBACK')
         print(f'development already resumed by this batch (audit {latest[0]})')
         sys.exit(0)
-    # A pause killed before its id reached the journal is known by the batch its row names.
-    ours = latest is not None and latest[1] == 'pause' and (
-        latest[0] == int(mine) if mine else latest[2:] == ('maintainer:claude', stage))
+    if latest is None or latest[1] != 'pause':
+        ours = False
+    elif mine:
+        ours = latest[0] == int(mine)
+    else:  # No id journaled: a pause killed before its id reached the journal is known by the batch its row
+        # names. One from the script before audit ids names none: it counts if made since this batch's baseline.
+        ours = latest[2] == 'maintainer:claude' and (latest[3] == stage or (
+            latest[3] == '' and baseline.isdigit() and latest[4] >= int(baseline)))
     if not ours:
         db.execute('ROLLBACK')
         if latest is None:
             print('no pause or resume is recorded, so development is left as it is')
         elif latest[1] == 'pause':
-            print(f"development stays paused: a newer pause (audit {latest[0]}) is not this batch's")
+            print(f"development stays paused: the latest pause (audit {latest[0]}) is not this batch's")
         else:
             print(f'development was resumed (audit {latest[0]}) after this batch paused it, and is left as it is')
         sys.exit(3)

@@ -28,6 +28,14 @@ run() {  # expected_rc phase [lines of output to show]
   [[ $rc == "$want" ]] || { tail -n 15 "$out"; fail "$phase exited $rc, expected $want"; }
 }
 as_owner() { setpriv --reuid=10001 --regid=10001 --clear-groups "$@"; }
+owner_sets() {  # pause|resume: the owner's /pause, written as Store.set_paused writes it
+  as_owner "$GENE_PY" - "$BATCH_ROOT/data/controller/gene.sqlite3" "$1" <<'PY'
+import sqlite3, sys, time
+with sqlite3.connect(sys.argv[1]) as db:
+    db.execute("UPDATE settings SET value=? WHERE key='paused'", ('true' if sys.argv[2] == 'pause' else 'false',))
+    db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)', (time.time(), '555', sys.argv[2], '', ''))
+PY
+}
 prep() { run 0 baseline 0; upload; run 0 stage 0; run 0 rehearse 0; run 0 drain 0; }
 release() { prep; run 0 gene 0; run 0 fri 0; run 0 evals 0; run 0 verify-off 0; run 0 resume 0; }
 journal_has() { grep -qx -- "$1" "$JOURNAL" || fail "journal lacks $1"; }

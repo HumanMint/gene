@@ -376,7 +376,10 @@ with sqlite3.connect('file:/data/gene.sqlite3?mode=ro', uri=True, timeout=30) as
     settings = dict(conn.execute("SELECT key,value FROM settings WHERE key IN "
                                  "('active_sha','previous_sha','paused','fri_active_sha')"))
     busy = conn.execute("SELECT count(*) FROM jobs WHERE state IN ('building','deploying')").fetchone()[0]
-print(json.dumps({'settings': settings, 'busy_jobs': busy}))
+    # The latest deployment the controller claimed, so pair_check can tell one that moved Gene from any other change.
+    latest = conn.execute('SELECT sha,previous_sha,state FROM deployments ORDER BY at DESC, rowid DESC LIMIT 1').fetchone()
+print(json.dumps({'settings': settings, 'busy_jobs': busy,
+                  'deployment': dict(zip(('sha', 'previous_sha', 'state'), latest)) if latest else None}))
 PY
   )
   python3 - "$db" "$GENE_HEALTH" "$FRI_HEALTH" "$ROOT/release.env" "$FRI_ROOT/release.env" "$FRI_ROOT/release.json" \
@@ -492,10 +495,32 @@ checks = {
     'source': (s['source'], os.path.isdir(B+'/installed-source')) in ((baseline['source'], False), (G, True), ('missing', True)),
 }
 bad = [k for k, v in checks.items() if not v]
+def fields(data):
+    return dict(line.split('=', 1) for line in data.decode(errors='replace').splitlines() if '=' in line)
+def deployed():  # The SHA a deployment moved Gene to from either recorded release, if one explains every change.
+    if 'release.env' not in bad or set(bad) - {'release.env', 'release settings'}:
+        return None
+    live = read(root+'/release.env') or b''
+    sha = fields(live).get('GENE_RELEASE_SHA', '')
+    for side, before in (('old', saved['release.env']), ('new', new_release)):
+        was = fields(before)
+        # Deployer.activate's exact file: the new SHA, while the runtime image and root are inherited.
+        written = f"GENE_RELEASE_SHA={sha}\nGENE_ROOT={was.get('GENE_ROOT')}\nGENE_RUNTIME_IMAGE={was.get('GENE_RUNTIME_IMAGE')}\n"
+        if (re.fullmatch('[0-9a-f]{40}', sha) and sha != was.get('GENE_RELEASE_SHA') and live == written.encode()
+                and active == (sha, was.get('GENE_RELEASE_SHA'))  # Store.finish_deploy's record of it
+                and s.get('deployment') == {'sha': sha, 'previous_sha': was.get('GENE_RELEASE_SHA'), 'state': 'deployed'}
+                and os.path.isfile(f'{root}/releases/{sha}/cogs/gene/__init__.py')  # the cogs it installed
+                and s['controller']['image'] == s['red']['image'] == manifest[side]['runtime']['id']):
+            return sha
+    return None
 if bad:
-    print('live state is outside the recorded old/new pair ('+', '.join(bad)+'); reconcile by hand, nothing was changed',
-          file=sys.stderr)
-    sys.exit(3 if 'release.env' in bad else 1)  # 3: release.env is neither release's, so a deployment moved Gene
+    moved = deployed()
+    said = 'live state is outside the recorded old/new pair ('+', '.join(bad)+')'
+    if moved:  # 3: a deployment moved Gene, and nothing else changed
+        print(said+': a deployment moved Gene to '+moved[:7]+'; nothing was changed', file=sys.stderr)
+        sys.exit(3)
+    print(said+'; reconcile by hand, nothing was changed', file=sys.stderr)
+    sys.exit(1)
 print('live state is built from the recorded old and new releases')
 PY
 }
@@ -1214,7 +1239,15 @@ rollback_gene() {
   owner=$(db_owner)
   repair_sidecars
   log 'rollback: check that live state is built from the recorded releases'
-  pair_check || exit 1
+  pair_check || checked=$?
+  if (( checked == 3 )) && fenced_by_rollback; then
+    # A deployment moved Gene, and an earlier run of this rollback only fenced: its fence timed out while the
+    # deployment ran, or found another change beside it that has been put back since. Either way this rollback
+    # changed nothing but its fence, so development goes back as it is, as below.
+    resume_as_is
+    die "Gene moved after an earlier rollback-gene fenced development; nothing was rolled back and $(resumed_as)"
+  fi
+  (( checked == 0 )) || exit 1
   # From here the forward phases refuse: a half-done rollback is finished by repeating rollback-gene. Every run
   # journals its start, so resume-old can tell a rollback ran after an earlier stop (as_is).
   mark intent:rollback
@@ -1225,13 +1258,14 @@ rollback_gene() {
   log 'rollback: check again with development fenced and Fri releases locked out'
   pair_check || checked=$?
   if (( checked == 3 )); then
-    # A deployment the fence waited out rewrote release.env: Gene moved, and this rollback changed nothing but
-    # its fence, so development goes back as it is (gene #93). The stop is journaled first, as the drain's is:
-    # if restoring stops, resume-old replays it.
+    # A deployment the fence waited out moved Gene, and it explains every change (pair_check): this rollback
+    # changed nothing but its fence, so development goes back as it is (gene #93). The stop is journaled first,
+    # as the drain's is: if restoring stops, resume-old replays it. Any other change keeps the fence (exit 1).
     resume_as_is
     die "Gene moved during the fence; nothing was rolled back and $(resumed_as)"
   fi
   (( checked == 0 )) || exit 1
+  mark intent:restore  # From here it restores: a later stop is no longer one after only a fence (fenced_by_rollback).
   log 'rollback: Fri first'
   restore_old_fri
   if has intent:start_new && ! has done:downgrade; then
@@ -1426,8 +1460,19 @@ resume_as_is() {  # After a fence that Gene may have moved under (a deployment l
 aborting() {  # A stop after a fence whose restore hasn't finished
   [[ -f $JOURNAL && $({ grep -x -e intent:abort -e resumed_old "$JOURNAL" || true; } | tail -n 1) == intent:abort ]]
 }
-as_is() {  # The batch's latest stop came after a fence, and no rollback has run since: it stays as it is
-  [[ -f $JOURNAL && $({ grep -x -e intent:abort -e intent:rollback "$JOURNAL" || true; } | tail -n 1) == intent:abort ]]
+as_is() {  # The batch's latest stop came after a fence, and no rollback has run since: it stays as it is. Every
+  # rollback run journals intent:rollback, but the script before gene #121 did so once per batch, so a later run of
+  # it shows only in its restore steps: any of them after the stop counts as a rollback too.
+  [[ -f $JOURNAL && $({ grep -x -e intent:abort -e intent:rollback -e intent:restore -e intent:fri_restore -e fri_restored \
+    -e done:downgrade -e gene_rolled_back -e fri_rolled_back "$JOURNAL" || true; } | tail -n 1) == intent:abort ]]
+}
+fenced_by_rollback() {  # Since development last resumed, rollback-gene has started (intent:rollback) and restored
+  # nothing, by the same lines: at most it fenced. A batch that never resumed is mid-switch, and never counts.
+  [[ -f $JOURNAL ]] && awk '
+    $0 == "resumed" || $0 == "resumed_old" {resumed = 1; started = 0; restored = 0}
+    $0 == "intent:rollback" {started = 1}
+    $0 ~ /^(intent:restore|intent:fri_restore|fri_restored|done:downgrade|gene_rolled_back|fri_rolled_back)$/ {restored = 1}
+    END {exit !(resumed && started && !restored)}' "$JOURNAL"
 }
 gene_moved() {  # The live Gene isn't the old release: before a batch drains, only a deployment moves it
   local live

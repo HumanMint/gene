@@ -154,6 +154,22 @@ def test_a_rebuild_sent_the_old_summary_keeps_its_replies_until_a_withdrawal_rea
     assert summary(store) is None and retired(replies(store)[-1])
 
 
+def test_an_empty_rebuild_retires_the_replies_instead_of_carrying_them_on(world):
+    """A rebuild that comes out empty shows later turns no summary, so nothing would tag a reply repeating the old one."""
+    from gene.fri_member_summary import finish
+    client, store = world
+    _, generation = summarized(client, store)
+    agent = client.app.state.agent
+    quoted(store, generation, message_id='705')
+    readable(store, 'new plans over here', 5000, conversation='public:52')
+    readable(store, 'and more of them', 4900, conversation='public:52')
+    with store.connection() as db:
+        db.execute('DELETE FROM fri_member_summary_calls')
+    claim_id, conversations, _ = claimed(agent)
+    finish(agent, claim_id, '', 'completed', conversations, True)
+    assert retired(replies(store)[-1])
+
+
 def test_a_question_a_summary_derived_turn_left_open_goes_with_it(world):
     """Its words are the model's too, and a later turn reads them back as what's pending."""
     client, store = world

@@ -118,16 +118,18 @@ built from other members' messages.
   their summary; their revision moves at the same time, so an older turn still fails. The purge below
   drops the generations too.
 - **What a summary-derived turn keeps.** A saved turn keeps the `summary_generation` it was sent (fri
-  #172). Whenever the member's generation moves (a withdrawal, a rebuild, an expiry, another member's
-  privacy change), and when their own privacy change erases the summary, every saved reply of theirs
-  that drew on a summary is replaced in the same transaction by a breadcrumb ("Earlier answer drawing
+  #172). Whenever the member's generation moves (a withdrawal, an expiry, another member's privacy
+  change, or a rebuild that wasn't sent the earlier summary or came out empty), and when their own
+  privacy change erases the summary, every saved reply of theirs that drew on a summary is replaced in
+  the same transaction by a breadcrumb ("Earlier answer drawing
   on an older summary of them. Nothing from it is retained here.") and marked not verbatim, and a
   question it left pending goes. History, a reference to Fri's message and reply checks then carry
   none of its words; the member's own words stay. A turn saved without a generation (an older Fri, or no summary in its request) is untouched.
   A controller start retires any an older controller left behind with a moved generation during a
-  rollback window, and the purge below retires all of them first. The cost: a rebuild (at most daily)
-  also turns the member's earlier summary-derived replies into breadcrumbs, as gene #97 accepted
-  refusing a reply in flight across one.
+  rollback window, and the purge below retires all of them first. A non-empty rebuild that was sent the
+  earlier summary keeps its origins, provenance and a later `through`, so a withdrawal of anything the
+  old one drew on still finds it: those replies move to the new generation instead of being retired,
+  and the routine daily rebuild doesn't erase Fri's side of a DM.
 - **Summary-derived writes.** The optional `summary-generation-writes` capability extends the check to
   a tool's writes (fri #171). `/workspace/save` and `/social/reminders/prepare` take the same optional
   top-level `summary_generation` and refuse with a 409 (no text) once it has moved, in the write's own

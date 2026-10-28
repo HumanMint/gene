@@ -266,7 +266,9 @@ def finish(agent, claim_id, summary, status, conversations, previous):
         origins = sorted(set(kept) | set((earlier or {}).get('origins', [])))
         if db.execute('SELECT 1 FROM fri_member_summaries WHERE guild_id=? AND user_id=?',
                       (agent.settings.guild_id, record['user_id'])).fetchone():
-            advance(db, agent.settings.guild_id, record['user_id'], covered=earlier is not None)  # Replacing one.
+            # Covered only by a summary later turns can see: an empty one would carry replies on with nothing
+            # tagging a reply that repeats them.
+            advance(db, agent.settings.guild_id, record['user_id'], covered=earlier is not None and bool(text))
         db.execute('INSERT INTO fri_member_summaries VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE '
                    'SET body=excluded.body,revision=excluded.revision,provenance=excluded.provenance,'
                    'origins=excluded.origins,refreshed=excluded.refreshed,through=excluded.through',

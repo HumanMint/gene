@@ -90,11 +90,33 @@ built from other members' messages.
   (Fri credential, the scope of `/chat/turn` without a mention grant): `guild_id`, `channel_id`,
   `conversation_id`, `user_id` and a Discord `message_id`. It deletes that member's saved turns in
   that conversation whose source, or a message of whose burst, is that message, with any pending
-  clarification or research permit it left. It answers `{"ok": true, "removed": n}`, so a repeat is
-  harmless, and moves no revision. Fri calls it when a member's message it saved a turn for is
-  edited or deleted while withdrawn, so the old words stop coming back as history (fri #129).
-  Other members' turns that drew on the message are untouched. An older controller lacks it and Fri
-  doesn't ask.
+  clarification or research permit the message or those turns left (a burst's name its final
+  message, gene #84). The member's summary, and a build of it in flight, go too if they could have
+  read the message: it was said in a conversation the summary or build drew on, before the newest
+  exchange it read (with five minutes' allowance for clock skew), even if its turn has been trimmed
+  since (gene #83). It answers `{"ok": true, "removed": n}`, so a repeat is harmless, and moves no
+  revision. Fri calls it when a member's message it saved a turn for is edited or deleted while
+  withdrawn, so the old words stop coming back as history (fri #129). Other members' turns and
+  summaries that drew on the message are untouched, as is a summary the member wrote in My memory.
+  An older controller lacks it and Fri doesn't ask. The same transaction records a fence: the guild,
+  member and message ID, never its words, kept a week (as long as a saved exchange). A save that lands
+  afterwards for a turn whose source or burst holds that message keeps nothing and answers
+  `{"ok": true, "first_memory": false, "kept": false}`, as a turn sent before a note removal does, so a
+  save Fri timed out on can't bring the words back (gene #90). `/chat/turn/check` refuses such a turn
+  with a 409 that holds no text, and `/chat/research/start` refuses its research. Memory off and
+  "forget me" drop the member's fences; their revision moves, so a late save fails on that instead.
+- **Summary generations.** The optional `summary-generations` capability closes the gap for a reply
+  that already drew on the member summary when a withdrawal dropped it (gene #91). With `summaries`,
+  `/chat/context` returns `member_summary.generation`, an integer that moves each time a withdrawal
+  drops that member's summary (a repeat drops nothing and moves nothing). A Fri that gives its model the
+  summary sends that same integer back as a top-level `summary_generation` on every `/chat/turn/check`
+  and `/chat/turn` for that turn, and on any other check whose text drew on it. Both refuse with a 409
+  (no text) once the generation has moved, so Fri withholds the reply as for other withdrawn evidence.
+  Fri omits it when no summary reached the model; a turn without it is checked as before, so an older
+  Fri keeps working, with the gap. An older controller returns no generation, so Fri has nothing to
+  send (and an extra field would be ignored). Privacy changes delete the member's generation with
+  their summary; their revision moves at the same time, so an older turn still fails. The purge below
+  drops the generations too.
 
 Provenance also reaches what follow-ups inherit:
 
@@ -237,7 +259,7 @@ as a recorded downgrade):
 python -m gene.fri_member_summary purge "$GENE_DB"
 ```
 
-It drops the summaries and their daily call stamps; exchanges and notes stay. Rolling back Fri alone
+It drops the summaries, their daily call stamps and their generations; exchanges and notes stay. Rolling back Fri alone
 needs no cleanup: an older Fri doesn't send `summaries`, so the controller never gives it one and no
 builder runs. Summaries already stored stay unseen until a newer Fri returns, they expire (30 days),
 or the member's "forget me", memory off or Forget my chats removes them; run the purge as well if they

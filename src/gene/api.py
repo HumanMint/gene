@@ -163,6 +163,14 @@ class MessageSources(BaseModel):
     message_ids: list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]] = Field(min_length=1, max_length=10)
 
 
+class TurnWithdrawal(Actor):
+    """A member's message edited or deleted after Fri saved their exchange with it (fri #129)."""
+    model_config = ConfigDict(extra='forbid')
+    channel_id: str
+    conversation_id: str = Field(pattern=r'^(private|public):[0-9]{1,25}$')
+    message_id: str = Field(pattern=r'^[0-9]{1,25}$')
+
+
 class ResearchStart(ChatScope):
     source: ChatSource
     revision: int = Field(ge=0)
@@ -461,6 +469,11 @@ def create_app(settings: Settings | None = None):
             raise HTTPException(400, 'Invitation turns are fenced by their mention grant')
         chat_scope(body)
         return store.check_chat(body.user_id, body.revision, [row.model_dump() for row in body.provenance or []])
+
+    @app.post('/chat/turn/withdraw', dependencies=[auth('fri')])
+    def chat_turn_withdraw(body: TurnWithdrawal):
+        chat_scope(body)
+        return store.withdraw_turn(body.guild_id, body.conversation_id, body.user_id, body.message_id)
 
     @app.post('/chat/messages/sources', dependencies=[auth('fri')])
     def chat_message_sources(body: MessageSources):

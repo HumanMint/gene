@@ -708,3 +708,23 @@ def test_the_units_run_once_a_day_inside_the_window_and_skips_are_not_failures()
     assert service['Service']['SuccessExitStatus'] == str(retention.REFUSED)
     assert service['Service']['ExecStart'].endswith('gene_image_retention.py --apply')
     assert '-/srv/gene/production-actions.jsonl' in service['Service']['ReadWritePaths'].split()
+
+
+def test_an_interrupted_removal_run_still_logs_what_it_removed(batch_host, monkeypatch):
+    root, images = batch_host.root, batch_host.images
+    held = []
+
+    def docker(*args):
+        if args[:3] == ('docker', 'image', 'inspect'):
+            return json.dumps([{'Id': next(i for i, row in images.items() if args[3] in row['tags'])}])
+        images.pop(next(i for i, row in images.items() if args[4] in row['tags']))
+        held.append(args[4])  # a batch command starts right after the first removal
+        return ''
+
+    monkeypatch.setattr(retention, 'command', docker)
+    monkeypatch.setattr(retention, 'lock_held', lambda path: bool(held))
+    assert retention.execute(root, apply=True) == (retention.REFUSED, None)
+    line = actions(root)[-1]
+    assert line['outcome'] == 'skipped: A batch-release command holds its lock; retry in the next window'
+    assert line['images']['removed_tags'] == ['gene-worker:' + gene(0)]
+    assert retention.read_json(root / 'maintenance/image-retention-result.json')['removed_tags'] == held

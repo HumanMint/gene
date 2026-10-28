@@ -785,7 +785,7 @@ def remove_parents(root, state, fingerprint, result, exception=''):
         save_json(root / 'maintenance/image-retention-result.json', result)
 
 
-def run(root, apply=False, exception=''):
+def run(root, apply=False, exception='', progress=None):
     folder = root / 'maintenance'
     policy = read_json(folder / 'image-retention-policy.json')
     if (policy.get('version') != 1 or not isinstance(policy.get('keep_images'), list)
@@ -842,6 +842,8 @@ def run(root, apply=False, exception=''):
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
         describe(result, None, f'image inspection failed ({type(exc).__name__})')
     save_json(folder / 'image-retention-plan.json', result)
+    if progress is not None:
+        progress['result'] = result  # so an interrupted removal run still logs what it removed
     if deleting:
         save_json(state_path, state)
         for row in result['delete']:
@@ -1031,23 +1033,23 @@ def execute(root, apply=False, exception=''):
         log_action(root, mode, started, 'refused: ' + why)
         print('REFUSED: ' + why + '. Nothing changed; the next window runs it.', file=sys.stderr)
         return REFUSED, None
-    folder = root / 'maintenance'
+    folder, progress = root / 'maintenance', {}
     try:
         with (folder / 'image-retention.lock').open('a') as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise Busy('Another image-retention run holds its lock') from None
-            result = run(root, apply, exception)
+            result = run(root, apply, exception, progress)
     except Busy as exc:
         record_status(folder, mode, 'skipped', str(exc))
-        log_action(root, mode, started, f'skipped: {exc}', exception)
-        print(f'SKIPPED: {exc}. Nothing changed; the next window runs it.', file=sys.stderr)
+        log_action(root, mode, started, f'skipped: {exc}', exception, progress.get('result'))
+        print(f'SKIPPED: {exc}. The next window runs it.', file=sys.stderr)
         return REFUSED, None
     except Exception as exc:
         detail = f'{type(exc).__name__}: {exc}'[:500]
         record_status(folder, mode, 'failed', detail)
-        log_action(root, mode, started, 'failed: ' + detail, exception)
+        log_action(root, mode, started, 'failed: ' + detail, exception, progress.get('result'))
         raise
     record_status(folder, mode, 'ok', result['deletion'], result)
     log_action(root, mode, started, 'ok' + (' (deferred at the window close)' if result.get('deferred') else ''),

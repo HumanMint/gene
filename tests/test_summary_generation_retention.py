@@ -128,6 +128,32 @@ def test_every_way_the_summary_goes_retires_what_drew_on_it(world):
     assert summary(store) is None and all(retired(reply) for reply in replies(store))
 
 
+def test_a_rebuild_sent_the_old_summary_keeps_its_replies_until_a_withdrawal_reaches_them(world):
+    """The daily rebuild that's sent the earlier summary carries its origins and provenance, so Fri's side of a DM stays.
+    A withdrawal of what the old summary drew on still finds the new one, and takes the reply with it."""
+    from gene.fri_member_summary import finish, settle
+    client, store = world
+    taken, generation = summarized(client, store)
+    agent = client.app.state.agent
+    quoted(store, generation, message_id='704')
+    readable(store, 'new plans over here', 5000, conversation='public:52')
+    readable(store, 'and more of them', 4900, conversation='public:52')
+    with store.connection() as db:
+        db.execute('DELETE FROM fri_member_summary_calls')
+    claim_id, conversations, _ = claimed(agent)
+    assert finish(agent, claim_id, 'they made new plans', 'completed', conversations, True) == {'kept': True}
+    newer = summary_generation_now(store)
+    assert newer != generation and QUOTING in replies(store)
+    assert referenced(store, '704')['verbatim'] is True
+    with store.connection() as db:
+        assert [row[0] for row in db.execute('SELECT summary_generation FROM chat_turns WHERE reply_message_id=?',
+                                             ('704',))] == [newer]
+        settle(db)  # A restart finds it current.
+    assert QUOTING in replies(store)
+    assert withdraw(client, taken).json()['removed'] == 1
+    assert summary(store) is None and retired(replies(store)[-1])
+
+
 def test_a_question_a_summary_derived_turn_left_open_goes_with_it(world):
     """Its words are the model's too, and a later turn reads them back as what's pending."""
     client, store = world

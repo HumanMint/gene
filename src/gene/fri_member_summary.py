@@ -57,13 +57,20 @@ def initialize(db):
     ''')
 
 
-def advance(db, guild, user):
+def advance(db, guild, user, covered=False):
     """The member's summary generation moves: a reply that drew on the summary it had fails its check and save (gene
-    #91), and one already saved keeps only a breadcrumb (fri #172). Whatever took or replaced that summary, since once
-    it's gone a later withdrawal finds nothing to move."""
+    #91), and one already saved keeps only a breadcrumb (fri #172), since once that summary is gone a later withdrawal
+    finds nothing to move. covered: a rebuild that was sent the summary it replaces keeps its origins, provenance and
+    a later `through`, so a withdrawal of anything the old one drew on still finds the new one. The saved replies then
+    move to the new generation instead, and the routine daily rebuild doesn't erase Fri's side of a DM."""
     db.execute('INSERT INTO fri_member_summary_generations VALUES (?,?,1) ON CONFLICT(guild_id, user_id) '
                'DO UPDATE SET generation=generation+1', (guild, user))
-    retire(db, 'guild_id=? AND user_id=?', (guild, user))
+    if covered:
+        db.execute('UPDATE chat_turns SET summary_generation=(SELECT generation FROM fri_member_summary_generations '
+                   'WHERE guild_id=? AND user_id=?) WHERE guild_id=? AND user_id=? AND summary_generation IS NOT NULL',
+                   (guild, user, guild, user))
+    else:
+        retire(db, 'guild_id=? AND user_id=?', (guild, user))
 
 
 def retire(db, where, args=()):
@@ -259,7 +266,7 @@ def finish(agent, claim_id, summary, status, conversations, previous):
         origins = sorted(set(kept) | set((earlier or {}).get('origins', [])))
         if db.execute('SELECT 1 FROM fri_member_summaries WHERE guild_id=? AND user_id=?',
                       (agent.settings.guild_id, record['user_id'])).fetchone():
-            advance(db, agent.settings.guild_id, record['user_id'])  # Replacing one a reply may hold.
+            advance(db, agent.settings.guild_id, record['user_id'], covered=earlier is not None)  # Replacing one.
         db.execute('INSERT INTO fri_member_summaries VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE '
                    'SET body=excluded.body,revision=excluded.revision,provenance=excluded.provenance,'
                    'origins=excluded.origins,refreshed=excluded.refreshed,through=excluded.through',

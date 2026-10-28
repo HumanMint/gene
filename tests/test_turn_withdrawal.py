@@ -1,5 +1,6 @@
 """fri #129: a member's message edited or deleted after Fri saved their exchange takes that exchange with it."""
 import logging
+import time
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
+from gene.fri_member_summary import NEXT, claim
 from gene.fri_protocol import compatible, contract
 from tests.test_api import headers
 from tests.test_fri_endings import source
@@ -133,3 +135,176 @@ def test_the_contract_offers_it_as_an_optional_capability():
     advertised = contract()
     assert 'turn-withdrawal' in advertised['capabilities']
     assert compatible({**advertised, 'capabilities': [c for c in advertised['capabilities'] if c != 'turn-withdrawal']})
+
+
+def test_a_bursts_first_message_takes_the_question_its_burst_left(world):
+    """gene #84: the question and its research permit name the burst's final message, not the one withdrawn."""
+    client, store = world
+    first, last = source(age=4, channel='51'), source(age=2, channel='51')
+    burst = [{'source': first, 'text': MARKER+' with the lights off'}, {'source': last, 'text': 'fri play music'}]
+    store.save_chat('123', 'public:51', '20', 0, 'fri play music', 'which song?', 'model', 'high', source=last,
+                    burst=burst, provenance=[], clarification={'goal': 'play', 'topic': '', 'question': 'which song?'})
+    theirs = source(age=1, user='30', channel='51')
+    now = time.time()
+    with store.connection() as db:
+        db.execute('INSERT INTO web_requests VALUES (?,?,?,?,?,?,?)', ('123', 'public:51', '20', last['id'], 0, now, 'q'))
+        db.execute('INSERT INTO chat_pending VALUES (?,?,?,?,?,?,?)', ('123', 'public:51', '30', theirs['id'], now, 0, '{}'))
+        db.execute('INSERT INTO web_requests VALUES (?,?,?,?,?,?,?)', ('123', 'public:51', '30', theirs['id'], 0, now, 'q'))
+    assert store.chat_context('123', 'public:51', '20')['pending']['source']['id'] == last['id']
+    assert withdraw(client, first['id']).json() == {'ok': True, 'removed': 1}
+    assert store.chat_context('123', 'public:51', '20')['pending'] is None
+    for _ in range(2):  # Again: nothing left, still fine.
+        with store.connection() as db:
+            assert [r[0] for r in db.execute('SELECT user_id FROM chat_pending')] == ['30']
+            assert [r[0] for r in db.execute('SELECT user_id FROM web_requests')] == ['30']
+        assert withdraw(client, first['id']).json() == {'ok': True, 'removed': 0}
+
+
+def background(client):
+    agent = client.app.state.agent
+    agent.update({'enabled': True}, 0, '9')
+    return agent
+
+
+def readable(store, text, age, user='20', conversation='public:51'):
+    """An exchange said where everyone could read it, `age` seconds back, saved a second later."""
+    message = save(store, text, user=user, conversation=conversation, age=age, audience='server')
+    with store.connection() as db:
+        db.execute('UPDATE chat_turns SET at=? WHERE id=(SELECT max(id) FROM chat_turns)', (time.time()-age+1,))
+    return message
+
+
+def summary(store, user='20'):
+    shown = store.chat_context('123', 'private:9', user, True, True)['member_summary']
+    return shown and shown['text']
+
+
+def built(agent, text):
+    """A build Fri finished from everything it was sent."""
+    return finish(agent, *claimed(agent), text)
+
+
+def claimed(agent):
+    with agent.store.connection() as db:
+        agent.put(db, NEXT, 0)  # Not waiting out the idle pause between looks.
+    offer = claim(agent)
+    assert offer, 'nobody was due a summary'
+    return offer['id'], sorted({row['conversation_id'] for row in offer['exchanges']}), offer
+
+
+def finish(agent, claim_id, conversations, offer, text):
+    from gene.fri_member_summary import finish as finished
+    return finished(agent, claim_id, text, 'completed', conversations, offer['previous'] is not None)
+
+
+def test_a_summary_built_on_the_message_goes_with_it(world, caplog):
+    """gene #83: only that member's, and a build in flight for someone else still keeps."""
+    client, store = world
+    agent = background(client)
+    caplog.set_level(logging.DEBUG)
+    taken = readable(store, 'raid tonight, bring the '+MARKER, 7300)
+    readable(store, 'what build for the raid', 7250)
+    readable(store, 'i main a healer', 7300, user='30', conversation='public:52')
+    readable(store, 'see you at the raid', 7250, user='30', conversation='public:52')
+    assert built(agent, 'they planned a raid with the '+MARKER) == {'kept': True}
+    assert MARKER in summary(store)
+    theirs = claimed(agent)  # Ash's build is under way when the message goes.
+    assert withdraw(client, taken).json() == {'ok': True, 'removed': 1}
+    assert summary(store) is None
+    with store.connection() as db:
+        assert db.execute("SELECT count(*) FROM fri_member_summaries WHERE user_id='20'").fetchone()[0] == 0
+    assert finish(agent, *theirs, 'they main a healer') == {'kept': True}
+    assert withdraw(client, taken).json() == {'ok': True, 'removed': 0}  # Again: nothing left, still fine.
+    assert summary(store, '30') == 'they main a healer'
+    assert MARKER not in caplog.text
+
+
+def test_an_exchange_trimmed_since_still_takes_the_summary(world):
+    """Six exchanges a conversation: the turn may be gone before the message is withdrawn, the summary not."""
+    client, store = world
+    agent = background(client)
+    taken = readable(store, 'raid tonight, bring the '+MARKER, 7300)
+    readable(store, 'what build for the raid', 7250)
+    built(agent, 'they planned a raid with the '+MARKER)
+    for age in range(60, 0, -10):
+        readable(store, f'later chat {age}', age)
+    assert MARKER not in str(store.chat_context('123', 'public:51', '20')['turns'])
+    assert withdraw(client, taken).json() == {'ok': True, 'removed': 0}
+    assert summary(store) is None
+
+
+def test_a_build_in_flight_keeps_nothing_from_it(world):
+    client, store = world
+    agent = background(client)
+    taken = readable(store, 'raid tonight, bring the '+MARKER, 7300)
+    readable(store, 'what build for the raid', 7250)
+    pending = claimed(agent)
+    withdraw(client, taken)
+    with pytest.raises(ValueError, match='expired'):
+        finish(agent, *pending, 'they planned a raid with the '+MARKER)
+    assert summary(store) is None
+
+
+def test_a_build_that_was_sent_the_old_summary_keeps_nothing_either(world):
+    client, store = world
+    agent = background(client)
+    taken = readable(store, 'raid tonight, bring the '+MARKER, 7300)
+    readable(store, 'what build for the raid', 7250)
+    built(agent, 'they planned a raid with the '+MARKER)
+    readable(store, 'the next day stuff', 3700)
+    readable(store, 'more of it', 3650)
+    with store.connection() as db:
+        db.execute('DELETE FROM fri_member_summary_calls')
+    pending = claimed(agent)
+    assert MARKER in pending[2]['previous']['text']
+    withdraw(client, taken)
+    with pytest.raises(ValueError, match='expired'):
+        finish(agent, *pending, 'they planned a raid with the '+MARKER+' and more')
+    assert summary(store) is None
+
+
+def test_a_summary_that_never_read_the_message_stays(world):
+    client, store = world
+    agent = background(client)
+    readable(store, 'raid tonight', 7300)
+    readable(store, 'what build for the raid', 7250)
+    restricted = save(store, 'restricted channel stuff', conversation='public:52', age=7200)
+    private = save(store, 'dm stuff', conversation='private:52', age=7200)
+    built(agent, 'they planned a raid')
+    later = readable(store, 'said after the build', 30)
+    assert withdraw(client, later).json()['removed'] == 1
+    assert withdraw(client, restricted, conversation_id='public:52', channel_id='52').json()['removed'] == 1
+    assert withdraw(client, private, conversation_id='private:52', channel_id='52').json()['removed'] == 1
+    assert summary(store) == 'they planned a raid'
+
+
+def test_their_own_edit_of_it_stays(world):
+    """An edit in My memory is in their own words and drew on no exchange."""
+    from gene.fri_member_summary import edit
+    from tests.test_fri_memory_items import source as control_source
+    client, store = world
+    agent = background(client)
+    taken = readable(store, 'raid tonight', 7300)
+    readable(store, 'what build for the raid', 7250)
+    built(agent, 'they planned a raid')
+    edit(store, '123', 'private:9', '20', 0, {**control_source(), 'channel_id': '9'}, 'replace', 'mostly raids')
+    assert withdraw(client, taken).json()['removed'] == 0  # The edit cleared their saved chats.
+    assert summary(store) == 'mostly raids'
+
+
+@pytest.mark.parametrize('erase', ['disable', 'erase_user', 'clear_chats'])
+def test_erasure_still_takes_a_summary_a_withdrawal_left(world, erase):
+    client, store = world
+    agent = background(client)
+    readable(store, 'raid tonight', 7300)
+    readable(store, 'what build for the raid', 7250)
+    built(agent, 'they planned a raid')
+    withdraw(client, readable(store, 'said after the build', 30))
+    assert summary(store) == 'they planned a raid'
+    if erase == 'disable':
+        store.personal_control('20', 'disable')
+    else:
+        getattr(store, erase)('20')
+    assert summary(store) is None and inputs(store) == []
+    with store.connection() as db:
+        assert db.execute('SELECT count(*) FROM fri_member_summaries').fetchone()[0] == 0

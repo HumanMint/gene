@@ -19,6 +19,13 @@ def environment(monkeypatch):
             del os.environ[key]
 
 
+@pytest.fixture(autouse=True)
+def workspace(tmp_path):
+    # Tokens may only go into git-ignored files in a git checkout, as .env.local is in Gene and Fri.
+    subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    (tmp_path / '.gitignore').write_text('*.env\n.env.local\nignored/\n')
+
+
 def initialized(tmp_path, **values):
     path = tmp_path / '.env.local'
     dev.main(['--env', str(path), 'init'])
@@ -142,3 +149,78 @@ def test_fri_env_refuses_files_git_tracks_and_its_own_source(tmp_path):
 def test_merged_rejects_multiline_values():
     with pytest.raises(ValueError):
         dev.merged([], {'GENE_GUILD_ID': '1\nGENE_OWNER_ID=2'})
+
+
+def tracked_repo(tmp_path, *names):
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    for name in names:
+        (repo / name).write_text('GENE_FRI_TOKEN=\nGENE_RUNTIME_TOKEN=\n')
+        subprocess.run(['git', '-C', str(repo), 'add', name], check=True)
+    return repo
+
+
+def test_init_refuses_templates_and_tracked_files(tmp_path, monkeypatch):
+    def wrote(*_):
+        raise AssertionError('a token was written')
+    repo = tracked_repo(tmp_path, '.env.example', 'settings.env')
+    (tmp_path / 'ignored').mkdir()
+    (tmp_path / 'ignored' / '.env.example').write_text('GENE_FRI_TOKEN=\n')  # Ignored, but a template.
+    targets = [repo / '.env.example', repo / 'settings.env', tmp_path / 'ignored' / '.env.example']
+    before = [target.read_text() for target in targets]
+    for target in targets:
+        with pytest.raises(SystemExit, match='Refusing'):
+            dev.main(['--env', str(target), 'init'])
+    assert [target.read_text() for target in targets] == before
+    monkeypatch.setattr(dev, 'write_private', wrote)  # Never touch this checkout's real template.
+    with pytest.raises(SystemExit, match='Refusing'):
+        dev.main(['--env', str(dev.ROOT / '.env.example'), 'init'])
+
+
+def test_token_writes_need_an_ignored_file_in_a_working_checkout(tmp_path):
+    path = initialized(tmp_path, **IDS)
+    broken = tmp_path / 'broken'  # A checkout whose repository is gone: every git command fails.
+    broken.mkdir()
+    (broken / '.git').write_text(f'gitdir: {tmp_path / "gone"}\n')
+    (tmp_path / 'fri').mkdir()
+    (tmp_path / 'fri' / 'notes.txt').write_text('')  # Untracked but not ignored: could be committed.
+    for target in (broken / 'fri.env', tmp_path / 'fri' / 'notes.txt'):
+        with pytest.raises(SystemExit, match='Refusing'):
+            dev.main(['--env', str(path), 'fri-env', str(target)])
+        with pytest.raises(SystemExit, match='Refusing'):
+            dev.main(['--env', str(target), 'init'])
+    assert not (broken / 'fri.env').exists() and (tmp_path / 'fri' / 'notes.txt').read_text() == ''
+
+
+def test_token_writes_refuse_when_git_is_missing(tmp_path):
+    path = initialized(tmp_path, **IDS)
+    repo = tracked_repo(tmp_path, '.env.example')
+    (tmp_path / 'fri').mkdir()
+    empty = tmp_path / 'no-git'
+    empty.mkdir()
+    os.environ['PATH'] = str(empty)  # Without git, nothing can be confirmed.
+    for target in (repo / '.env.example', tmp_path / 'fri' / 'fri.env'):
+        with pytest.raises(SystemExit, match='Refusing'):
+            dev.main(['--env', str(path), 'fri-env', str(target)])
+    with pytest.raises(SystemExit, match='Refusing'):
+        dev.main(['--env', str(tmp_path / 'new.env'), 'init'])
+    assert dev.read_env(repo / '.env.example')['GENE_FRI_TOKEN'] == ''
+    assert not (tmp_path / 'fri' / 'fri.env').exists() and not (tmp_path / 'new.env').exists()
+
+
+def test_fri_env_replaces_every_copy_of_a_key(tmp_path):
+    source = dev.read_env(initialized(tmp_path, **IDS))
+    target = tmp_path / 'fri' / '.env.local'
+    target.parent.mkdir()
+    target.write_text('GENE_FRI_TOKEN=stale-1\n# keep me\nDISCORD_TOKEN=fri-bot\n'
+                      '  GENE_FRI_TOKEN = stale-2\nGENE_GUILD_ID=1\nGENE_GUILD_ID=2\n')
+    dev.main(['--env', str(tmp_path / '.env.local'), 'fri-env', str(target)])
+    lines = target.read_text().splitlines()
+    # Fri reads stripped KEY=VALUE lines and the last copy of a key wins.
+    fri_reads = dict((key.strip(), value.strip()) for key, value in
+                     (line.split('=', 1) for line in lines if '=' in line and not line.startswith('#')))
+    assert fri_reads['GENE_FRI_TOKEN'] == source['GENE_FRI_TOKEN']
+    assert fri_reads['GENE_GUILD_ID'] == IDS['GENE_GUILD_ID'] and fri_reads['DISCORD_TOKEN'] == 'fri-bot'
+    assert [line.split('=', 1)[0].strip() for line in lines].count('GENE_FRI_TOKEN') == 1
+    assert '# keep me' in lines

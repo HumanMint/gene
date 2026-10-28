@@ -155,6 +155,9 @@ uv run --no-sync ruff check .
 
 - **`Four distinct service tokens of at least 32 characters are required`**: run
   `uv run python scripts/dev.py init`, which fills in missing tokens.
+- **`Refusing to write a token into ...`**: `init` and `fri-env` write tokens only into a
+  file Git confirms is untracked and ignored, such as `.env.local` in a git clone of Gene
+  or Fri. Install git, and use those files rather than `.env.example` or a tracked file.
 - **Fri gets 401 from the controller**: Fri's `GENE_FRI_TOKEN` differs from this
   `.env.local`. Run `fri-env` again, or copy it by hand.
 - **Fri gets 403 "This server is not configured for Gene"**: the IDs differ between the

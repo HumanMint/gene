@@ -7,7 +7,8 @@
     uv run python scripts/dev.py fri-env PATH # the values a local Fri needs, written to PATH
     uv run python scripts/dev.py red          # optional: Gene's Red bot (uv sync --extra red)
 
-Nothing here contacts Discord or prints a token. State stays under .state/ in this checkout.
+Nothing here contacts Discord or prints a token, and tokens are written only to files Git
+confirms are untracked and ignored, such as .env.local. State stays under .state/ in this checkout.
 Production installation is docs/setup.md.
 """
 
@@ -36,6 +37,7 @@ ID_KEYS = ('GENE_GUILD_ID', 'GENE_OWNER_ID', 'GENE_COMMAND_CHANNEL_ID', 'GENE_WO
 ID_LISTS = ('GENE_MEME_SOURCE_CHANNEL_IDS', 'FRI_CHANNEL_IDS', 'FRI_HISTORY_CHANNEL_IDS',
             'FRI_MEME_CHANNEL_IDS', 'FRI_STATUS_CONTEXT_CHANNEL_IDS')
 LOOPBACK = ('127.0.0.1', 'localhost', '::1')
+TEMPLATE_SUFFIXES = ('.example', '.sample', '.template', '.dist')
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -63,27 +65,61 @@ def write_private(path: Path, lines: list[str]):
 
 
 def merged(lines: list[str], values: dict[str, str]) -> list[str]:
-    """Set each key in place, keeping comments and other keys; append keys the file lacks."""
+    """Set each key once, where it first appears, keeping comments and other keys; append keys the
+    file lacks. Later copies of a key are dropped, since env readers take the last one."""
     for value in values.values():
         if any(character in value for character in '\r\n\x00'):
             raise ValueError('Configuration values must be single lines')
     pending = dict(values)
     result = []
     for line in lines:
-        key = line.split('=', 1)[0]
-        if not line.startswith('#') and '=' in line and key in pending:
-            line = f'{key}={pending.pop(key)}'
+        setting = line.strip()
+        key = setting.split('=', 1)[0].strip() if '=' in setting and not setting.startswith('#') else None
+        if key in values:
+            if key in pending:
+                result.append(f'{key}={pending.pop(key)}')
+            continue
         result.append(line)
     return result + [f'{key}={value}' for key, value in pending.items()]
 
 
-def tracked(path: Path) -> bool:
-    """True when Git tracks path, so a write would put a token into a public repository."""
-    try:
-        return subprocess.run(['git', '-C', str(path.parent), 'ls-files', '--error-unmatch', path.name],
-                              capture_output=True).returncode == 0
-    except OSError:
-        return False
+def unsafe_for_tokens(path: Path) -> str | None:
+    """Why path mustn't receive a token, or None once Git confirms it is untracked and ignored.
+
+    The repositories are public, so a token may only go into a git-ignored file such as .env.local.
+    When Git can't answer (not installed, not a checkout, any error), that is a refusal too."""
+    if path.name.endswith(TEMPLATE_SUFFIXES):
+        return 'it is a shared template'
+    if not path.parent.is_dir():
+        return f'{path.parent} does not exist'
+
+    def git(*command):
+        try:
+            return subprocess.run(['git', '-C', str(path.parent), *command, '--', path.name],
+                                  capture_output=True, text=True)
+        except OSError:
+            return None
+
+    listed = git('--literal-pathspecs', 'ls-files')
+    if listed is None or listed.returncode != 0:
+        return "Git couldn't confirm it is untracked (is git installed, and is this a git checkout?)"
+    if listed.stdout.strip():
+        return 'Git tracks it'
+    ignored = git('check-ignore', '-q')
+    if ignored is None or ignored.returncode not in (0, 1):
+        return "Git couldn't confirm it is ignored"
+    if ignored.returncode == 1:
+        return "Git doesn't ignore it, so it could be committed"
+    return None
+
+
+def write_tokens(path: Path, lines: list[str]):
+    """write_private, but only into a file Git confirms is untracked and ignored."""
+    problem = unsafe_for_tokens(path)
+    if problem:
+        raise SystemExit(f'Refusing to write a token into {path}: {problem}. '
+                         'Use a git-ignored env file in a git checkout, such as .env.local.')
+    write_private(path, lines)
 
 
 def init(args):
@@ -98,7 +134,7 @@ def init(args):
     if path.exists() and not missing:
         print(f'{path} already has its service tokens; nothing changed.')
     else:
-        write_private(path, merged(lines, {key: secrets.token_urlsafe(48) for key in missing}))
+        write_tokens(path, merged(lines, {key: secrets.token_urlsafe(48) for key in missing}))
         print(f'Wrote {path} (mode 600) with new {", ".join(missing)}. No token was printed.')
     print('Next: fill in the Discord IDs you need (see docs/quickstart.md), then run'
           ' `uv run python scripts/dev.py check`.')
@@ -215,12 +251,12 @@ def fri_env(args):
     target = args.path.expanduser().resolve()
     if not target.parent.is_dir():
         raise SystemExit(f'{target.parent} does not exist. Clone Fri first, then run fri-env.')
-    if target == args.env.resolve() or tracked(target):
-        raise SystemExit(f'Refusing to write a token into {target}: use an ignored local env file.')
+    if target == args.env.resolve():
+        raise SystemExit(f'Refusing to write a token into {target}: it is the source env file.')
     values = {'GENE_CONTROLLER_URL': f'http://127.0.0.1:{args.port}',
               **{key: env[key] for key in ('GENE_FRI_TOKEN', *FRI_IDS)}}
     lines = target.read_text().splitlines() if target.exists() else []
-    write_private(target, merged(lines, values))
+    write_tokens(target, merged(lines, values))
     print(f'Updated {", ".join(values)} in {target} (mode 600). The token was not printed.')
 
 

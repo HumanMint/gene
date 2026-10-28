@@ -161,6 +161,9 @@ def test_the_release_script_refuses_a_clock_it_cannot_trust(tmp_path):
 FAKE_STAT = '''#!/usr/bin/env bash
 for file; do :; done  # stat -c %u:%g FILE; owners come from $CTL/<name>.owner
 if [[ $file == "$(cat "$CTL/vanish-at-stat" 2>/dev/null)" ]]; then rm -f "$file"; fi
+if [[ $file == "$(cat "$CTL/stat-eio-hidden" 2>/dev/null)" ]]; then  # An I/O error the shell's -e fails on too.
+  echo "stat: cannot statx '$file': Input/output error" >&2; exit 1
+fi
 [[ -e $file ]] || { echo "stat: cannot statx '$file': No such file or directory" >&2; exit 1; }
 if [[ $file == "$(cat "$CTL/stat-eio" 2>/dev/null)" ]]; then echo "stat: cannot statx '$file': Input/output error" >&2; exit 1; fi
 if [[ $file == "$(cat "$CTL/reappear-at-stat" 2>/dev/null)" ]]; then  # Gone at stat, a new one there after.
@@ -177,14 +180,17 @@ echo "$1" > "$CTL/${2##*/}.owner"
 '''
 
 
-def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False, eio=False, reappear=False):
+def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False, eio=False, reappear=False, eio_hidden=False):
     """repair_sidecars on a root-owned or owner-owned WAL that SQLite removes at the chosen moment."""
     ctl, data, bin_dir = tmp_path/'ctl', tmp_path/'data', tmp_path/'bin'
     for path in ctl, data, bin_dir:
         path.mkdir()
     db = data/'gene.sqlite3'
     db.touch()
-    (data/'gene.sqlite3-wal').touch()
+    if eio_hidden:  # The file is there, but every lookup fails with an I/O error: -e and -L see nothing either.
+        (ctl/'stat-eio-hidden').write_text(f'{db}-wal')
+    else:
+        (data/'gene.sqlite3-wal').touch()
     (ctl/'gene.sqlite3-wal.owner').write_text(wal_owner+'\n')
     if vanish:
         (ctl/f'vanish-at-{vanish}').write_text(f'{db}-wal')
@@ -235,6 +241,14 @@ def test_a_journal_file_that_cant_be_read_but_is_there_stops_the_script(tmp_path
     assert chowned == [] and wal.exists()
 
 
+def test_an_io_error_that_hides_a_journal_file_from_the_shell_too_stops_the_script(tmp_path):
+    """gene #101: a persistent I/O error fails stat and the shell's -e and -L checks alike. Only stat's own
+    'no such file' counts as gone, so the file isn't skipped as if it had vanished."""
+    out, chowned, _ = sidecar_shell(tmp_path, '0:0', eio_hidden=True)
+    assert out.returncode != 0 and 'repaired' not in out.stdout
+    assert 'FAIL: could not read the owner of gene.sqlite3-wal' in out.stderr and chowned == []
+
+
 def test_a_journal_file_gone_at_stat_and_back_after_needs_nothing(tmp_path):
     """2026-10-28, second release: SQLite removed -shm at stat and made a new one before a recheck. Gone at
     stat is gone: the new one is the controller's own, so the repair skips it and the switch goes on."""
@@ -283,6 +297,64 @@ def test_sizing_a_tree_counts_a_file_that_vanishes_as_gone(tmp_path, printed, st
         assert out.returncode != 0 and 'size=' not in out.stdout
     else:
         assert out.returncode == 0 and out.stdout.split() == ['size=4096'], out.stderr
+
+
+@needs_bash4
+@pytest.mark.parametrize('switching', ['0', '1'])
+@pytest.mark.parametrize('failing', ['data/controller', 'data/red', 'source'])  # first, middle and last in the sum
+def test_a_size_that_cant_be_measured_stops_the_switchs_disk_check(tmp_path, switching, failing):
+    """gene #100: a measurement that fails inside an arithmetic sum used to drop out of it (or, mid-switch, stop only
+    its own subshell), so disk admission went on without it. It stops the switch, and mid-switch rolls back."""
+    bin_dir, root = tmp_path/'bin', tmp_path/'srv'
+    bin_dir.mkdir()
+    (bin_dir/'du').write_text('#!/usr/bin/env bash\nfor path; do :; done\n'
+                              f'if [[ $path == {root}/{failing} ]]; then printf "4096\\t%s\\n" "$path"\n'
+                              '  echo "du: cannot read directory \'$path/x\': Input/output error" >&2; exit 1; fi\n'
+                              'printf "1000\\t%s\\n" "$path"\n')
+    (bin_dir/'du').chmod(0o755)
+    shell = (f'set -Eeuo pipefail\nROOT={root} STAGE={root}/staging SWITCHING={switching}\n'
+             + functions('log', 'die', 'du_bytes', 'measure', 'gene_disk', 'on_gene_error')
+             + '\nrollback_gene() { if [[ $BASHPID == "$$" ]]; then echo rolled-back; fi; }\n'
+             'disk_admission() { echo "admitted $*"; }\n'
+             + ('trap on_gene_error ERR\n' if switching == '1' else '') + 'gene_disk\necho switching-on\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'})
+    assert out.returncode != 0 and 'admitted' not in out.stdout and 'switching-on' not in out.stdout, out.stdout
+    assert f'FAIL: could not measure {root}/{failing}' in out.stderr
+    assert ('rolled-back' in out.stdout.split()) is (switching == '1')  # the main shell's rollback, not a subshell's
+
+
+def test_sizing_a_tree_stops_on_an_io_error_for_a_path_du_cant_reach(tmp_path):
+    """gene #101: an I/O error on a path is never read as that path being gone, whatever the shell sees there."""
+    bin_dir = tmp_path/'bin'
+    bin_dir.mkdir()
+    (bin_dir/'du').write_text('#!/usr/bin/env bash\nprintf "%s\\t%s\\n" 4096 "$2"\n'
+                              'echo "du: cannot access \'$2/gene.sqlite3-wal\': Input/output error" >&2\nexit 1\n')
+    (bin_dir/'du').chmod(0o755)
+    shell = ('set -Eeuo pipefail\nSWITCHING=0\n' + functions('log', 'die', 'du_bytes')
+             + f'\nsize=$(du_bytes {tmp_path})\necho "size=$size"\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'})
+    assert out.returncode != 0 and 'size=' not in out.stdout
+    assert 'FAIL: could not measure' in out.stderr and 'Input/output error' in out.stderr
+
+
+@pytest.mark.parametrize('journal,mode', [
+    (['baseline', 'drained'], 'checked'),
+    (['baseline', 'intent:pause', 'intent:abort'], 'replays'),  # the drain's stop, its restore unfinished
+    (['baseline', 'intent:pause', 'intent:abort', 'resumed_old'], 'as-is'),  # gene #95: and once restored
+    # gene #93: rollback-gene's stop after its fence, restored, and then not
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:abort', 'resumed_old'], 'as-is'),
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:abort'], 'replays'),
+    # A rollback that ran after such a stop: what it restored is checked again.
+    (['baseline', 'drained', 'intent:abort', 'resumed_old', 'intent:rollback', 'fri_rolled_back'], 'checked'),
+])
+def test_resume_old_stays_as_it_is_after_a_stop_until_a_rollback_runs(tmp_path, journal, mode):
+    (tmp_path/'journal').write_text(''.join(line+'\n' for line in journal))
+    shell = (f'set -Eeuo pipefail\nJOURNAL={tmp_path}/journal\n' + functions('has', 'aborting', 'as_is')
+             + '\nif aborting; then echo replays; elif as_is; then echo as-is; else echo checked; fi\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0 and out.stdout.split() == [mode], out.stderr
 
 
 def test_claims_wait_for_the_window_and_an_owner_rollback_does_not(store, monkeypatch):

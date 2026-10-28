@@ -1101,6 +1101,9 @@ class Store:
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
                        (guild_id, scope, user_id, guild_id, scope, user_id, limit(scope)))
             # With the summary generation it drew on: once that moves, the reply keeps only a breadcrumb (fri #172).
+            if summary_generation is not None:
+                from .fri_member_summary import keep as keep_generation
+                keep_generation(db, guild_id, user_id)
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
                        'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
                        'reply_message_id,verbatim,speaker_revision,attributed,audience,summary_generation) '

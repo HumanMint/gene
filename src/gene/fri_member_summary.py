@@ -86,9 +86,19 @@ def retire(db, where, args=()):
 
 def settle(db):
     """At start: what an older controller left while it ran (a rollback window), which moved generations without
-    retiring the replies that drew on them."""
-    retire(db, 'summary_generation <> coalesce((SELECT generation FROM fri_member_summary_generations g '
-               'WHERE g.guild_id=chat_turns.guild_id AND g.user_id=chat_turns.user_id), 0)')
+    retiring the replies that drew on them. Its privacy changes deleted the member's generation outright, and a drop
+    there can write it again from one, so a reply whose generation can't be confirmed goes too (gene #114): one with
+    none on record (a save records it, see keep), or saved under a revision of the member's since moved."""
+    retire(db, 'summary_generation IS NOT (SELECT generation FROM fri_member_summary_generations g '
+               'WHERE g.guild_id=chat_turns.guild_id AND g.user_id=chat_turns.user_id) OR speaker_revision IS NOT '
+               'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turns.user_id), 0)')
+
+
+def keep(db, guild, user):
+    """A reply that drew on the member's summary is being saved: its generation goes on record, zero included, so a
+    start that finds none knows an older controller erased it (see settle)."""
+    db.execute('INSERT INTO fri_member_summary_generations VALUES (?,?,0) ON CONFLICT(guild_id, user_id) DO NOTHING',
+               (guild, user))
 
 
 def drop(db, guild, user):

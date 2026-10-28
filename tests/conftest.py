@@ -1,6 +1,8 @@
+import datetime as dt
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +14,11 @@ from gene.store import Store
 
 gene_test_config = TemporaryDirectory(prefix='gene-test-config-')
 os.environ['XDG_CONFIG_HOME'] = gene_test_config.name
-INSIDE_WINDOW = 1793185500.0  # 2026-10-28T04:05:00-07:00
+# Tomorrow's window, not a fixed date: gene #65 allows one deployment per local day, counted from rows the store
+# dates with the real clock. Real rows always fall on an earlier day than the window, so a test's own deployments
+# never use up that day (a fixed date broke every test with two deployments once it arrived).
+INSIDE_WINDOW = dt.datetime.combine(dt.datetime.now(ZoneInfo('America/Los_Angeles')).date()+dt.timedelta(days=1),
+                                    dt.time(4, 5), ZoneInfo('America/Los_Angeles')).timestamp()
 
 
 @pytest.fixture(autouse=True)

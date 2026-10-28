@@ -30,6 +30,9 @@ ASKED = ('do', 'does', 'did', 'can', 'could', 'will', 'would', 'shall', 'should'
 ASKING = re.compile(r"(?i)(?:^|\b(?:please|pls|plz|just|so|and|also|now|actually|instead|then|honestly|tbh|ngl|"
                     r"btw|lol|lmao|haha|ok|okay|yeah|yea|ya|yes|oh|hey|hi|yo|fri|bro|dude|can|could|will|may|"
                     r"should|from now on|(?:can|could|will|would) (?:you|u)|(?:you|u) to))\W*$")
+# "can you call me dan?" asks to be called it, the one question that keeps a note.
+POLITE = re.compile(r"(?i)\W*(?:(?:lol|lmao|haha|ok|okay|hey|hi|yo|fri|so|also|and|bro|dude|btw)\W+)*"
+                    r"(?:can|could|would|will) (?:you|u)(?: (?:please|pls|plz|just))*\W*")
 RETRACTED = re.compile(r"(?i)\b(?:jk|j/k|kidding|anymore|not really)\b|(?:^|\s)/s\b")
 # The next sentence, on its own, takes it back: "i like chess. jk", "i like chess\nlol no".
 TAKEN_BACK = re.compile(r"(?i)\W*(?:(?:lol|lmao|lmfao|haha)\W+)*(?:jk|j/k|/s|just kidding|kidding|not really|"
@@ -77,8 +80,9 @@ def whole(text, at, evidence):
 def claimed(text, at, evidence):
     """Whether the words at text[at:] are the member's own claim, not quoted, reported, denied, asked or taken back."""
     before, after = text[:at].replace('’', "'"), text[at + len(evidence):].replace('’', "'")
-    # Single quotes open after a non-word and close before one; "don't" and "i'm" are neither.
-    single = [m.group(1) for m in re.finditer(r"(?<!\w)(['‘])(?=\S)|(?<=\S)'(?!\w)", before)]
+    # Single quotes open after a non-word and close before one; "don't", "i'm", "'cause" and "'90s" are neither.
+    single = [m.group(1) for m in re.finditer(r"(?<!\w)(['‘])(?=\S)(?!(?i:cause|cuz|coz|bout|til|till|em|n|round)\b"
+                                              r"|\d\ds?\b)|(?<=\S)'(?!\w)", before)]
     if (before.rstrip().endswith(QUOTED) or before.rsplit('\n', 1)[-1].lstrip().startswith('>')
             or re.search(r'(?m)^\s*>>>', before) or before.count('`') % 2 or before.count('"') % 2
             or before.count('“') > before.count('”') or (single and single[-1])
@@ -93,7 +97,8 @@ def claimed(text, at, evidence):
         return False  # "she said honestly …", "dont ever …", "bob: …".
     stop = SENTENCE.search(after)
     rest, end, following = (after[:stop.start()], stop.group(), after[stop.end():]) if stop else (after, '', '')
-    if '?' in end:
+    if '?' in end and not (evidence.lower().startswith('call me') and POLITE.fullmatch(lead)
+                           and re.fullmatch(r'(?i)\W*(?:(?:please|pls|plz|from now on|instead|now)\W*)*', rest)):
         return False  # "i like chess?" asks.
     if RETRACTED.search(evidence + rest) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest):
         return False  # "… jk", "… said no one ever".

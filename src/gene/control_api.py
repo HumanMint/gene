@@ -78,7 +78,9 @@ def register(app, store, settings, auth):
     @app.post('/controls/recent', dependencies=[auth('fri')])
     def recent(body: Scope):
         scope(body)
-        return {'receipts': controls.recent(body.user_id, body.guild_id, body.conversation_id)}
+        # `correctable`: a play of theirs a correction could put right, which the three receipts may not show.
+        return {'receipts': controls.recent(body.user_id, body.guild_id, body.conversation_id),
+                'correctable': controls.correctable(body.user_id, body.guild_id, body.conversation_id)}
 
     @app.post('/controls', dependencies=[auth('fri')])
     def enqueue(body: Control):

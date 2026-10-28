@@ -31,6 +31,13 @@ ASKING = re.compile(r"(?i)(?:^|\b(?:please|pls|plz|just|so|and|also|now|actually
                     r"btw|lol|lmao|haha|ok|okay|yeah|yea|ya|yes|oh|hey|hi|yo|fri|bro|dude|can|could|will|may|"
                     r"should|from now on|(?:can|could|will|would) (?:you|u)|(?:you|u) to))\W*$")
 RETRACTED = re.compile(r"(?i)\b(?:jk|j/k|kidding|anymore|not really)\b|(?:^|\s)/s\b")
+# The next sentence, on its own, takes it back: "i like chess. jk", "i like chess\nlol no".
+TAKEN_BACK = re.compile(r"(?i)\W*(?:(?:lol|lmao|lmfao|haha)\W+)*(?:jk|j/k|/s|just kidding|kidding|not really|"
+                        r"not anymore|no|nah|nope)(?:\W+(?:lol|lmao|lmfao|haha))*\W*")
+# "call me crazy (but …)" is an idiom, not a nickname; "call me dan, but not danny" is one.
+IDIOM = re.compile(r"(?i)call me\s+(?:an?\s+)?(?:crazy|insane|nuts|mad|weirdo?|old[- ]fashioned|paranoid|nerdy?|geek|"
+                   r"stupid|dumb|idiot|naive|picky|petty|biased|basic|cringe|lazy|snob|hater|boomer|romantic|"
+                   r"sentimental|cynical|sucker|extra|dramatic|hypocrite|cheap|whatever|anything|out)\b")
 
 
 def personal_note(candidate, text):
@@ -60,18 +67,22 @@ def personal_note(candidate, text):
 
 
 def whole(text, at, evidence):
-    """Starts and ends where words do: not the "i like" in "wasabi like" or the "call me dan" in "call me danny"."""
+    """Starts and ends where words do: not the "i like" in "wasabi like" or the "call me dan" in "call me danny".
+    An opening quote starts one ("'i like …"), so the quote check sees it; the apostrophe in "don't" doesn't."""
     end = at + len(evidence)
-    return not ((at and re.match(r"[\w'’-]", text[at - 1]))
+    return not (re.search(r"(?:[\w-]|\w['’])$", text[max(at - 2, 0):at])
                 or (re.match(r'\w', evidence[-1]) and re.match(r'\w', text[end:end + 1])))
 
 
 def claimed(text, at, evidence):
     """Whether the words at text[at:] are the member's own claim, not quoted, reported, denied, asked or taken back."""
     before, after = text[:at].replace('’', "'"), text[at + len(evidence):].replace('’', "'")
+    # Single quotes open after a non-word and close before one; "don't" and "i'm" are neither.
+    single = [m.group(1) for m in re.finditer(r"(?<!\w)(['‘])(?=\S)|(?<=\S)'(?!\w)", before)]
     if (before.rstrip().endswith(QUOTED) or before.rsplit('\n', 1)[-1].lstrip().startswith('>')
             or re.search(r'(?m)^\s*>>>', before) or before.count('`') % 2 or before.count('"') % 2
-            or before.count('“') > before.count('”') or after.lstrip()[:1] in ('"', '”') or re.match(r"\s*'(?!\w)", after)):
+            or before.count('“') > before.count('”') or (single and single[-1])
+            or after.lstrip()[:1] in ('"', '”') or re.match(r"\s*'(?!\w)", after)):
         return False  # Quoted, code or a blockquote.
     *earlier, lead = SENTENCE.split(before)
     prior = next((part for part in reversed(earlier) if part.strip()), '')
@@ -80,12 +91,16 @@ def claimed(text, at, evidence):
     lead = FILLER.sub(' ', lead)
     if FRAMED.search(lead) or NEGATED.search(lead) or re.search(r'\w:(?:\s|$)', lead):
         return False  # "she said honestly …", "dont ever …", "bob: …".
-    rest = SENTENCE.split(after, maxsplit=1)[0]
+    stop = SENTENCE.search(after)
+    rest, end, following = (after[:stop.start()], stop.group(), after[stop.end():]) if stop else (after, '', '')
+    if '?' in end:
+        return False  # "i like chess?" asks.
     if RETRACTED.search(evidence + rest) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest):
         return False  # "… jk", "… said no one ever".
+    if TAKEN_BACK.fullmatch(next((part for part in SENTENCE.split(following) if part.strip()), '')):
+        return False  # "… . jk"
     if evidence.lower().startswith('call me'):
-        return bool(ASKING.search(lead)) and not re.match(r"(?i)call me\s+[\w'-]+(?:\s+[\w'-]+)?\s*,?\s+but\b",
-                                                          evidence + rest)  # Not "call me crazy but …".
+        return bool(ASKING.search(lead)) and not IDIOM.match(evidence + rest)
     words = re.findall(r"[\w']+", lead.lower())
     return not words or words[-1] not in ASKED
 

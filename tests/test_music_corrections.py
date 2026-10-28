@@ -19,21 +19,32 @@ FIX = 'not the one, i meant join us for a bite'
     ('fri not that one lol, Join Us For A Bite', 'join us for a bite', True),
     ('wrong song, "join us for a bite"', 'join us for a bite', True),  # Quoted song names are still theirs.
     ('i meant join us for a bite', 'join us for a bite', True),
+    ('nah not that one \u2014 join us for a bite', 'join us for a bite', True),
+    ('<@99> not that one, I Will Always Love You', 'I Will Always Love You', True),
+    # Sol r2 S4: titles may use any words.
+    ('wrong song, i meant Can You Feel My Heart', 'Can You Feel My Heart', True),
+    ('wrong song, i meant All I Got by Said The Sky', 'All I Got by Said The Sky', True),
+    ('wrong song, The One', 'The One', True),
     ('join us for a bite', 'join us for a bite', False),  # No correction: a plain title isn't a request.
     (FIX, 'someone else song', False),  # Not in their words.
+    (FIX, '', False),
     ('for example: not that one, i meant join us for a bite', 'join us for a bite', False),
     ('"not that one, i meant join us for a bite" is what he said', 'join us for a bite', False),
     ("not that one, don't play join us for a bite", 'join us for a bite', False),
-    (FIX, '', False),
-    # Sol r1 S1: someone else's words in a blockquote or code never supply the song.
+    ('join us for a bite, not that one', 'join us for a bite', False),  # The song comes after the correction.
+    # Sol r1 and r2 S1: someone else's words in quotes, code or a blockquote never supply the song.
     ('not that one\n> alex: Never Gonna Give You Up', 'Never Gonna Give You Up', False),
     ('not that one\n```Never Gonna Give You Up```', 'Never Gonna Give You Up', False),
-    # Sol r1 S2: chat that names no replacement, reported speech and questions aren't requests.
+    ('not that one, ``Never Gonna Give You Up``', 'Never Gonna Give You Up', False),
+    ('not that one\n>>> alex said\nNever Gonna Give You Up', 'Never Gonna Give You Up', False),
+    ('"wrong song, Never Gonna Give You Up"\nnot that one, i meant Join Us For A Bite', 'Never Gonna Give You Up', False),
+    # Sol r1 and r2 S2: chat that names no replacement, reported speech and questions aren't requests.
     ('i meant to say thanks', 'thanks', False),
+    ('not that one, i meant to say thanks', 'thanks', False),
     ('not the one i wanted lol', 'the one', False),
+    ('not the one i wanted lol', 'i wanted', False),
     ('he said not that one, i meant join us for a bite', 'join us for a bite', False),
     ('could you tell me if not that one, i meant join us for a bite works', 'join us for a bite', False),
-    ('join us for a bite, not that one', 'join us for a bite', False),  # The song comes after the correction.
 ])
 def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argument, expected):
     assert correction(text, argument) is expected

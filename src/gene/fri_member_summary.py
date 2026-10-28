@@ -164,6 +164,13 @@ def read(db, guild, user):
     return row
 
 
+def lapsed(db, guild, user):
+    """Whether the member had a summary that lapsed (expired, say, with nothing pruning it yet). It goes now, which
+    moves their generation, so a turn or write that drew on it can't keep its words (gene #113)."""
+    row = db.execute('SELECT 1 FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user)).fetchone()
+    return bool(row) and read(db, guild, user) is None
+
+
 def view(row):
     """What Fri gets. The origins are where its words were said, for Fri to recheck who can read them now."""
     if not row or not row['body']:

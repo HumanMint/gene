@@ -970,6 +970,8 @@ class Store:
         the reply (gene #90). summary_generation: the member summary's the turn drew on, if it did (gene #91).
         """
         with self.connection() as db:
+            if summary_generation is not None:  # A lapsed summary goes here (see _summary_unchanged), in one go.
+                db.execute('BEGIN IMMEDIATE')
             if self._privacy_state(db, user_id)[0] != revision:
                 raise Conflict('This conversation was cleared while Fri was replying. Start again.')
             self._checked_provenance(db, user_id, provenance)
@@ -988,10 +990,17 @@ class Store:
 
     @staticmethod
     def _summary_unchanged(db, guild_id, user_id, summary_generation):
-        """A turn that drew on the member's summary fails closed once a withdrawal dropped it (gene #91). A turn that
-        says nothing, from an older Fri or one that drew on none, is checked as before."""
-        from .fri_member_summary import generation
-        if summary_generation is not None and generation(db, guild_id, user_id) != summary_generation:
+        """A turn that drew on the member's summary fails closed once a withdrawal dropped it (gene #91), or once it
+        lapsed: one that expired with nothing pruning it yet goes here, as a read that finds it lapsed drops it, so
+        its generation moves before it's compared (gene #113). A turn that says nothing, from an older Fri or one that
+        drew on none, is checked as before."""
+        from .fri_member_summary import generation, lapsed
+        if summary_generation is None:
+            return
+        if lapsed(db, guild_id, user_id):
+            db.commit()  # It stays gone, and its replies retired, though the refusal undoes the rest.
+            raise Conflict(SUMMARY_CHANGED)
+        if generation(db, guild_id, user_id) != summary_generation:
             raise Conflict(SUMMARY_CHANGED)
 
     def check_authors(self, authors):

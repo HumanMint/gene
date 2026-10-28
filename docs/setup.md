@@ -61,16 +61,14 @@ starting their services. Keep `GENE_SHOW_FRI=false` until the companion is confi
 
 ## Music
 
-The repository includes a separate Red-compatible Lavalink node and source resolver
-in `ops/Dockerfile.audio` and `ops/audio-compose.yml`. Build/pin these independently
-and set Gene's external audio host/port/password as described in
-[Audio operations](operations.md#audio-on-hostinger-downloads-through-the-mac).
-That guide documents the tested Hostinger/home-relay arrangement; it is optional
-infrastructure, not a universal guarantee that every source works from every VPS.
+The optional [red-audio-adapter](https://github.com/HumanMint/red-audio-adapter)
+repository owns the Red-compatible Lavalink source, resolver/cache and private download
+relay. Install and pin its audio services separately; Gene consumes the exact Python
+adapter revision recorded in [audio-adapter.json](audio-adapter.json).
 
-The home machine transfers files only. The server plays them and owns the bounded
-cache. No personal YouTube cookies are required by this setup. Verify actual audible
-playback; a loaded title or queued track alone is insufficient.
+Follow [Gene audio integration](audio-adapter.md) and the adapter's portable setup guide.
+Keep Gene's external audio host/port/password and prepare token private. Test actual
+audible playback; a loaded title or queued track alone is insufficient.
 
 ## Optional Fri and coding workflow
 

@@ -62,102 +62,16 @@ Add `ps`, `up -d`, `logs --tail 60 red`, or `stop red` as needed. Logs can conta
 request details or source-service errors; inspect privately and never paste secrets.
 The controller listens only on host loopback port 8787 and its private Docker network.
 
-## Audio on Hostinger; downloads through the Mac
+## Optional external audio adapter
 
-Hostinger runs the pinned Red-compatible Lavalink `3.7.13+red.5` and the separate Gene
-source plugin. Red remains an upstream package; its commands, player, queue, and
-metadata cache are unchanged. Red's `audioset cache` manages metadata, not downloaded
-music files ([upstream documentation](https://docs.discord.red/en/stable/cog_guides/audio.html#owner-only-audioset-commands)).
-The downloaded-file cache below therefore belongs to the external audio service.
-
-A direct Hostinger test with `yt-dlp[default]==2026.8.19` and Node 24 tried complete
-public audio downloads for Rainbow Road and Far Away. Both required YouTube sign-in /
-bot verification. The configured source uses the home connection; it does not repeat
-these failed VPS attempts for every request or use personal cookies.
-
-The private path is:
-
-1. Red on Hostinger asks its private Lavalink node to play a YouTube ID.
-2. Hostinger checks `/srv/gene/data/audio/media` for a complete cached file.
-3. On a miss, the Mac downloads audio without transcoding, encoding, or voice playback.
-4. The Mac transfers the complete file over Tailscale. Hostinger verifies the byte count
-   and SHA-256, then atomically publishes the file. Partial or mismatched transfers cannot play.
-5. The Mac deletes its temporary transfer directory after a completed or interrupted send.
-   Failed downloads are also removed; process-crash debris is removed when the relay restarts.
-6. Lavalink on Hostinger reads the local cached file and sends Discord voice packets.
-
-Only the download relay remains on the Mac. It runs at background priority and is idle
-between requests. Its server waits for socket events instead of running Uvicorn's normal
-10 Hz housekeeping timer; termination signals still wake shutdown immediately. The relay
-has no request-count limit, supervisor heartbeat, or periodically refreshed Date header.
-Its independently pinned release is recorded in `.audio/relay-release.json`.
-There is no Mac Java audio process, continuous audio stream, or voice
-connection. Existing Cobalt agents, ports, and cookies remain independent.
-
-### Cache policy
-
-The persistent Hostinger cache survives audio and bot releases. A play refreshes the
-track's seven-day lifetime. Hourly cleanup and request-time cleanup remove expired idle
-tracks. At capacity, the least recently played unleased tracks are evicted first. Playback
-leases persist across resolver restarts and are released by the source plugin; orphaned
-leases expire after two hours. No unrelated files or Red metadata are managed here.
-
-`GENE_AUDIO_CACHE_BYTES` is set at installation to 10% of then-free space on the cache
-filesystem (approximately 6.5 GiB on the current VPS), not a preallocated reservation.
-`GENE_AUDIO_RESERVE_BYTES=2147483648` preserves at least 2 GiB of free space. Admissions
-include incomplete downloads and metadata; low space fails closed rather than filling
-the disk. Per-track limits remain 64 MiB and 30 minutes. Downloads are serialized and
-identical cache misses coalesce. Limits and the seven-day TTL are explicit in the private
-`/srv/gene/secrets/audio-resolver.env` file.
-
-Cached display metadata contains only the video ID, title, artist, duration, and canonical
-YouTube link. A cached link can play with the Mac offline. New searches still require the
-home connection; Red may also answer previously cached metadata lookups itself.
-
-### Install and verify
-
-Build `ops/Dockerfile.audio` targets `node` and `resolver` as `gene-audio:<full-sha>` and
-`gene-audio-resolver:<full-sha>`. Audio has its own maintainer-controlled Compose project:
-
-```sh
-docker compose --env-file /srv/gene/audio-release.env \
-  -f /srv/gene/source/ops/audio-compose.yml up -d
-```
-
-`GENE_AUDIO_SHA` pins that project independently of feature releases. Its node joins the
-existing private `gene_default` network as `gene-audio`; no host/public port is published.
-The resolver shares the node's network namespace and binds `127.0.0.1:2334`. Both containers
-share only the dedicated media volume (read-only for Java). The node's password and
-resolver token are separate; the Mac relay has another token.
-
-Stage the home relay using:
-
-```sh
-uv run --no-sync python scripts/install_download_relay.py --stage .audio/relay-stage
-```
-
-The ignored `.env.local` supplies `GENE_RELAY_TOKEN`, `GENE_RELAY_BIND` (Mac Tailscale IP),
-`GENE_RELAY_PEER` (VPS Tailscale IP), and optional `GENE_RELAY_PORT` (2335 by default).
-Install a clean committed release with `--release-sha <full-sha>`. Its immutable source
-and environment live in `.audio/relay-releases/<sha>`, served by
-`local.dan.gene.download-relay`. The relay binds only the configured Tailscale address,
-rejects other source IPs, requires its token, and disables forwarded-IP trust.
-`scripts/install_audio.py` now routes to this download-only installer.
-
-Before switching Red, test the candidate's complete download, cache reuse with the Mac
-unavailable, native decoding/seek, and sender timing. Stop the old Mac
-`local.dan.gene.audio`, `.audio.resolver`, and `.audio.proxy` agents only after Hostinger
-is healthy. Archive their plists outside `~/Library/LaunchAgents` so they cannot respawn
-at login. Delete only their `media/` caches after they stop. Keep their immutable binaries
-and archived plists for rollback; rollback can redownload missing songs.
-
-Back up the old runtime/audio configuration before changing `GENE_AUDIO_HOST` to
-`gene-audio`. Preserve the previous bot/controller image and source. A failed switch must
-restore both the runtime's node address and the old Mac agents. A failed future audio
-release restores its previous pinned audio image and relay definition. Never claim
-Discord voice playback is verified merely because a search or health endpoint succeeds.
-The native `audio-plugin/test/PlaybackProbe.java` and `UdpTimingProbe.java` are included
-in the audio image for decoding, seeking, and timed sender checks without a compiler.
+The [red-audio-adapter](https://github.com/HumanMint/red-audio-adapter) repository owns
+Lavalink's external source, resolver/cache, download relay, build tools and their tests.
+Use its [setup guide](https://github.com/HumanMint/red-audio-adapter/blob/main/docs/setup.md)
+for a new installation and [Gene integration](audio-adapter.md) for a pinned upgrade.
+Gene keeps the Red command layer, its diagnostics, deployment authority and existing
+`ops/audio-compose.yml` integration manifest. Audio services and the optional relay
+release separately from the Gene/Fri runtime batch; no service is switched by this
+source extraction. Preserve cache files, leases, private settings and rollback assets.
 
 ## Releases and recovery
 
@@ -1184,33 +1098,23 @@ writes a member conversation, or sends a Discord message. Usage is recorded as e
 
 ### Selected-track preparation and Fri request previews
 
-Gene's trusted runtime adapter prepares only the selected YouTube file before sending
-Lavalink's play operation. This avoids its ten-second stuck detector expiring during a
-cold download. The Mac remains the temporary download relay; decoding, cached files
-and voice transmission remain on Hostinger. `/prepare` uses the existing authenticated
-resolver, a 100-second client bound and a three-minute cache handoff pin. Stop, skip,
-disconnect, pause and seek still apply while preparation is pending. A failed preparation
-uses Red's existing track-error handling; it never sends a play operation. The adapter
-dispatches a Lavalink track exception through red-lavalink, which parses its severity as
-`ExceptionSeverity` (uppercase values only). Red's Audio cog then posts the message as a
-"Track Error" embed in the command's channel and skips to the next queued track. Red and
-Lavalink's installed package files remain unchanged.
+Gene calls the separately maintained adapter's preparation hook through the
+`gene.runtime_audio` compatibility import. The hook prepares the selected YouTube file
+before Lavalink's play operation; stop/skip/disconnect/pause/seek remain effective.
+Red's own track-exception notification and recovery handle failures. Red's installed
+package files stay unchanged.
 
-A resolver refusal names its reason only as a fixed code in the `X-Gene-Refusal` header:
-`too_long` (over 30 minutes), `too_large` (over 64 MiB) or `unsupported` (live or not an
-ordinary public stream). Hostinger's resolver forwards only a known code from the Mac relay,
-never the relay's text, and the runtime maps it to a fixed member line. Any other failure
-shows the generic line. The three parts deploy separately: a feature release updates only
-the runtime, so the specific reason needs the resolver image (`GENE_AUDIO_RESOLVER_SHA`) and
-the Mac relay to run a release that includes it. Until then members see the generic line.
+Configure `GENE_AUDIO_PREPARE_URL=http://gene-audio:2334` and
+`GENE_AUDIO_PREPARE_TOKEN` privately in the runtime environment. That token is the
+resolver credential, not a Discord token. In the container layout the resolver binds
+`0.0.0.0` inside the node's private network namespace; publish no host port. Keep its
+separate token and the node/relay credentials private.
 
-Set `GENE_AUDIO_PREPARE_URL=http://gene-audio:2334` and `GENE_AUDIO_PREPARE_TOKEN` in
-`runtime.env`. The latter is the resolver service credential, never a Discord token.
-The resolver must bind `0.0.0.0` inside its Docker network namespace; do not publish
-port 2334 on the host. Keep its token and namespace isolated. Build the resolver image
-from the same tested SHA and pin it with `GENE_AUDIO_RESOLVER_SHA` in `audio-release.env`.
-`GENE_AUDIO_SHA` continues to pin the unchanged audio node. Roll back the resolver
-image/environment alongside the bot runtime.
+Fixed refusal codes (`too_long`, `too_large`, `unsupported`) cross service boundaries
+through `X-Gene-Refusal`. Unknown/older errors use a generic member line. The runtime,
+resolver image and relay update independently; see the adapter's
+[protocol](https://github.com/HumanMint/red-audio-adapter/blob/main/docs/architecture.md)
+and [Gene rollout/rollback](audio-adapter.md) before changing any audio pin.
 
 Set `GENE_COMMAND_CHANNEL_ID` in controller configuration to the approved bot commands
 channel. Fri sends member-DM controls there, with member/channel access rechecked.

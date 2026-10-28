@@ -988,6 +988,7 @@ def test_a_fri_only_release_above_a_gene_level_must_roll_back_first(batch_host, 
         (backup_of(latest) / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(7)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(7)}\n')
         (backup_of(latest) / 'fri-release.json').write_text(json.dumps({'sha': fri(7), 'previous': fri(3)}))
         middle = write_fri_only(root, images, 3, 7, 3, NOW - 1.5 * DAY, backup=case == 'between_levels')
+        live_fri(batch_host, 4, previous=7)  # batch 4 released Fri 4 over Fri 7
         names = [latest.name, middle.name, stage_of(root, 3).name]
     else:
         top = write_fri_only(root, images, 4, 5, 4, NOW - 0.5 * DAY, **on_top.get(case, {}))
@@ -1203,4 +1204,4 @@ def test_retention_and_the_release_script_agree_on_every_rollback_check(batch_ho
             accepted = (run_script_check('fri_pair_check', [state_json, manifest, backup, str(batch_host.fri_root),
                                                             record['fri'], record['old_fri']])
                         and run_script_check('gene_unmoved', [state_json, manifest, baseline, record['gene']]))
-        assert accepted is not failing, (record['name'], failing)
+        assert accepted == (not failing), (record['name'], failing)

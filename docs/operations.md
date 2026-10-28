@@ -211,7 +211,23 @@ in service above a level, newest first, must also be complete before the level c
 The pair must continue down the chain: each Fri-only batch's Fri is the Fri rolled back to so far, and
 each step's new images are the ones the release after it replaced. The live Fri pins must be the Fri
 of the latest batch in service. The plan lists Fri-only steps in `lineage` with `fri_only`; they don't
-count as levels. A legacy maintainer level is complete with
+count as levels.
+
+Last, each recovery must pass the checks `batch-release.sh` makes before it changes anything, on the state
+the recoveries above it leave. The tool starts from the live host (`release.env`, `secrets/worker.env`,
+Fri's `release.env` and `release.json` as bytes, the controller's `active_sha`, `previous_sha` and
+`fri_active_sha`, the source marker and the three service containers' images). It then evaluates
+`pair_check` for each `rollback-gene` and `fri_pair_check` with `gene_unmoved` for each `rollback-fri`:
+the same fields, the same byte comparisons, and the same exception that a restored record may be its
+own saved bytes. After each check passes, it applies what that rollback restores: the backup's exact
+bytes, the old images, settings and source. A saved Fri record whose `previous` doesn't match, for
+example, refuses the level whose rollback reads it next. An owner's rollback of a cog-only release
+through the deployer is followed the same way (`store.rollback`, `deploy.activate`). A feature deploy
+above a batch therefore refuses: undoing it leaves `previous_sha` at the feature, which `pair_check`
+rejects, and the batch tooling needs that reconciled by hand anyway (`baseline` refuses it too). A
+legacy install's rollback has no script to mirror, so nothing below it is simulated. Bytes are only
+compared, never printed or stored. The tests run the script's own check programs on every state the
+tool simulates, so the two can't drift apart unnoticed. A legacy maintainer level is complete with
 `installed-source/`, `controller.sqlite3`, `red.tar.gz`, `fri.tar.gz`, pins naming the previous
 release, and its cogs. An incomplete level inside the two protected levels refuses and names what
 is missing; levels beyond them are not consulted.

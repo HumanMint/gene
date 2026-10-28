@@ -40,6 +40,8 @@ LEVEL_MARKS = LIVE | {'gene_attempted', 'drained'}
 FRI_ONLY_MARKS = LIVE | {'fri_backup', 'drained'}  # what rollback-fri and resume-old need from a Fri-only batch
 BACKUP_FILES = ('release.env', 'worker.env', 'fri-release.env', 'fri-release.json', 'db/controller.sqlite3',
                 'installed-source/ops/compose.yml', 'installed-source/ops/fri-compose.yml')
+SAVED_GENE = ('release.env', 'worker.env', 'fri-release.env', 'fri-release.json')  # what rollback-gene restores
+SAVED_FRI = ('fri-release.env', 'fri-release.json')  # what rollback-fri restores
 DOWNGRADES = re.compile(r'(?:gene\.[a-z_]+(?: gene\.[a-z_]+)*)?')
 ZONE = 'America/Los_Angeles'
 EARLIEST = 1793059200  # 2026-10-27T00:00Z: a clock before the window policy existed is not trusted
@@ -189,7 +191,8 @@ def controller_refs(root):
     with sqlite3.connect(path.as_uri() + '?mode=ro', uri=True) as db:
         db.execute('PRAGMA query_only=ON')
         db.execute('BEGIN')
-        settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN ('active_sha','previous_sha')"))
+        settings = dict(db.execute("SELECT key,value FROM settings WHERE key IN "
+                                   "('active_sha','previous_sha','fri_active_sha')"))
         jobs, cog_jobs = [], {}
         for job, kind, state, proposal, approved in db.execute(
                 'SELECT id,kind,state,proposal,approved_sha FROM jobs'):
@@ -411,7 +414,8 @@ def batch_step(root, record, by_tag):
         raise incomplete('its new Fri image is not its Fri release')
     if not (root / 'releases' / record['old_gene'] / 'cogs').is_dir():
         raise incomplete(f"the rollback cogs releases/{record['old_gene']} are missing")
-    return old_fri, baseline['settings']['previous_sha']
+    return {'record': record, 'baseline': baseline, 'backup': backup,
+            'saved': {name: (backup / name).read_bytes() for name in SAVED_GENE}}
 
 
 def fri_step(root, record, by_tag, restores, source, gene_images):
@@ -459,6 +463,127 @@ def fri_step(root, record, by_tag, restores, source, gene_images):
             != {'FRI_RELEASE_SHA': record['old_fri'], 'FRI_RUNTIME_IMAGE': old['fri'][0]}
             or not isinstance(fri_record, dict) or fri_record.get('sha') != record['old_fri']):
         raise incomplete(f'backup {backup.name} disagrees with its manifest')
+    return {'record': record, 'baseline': baseline, 'backup': backup,
+            'saved': {name: (backup / name).read_bytes() for name in SAVED_FRI}}
+
+
+def live_images():
+    """Each service container's image ID, or 'none', as batch-release.sh's container_image reads it."""
+    found = {}
+    for key, name in (('controller', 'gene-controller-1'), ('red', 'gene-red-1'), ('fri', 'fri-runtime-1')):
+        try:
+            found[key] = command('docker', 'inspect', '-f', '{{.Image}}', name).strip()
+        except subprocess.CalledProcessError:
+            found[key] = 'none'
+    return found
+
+
+def live_pair_state(root, settings):
+    """What batch-release.sh's pair checks read from the live host: the pin files and Fri record as bytes
+    (compared, never printed), the controller's release settings, the source marker and container images."""
+    def read(path):
+        try:
+            return path.read_bytes()
+        except FileNotFoundError:
+            return None
+    marker = root / 'source/.release-sha'
+    source = marker.read_text().rstrip('\n') if marker.is_file() else 'unmarked' if (root / 'source').is_dir() else 'missing'
+    return {'release.env': read(root / 'release.env'), 'worker.env': read(root / 'secrets/worker.env'),
+            'fri release.env': read(FRI_ROOT / 'release.env'), 'fri release.json': read(FRI_ROOT / 'release.json'),
+            'settings': {key: settings.get(key) for key in ('active_sha', 'previous_sha', 'fri_active_sha')},
+            'source': source} | live_images()
+
+
+def release_values(data):
+    """release.env as state() and the deployer read it: every line with '=', split once, nothing stripped."""
+    try:
+        return dict(line.split('=', 1) for line in (data or b'').decode().splitlines() if '=' in line)
+    except UnicodeDecodeError:
+        return None
+
+
+def pair_mirror(kind, step, state, root_text):
+    """The checks batch-release.sh's recovery makes before it changes anything, on a simulated live state:
+    pair_check for rollback-gene (kind 'gene'), fri_pair_check and gene_unmoved for rollback-fri ('fri').
+    The same fields, the same byte comparisons and exceptions. Returns the names of the failing checks."""
+    record, saved, baseline = step['record'], step['saved'], step['baseline']
+    G, F, OLD_G, OLD_F = record['gene'], record['fri'], record['old_gene'], record['old_fri']
+    old, new, settings = record['images']['old'], record['images']['new'], state['settings']
+    try:
+        fri_record = json.loads(state['fri release.json'] or b'null')
+    except ValueError:
+        fri_record = None
+    checks = {
+        'fri release.env': state['fri release.env'] in (saved['fri-release.env'],
+                                                        saved['fri-release.env'].replace(OLD_F.encode(), F.encode())),
+        # The record a rollback restores is its own saved bytes; otherwise it must be F's, replacing OLD_F.
+        'fri release.json': (state['fri release.json'] == saved['fri-release.json']
+                             or (isinstance(fri_record, dict) and fri_record.get('sha') == F
+                                 and fri_record.get('previous') == OLD_F)),
+        'fri_active_sha': settings.get('fri_active_sha') in (None, OLD_F, F),
+        'fri image': state['fri'] in (old['fri'][1], new['fri'][1], 'none')}
+    if kind == 'gene':
+        new_release = f'GENE_RELEASE_SHA={G}\nGENE_ROOT={root_text}\nGENE_RUNTIME_IMAGE=gene-runtime:{G}\n'.encode()
+        new_worker = re.sub(rb'(?m)^GENE_WORKER_IMAGE=.*$', b'GENE_WORKER_IMAGE=gene-worker:' + G.encode(),
+                            saved['worker.env'])
+        gene_images = (old['runtime'][1], new['runtime'][1], 'none')
+        checks |= {
+            'release.env': state['release.env'] in (saved['release.env'], new_release),
+            'worker.env': state['worker.env'] in (saved['worker.env'], new_worker),
+            'release settings': (settings.get('active_sha'), settings.get('previous_sha'))
+                                in ((OLD_G, baseline['settings']['previous_sha']), (G, OLD_G)),
+            'controller image': state['controller'] in gene_images, 'red image': state['red'] in gene_images,
+            'source': (state['source'], (step['backup'] / 'installed-source').is_dir())
+                      in ((baseline['source'], False), (G, True), ('missing', True))}
+    else:
+        values = release_values(state['release.env'])
+        pin = 'unknown'  # state()'s worker_pin: the release whose worker line appears exactly once
+        for sha in (G, OLD_G):
+            if (state['worker.env'] or b'').split(b'\n').count(f'GENE_WORKER_IMAGE=gene-worker:{sha}'.encode()) == 1:
+                pin = 'gene-worker:' + sha
+        checks |= {
+            'active_sha': settings.get('active_sha') == G,
+            'release.env': values is not None and {key: values.get(key) for key in ('GENE_RELEASE_SHA', 'GENE_RUNTIME_IMAGE')}
+                           == {'GENE_RELEASE_SHA': G, 'GENE_RUNTIME_IMAGE': old['runtime'][0]},
+            'worker_pin': pin == old['worker'][0], 'source': state['source'] == baseline['source'],
+            'controller_image': state['controller'] == old['runtime'][1], 'red_image': state['red'] == old['runtime'][1]}
+    return [name for name, passed in checks.items() if not passed]
+
+
+def after_rollback(kind, step, state):
+    """The live state a successful rollback-gene ('gene') or rollback-fri ('fri') leaves."""
+    record, saved, baseline = step['record'], step['saved'], step['baseline']
+    old = record['images']['old']
+    state = dict(state, settings=dict(state['settings']))
+    # restore_old_fri: nothing to do once the old Fri's pins, record, setting and image are all in place.
+    if not (state['fri release.env'] == saved['fri-release.env'] and state['fri release.json'] == saved['fri-release.json']
+            and state['settings'].get('fri_active_sha') in (None, record['old_fri']) and state['fri'] == old['fri'][1]):
+        state.update({'fri release.env': saved['fri-release.env'], 'fri release.json': saved['fri-release.json'],
+                      'fri': old['fri'][1]})
+        state['settings']['fri_active_sha'] = record['old_fri']
+    if kind == 'gene':
+        state.update({'release.env': saved['release.env'], 'worker.env': saved['worker.env'],
+                      'controller': old['runtime'][1], 'red': old['runtime'][1], 'source': baseline['source']})
+        state['settings'].update(active_sha=record['old_gene'], previous_sha=baseline['settings']['previous_sha'])
+    return state
+
+
+def after_deployer_rollback(root, step, state, root_text):
+    """The owner's rollback of a cog-only release through the deployer, or None when it would refuse.
+
+    store.rollback proposes (previous_sha, active_sha); the deployer needs that release's cogs and rewrites
+    release.env keeping the runtime image (deploy.activate, GENE_ROOT defaulting to the host root); the
+    controller then records active_sha = the proposal and previous_sha = the release it replaced.
+    """
+    settings = state['settings']
+    values = release_values(state['release.env'])
+    if (values is None or (settings.get('previous_sha'), settings.get('active_sha')) != (step['previous'], step['sha'])
+            or not (root / 'releases' / step['previous'] / 'cogs/gene/__init__.py').is_file()):
+        return None
+    image = values.get('GENE_RUNTIME_IMAGE', 'gene-runtime:bootstrap')
+    release = f"GENE_RELEASE_SHA={step['previous']}\nGENE_ROOT={root_text}\nGENE_RUNTIME_IMAGE={image}\n".encode()
+    return dict(state, settings=dict(settings, active_sha=step['previous'], previous_sha=step['sha']),
+                **{'release.env': release})
 
 
 def baseline_of(root, record, incomplete):
@@ -565,7 +690,7 @@ def snapshot(root, policy):
     if records:
         # Fri images are batch cleanup's to remove, but the batch records must still lead back from the live Fri.
         fri_pins = read_pins(FRI_ROOT / 'release.env', {'FRI_RELEASE_SHA', 'FRI_RUNTIME_IMAGE'})
-    rollback_files, lineage = {}, []
+    rollback_files, lineage, recovery = {}, [], []
     cursor, before, complete, steps = settings['active_sha'], float('inf'), 0, 0
     # The release pair a rollback lands on, carried down the chain: its Fri, and the images it runs.
     fri_cursor, carried = fri_pins.get('FRI_RELEASE_SHA') if records else None, None
@@ -594,8 +719,9 @@ def snapshot(root, policy):
                 raise ValueError(f"Batch {name} Fri {fri_only['fri'][:7]} does not continue Fri {fri_cursor[:7]}")
             if carried is not None and fri_only['images']['new'] != carried:
                 raise ValueError(f'Batch {name} images are not the ones the release after it replaced')
-            fri_step(root, fri_only, by_tag, previous, cursor if batch else None,
-                     (event['images']['new']['runtime'], event['images']['new']['worker']) if batch else None)
+            recovery.append(('fri', fri_step(root, fri_only, by_tag, previous, cursor if batch else None,
+                                             (event['images']['new']['runtime'], event['images']['new']['worker'])
+                                             if batch else None)))
             for entries in fri_only['images'].values():
                 for _, iid in entries.values():
                     hold(iid, f'{ROLLBACK} (batch {name})')
@@ -619,7 +745,9 @@ def snapshot(root, policy):
             if carried is not None and new != carried:
                 raise ValueError(f'Batch {name} is not a complete rollback configuration: its new images are not '
                                  'the ones the release after it replaced')
-            old_fri, restores = batch_step(root, event, by_tag)
+            step = batch_step(root, event, by_tag)
+            recovery.append(('gene', step))
+            old_fri, restores = event['old_fri'], step['baseline']['settings']['previous_sha']
             for entries in event['images'].values():
                 for _, iid in entries.values():
                     hold(iid, f'{ROLLBACK} (batch {name})')
@@ -651,6 +779,7 @@ def snapshot(root, policy):
                     or not (root / 'releases' / previous / 'cogs').is_dir()):
                 raise ValueError('Missing complete rollback image configuration for ' + cursor)
             rollback_files[str(backup)] = {'cog_sha': cursor, 'previous_sha': previous}
+            recovery.append(('cog', {'sha': cursor, 'previous': previous, 'job': job}))
             lineage.append({'sha': cursor, 'previous': previous, 'record': 'cog job ' + job})
             protected_shas.add(previous)
             cursor, before = previous, at
@@ -669,6 +798,7 @@ def snapshot(root, policy):
         rollback_files[str(backup)] = [release, old_worker]
         for ref in (release['GENE_RUNTIME_IMAGE'], old_worker['GENE_WORKER_IMAGE']):
             want(ref, f'{ROLLBACK} (deployment {job})')
+        recovery.append(('legacy', None))
         lineage.append({'sha': cursor, 'previous': previous, 'record': 'deployment ' + job})
         protected_shas.add(previous)
         cursor, before = previous, at
@@ -681,6 +811,29 @@ def snapshot(root, policy):
             raise ValueError(f"Batch {step['record'].removeprefix('batch ')} is not a complete rollback configuration: "
                              f"its baseline.json previous_sha {step['restores_previous']} is not the next rollback "
                              f"level's {below['previous']}")
+    # Each batch's recovery must pass the release script's own first checks on the state the recoveries above
+    # it leave: the live state for the first, then what each rollback restores. A legacy install's rollback
+    # has no script to mirror, so nothing after it is simulated; a batch below one can't be.
+    if any(kind in ('gene', 'fri') for kind, _ in recovery):
+        state, root_text = live_pair_state(root, settings), str(root)
+        for kind, step in recovery:
+            if kind == 'legacy':
+                state = None
+            elif state is None:
+                raise ValueError(f"Batch {step['record']['name']} sits below a legacy install, whose recovery has no "
+                                 'release script to check')
+            elif kind == 'cog':
+                state = after_deployer_rollback(root, step, state, root_text)
+                if state is None:
+                    raise ValueError(f"The owner's rollback of cog job {step['job']} through the deployer would refuse, "
+                                     'so the batch levels below it cannot be reached')
+            else:
+                failing = pair_mirror(kind, step, state, root_text)
+                if failing:
+                    what = 'rollback-gene' if kind == 'gene' else 'rollback-fri'
+                    raise ValueError(f"Batch {step['record']['name']} is not a complete rollback configuration: on the "
+                                     f"state the rollbacks above it leave, its {what} would refuse ({', '.join(failing)})")
+                state = after_rollback(kind, step, state)
     if records:
         if live:
             latest = max(live, key=lambda record: record['at'])
@@ -1302,7 +1455,7 @@ def main(argv=None):
     if os.geteuid() != 0:
         parser.error('Run as root on the Gene host')
     FRI_ROOT = args.fri_root
-    root = args.root.resolve()
+    root = args.root.absolute()  # as batch-release.sh's ROOT, which the pins it writes name
     if args.status:
         report = status(root)
         print(json.dumps(report, indent=2, sort_keys=True))

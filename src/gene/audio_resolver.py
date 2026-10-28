@@ -28,6 +28,16 @@ from gene.audio_cache import MediaCache
 VIDEO_ID = re.compile(r'^[A-Za-z0-9_-]{11}$')
 YOUTUBE_HOSTS = {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'}
 MEDIA_EXTENSIONS = {'.webm', '.m4a', '.mp4', '.ogg', '.mp3'}
+# A refusal crosses the relay, host and runtime only as one of these fixed codes in this
+# header. Upstream text, stream URLs and extractor traces never travel with it.
+REFUSAL_HEADER = 'X-Gene-Refusal'
+REFUSALS = {'too_long': 'Use a public track no longer than 30 minutes.',
+            'too_large': 'This track exceeds the 64 MiB audio limit.',
+            'unsupported': 'This source currently supports ordinary public YouTube tracks.'}
+
+
+def refusal(reason: str) -> HTTPException:
+    return HTTPException(422, REFUSALS[reason], headers={REFUSAL_HEADER: reason})
 
 
 def canonical_query(value: str) -> tuple[str, bool]:
@@ -134,6 +144,9 @@ def create_app(token: str | None = None, extractor=None, *, cache_dir=None, down
                           follow_redirects=False) as client:
             with client.stream('POST', relay_url + '/transfer', json={'identifier': identifier},
                                headers={'Authorization': 'Bearer ' + relay_token}) as response:
+                reason = response.headers.get(REFUSAL_HEADER)
+                if response.status_code == 422 and reason in REFUSALS:
+                    raise refusal(reason)  # The relay's own text is never read.
                 response.raise_for_status()
                 extension = response.headers.get('x-gene-extension')
                 expected_size = int(response.headers.get('content-length', '0'))
@@ -243,12 +256,15 @@ def create_app(token: str | None = None, extractor=None, *, cache_dir=None, down
     def prepare(identifier, folder, max_bytes):
         for attempt in range(2):
             result = extract('https://www.youtube.com/watch?v=' + identifier, flat=False)
+            duration = result.get('duration') or 0
             if result.get('is_live') or not public_stream(result.get('url', '')):
-                raise HTTPException(422, 'This source currently supports ordinary public YouTube tracks.')
-            if result.get('protocol') != 'https' or not 0 < (result.get('duration') or 0) <= 1800:
-                raise HTTPException(422, 'Use a public track no longer than 30 minutes.')
+                raise refusal('unsupported')
+            if duration > 1800:
+                raise refusal('too_long')
+            if result.get('protocol') != 'https' or not duration > 0:
+                raise refusal('unsupported')
             if (result.get('filesize') or 0) > max_bytes:
-                raise HTTPException(422, 'This track exceeds the 64 MiB audio limit.')
+                raise refusal('too_large')
             try:
                 path = download(result, folder, max_bytes)
                 metadata[identifier] = {'identifier': identifier, 'title': (result.get('title') or 'YouTube track')[:300],

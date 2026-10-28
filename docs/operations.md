@@ -962,8 +962,19 @@ cold download. The Mac remains the temporary download relay; decoding, cached fi
 and voice transmission remain on Hostinger. `/prepare` uses the existing authenticated
 resolver, a 100-second client bound and a three-minute cache handoff pin. Stop, skip,
 disconnect, pause and seek still apply while preparation is pending. A failed preparation
-uses Red's existing track-error handling; it never sends a play operation. Red and
+uses Red's existing track-error handling; it never sends a play operation. The adapter
+dispatches a Lavalink track exception through red-lavalink, which parses its severity as
+`ExceptionSeverity` (uppercase values only). Red's Audio cog then posts the message as a
+"Track Error" embed in the command's channel and skips to the next queued track. Red and
 Lavalink's installed package files remain unchanged.
+
+A resolver refusal names its reason only as a fixed code in the `X-Gene-Refusal` header:
+`too_long` (over 30 minutes), `too_large` (over 64 MiB) or `unsupported` (live or not an
+ordinary public stream). Hostinger's resolver forwards only a known code from the Mac relay,
+never the relay's text, and the runtime maps it to a fixed member line. Any other failure
+shows the generic line. The three parts deploy separately: a feature release updates only
+the runtime, so the specific reason needs the resolver image (`GENE_AUDIO_RESOLVER_SHA`) and
+the Mac relay to run a release that includes it. Until then members see the generic line.
 
 Set `GENE_AUDIO_PREPARE_URL=http://gene-audio:2334` and `GENE_AUDIO_PREPARE_TOKEN` in
 `runtime.env`. The latter is the resolver service credential, never a Discord token.

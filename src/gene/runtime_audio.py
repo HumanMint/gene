@@ -13,6 +13,14 @@ from urllib.parse import parse_qs, urlsplit
 import httpx
 
 LOG = logging.getLogger('gene.audio.prepare')
+# Red shows the member a refusal's fixed line from the resolver's code (its X-Gene-Refusal
+# header). Nothing else the resolver or YouTube says reaches Red, logs or the member.
+REFUSALS = {
+    'too_long': "That track is longer than 30 minutes, so Gene can't play it. Pick a shorter one.",
+    'too_large': "That track's audio is over Gene's 64 MiB limit, so it can't play. Pick a shorter one.",
+    'unsupported': "Gene plays ordinary public YouTube tracks only, not live streams. Pick another one.",
+}
+FAILED = 'The audio download could not be prepared. Try again shortly or choose another track.'
 
 
 def youtube_id(track):
@@ -23,17 +31,38 @@ def youtube_id(track):
     return identifier if re.fullmatch(r'[A-Za-z0-9_-]{11}', identifier) else None
 
 
+class Refused(ValueError):
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def report_failure(node, guild_id, reason=None):
+    """Hand Red's Audio cog a track exception: it posts the message as a Track Error, then skips."""
+    from lavalink.enums import ExceptionSeverity, LavalinkEvents, LavalinkIncomingOp
+    node.event_handler(LavalinkIncomingOp.EVENT, LavalinkEvents.TRACK_EXCEPTION, {
+        'guildId': str(guild_id), 'exception': {
+            'message': REFUSALS.get(reason, FAILED), 'cause': 'Audio preparation failed before playback',
+            # Parsed by red-lavalink's ExceptionSeverity, which has no lowercase values.
+            'severity': ExceptionSeverity.COMMON.value}})
+
+
 class AudioPreparation:
-    def __init__(self, url, token, guild_id):
+    def __init__(self, url, token, guild_id, *, transport=None):
         if url not in {'http://gene-audio:2334', 'http://127.0.0.1:2334'} or len(token) < 32:
             raise ValueError('Audio preparation requires the private resolver and its service token')
         self.url, self.token, self.guild_id = url, token, guild_id
+        self.transport = transport  # Offline tests only; production uses httpx's network transport.
         self.pending = {}
 
     async def prepare(self, identifier):
-        async with httpx.AsyncClient(timeout=httpx.Timeout(95, connect=5), trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(95, connect=5), trust_env=False,
+                                     transport=self.transport) as client:
             response = await client.post(self.url+'/prepare', json={'identifier': identifier},
                                          headers={'Authorization': 'Bearer '+self.token})
+            reason = response.headers.get('x-gene-refusal')
+            if response.status_code == 422 and reason in REFUSALS:
+                raise Refused(reason)
             response.raise_for_status()
             if response.json().get('ready') is not True:
                 raise ValueError('Audio preparation was not confirmed')
@@ -64,14 +93,14 @@ class AudioPreparation:
                     try:
                         async with asyncio.timeout(100):
                             await self.prepare(identifier)
-                    except (httpx.HTTPError, TimeoutError, ValueError):
+                    except (httpx.HTTPError, TimeoutError, ValueError) as exc:
                         if pending.get(key) is marker:
-                            from lavalink.enums import LavalinkEvents, LavalinkIncomingOp
-                            LOG.warning('Selected audio preparation failed; playback was not started')
-                            node.event_handler(LavalinkIncomingOp.EVENT, LavalinkEvents.TRACK_EXCEPTION,
-                                {'guildId': str(guild_id), 'exception': {
-                                    'message': 'The audio download could not be prepared. Try again shortly or choose another track.',
-                                    'cause': 'Audio preparation failed before playback', 'severity': 'common'}})
+                            reason = exc.reason if isinstance(exc, Refused) else None
+                            status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                            # Only a fixed code, status or exception class: never URLs or upstream text.
+                            LOG.warning('Selected audio preparation failed (%s); playback was not started',
+                                        reason or status or type(exc).__name__)
+                            report_failure(node, guild_id, reason)
                         return
                 if pending.get(key) is marker:
                     return await original_play(node, guild_id, track, replace=replace,

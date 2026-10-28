@@ -15,6 +15,18 @@ FIX = 'not the one, i meant join us for a bite'
 
 
 @pytest.mark.parametrize('text,argument,expected', [
+    # Review of #98/#157: the song is the start of the replacement, never words from a later clause, and a
+    # change of heart after it withdraws it.
+    ('wrong song, To The Moon, not To Be With You', 'To Be With You', False),
+    ('wrong song, To The Moon, not To Be With You', 'To The Moon', True),
+    ('i meant to skip To The Moon', 'To The Moon', False),
+    ('wrong song, Love Story, actually no', 'Love Story', False),
+    ('wrong song, Love Story... i changed my mind', 'Love Story', False),
+    ('not that one, Love Story, no wait', 'Love Story', False),
+    ('actually no, wrong song, Love Story', 'Love Story', True),
+    ('not that one, Love Story by Taylor Swift', 'Love Story Taylor Swift', True),
+    ('not that one, Love Story by Taylor Swift', 'Taylor Swift', False),
+    ('wrong song, "Actually No" by someone', 'Actually No', True),
     (FIX, 'join us for a bite', True),
     ('fri not that one lol, Join Us For A Bite', 'join us for a bite', True),
     ('wrong song, "join us for a bite"', 'join us for a bite', True),  # Quoted song names are still theirs.
@@ -45,6 +57,32 @@ FIX = 'not the one, i meant join us for a bite'
     ('not the one i wanted lol', 'i wanted', False),
     ('he said not that one, i meant join us for a bite', 'join us for a bite', False),
     ('could you tell me if not that one, i meant join us for a bite works', 'join us for a bite', False),
+    # gene #72 (1): the link is consumed once, and negation or cancellation outside a quoted title refuses.
+    ("not that one, i meant don't play join us for a bite", 'join us for a bite', False),
+    ('not that one, join us for a bite. do not queue anything yet', 'join us for a bite', False),
+    ('wrong song, i meant join us for a bite, actually nvm', 'join us for a bite', False),
+    ("wrong song, Don't Stop Believin'", "Don't Stop Believin'", False),
+    ('wrong song, "Don\'t Stop Believin\'"', "Don't Stop Believin'", True),
+    ("wrong song, I Don't Care", "I Don't Care", True),
+    ('wrong song, Never Gonna Give You Up', 'Never Gonna Give You Up', True),
+    # gene #72 (2): the song is the replacement right after the correction, never someone else's words or
+    # an example, though a quoted title still counts.
+    ('not that one, alex said "Never Gonna Give You Up"', 'Never Gonna Give You Up', False),
+    ('not that one, for example Never Gonna Give You Up', 'Never Gonna Give You Up', False),
+    ('not that one, alex said never gonna give you up', 'alex said never gonna give you up', False),
+    ('not that one, e.g. never gonna give you up', 'e.g. never gonna give you up', False),
+    ('not that one, join us for a bite. alex wants never gonna give you up', 'never gonna give you up', False),
+    ('wrong song, join us for a bite, not never gonna give you up', 'never gonna give you up', False),
+    ('wrong song, join us for a bite, not never gonna give you up', 'join us for a bite', True),
+    ('wrong song, "Alex Said Hi"', 'Alex Said Hi', True),
+    ('not that one, i said join us for a bite', 'join us for a bite', True),
+    ('not that one, play That Funky Music', 'That Funky Music', True),
+    ('not that one, play That Funky Music', 'Play That Funky Music', True),
+    # gene #72 (3): only a conversational "i meant to say ..." is an infinitive; "To ..." can start a title.
+    ('wrong song, To The Moon', 'To The Moon', True),
+    ('not that one, i meant To The Moon', 'To The Moon', True),
+    ('wrong song, i meant to say To The Moon', 'To The Moon', False),
+    ('not that one, i meant to.', 'to', False),
 ])
 def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argument, expected):
     assert correction(text, argument) is expected

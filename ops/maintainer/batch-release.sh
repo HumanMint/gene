@@ -790,13 +790,14 @@ stage() {
   local images=0 size db_size red_size source_size fri_size tars=0 gene_tar docker_root disk
   for kind in runtime worker fri; do
     changes "$kind" || continue
-    size=$(docker image inspect -f '{{.Size}}' "$(jget "$MANIFEST" "old.$kind.tag")") && [[ $size =~ ^[0-9]+$ ]] \
-      || die "could not read the size of the old $kind image"
+    size=$(docker image inspect -f '{{.Size}}' "$(jget "$MANIFEST" "old.$kind.tag")") || die "could not read the size of the old $kind image"
+    [[ $size =~ ^[0-9]+$ ]] || die "could not read the size of the old $kind image: $size"
     images=$(( images + size ))
   done
   measure db_size "$ROOT/data/controller"
   for name in "${names[@]}"; do
-    size=$(stat -c %s "$STAGE/$name.tar") && [[ $size =~ ^[0-9]+$ ]] || die "could not read the size of $name.tar"
+    size=$(stat -c %s "$STAGE/$name.tar") || die "could not read the size of $name.tar"
+    [[ $size =~ ^[0-9]+$ ]] || die "could not read the size of $name.tar: $size"
     tars=$(( tars + size ))
   done
   docker_root=$(docker info -f '{{.DockerRootDir}}') || die 'could not read the Docker root dir'

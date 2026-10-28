@@ -51,7 +51,6 @@ def load(path: Path) -> dict[str, str]:
 
 def write_private(path: Path, lines: list[str]):
     """Replace path atomically with a file that is mode 600 from its first byte."""
-    path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix='.' + path.name + '.')
     try:
         os.fchmod(fd, 0o600)
@@ -214,6 +213,8 @@ def fri_env(args):
     if missing:
         raise SystemExit(f'Set {", ".join(missing)} in {args.env} first (then run check).')
     target = args.path.expanduser().resolve()
+    if not target.parent.is_dir():
+        raise SystemExit(f'{target.parent} does not exist. Clone Fri first, then run fri-env.')
     if target == args.env.resolve() or tracked(target):
         raise SystemExit(f'Refusing to write a token into {target}: use an ignored local env file.')
     values = {'GENE_CONTROLLER_URL': f'http://127.0.0.1:{args.port}',

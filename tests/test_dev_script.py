@@ -118,6 +118,13 @@ def test_fri_env_needs_the_ids_fri_reads_at_startup(tmp_path):
     assert not (tmp_path / 'fri.env').exists()
 
 
+def test_fri_env_needs_an_existing_fri_checkout(tmp_path):
+    path = initialized(tmp_path, **IDS)
+    with pytest.raises(SystemExit, match='Clone Fri first'):
+        dev.main(['--env', str(path), 'fri-env', str(tmp_path / 'fri' / '.env.local')])
+    assert not (tmp_path / 'fri').exists()
+
+
 def test_fri_env_refuses_files_git_tracks_and_its_own_source(tmp_path):
     path = initialized(tmp_path, **IDS)
     repo = tmp_path / 'repo'

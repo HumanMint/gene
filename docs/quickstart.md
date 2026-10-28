@@ -79,31 +79,27 @@ the controller's `GENE_FRI_TOKEN`.
    | `GENE_WORKSHOP_CHANNEL_ID` | right-click the text channel where Fri should chat > **Copy Channel ID** |
 
    Optionally list more chat channels in `FRI_CHANNEL_IDS`, comma separated.
-3. Run `uv run python scripts/dev.py check` until it shows `ok  Fri pairing`, then
+3. Run `uv run python scripts/dev.py check` until it reports `Fri pairing` as ok, then
    restart the controller.
-4. Give Fri the same values. Clone Fri next to this checkout and follow
-   [its quickstart](https://github.com/HumanMint/fri#readme); its setup can copy them
-   from here:
+4. Clone Fri next to this checkout, then write the values Fri shares with the controller
+   into Fri's git-ignored `.env.local`:
 
    ```sh
-   cd ..
-   git clone https://github.com/HumanMint/fri.git
-   cd fri
-   scripts/local.sh setup --from-gene ../gene/.env.local
-   ```
-
-   If Fri's `.env.local` already exists, push the values into it from this checkout
-   instead. This updates only the five keys below and never prints the token:
-
-   ```sh
+   git clone https://github.com/HumanMint/fri.git ../fri
    uv run python scripts/dev.py fri-env ../fri/.env.local
    ```
 
+   `fri-env` creates the file (mode 600) or updates it in place. It sets only these keys,
+   keeps everything else, and never prints the token:
+
    | Key in Fri's env | Value |
    | --- | --- |
-   | `GENE_CONTROLLER_URL` | `http://127.0.0.1:8787` |
+   | `GENE_CONTROLLER_URL` | `http://127.0.0.1:8787` (`--port` changes it) |
    | `GENE_FRI_TOKEN` | the same as this `.env.local` |
    | `GENE_GUILD_ID`, `GENE_OWNER_ID`, `GENE_WORKSHOP_CHANNEL_ID` | the same as this `.env.local` |
+
+5. Continue with [Fri's quickstart](https://github.com/HumanMint/fri#readme) in `../fri`.
+   Its setup keeps the values `fri-env` wrote and adds the rest.
 
 When Fri starts it reads the controller's `/fri/contract` and refuses to run if the
 contract or token doesn't match. Fri also needs its own Discord bot token and model

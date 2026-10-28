@@ -129,7 +129,6 @@ def batch_host(tmp_path, monkeypatch):
         details[iid(WORKER + n)] = chain(['base', f'runtime-{n}', f'worker-{n}'], 650, iid(RUNTIME + n))
         details[iid(FRI + n)] = chain(['fri-base', f'fri-{n}'], 350)
     monkeypatch.setattr(retention, 'image_details', lambda ids: {i: copy.deepcopy(details[i]) for i in ids}, raising=False)
-    monkeypatch.setattr(retention, 'lock_held', lambda path: False, raising=False)
     monkeypatch.setattr(retention, 'FRI_ROOT', fri_root, raising=False)
     monkeypatch.setattr(retention.time, 'time', lambda: NOW)
     return SimpleNamespace(root=root, fri_root=fri_root, images=images, policy=policy, db=db,
@@ -478,28 +477,11 @@ def test_fri_only_and_gene_only_batches(batch_host):
     assert result['live'] == {'gene': gene(4), 'fri': fri(5)}
 
 
-def test_held_locks_and_receipts_skip_the_run(batch_host, monkeypatch):
+def test_a_pending_deployment_receipt_skips_the_run(batch_host):
     root = batch_host.root
-    monkeypatch.setattr(retention, 'lock_held', lambda path: path == root / 'batch-release.lock')
-    with pytest.raises(retention.Busy, match='batch-release command holds its lock'):
-        retention.run(root, apply=True)
-    monkeypatch.setattr(retention, 'lock_held', lambda path: False)
     (root / 'deploy-result.json').write_text('{}')
     with pytest.raises(retention.Busy, match='receipt'):
         retention.run(root, apply=True)
-
-
-def test_lock_held_reads_the_kernel_table_without_taking_the_lock(tmp_path):
-    lock = tmp_path / 'batch-release.lock'
-    table = tmp_path / 'locks'
-    assert not retention.lock_held(lock, table)  # never created: nothing holds it
-    lock.touch()
-    info = lock.stat()
-    device = f'{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}'
-    table.write_text(f'1: POSIX  ADVISORY  WRITE 99 {device} 0 EOF\n2: FLOCK  ADVISORY  WRITE 10 00:00:1 0 EOF\n')
-    assert not retention.lock_held(lock, table)
-    table.write_text(table.read_text() + f'3: FLOCK  ADVISORY  WRITE 1234 {device} 0 EOF\n')
-    assert retention.lock_held(lock, table)
 
 
 @pytest.mark.parametrize('case', ['exact', 'unknown_junction', 'shared_removed', 'branch', 'kept_child',
@@ -723,28 +705,6 @@ def test_the_units_run_once_a_day_inside_the_window_and_skips_are_not_failures()
     assert '-/srv/gene/production-actions.jsonl' in service['Service']['ReadWritePaths'].split()
 
 
-def test_an_interrupted_removal_run_still_logs_what_it_removed(batch_host, monkeypatch):
-    root, images = batch_host.root, batch_host.images
-    held = []
-
-    def docker(*args):
-        if args[:3] == ('docker', 'image', 'inspect'):
-            return json.dumps([{'Id': next(i for i, row in images.items() if args[3] in row['tags'])}])
-        images.pop(next(i for i, row in images.items() if args[4] in row['tags']))
-        held.append(args[4])  # a batch command starts right after the first removal
-        return ''
-
-    monkeypatch.setattr(retention, 'command', docker)
-    monkeypatch.setattr(retention, 'lock_held', lambda path: bool(held))
-    assert retention.execute(root, apply=True) == (retention.REFUSED, None)
-    line = actions(root)[-1]
-    assert line['outcome'] == 'skipped: A batch-release command holds its lock; retry in the next window'
-    assert line['images']['removed_tags'] == ['gene-worker:' + gene(0)]
-    assert retention.read_json(root / 'maintenance/image-retention-result.json')['removed_tags'] == held
-
-
-# Sol round 1 on gene #80.
-
 def removing(images, calls=None, on_inspect=None):
     """Docker for an apply run: inspect names the tag's image, rm drops it from the inventory."""
     def docker(*args):
@@ -910,3 +870,55 @@ def test_the_window_is_checked_again_right_before_each_removal(batch_host, monke
         assert state.get('removal_intents', {}) == {}
     else:
         assert calls == ['gene-worker:' + gene(0), 'gene-runtime:' + gene(0)] and iid(500) in images
+
+
+def test_an_interrupted_removal_run_still_logs_what_it_removed(batch_host, monkeypatch):
+    root, images = batch_host.root, batch_host.images
+    calls = []
+
+    def stall(tag):
+        if calls:  # Docker stops answering after the first removal
+            raise retention.subprocess.TimeoutExpired('docker', 120)
+
+    monkeypatch.setattr(retention, 'command', removing(images, calls, on_inspect=stall))
+    with pytest.raises(retention.subprocess.TimeoutExpired):
+        retention.execute(root, apply=True)
+    line = actions(root)[-1]
+    assert line['outcome'].startswith('failed: TimeoutExpired')
+    assert line['images']['removed_tags'] == calls == ['gene-worker:' + gene(0)]
+    assert retention.read_json(root / 'maintenance/image-retention-result.json')['removed_tags'] == calls
+
+
+def test_a_run_keeps_the_batch_lock_for_a_bounded_time(batch_host, monkeypatch):
+    root, images = batch_host.root, batch_host.images
+    clock = [NOW]
+    monkeypatch.setattr(retention.time, 'time', lambda: clock[0])
+    calls = []
+
+    def slow(tag):  # still inside the window, but past the budget once the first tag is done
+        if calls:
+            clock[0] = NOW + retention.LOCK_BUDGET
+
+    monkeypatch.setattr(retention, 'command', removing(images, calls, on_inspect=slow))
+    result = retention.run(root, apply=True)
+    assert calls == ['gene-worker:' + gene(0)] and 'held batch-release.lock' in result['deferred']
+    assert retention.window_open(clock[0])
+
+
+def test_a_batch_record_written_during_discovery_stops_the_run(batch_host, monkeypatch):
+    root, images = batch_host.root, batch_host.images
+    inventory, count = retention.docker_inventory, [0]
+
+    def snapshot_inventory():
+        count[0] += 1
+        if count[0] == 3:  # the last check before the first removal: staging gains a batch naming release 0
+            write_batch(root, 5, 0, NOW - 60, marks=['baseline'], backup=False)
+        return inventory()
+
+    monkeypatch.setattr(retention, 'docker_inventory', snapshot_inventory)
+    calls = []
+    monkeypatch.setattr(retention, 'command', removing(images, calls))
+    with pytest.raises(ValueError) as stopped:
+        retention.run(root, apply=True)
+    assert calls == []
+    assert isinstance(stopped.value, retention.Busy) and 'Batch records changed during discovery' in str(stopped.value)

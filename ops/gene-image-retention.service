@@ -22,4 +22,5 @@ ReadWritePaths=/srv/gene/maintenance /srv/gene/data/controller -/srv/gene/produc
 PrivateTmp=true
 Nice=15
 IOSchedulingClass=idle
-TimeoutStartSec=30min
+# It holds batch-release.lock while it runs, so a stuck run must not hold it for long.
+TimeoutStartSec=20min

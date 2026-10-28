@@ -181,14 +181,24 @@ Inactivity, age and an empty tag list are never retirement evidence.
 
 From the controller's `active_sha`, each step back is the latest earlier release of that SHA in
 either record; two at the same time refuse as ambiguous. The tool keeps two complete rollback
-levels behind the live release. Cog-only steps are traversed without counting. A batch level is
-complete by the checks its own `rollback-gene` makes before changing anything: the controller's
-`previous_sha` names its old Gene (first step), the live runtime and worker pins are its new
-images (first level), every tag in its manifest (old and new runtime, worker and Fri) still names
-the recorded image ID, its switch backup under `backups/` has `release.env`, `worker.env`,
-`fri-release.env`, `fri-release.json`, `db/controller.sqlite3` and `installed-source/`, the
-backup's pins are the manifest's old pair, and `releases/<old Gene>/cogs` exists. The live Fri
-pins must be the Fri of the latest batch in service. A legacy maintainer level is complete with
+levels behind the live release. Cog-only steps are traversed without counting. A batch level counts
+only when everything its `rollback-gene` and `resume-old` read is present and consistent:
+
+- the manifest's `old_gene`, `old_fri` and `downgrades` (a `batch-<G>` manifest has no old pair, so
+  only the older script that made it could roll it back, and it never counts);
+- the journal's `gene_attempted`, `drained`, `gene_recorded`, `fri_switched` and `resumed`;
+- every manifest tag (old and new runtime, worker and Fri) still naming its recorded image ID;
+- `baseline.json` for the old release: its `active_sha`, a `previous_sha` that is the next level's old
+  Gene, a `source` of the old release or `unmarked`, and Gene's and Fri's guild and presence;
+- the switch backup under `backups/`: `release.env`, `worker.env` and `fri-release.env` naming the
+  manifest's old pair, `fri-release.json` for the old Fri, `db/controller.sqlite3`, and
+  `installed-source/` marked as `baseline.json`'s source, with `ops/compose.yml` and
+  `ops/fri-compose.yml`;
+- `releases/<old Gene>/cogs`;
+- on the first level, the controller's `previous_sha` naming its old Gene and the live runtime and
+  worker pins naming its new images.
+
+The live Fri pins must be the Fri of the latest batch in service. A legacy maintainer level is complete with
 `installed-source/`, `controller.sqlite3`, `red.tar.gz`, `fri.tar.gz`, pins naming the previous
 release, and its cogs. An incomplete level inside the two protected levels refuses and names what
 is missing; levels beyond them are not consulted.
@@ -196,15 +206,25 @@ is missing; levels beyond them are not consulted.
 A malformed, unreadable or symlinked record, an unrecognized `staging/batch-*` directory, a missing
 or retagged image, an incomplete backup, disagreeing pointers or pins, a live release whose batch
 rolled back or never recorded its switch, and ambiguous history all refuse (exit 1). A batch in
-flight (drained or paused without resuming, or mid-rollback), a held `batch-release.lock` (read
-from `/proc/locks` without taking it), a Gene build or deployment, a Docker build, a pending
-deployment receipt or another retention run skip the run instead (exit 4): nothing changes and the
-next window tries again.
+flight (drained or paused without resuming, or mid-rollback), a running batch command, a Gene build
+or deployment, a Docker build, a pending deployment receipt or another retention run skip the run
+instead (exit 4): nothing changes and the next window tries again.
+
+**The batch lock.** A run, plan or apply, takes `batch-release.sh`'s own lock, `/srv/gene/batch-release.lock`
+(`flock` exclusive, non-blocking), and holds it from discovery through the last removal. If a batch
+command holds it, the run skips. While retention holds it, a batch command that starts, recovery
+included, stops at its lock check (`another batch-release command ... still is running`, exit 1,
+logged `failed: exit 1`) before it reads or changes anything; `fuser -v` shows the holder, and the
+command is repeated once retention finishes. So nothing a batch stages can name an image mid-removal.
+To keep that wait short, a run stops removing 10 minutes after it took the lock and the rest wait for
+the next window (`deferred`); the service's 20-minute timeout bounds a stuck run.
 
 **What it keeps and what it removes.** It removes a release tag only with supersession evidence
 past a 24-hour grace period: a successful deployment's backup, a batch in service (its old Gene
 images retired when it resumed, dated by its journal), a configured version the tool saw replaced,
-or an explicit `retired_images` entry. It always keeps container references (including stopped
+or an explicit `retired_images` entry. A batch is evidence only when its record checks out: its old
+pair is that release's own `gene-runtime:<old>` and `gene-worker:<old>` tags, still naming the recorded
+image IDs, and its switch backup's pins name the same pair. Otherwise it supersedes nothing. It always keeps container references (including stopped
 containers), the current pins and running services' images, every image of both rollback levels,
 pending proposal/approval versions, holds, configured references, audio and other repositories.
 It also keeps every image in the manifests of the three most recently resumed batches and of any
@@ -245,8 +265,8 @@ to five minutes' delay and no catch-up (`Persistent=false`). Planning and remova
 inside the maintenance window, [04:00, 05:00): a plan run takes the tool's lock and writes the plan
 and status files, so it is a production action too. Outside the window a run takes no lock, writes
 nothing but its log line and exits 4; `MAINTENANCE_EXCEPTION='<who, when, why>'`, on the owner's
-explicit words, lets it run and is logged. The window is checked again before each removal; at the
-close the rest wait for the next window (`deferred`). Removal needs both `--apply` (the service
+explicit words, lets it run and is logged. The window is checked again right before each Docker removal, after
+that image's inspection and recorded intent; at the close the rest wait for the next window (`deferred`). Removal needs both `--apply` (the service
 passes it) and `"apply_enabled": true` in the policy. Without the policy flag every run only plans,
 so a newly installed or repaired tool removes nothing until a maintainer has reviewed its plan.
 
@@ -284,9 +304,8 @@ SQLite `immutable=1` or copy an active database without its WAL to work around r
 that could hide current release references. Env files are read only for `*_IMAGE` and release SHA
 lines, never printed.
 
-`batch-release.sh` does not take this tool's lock. Instead the tool skips while a batch command holds
-`batch-release.lock` or a batch is in flight, and rechecks every reference, the staging journals
-included, before each removal. Before planning to reuse an old version, add its tag or exact image
+The tool holds `batch-release.lock` for its whole run (above), skips while a batch is in flight, and
+rechecks every reference, the staging journals included, before each removal. Before planning to reuse an old version, add its tag or exact image
 ID to `keep_images`, and keep that hold until the function is retired. Never authorize image deletion
 from Discord text, imported history, or a feature job.
 
@@ -300,7 +319,7 @@ check them: `systemd-analyze verify` and `systemd-analyze calendar '*-*-* 04:40 
 sudo python3 /srv/gene/maintenance/current/gene_image_retention.py
 ```
 
-It takes `maintenance/image-retention.lock`, writes `image-retention-plan.json` and
+It takes `maintenance/image-retention.lock` and `batch-release.lock` for its run, writes `image-retention-plan.json` and
 `image-retention-status.json`, and appends one action-log line. It reads Docker metadata, the
 controller DB read-only and the staging records; it starts no container and removes nothing.
 Review the plan; only then set `"apply_enabled": true` in the policy, in a window, and log it.

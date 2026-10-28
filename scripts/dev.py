@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Run Gene's controller, and optionally its Red bot, on this machine for development.
 
-    uv run python scripts/dev.py init         # .env.local with fresh service tokens
+    uv run python scripts/dev.py init         # .env.local from the template, with no tokens yet
+    uv run python scripts/dev.py token        # one random service token to paste into .env.local
     uv run python scripts/dev.py check        # offline config check and controller dry run
     uv run python scripts/dev.py controller   # serve the controller on http://127.0.0.1:8787
-    uv run python scripts/dev.py fri-env PATH # the values a local Fri needs, written to PATH
+    uv run python scripts/dev.py fri-env      # the lines a local Fri needs from this controller
     uv run python scripts/dev.py red          # optional: Gene's Red bot (uv sync --extra red)
 
-Nothing here contacts Discord or prints a token, and tokens are written only to files Git
-confirms are untracked and ignored, such as .env.local. State stays under .state/ in this checkout.
+Nothing here contacts Discord or writes a token into a file: `token` prints a fresh one for you to
+paste, and nothing else prints one. State stays under .state/ in this checkout.
 Production installation is docs/setup.md.
 """
 
@@ -22,7 +23,6 @@ import secrets
 import subprocess
 import sys
 import tempfile
-import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
@@ -65,99 +65,26 @@ def write_private(path: Path, lines: list[str]):
         raise
 
 
-def merged(lines: list[str], values: dict[str, str]) -> list[str]:
-    """Set each key once, where it first appears, keeping comments and other keys; append keys the
-    file lacks. Later copies of a key are dropped, since env readers take the last one."""
-    for value in values.values():
-        if any(character in value for character in '\r\n\x00'):
-            raise ValueError('Configuration values must be single lines')
-    pending = dict(values)
-    result = []
-    for line in lines:
-        setting = line.strip()
-        key = setting.split('=', 1)[0].strip() if '=' in setting and not setting.startswith('#') else None
-        if key in values:
-            if key in pending:
-                result.append(f'{key}={pending.pop(key)}')
-            continue
-        result.append(line)
-    return result + [f'{key}={value}' for key, value in pending.items()]
-
-
-def folded(name: str) -> str:
-    """A file name as a case-insensitive, normalizing disk (macOS's default) may compare it."""
-    return unicodedata.normalize('NFC', name).casefold()
-
-
-def unsafe_for_tokens(path: Path) -> str | None:
-    """Why path mustn't receive a token, or None once Git confirms it is untracked and ignored.
-
-    The repositories are public, so a token may only go into a git-ignored file such as .env.local.
-    When Git can't answer (not installed, not a checkout, any error), that is a refusal too."""
-    if path.name.endswith(TEMPLATE_SUFFIXES):
-        return 'it is a shared template'
-    if not path.parent.is_dir():
-        return f'{path.parent} does not exist'
-    environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-
-    def git(directory, *command):
-        try:
-            return subprocess.run(['git', '-C', str(directory), *command], capture_output=True,
-                                  encoding='utf-8', errors='surrogateescape', env=environment)
-        except OSError:
-            return None
-
-    unsure = "Git couldn't confirm it is untracked (is git installed, and is this a git checkout?)"
-    folder = path.parent.resolve()
-    # Every checkout above it, found on disk rather than by asking Git, so a nested checkout can't hide
-    # an outer one's tracked file and a broken outer checkout is a refusal, not the end of the search.
-    checkouts = [above for above in (folder, *folder.parents) if (above / '.git').exists()]
-    if not checkouts:
-        return unsure
-    for checkout in checkouts:
-        listed = git(checkout, 'ls-files', '-z')
-        if listed is None or listed.returncode != 0:
-            return unsure
-        # Matched by the folder's identity on disk and the name as the disk may fold it, never by
-        # spelling: on macOS config/.env.ä can be the tracked Config/.env.Ä, whether it exists yet or not.
-        for name in filter(None, listed.stdout.split('\0')):
-            entry = checkout / name
-            if (folded(entry.name) == folded(path.name) and entry.parent.is_dir()
-                    and os.path.samefile(entry.parent, folder)):
-                return 'Git tracks it'
-    ignored = git(path.parent, 'check-ignore', '-q', '--', path.name)
-    if ignored is None or ignored.returncode not in (0, 1):
-        return "Git couldn't confirm it is ignored"
-    if ignored.returncode == 1:
-        return "Git doesn't ignore it, so it could be committed"
-    return None
-
-
-def write_tokens(path: Path, lines: list[str]):
-    """write_private, but only into a file Git confirms is untracked and ignored."""
-    problem = unsafe_for_tokens(path)
-    if problem:
-        raise SystemExit(f'Refusing to write a token into {path}: {problem}. '
-                         'Use a git-ignored env file in a git checkout, such as .env.local.')
-    write_private(path, lines)
-
-
 def init(args):
     path = args.env
     if path.exists():
-        lines = path.read_text().splitlines()
         current = read_env(path)
+        print(f'{path} already exists; nothing changed.')
     else:
-        lines = (ROOT / '.env.example').read_text().splitlines()
+        write_private(path, (ROOT / '.env.example').read_text().splitlines())
         current = {}
+        print(f'Wrote {path} (mode 600) from .env.example, with no tokens in it.')
     missing = [key for key in SERVICE_TOKENS if not current.get(key)]
-    if path.exists() and not missing:
-        print(f'{path} already has its service tokens; nothing changed.')
-    else:
-        write_tokens(path, merged(lines, {key: secrets.token_urlsafe(48) for key in missing}))
-        print(f'Wrote {path} (mode 600) with new {", ".join(missing)}. No token was printed.')
-    print('Next: fill in the Discord IDs you need (see docs/quickstart.md), then run'
+    if missing:
+        print('Give each of these its own value: run `uv run python scripts/dev.py token` once per line and '
+              'paste what it prints after the = sign.\n  ' + '\n  '.join(f'{key}=' for key in missing))
+    print('Then fill in the Discord IDs you need (see docs/quickstart.md), and run'
           ' `uv run python scripts/dev.py check`.')
+
+
+def token(args):
+    """A fresh random service token, printed for the person running this to paste: never written anywhere."""
+    print(secrets.token_urlsafe(48))
 
 
 def apply(env: dict[str, str]):
@@ -265,19 +192,14 @@ def controller(args):
 
 def fri_env(args):
     env = load(args.env)
-    missing = [key for key in (*FRI_IDS, 'GENE_FRI_TOKEN') if not env.get(key)]
+    missing = [key for key in FRI_IDS if not env.get(key)]
     if missing:
         raise SystemExit(f'Set {", ".join(missing)} in {args.env} first (then run check).')
-    target = args.path.expanduser().resolve()
-    if not target.parent.is_dir():
-        raise SystemExit(f'{target.parent} does not exist. Clone Fri first, then run fri-env.')
-    if target == args.env.resolve():
-        raise SystemExit(f'Refusing to write a token into {target}: it is the source env file.')
-    values = {'GENE_CONTROLLER_URL': f'http://127.0.0.1:{args.port}',
-              **{key: env[key] for key in ('GENE_FRI_TOKEN', *FRI_IDS)}}
-    lines = target.read_text().splitlines() if target.exists() else []
-    write_tokens(target, merged(lines, values))
-    print(f'Updated {", ".join(values)} in {target} (mode 600). The token was not printed.')
+    print("Put these lines in Fri's .env.local (Fri's `scripts/local.sh setup` creates it), replacing any old ones:")
+    print(f'GENE_CONTROLLER_URL=http://127.0.0.1:{args.port}')
+    for key in FRI_IDS:
+        print(f'{key}={env[key]}')
+    print(f'GENE_FRI_TOKEN=  <- copy GENE_FRI_TOKEN from {args.env}; it is not printed here')
 
 
 def red(args):
@@ -308,18 +230,18 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('--env', type=Path, default=ENV, help='env file (default: .env.local)')
     commands = parser.add_subparsers(dest='command', required=True)
-    commands.add_parser('init', help='create .env.local, or fill in missing service tokens')
+    commands.add_parser('init', help='create .env.local from the template, and say which tokens it needs')
+    commands.add_parser('token', help='print one random service token to paste into .env.local')
     commands.add_parser('check', help='validate .env.local and dry-run the controller offline')
     serve = commands.add_parser('controller', help='run the controller')
     serve.add_argument('--host', default='127.0.0.1')
     serve.add_argument('--port', type=int, default=8787)
-    pair = commands.add_parser('fri-env', help="write a local Fri's controller settings to PATH")
-    pair.add_argument('path', type=Path)
+    pair = commands.add_parser('fri-env', help="print the lines a local Fri needs from this controller")
     pair.add_argument('--port', type=int, default=8787, help="the controller's local port")
     commands.add_parser('red', help="run Gene's Red bot against the local controller")
     args = parser.parse_args(argv)
     args.env = args.env.expanduser().resolve()
-    {'init': init, 'check': check, 'controller': controller, 'fri-env': fri_env,
+    {'init': init, 'token': token, 'check': check, 'controller': controller, 'fri-env': fri_env,
      'red': red}[args.command](args)
 
 

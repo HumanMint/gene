@@ -58,15 +58,16 @@ fetches Python 3.11 if needed.
 git clone https://github.com/HumanMint/gene.git
 cd gene
 uv sync --frozen
-uv run python scripts/dev.py init        # .env.local with four random service tokens
+uv run python scripts/dev.py init        # .env.local from the template
+uv run python scripts/dev.py token       # run once per service token and paste each into .env.local
 uv run python scripts/dev.py check       # validate it and dry-run the controller, offline
 uv run python scripts/dev.py controller  # http://127.0.0.1:8787
 ```
 
 Then, in [the quickstart](docs/quickstart.md):
 
-- **Pair with a local Fri**: add your test server's IDs to `.env.local` and hand Fri the
-  same values (`dev.py fri-env`).
+- **Pair with a local Fri**: add your test server's IDs to `.env.local` and give Fri the
+  same values (`dev.py fri-env` prints them).
 - **Add Gene's Red bot** (optional): `uv sync --frozen --extra red`, a bot token, then
   `dev.py red`.
 - **Music** (advanced) needs a Red-compatible Lavalink node.

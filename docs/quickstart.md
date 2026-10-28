@@ -22,13 +22,24 @@ git clone https://github.com/HumanMint/gene.git
 cd gene
 uv sync --frozen
 uv run python scripts/dev.py init
-uv run python scripts/dev.py check
 ```
 
-`init` copies [`.env.example`](../.env.example) to `.env.local` (mode 600) and fills in
-four random service tokens, one per service that talks to the controller. Run it again
-any time; it only fills in tokens that are missing. The comments in the file explain
-each value.
+`init` copies [`.env.example`](../.env.example) to `.env.local` (mode 600) and lists the four
+service tokens it needs, one per service that talks to the controller. It never changes a
+file that already exists. Give each token its own value: run this once per token and paste
+what it prints after that token's `=` in `.env.local`:
+
+```sh
+uv run python scripts/dev.py token
+```
+
+The script never writes a token into a file itself, so `.env.local` stays the one place they
+live. It's git-ignored in this repository; keep it that way. The comments in the file explain
+each value. Then:
+
+```sh
+uv run python scripts/dev.py check
+```
 
 `check` validates the file and starts the controller in-process on a throwaway database,
 without opening a port or touching the network. It never prints a value:
@@ -81,16 +92,15 @@ the controller's `GENE_FRI_TOKEN`.
    Optionally list more chat channels in `FRI_CHANNEL_IDS`, comma separated.
 3. Run `uv run python scripts/dev.py check` until it reports `Fri pairing` as ok, then
    restart the controller.
-4. Clone Fri next to this checkout, then write the values Fri shares with the controller
-   into Fri's git-ignored `.env.local`:
+4. Clone Fri next to this checkout, and print the values Fri shares with the controller:
 
    ```sh
    git clone https://github.com/HumanMint/fri.git ../fri
-   uv run python scripts/dev.py fri-env ../fri/.env.local
+   uv run python scripts/dev.py fri-env
    ```
 
-   `fri-env` creates the file (mode 600) or updates it in place. It sets only these keys,
-   keeps everything else, and never prints the token:
+   `fri-env` prints these lines for Fri's git-ignored `.env.local`, which Fri's setup creates.
+   It never prints the token: copy `GENE_FRI_TOKEN` from this `.env.local` yourself.
 
    | Key in Fri's env | Value |
    | --- | --- |
@@ -99,7 +109,7 @@ the controller's `GENE_FRI_TOKEN`.
    | `GENE_GUILD_ID`, `GENE_OWNER_ID`, `GENE_WORKSHOP_CHANNEL_ID` | the same as this `.env.local` |
 
 5. Continue with [Fri's quickstart](https://github.com/HumanMint/fri#readme) in `../fri`.
-   Its setup keeps the values `fri-env` wrote and adds the rest.
+   Its setup creates Fri's `.env.local`; paste the lines from `fri-env` into it.
 
 When Fri starts it reads the controller's `/fri/contract` and refuses to run if the
 contract or token doesn't match. Fri also needs its own Discord bot token and model
@@ -154,15 +164,12 @@ uv run --no-sync ruff check .
 ## Troubleshooting
 
 - **`Four distinct service tokens of at least 32 characters are required`**: run
-  `uv run python scripts/dev.py init`, which fills in missing tokens.
-- **`Refusing to write a token into ...`**: `init` and `fri-env` write tokens only into a
-  file Git confirms is untracked and ignored, such as `.env.local` in a git clone of Gene
-  or Fri. Install git, and use those files rather than `.env.example` or a tracked file.
+  `uv run python scripts/dev.py token` for each empty or repeated token and paste the values in.
 - **Fri gets 401 from the controller**: Fri's `GENE_FRI_TOKEN` differs from this
-  `.env.local`. Run `fri-env` again, or copy it by hand.
+  `.env.local`. Copy it again exactly.
 - **Fri gets 403 "This server is not configured for Gene"**: the IDs differ between the
   two env files, or the controller wasn't restarted after you edited `.env.local`.
 - **Port 8787 is busy**: `dev.py controller --port 8788`, and
-  `dev.py fri-env ../fri/.env.local --port 8788`.
-- **Starting over**: stop everything and delete `.state/`. Delete `.env.local` too for
-  new tokens; then refresh Fri's copy with `fri-env`.
+  `dev.py fri-env --port 8788`.
+- **Starting over**: stop everything and delete `.state/`. For new tokens, run `token` again
+  for each and paste them in; then copy the new `GENE_FRI_TOKEN` into Fri's `.env.local`.

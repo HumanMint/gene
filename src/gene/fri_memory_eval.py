@@ -8,7 +8,8 @@ them as a chat save would (its first three proposals, through personal_note) and
     docker exec -i gene-controller-1 python -m gene.fri_memory_eval < memory.jsonl
 
 `keep` is null when nothing should be kept. Otherwise at least one note must be kept, and every kept note
-must be in one of keep.categories and mention one of keep.about. Other lines pass through untouched.
+must be in one of keep.categories and mention one of keep.about. Other lines are skipped; input with no
+proposal lines fails.
 """
 
 import json
@@ -32,15 +33,19 @@ def grade(row, check=personal_note):
 
 
 def main(lines, out=sys.stdout):
-    failed = []
+    """The cases that failed. Nothing to grade is a failure too: an empty or wrong capture never passes."""
+    failed, graded = [], 0
     for line in lines:
         row = json.loads(line) if line.strip() else {}
         if 'keep' not in row:
             continue
-        graded = grade(row)
-        print(json.dumps(graded), file=out, flush=True)
-        if not graded['passed']:
-            failed.append(graded['case'])
+        graded += 1
+        result = grade(row)
+        print(json.dumps(result), file=out, flush=True)
+        if not result['passed']:
+            failed.append(result['case'])
+    if not graded:
+        raise SystemExit('No memory proposal cases to grade: was python -m fri.fri_eval --suite memory captured?')
     return failed
 
 

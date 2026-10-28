@@ -81,3 +81,11 @@ def test_a_run_grades_proposal_lines_and_names_every_failure():
     assert ran.returncode == 1 and 'Memory proposals failed: joke' in ran.stderr
     ran = subprocess.run([sys.executable, '-m', 'gene.fri_memory_eval'], input=lines[2], text=True, capture_output=True)
     assert ran.returncode == 0 and json.loads(ran.stdout)['passed'] is True
+
+
+@pytest.mark.parametrize('captured', ['', '\n\n', json.dumps({'case': 'banter', 'passed': True, 'reply': 'ok'})])
+def test_a_run_with_nothing_to_grade_fails(captured):
+    with pytest.raises(SystemExit, match='No memory proposal cases'):
+        main(captured.splitlines(), io.StringIO())
+    ran = subprocess.run([sys.executable, '-m', 'gene.fri_memory_eval'], input=captured, text=True, capture_output=True)
+    assert ran.returncode == 1 and 'No memory proposal cases' in ran.stderr

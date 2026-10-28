@@ -178,6 +178,23 @@ def test_init_refuses_templates_and_tracked_files(tmp_path, monkeypatch):
         dev.main(['--env', str(dev.ROOT / '.env.example'), 'init'])
 
 
+def test_token_writes_refuse_a_tracked_file_named_in_another_case(tmp_path):
+    # On a case-insensitive disk .ENV.REVIEW is the tracked .env.review, even though the ignore rules
+    # match it; refuse on every disk so no token reaches a tracked file through a case alias.
+    path = initialized(tmp_path, **IDS)
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    (repo / '.gitignore').write_text('.env.*\n.ENV.*\n')
+    (repo / '.env.review').write_text('GENE_FRI_TOKEN=\nGENE_RUNTIME_TOKEN=\n')
+    subprocess.run(['git', '-C', str(repo), 'add', '-f', '.env.review'], check=True)
+    alias = repo / '.ENV.REVIEW'
+    for command in (['--env', str(alias), 'init'], ['--env', str(path), 'fri-env', str(alias)]):
+        with pytest.raises(SystemExit, match='Git tracks it'):
+            dev.main(command)
+    assert (repo / '.env.review').read_text() == 'GENE_FRI_TOKEN=\nGENE_RUNTIME_TOKEN=\n'
+
+
 def test_token_writes_need_an_ignored_file_in_a_working_checkout(tmp_path):
     path = initialized(tmp_path, **IDS)
     broken = tmp_path / 'broken'  # A checkout whose repository is gone: every git command fails.

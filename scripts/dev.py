@@ -93,14 +93,15 @@ def unsafe_for_tokens(path: Path) -> str | None:
     if not path.parent.is_dir():
         return f'{path.parent} does not exist'
 
-    def git(*command):
+    def git(*command, name=path.name):
         try:
-            return subprocess.run(['git', '-C', str(path.parent), *command, '--', path.name],
+            return subprocess.run(['git', '-C', str(path.parent), *command, '--', name],
                                   capture_output=True, text=True)
         except OSError:
             return None
 
-    listed = git('--literal-pathspecs', 'ls-files')
+    # Ignoring case: on a case-insensitive disk, .ENV.REVIEW is the tracked .env.review.
+    listed = git('ls-files', name=f':(literal,icase){path.name}')
     if listed is None or listed.returncode != 0:
         return "Git couldn't confirm it is untracked (is git installed, and is this a git checkout?)"
     if listed.stdout.strip():

@@ -11,6 +11,8 @@ import pytest
 from scripts import gene_image_retention as retention
 from tests.test_image_retention import NOW, iid
 
+REAL_CLOCK = retention.time.time  # bound before any fixture pins time.time; the script runs on the real clock
+
 DAY = 24 * 60 * 60
 RUNTIME, WORKER, FRI = 100, 110, 120  # image IDs: iid(base + release number)
 AUDIO = 'a' * 40
@@ -1197,13 +1199,14 @@ def put_state(batch_host, state, health_dir, expect):
         if state['source_tree'] is not None:
             shutil.copytree(state['source_tree'], source, symlinks=True)
     health_dir.mkdir(exist_ok=True)
+    # Fresh by the clock state() reads in the script's own process: written now, read a moment later.
     gene_sha, fri_sha, baseline = expect
     (health_dir / 'gene.json').write_text(json.dumps({
         'sha': gene_sha, 'guild_id': baseline['gene']['guild_id'], 'presence': baseline['gene']['presence'],
-        'guild_connected': True, 'controls_running': True, 'at': retention.time.time()}))
+        'guild_connected': True, 'controls_running': True, 'at': REAL_CLOCK()}))
     (health_dir / 'fri.json').write_text(json.dumps({
         'sha': fri_sha, 'guild_id': baseline['fri']['guild_id'], 'presence': baseline['fri']['presence'],
-        'guild_connected': True, 'agent_heartbeat': {'running': True, 'failed': []}, 'at': retention.time.time()}))
+        'guild_connected': True, 'agent_heartbeat': {'running': True, 'failed': []}, 'at': REAL_CLOCK()}))
     settings = {key: value for key, value in state['settings'].items() if value is not None}
     return {'ROOT': str(root), 'FRI_ROOT': str(fri_root), 'GENE_HEALTH': str(health_dir / 'gene.json'),
             'FRI_HEALTH': str(health_dir / 'fri.json'), 'DB_JSON': json.dumps({'settings': settings, 'busy_jobs': 0}),
@@ -1464,4 +1467,42 @@ def test_the_mirror_and_the_script_both_refuse_numeric_baseline_values(batch_hos
     env |= batch_env(root, record)
     returncode, out = run_script(tmp_path, ['jget', 'source_state', 'state', 'verify'], 'verify old', env)
     assert returncode != 0, out[-800:]
+
+
+# gene #71 and #92: a stop after a fence whose restore hasn't finished.
+
+JOURNALS = {
+    'live': LIVE,
+    'aborted_restoring': LIVE + ['intent:abort'],  # rollback-fri found Gene moved, then its restore stopped
+    'aborted_restored': LIVE + ['intent:abort', 'resumed_old'],
+    'abort_again': ['baseline', 'intent:pause', 'drained', 'resumed_old', 'intent:abort'],
+    'drain_aborting': ['baseline', 'staged', 'rehearsed', 'intent:pause', 'paused:7', 'intent:abort'],
+    'owner_paused_first': ['baseline', 'staged', 'rehearsed', 'intent:pause', 'skipped:pause'],
+    'crlf_abort': ['baseline', 'drained', 'intent:abort\r'],
+}
+
+
+@pytest.mark.parametrize('case', sorted(JOURNALS))
+def test_aborting_and_touched_match_the_release_script(tmp_path, case):
+    journal = tmp_path / 'journal'
+    journal.write_bytes(b''.join(line.encode() + b'\n' for line in JOURNALS[case]))
+    data = journal.read_bytes()
+    lines = [line.decode('utf-8', 'surrogateescape') for line in data.split(b'\n')]
+    record = {'marks': set(lines), 'lines': lines}
+    _, out = run_script(tmp_path, ['has', 'aborting', 'touched'],
+                        'if aborting; then echo aborting; fi; if touched; then echo touched; fi', {'JOURNAL': str(journal)})
+    assert ('aborting' in out.split()) == retention.aborting(record)
+    assert ('touched' in out.split()) == retention.touched(record)
+
+
+def test_a_batch_stopped_after_its_fence_holds_retention_until_resume_old(batch_host):
+    root = batch_host.root
+    write_fri_only(root, batch_host.images, 4, 5, 4, NOW - 0.5 * DAY, marks=FRI_ONLY + ['intent:abort'])
+    live_fri(batch_host, 5)
+    with pytest.raises(retention.Busy, match='mid-release or mid-rollback'):
+        retention.run(root, apply=True)
+    stage = root / 'staging' / f'batch-{gene(4)}-{fri(5)}'
+    set_marks(stage, FRI_ONLY + ['intent:abort', 'resumed_old'])  # resume-old finished it, as it is
+    with pytest.raises(ValueError, match='Live Fri is not the release batch'):  # no longer in service
+        retention.run(root, apply=True)
 

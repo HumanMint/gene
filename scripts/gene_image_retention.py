@@ -291,9 +291,9 @@ def batch_records(root):
             words = set(data.decode().split())  # cleanup's prune_images reads marks this way
         except UnicodeDecodeError:
             raise ValueError(f'Malformed batch record {path.name}: its journal is not text') from None
-        # The phases ask has(), grep -x: whole lines, a carriage return included.
-        lines = {line.decode('utf-8', 'surrogateescape') for line in data.split(b'\n')}
-        records.append(batch_record(path.name, match, manifest, lines, journal.stat().st_mtime, words))
+        # The phases ask has(), grep -x: whole lines, a carriage return included, in the journal's order.
+        lines = [line.decode('utf-8', 'surrogateescape') for line in data.split(b'\n')]
+        records.append(batch_record(path.name, match, manifest, set(lines), journal.stat().st_mtime, words, lines))
     return records
 
 
@@ -303,7 +303,7 @@ def is_sha(value):
     return isinstance(value, str) and SHA.fullmatch(value) is not None
 
 
-def batch_record(name, match, manifest, marks, at, words=None):
+def batch_record(name, match, manifest, marks, at, words=None, lines=None):
     def bad(why):
         return ValueError(f'Malformed batch record {name}: {why}')
     if (not isinstance(manifest, dict) or manifest.get('gene') != match[1]
@@ -333,15 +333,28 @@ def batch_record(name, match, manifest, marks, at, words=None):
             'images': images, 'marks': marks, 'at': at, 'backup': manifest.get('backup'),
             'old_pair': 'old_gene' in manifest and 'old_fri' in manifest, 'downgrades': manifest.get('downgrades'),
             'gene_changes': match[1] != old_gene,
-            'words': marks if words is None else words,
+            'words': marks if words is None else words, 'lines': sorted(marks) if lines is None else lines,
             'live': LIVE <= marks and not marks & {'intent:rollback', 'resumed_old'}}
 
 
+def touched(record):
+    """batch-release.sh's touched(): this batch has fenced development, or begun to."""
+    return bool(record['marks'] & {'drained', 'intent:pause', 'intent:abort'})
+
+
+def aborting(record):
+    """batch-release.sh's aborting(): a stop after a fence whose restore hasn't finished, by the later of the
+    journal's intent:abort and resumed_old lines. rollback-fri refuses then, and resume-old resumes as it is."""
+    latest = [line for line in record['lines'] if line in ('intent:abort', 'resumed_old')]
+    return bool(latest) and latest[-1] == 'intent:abort'
+
+
 def in_flight(record):
-    """Development is paused or switching for this batch: drained without resuming, or mid-rollback."""
+    """Development is fenced or switching for this batch: touched without resuming, mid-rollback, or stopped
+    after its fence with its restore unfinished."""
     marks = record['marks']
-    return 'resumed_old' not in marks and (
-        'intent:rollback' in marks or ('resumed' not in marks and bool(marks & {'intent:pause', 'drained'})))
+    return aborting(record) or ('resumed_old' not in marks and (
+        'intent:rollback' in marks or ('resumed' not in marks and touched(record))))
 
 
 def unfinished(record):

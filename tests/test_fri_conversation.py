@@ -104,6 +104,100 @@ def test_projects_notes_keep_every_other_rule(candidate, text):
     assert personal_note(candidate, text) is None
 
 
+@pytest.mark.parametrize('category,evidence,text', [
+    # Not where a word starts or ends.
+    ('hobbies', 'i like sushi is mid', 'wasabi like sushi is mid'),
+    ('games', 'i play valorant with us', 'tell ravi play valorant with us'),
+    ('nickname', 'call me dan', 'call me danny'),
+    ('games', 'i like chess', 'i like chessboxing'),
+    # Denied, even with words between.
+    ('nickname', 'call me dan', 'dont call me dan'),
+    ('nickname', 'call me dan', 'dont ever call me dan'),
+    ('nickname', 'call me dan', 'don’t ever call me dan lol'),
+    ('nickname', 'call me dan', 'do not call me dan'),
+    ('nickname', 'call me dan', 'please never ever call me dan'),
+    ('games', 'i like chess', "i really don't think i like chess"),
+    ('games', 'i play valorant', 'i dont even know why i play valorant'),
+    ('games', 'i like chess', "i can't say i like chess"),
+    ('games', 'i like chess', 'not that i like chess'),
+    ('games', 'i like chess', 'no way i like chess'),
+    # Someone else's words, or a claim that isn't one.
+    ('games', 'i like chess', 'she said honestly i like chess'),
+    ('games', 'i play valorant too much', 'my mom says i play valorant too much'),
+    ('games', 'i like chess', 'he was literally like i like chess'),
+    ('games', 'i like chess', "she's like i like chess"),
+    ('games', 'i like chess', 'apparently i like chess now'),
+    ('games', 'i like chess', 'they think i like chess'),
+    ('games', 'i like chess', 'imagine if i like chess'),
+    ('games', 'i like chess', 'pretend i like chess'),
+    ('games', 'i play valorant with us', 'should i play valorant with us tonight'),
+    ('nickname', 'my nickname', "what's my nickname"),
+    ('games', 'i like Minecraft', 'did i say i like Minecraft?'),
+    ('games', 'i like chess', 'i like chess jk'),
+    ('games', 'i like chess', 'i like chess /s'),
+    ('games', 'i like chess', 'i like chess, she said'),
+    ('music', 'i love mondays', 'i love mondays said no one ever'),
+    ('games', 'i like chess', 'bob: i like chess'),
+    ('games', 'i like chess', 'she said:\ni like chess'),
+    ('nickname', 'call me dan', 'call me dan. jk dont call me dan'),
+    # Who's calling them that, or the idiom.
+    ('nickname', 'call me crazy but whatever', 'they call me crazy but whatever'),
+    ('nickname', 'call me crazy', 'call me crazy but i like chess'),
+    ('nickname', 'call me dan', 'my friends call me dan'),
+    # Quoted, code or blockquote.
+    ('games', 'i like chess', 'she goes "honestly i like chess"'),
+    ('games', 'i like chess', 'lol “honestly i like chess”'),
+    ('games', 'i like chess', "she was all 'honestly i like chess'"),
+    ('games', 'i like chess', '`echo honestly i like chess`'),
+    ('games', 'i like chess', '```\nprint()\ni like chess\n```'),
+    ('games', 'i like chess', '> lol i like chess'),
+    ('games', 'i like chess', '>>> quote\nlol i like chess'),
+])
+def test_notes_are_the_members_own_plain_claim(category, evidence, text):
+    assert personal_note({'category': category, 'evidence': evidence}, text) is None
+
+
+@pytest.mark.parametrize('category,evidence,text', [
+    ('games', 'i like chess', 'lol i like chess'),
+    ('games', 'i like chess', 'honestly i like chess'),
+    ('games', 'i like chess', 'not gonna lie, i like chess'),
+    ('games', 'i like chess', 'no cap i like chess'),
+    ('games', 'i like chess', 'gotta say i like chess'),
+    ('music', 'i love trance', 'ngl i love trance'),
+    ('games', 'i play valorant', 'fri i play valorant'),
+    ('games', 'i play valorant', 'yeah, i play valorant'),
+    ('games', 'i like chess', 'i play valorant and i like chess'),
+    ('games', 'i play chess', 'on weekends i play chess'),
+    ('games', 'i like chess', 'no, i like chess'),
+    ('games', 'i like chess', "i don't play league. i like chess"),
+    ('games', 'i like chess', 'i like chess, not checkers'),
+    ('games', 'i like chess', 'i like chess lol'),
+    ('games', 'my favorite game is chess', 'tbh my favorite game is chess'),
+    ('games', 'my favorite game', 'chess is my favorite game'),
+    ('nickname', 'call me dan', 'pls call me dan'),
+    ('nickname', 'call me dan', 'you can call me dan'),
+    ('nickname', 'call me dan', 'can you call me dan'),
+    ('nickname', 'call me dan', 'i want you to call me dan'),
+    ('nickname', 'call me dan', 'from now on just call me dan'),
+    ('nickname', 'call me dan', 'lol call me dan'),
+    ('nickname', 'my nickname is dan', 'my nickname is dan btw'),
+    ('projects', "I'm working on a mod", "lol I'm working on a mod"),
+])
+def test_harmless_lead_ins_still_keep_a_note(category, evidence, text):
+    assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
+
+
+def test_a_denied_nickname_keeps_no_note_when_saved(store):
+    def save(text):
+        return store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                               notes=[{'category': 'nickname', 'evidence': 'call me dan'}])
+    assert not save('dont ever call me dan')['first_memory']
+    assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
+    assert save('lol call me dan')['first_memory']
+    notes = store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
+    assert [note['evidence'] for note in notes] == ['call me dan']
+
+
 def test_notes_expire_on_idle_health_and_erasure(store):
     note = {'category': 'music', 'evidence': 'I love trance'}
     store.save_chat('guild', 'public:1', 'one', 0, note['evidence'], 'reply', 'model', 'high', notes=[note])

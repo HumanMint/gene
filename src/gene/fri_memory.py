@@ -9,6 +9,28 @@ CONVERSATION_ONLY = ('projects',)  # Kept where it was said; only the member's o
 MAX_NOTES = 10
 PER_CATEGORY = 3
 TTL = 90 * 86400
+QUOTED = ('"', "'", '“', '‘', '>', '`')
+SENTENCE = re.compile(r'[!?;\n]+|(?<![.\d])\.(?![.\d])')
+# Common fillers that only look like a denial or a report: "not gonna lie, i like chess".
+FILLER = re.compile(r"(?i)\b(?:not (?:gonna|going to) lie|not to brag|no (?:cap|lie|offen[cs]e)|"
+                    r"(?:gotta|got to|have to|must|needless to) say|if (?:i'm|im|i am) honest|if you ask me)\b")
+# Someone else's words, a supposition or a quotation: nothing after it in the sentence is the member's claim.
+FRAMED = re.compile(
+    r"(?i)\b(?:say|says|said|saying|tells?|told|telling|ask(?:s|ed)?|wr(?:ite|ites|ote)|text(?:s|ed)|goes|"
+    r"think(?:s|ing)?|thought|believe[sd]?|assume[sd]?|claim(?:s|ed)?|quot(?:e|es|ed|ing)|apparently|"
+    r"supposedly|allegedly|pretend\w*|imagine|suppose[sd]?|if|unless|whether|wish(?:es|ed)?|"
+    r"(?:am|is|are|was|were|be|been|im|'m|'s|'re)\s+(?:\w+\s+)?like)\b")
+# A denial anywhere earlier in the sentence, however many words sit between: "dont ever call me dan".
+NEGATED = re.compile(r"(?i)\b(?:not|never|no(?!\s*,)|nobody|noone|nothing|neither|nor|without|cannot|ain'?t|"
+                     r"\w+n't|(?:do|does|did|is|are|was|were|ca|could|wo|would|should|have|has|had)nt)\b")
+# Right before "i like" or "my favorite", a question: "should i play", "what's my nickname".
+ASKED = ('do', 'does', 'did', 'can', 'could', 'will', 'would', 'shall', 'should', 'may', 'might', 'must',
+         'what', 'whats', "what's")
+# "call me" is the member's own ask after nothing, a filler or "you can"; "they call me" isn't.
+ASKING = re.compile(r"(?i)(?:^|\b(?:please|pls|plz|just|so|and|also|now|actually|instead|then|honestly|tbh|ngl|"
+                    r"btw|lol|lmao|haha|ok|okay|yeah|yea|ya|yes|oh|hey|hi|yo|fri|bro|dude|can|could|will|may|"
+                    r"should|from now on|(?:can|could|will|would) (?:you|u)|(?:you|u) to))\W*$")
+RETRACTED = re.compile(r"(?i)\b(?:jk|j/k|kidding|anymore|not really)\b|(?:^|\s)/s\b")
 
 
 def personal_note(candidate, text):
@@ -20,8 +42,9 @@ def personal_note(candidate, text):
         return None
     if clean(evidence, 180) != evidence or any(s in evidence for s in ('\n', '`', '<@', '://')):
         return None
-    before = text[:text.index(evidence)].rstrip()
-    if before.endswith(('"', "'", '“', '‘', '>', '`')):
+    # Every place these words stand as whole words must be the member's own plain claim; any doubt keeps nothing.
+    spots = [m.start() for m in re.finditer(f'(?={re.escape(evidence)})', text) if whole(text, m.start(), evidence)]
+    if not spots or not all(claimed(text, at, evidence) for at in spots):
         return None
     # What a member is doing is only ever a projects note, and a projects note only ever says what they're doing.
     if candidate['category'] == 'projects':
@@ -34,6 +57,37 @@ def personal_note(candidate, text):
                  r'politic\w*|religio\w*|sexual\w*|health|medical|permission|approv\w*|deploy|execute)\b', evidence):
         return None
     return candidate['category'], evidence
+
+
+def whole(text, at, evidence):
+    """Starts and ends where words do: not the "i like" in "wasabi like" or the "call me dan" in "call me danny"."""
+    end = at + len(evidence)
+    return not ((at and re.match(r"[\w'’-]", text[at - 1]))
+                or (re.match(r'\w', evidence[-1]) and re.match(r'\w', text[end:end + 1])))
+
+
+def claimed(text, at, evidence):
+    """Whether the words at text[at:] are the member's own claim, not quoted, reported, denied, asked or taken back."""
+    before, after = text[:at].replace('’', "'"), text[at + len(evidence):].replace('’', "'")
+    if (before.rstrip().endswith(QUOTED) or before.rsplit('\n', 1)[-1].lstrip().startswith('>')
+            or re.search(r'(?m)^\s*>>>', before) or before.count('`') % 2 or before.count('"') % 2
+            or before.count('“') > before.count('”') or after.lstrip()[:1] in ('"', '”') or re.match(r"\s*'(?!\w)", after)):
+        return False  # Quoted, code or a blockquote.
+    *earlier, lead = SENTENCE.split(before)
+    prior = next((part for part in reversed(earlier) if part.strip()), '')
+    if re.search(r"(?i)(?:\b(?:said|says|wrote|writes|texted|asked|goes|told me|tells me)\b\W*|:\s*)$", prior):
+        return False  # "she said:" and then the words on their own line.
+    lead = FILLER.sub(' ', lead)
+    if FRAMED.search(lead) or NEGATED.search(lead) or re.search(r'\w:(?:\s|$)', lead):
+        return False  # "she said honestly …", "dont ever …", "bob: …".
+    rest = SENTENCE.split(after, maxsplit=1)[0]
+    if RETRACTED.search(evidence + rest) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest):
+        return False  # "… jk", "… said no one ever".
+    if evidence.lower().startswith('call me'):
+        return bool(ASKING.search(lead)) and not re.match(r"(?i)call me\s+[\w'-]+(?:\s+[\w'-]+)?\s*,?\s+but\b",
+                                                          evidence + rest)  # Not "call me crazy but …".
+    words = re.findall(r"[\w']+", lead.lower())
+    return not words or words[-1] not in ASKED
 
 
 def memory_intent(text):

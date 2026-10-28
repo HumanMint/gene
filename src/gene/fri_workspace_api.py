@@ -26,6 +26,9 @@ class Save(Scope):
     body: str = Field(min_length=1, max_length=4000)
     state: Literal['open', 'completed', 'cancelled']
     request_text: str = Field(default='', max_length=4000)
+    # The member summary's generation, sent by a Fri whose turn gave its model that summary: refused once it moved
+    # (fri #171). An older Fri omits it.
+    summary_generation: int | None = Field(default=None, ge=0)
 
 
 class Prepare(Scope):

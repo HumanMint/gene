@@ -119,7 +119,9 @@ class Social:
             raise KeyError('Reminder unavailable in this DM')
         return dict(row)
 
-    def reminder_prepare(self, scope, source, revision, body, local_time, timezone):
+    def reminder_prepare(self, scope, source, revision, body, local_time, timezone, *, summary_generation=None):
+        """summary_generation: as for saved work, refused once it moved (fri #171), and kept out of the digest."""
+        from .store import Store
         fresh(source, scope)
         if source.guild_id is not None or not scope['conversation_id'].startswith('private:'):
             raise ValueError('Prepare personal reminders in your verified member DM.')
@@ -131,6 +133,7 @@ class Social:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
             Workspace.revision(db, scope['user_id'], revision)
+            Store._summary_unchanged(db, scope['guild_id'], scope['user_id'], summary_generation)
             old = db.execute('SELECT * FROM fri_reminders WHERE source_id=?', (source.id,)).fetchone()
             if old:
                 if old['payload'] != payload:

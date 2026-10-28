@@ -81,8 +81,11 @@ class Workspace:
                 'AND scope=? ORDER BY updated DESC LIMIT 30',
                 (scope['guild_id'], scope['user_id'], scope['conversation_id']))]}
 
-    def save(self, scope, source, revision, work_id, version, title, body, state, request_text=''):
-        from .store import Conflict
+    def save(self, scope, source, revision, work_id, version, title, body, state, request_text='',
+             summary_generation=None):
+        """summary_generation: the member summary's the turn drew on, if it did. The save is refused once a withdrawal
+        or rebuild has moved it, so its words can't be kept after their source went (fri #171)."""
+        from .store import Conflict, Store
         source.check(scope['guild_id'], scope['conversation_id'], scope['user_id'])
         if source.kind != 'discord_message' or abs(time.time()-source.timestamp().timestamp()) > 900:
             raise ValueError('Saving work needs a fresh Discord message')
@@ -96,6 +99,7 @@ class Workspace:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
             self.revision(db, scope['user_id'], revision)
+            Store._summary_unchanged(db, scope['guild_id'], scope['user_id'], summary_generation)
             if scope['conversation_id'].startswith('public:'):
                 old = self.get(db, work_id, scope) if work_id else None
                 if body not in request_text and (not old or body != old['body']):

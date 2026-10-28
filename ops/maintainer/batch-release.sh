@@ -718,13 +718,21 @@ def parts(path):  # (installed, metadata): the file's tables split into what may
         metadata[table] = {key: value for key, value in values.items() if key in keys}
         data[table] = {key: value for key, value in values.items() if key not in keys}
     return data, metadata
+def same(a, b):  # equal and of the same types all the way down: true, 1 and 1.0 aren't the same setting
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(same(a[key], b[key]) for key in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+    return a == b
 def changed(old, new):  # dotted names of the top-level keys and table entries that differ
     names = []
     for key in sorted(set(old) | set(new)):
         a, b = old.get(key), new.get(key)
         if isinstance(a, dict) and isinstance(b, dict):
-            names += [f'{key}.{sub}' for sub in sorted(set(a) | set(b)) if a.get(sub) != b.get(sub)]
-        elif a != b:
+            names += [f'{key}.{sub}' for sub in sorted(set(a) | set(b)) if not same(a.get(sub), b.get(sub))]
+        elif not same(a, b):
             names.append(key)
     return names
 (live, live_meta), (staged, staged_meta) = parts(sys.argv[1]), parts(sys.argv[2])

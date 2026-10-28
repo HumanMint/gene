@@ -458,3 +458,53 @@ def test_a_plain_restart_keeps_current_summary_derived_replies(world):
     assert finish(client.app.state.agent, claim_id, 'they made new plans', 'completed', conversations, True)['kept']
     Store(store.path)
     assert replies(store)[-1] == QUOTING and referenced(store, '706')['verbatim'] is True
+
+
+def sources(client, *message_ids):
+    answer = client.post('/chat/messages/sources', headers=headers('fri'),
+                         json={'guild_id': '123', 'message_ids': list(message_ids)})
+    assert answer.status_code == 200, answer.text
+    return answer.json()['messages']
+
+
+def test_a_reference_to_a_reply_on_a_summary_that_lapsed_since_is_retired(world):
+    """gene #120: the sources lookup finds the summary a reply drew on expired but not yet pruned. It goes there, as a
+    read that finds it lapsed drops it, so the reply is reported as a breadcrumb, not verbatim, and stays one."""
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, generation, conversation='public:51')
+    quoted(store, None, reply='an older fri said hi', message_id='701', conversation='public:51')
+    assert sources(client, '700')['700']['verbatim'] is True
+    assert summary_generation_now(store) == generation  # A current summary stays.
+    lapsed(store)
+    found = sources(client, '700', '701')
+    assert found['700']['verbatim'] is False and found['701']['verbatim'] is True
+    assert dropped(store, generation)
+    assert sources(client, '700')['700']['verbatim'] is False
+
+
+def traced(store, monkeypatch):
+    """The statements the store runs from here on."""
+    ran, opened = [], store.connection
+
+    @contextmanager
+    def connection():
+        with opened() as db:
+            db.set_trace_callback(ran.append)
+            yield db
+    monkeypatch.setattr(store, 'connection', connection)
+    return ran
+
+
+def test_a_reference_to_a_reply_that_drew_on_no_summary_stays_a_plain_read(world, monkeypatch):
+    """Only a reply that drew on a summary takes the write lock: the lookup of any other reads, as before, and leaves a
+    lapsed summary to the next read."""
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, None, reply='an older fri said hi', message_id='701')
+    lapsed(store)
+    ran = traced(store, monkeypatch)
+    assert sources(client, '701', '702') == {'701': {'verbatim': True, 'provenance': [{'user_id': '20', 'revision': 0}]}}
+    assert ran and all(statement.lstrip().upper().startswith('SELECT') for statement in ran), ran
+    monkeypatch.undo()
+    assert summary_generation_now(store) == generation

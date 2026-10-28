@@ -49,6 +49,8 @@ def start(store, guild, conversation, user, revision, source, text, query, *, me
         row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
         if revision != (row[0] if row else 0):
             raise ValueError('Conversation changed before research started')
+        if store.taken_back(db, guild, user, [event.id]):  # Withdrawn since Fri saved an exchange with it (gene #90).
+            raise ValueError('That message was edited or deleted before research started')
         # A mention invitation never inherits authority from a channel's older
         # configured-scope clarification, even if the same database row remains.
         pending = None if mention else read(db, guild, conversation, user, revision)

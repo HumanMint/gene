@@ -147,6 +147,9 @@ class ChatTurn(ChatScope):
     # server: said where everyone in the server could read it, so it may reach the member's profile
     # and their other conversations. Only Fri can tell, from Discord's permissions at the time.
     audience: Literal['server', 'conversation'] = 'conversation'
+    # The member summary's generation from /chat/context, sent by a Fri that gave its model that summary. A withdrawal
+    # that drops the summary moves it, and the turn is refused (gene #91). An older Fri omits it: checked as before.
+    summary_generation: int | None = Field(default=None, ge=0)
 
     @model_validator(mode='after')
     def private_stays_private(self):
@@ -460,7 +463,8 @@ def create_app(settings: Settings | None = None):
                               response_kind=body.response_kind, reaction=body.reaction, allow_closing=body.allow_closing,
                               burst=[row.model_dump() for row in body.burst],
                               provenance=None if body.provenance is None else [row.model_dump() for row in body.provenance],
-                              reply_message_id=body.reply_message_id, verbatim=body.verbatim, audience=body.audience)
+                              reply_message_id=body.reply_message_id, verbatim=body.verbatim, audience=body.audience,
+                              summary_generation=body.summary_generation)
 
     @app.post('/chat/turn/check', dependencies=[auth('fri')])
     def chat_turn_check(body: ChatTurn):
@@ -468,7 +472,9 @@ def create_app(settings: Settings | None = None):
         if body.mention_grant:
             raise HTTPException(400, 'Invitation turns are fenced by their mention grant')
         chat_scope(body)
-        return store.check_chat(body.user_id, body.revision, [row.model_dump() for row in body.provenance or []])
+        return store.check_chat(body.user_id, body.revision, [row.model_dump() for row in body.provenance or []],
+                                guild_id=body.guild_id, messages=[body.source.id, *(row.source.id for row in body.burst)],
+                                summary_generation=body.summary_generation)
 
     @app.post('/chat/turn/withdraw', dependencies=[auth('fri')])
     def chat_turn_withdraw(body: TurnWithdrawal):

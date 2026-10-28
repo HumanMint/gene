@@ -308,3 +308,218 @@ def test_erasure_still_takes_a_summary_a_withdrawal_left(world, erase):
     assert summary(store) is None and inputs(store) == []
     with store.connection() as db:
         assert db.execute('SELECT count(*) FROM fri_member_summaries').fetchone()[0] == 0
+
+
+def turn(said, text, *, user='20', **extra):
+    """A turn's body for /chat/turn and its check before delivery, answering `said`."""
+    return {**SCOPE, 'user_id': user, 'revision': 0, 'source': said, 'input': text, 'reply': 'okay',
+            'model': 'model', 'effort': 'high', 'provenance': [], **extra}
+
+
+def check(client, body):
+    return client.post('/chat/turn/check', headers=headers('fri'), json=body)
+
+
+def post_turn(client, body):
+    return client.post('/chat/turn', headers=headers('fri'), json=body)
+
+
+def fences(store):
+    with store.connection() as db:
+        return [dict(row) for row in db.execute('SELECT * FROM chat_turn_withdrawals ORDER BY user_id')]
+
+
+def test_a_save_landing_after_its_message_was_withdrawn_keeps_nothing(world, caplog):
+    """gene #90: the withdrawal reached the controller first (a save Fri timed out on, say), and found nothing yet."""
+    client, store = world
+    caplog.set_level(logging.DEBUG)
+    first, last = source(age=4, channel='51'), source(age=2, channel='51')
+    burst = [{'source': first, 'text': MARKER+' with the lights off'}, {'source': last, 'text': 'fri play music'}]
+    body = turn(last, 'fri play music', burst=burst, reply='which song? the '+MARKER+' one?',
+                notes=[{'category': 'music', 'evidence': 'fri play music'}],
+                clarification={'goal': 'play', 'topic': '', 'question': 'which song?'})
+    assert withdraw(client, first['id']).json() == {'ok': True, 'removed': 0}
+    for _ in range(2):  # A retry of the save is as harmless.
+        assert post_turn(client, body).json() == {'ok': True, 'first_memory': False, 'kept': False}
+    context = store.chat_context('123', 'public:51', '20', True, True)
+    assert context['turns'] == [] and context['pending'] is None and context['personal_memory']['notes'] == []
+    assert MARKER not in str(context) and MARKER not in caplog.text
+    # Their next message, which isn't the one withdrawn, saves as ever, and so does another member's.
+    later = source(age=1, channel='51')
+    assert post_turn(client, turn(later, 'what about lunch')).json()['ok'] is True
+    assert post_turn(client, turn(source(age=1, user='30', channel='51'), 'me too', user='30')).json()['ok'] is True
+    assert inputs(store) == ['what about lunch'] and inputs(store, '30') == ['me too']
+
+
+def test_a_late_save_of_the_message_itself_keeps_nothing(world):
+    client, store = world
+    said = source(age=3, channel='51')
+    withdraw(client, said['id'])
+    assert store.save_chat('123', 'public:51', '20', 0, 'explain '+MARKER, 'okay', 'model', 'high', source=said,
+                           provenance=[])['kept'] is False
+    assert inputs(store) == []
+
+
+def test_the_check_before_delivery_refuses_a_reply_to_a_withdrawn_message(world, caplog):
+    client, store = world
+    caplog.set_level(logging.DEBUG)
+    first, last = source(age=4, channel='51'), source(age=2, channel='51')
+    body = turn(last, 'part two', burst=[{'source': first, 'text': MARKER+' part one'}, {'source': last, 'text': 'part two'}])
+    assert check(client, body).json() == {'ok': True}
+    withdraw(client, first['id'])
+    for _ in range(2):  # Asked again, the same answer.
+        refused = check(client, body)
+        assert refused.status_code == 409 and MARKER not in refused.text
+    assert check(client, {**body, 'burst': []}).json() == {'ok': True}  # Its last message alone isn't the one withdrawn.
+    assert check(client, turn(last, 'part two', user='30', source={**last, 'user_id': '30'})).json() == {'ok': True}
+    withdraw(client, last['id'])
+    assert check(client, {**body, 'burst': []}).status_code == 409
+    assert MARKER not in caplog.text
+
+
+def test_research_for_a_withdrawn_message_is_refused(world):
+    client, store = world
+    said = source(age=2, channel='51')
+    research = {**SCOPE, 'source': said, 'revision': 0, 'input': 'weather in Seoul', 'query': 'weather in Seoul'}
+    withdraw(client, said['id'])
+    assert client.post('/chat/research/start', headers=headers('fri'), json=research).status_code == 400
+    fresh = {**research, 'source': source(age=1, channel='51')}
+    assert client.post('/chat/research/start', headers=headers('fri'), json=fresh).json() == {'ok': True}
+    with store.connection() as db:
+        assert [r[0] for r in db.execute('SELECT source_id FROM web_requests')] == [fresh['source']['id']]
+
+
+def test_the_fence_holds_no_words_and_lapses(world):
+    client, store = world
+    taken = save(store, 'explain '+MARKER)
+    for _ in range(2):  # A repeat keeps one fence.
+        withdraw(client, taken)
+    [fence] = fences(store)
+    assert set(fence) == {'guild_id', 'user_id', 'message_id', 'at'} and MARKER not in str(fence)
+    assert (fence['guild_id'], fence['user_id'], fence['message_id']) == ('123', '20', taken)
+    with store.connection() as db:  # Kept a week, as long as a saved exchange is: no turn runs that long.
+        db.execute('UPDATE chat_turn_withdrawals SET at=at-7*86400+60')
+    store.chat_context('123', 'public:51', '20')
+    assert len(fences(store)) == 1
+    with store.connection() as db:
+        db.execute('UPDATE chat_turn_withdrawals SET at=at-120')
+    store.chat_context('123', 'public:51', '20')
+    assert fences(store) == []
+
+
+@pytest.mark.parametrize('erase', ['disable', 'erase_user', 'clear_chats'])
+def test_erasure_after_a_fence_still_works_and_refuses_the_late_save(world, erase):
+    client, store = world
+    mine, theirs = source(age=3, channel='51'), source(age=3, user='30', channel='51')
+    withdraw(client, mine['id'])
+    withdraw(client, theirs['id'], user_id='30')
+    if erase == 'disable':
+        store.personal_control('20', 'disable')
+    else:
+        getattr(store, erase)('20')
+    assert post_turn(client, turn(mine, 'explain '+MARKER)).status_code == 409  # Their revision moved.
+    # Memory off keeps nothing of theirs, fences included; Forget my chats leaves them, like note removals.
+    assert [f['user_id'] for f in fences(store)] == (['20', '30'] if erase == 'clear_chats' else ['30'])
+    assert inputs(store) == []
+
+
+def summary_generation(store, user='20'):
+    return store.chat_context('123', 'public:51', user, True, True)['member_summary']['generation']
+
+
+def test_a_reply_drawing_on_a_summary_withdrawn_since_is_refused(world, caplog):
+    """gene #91: the turn fetched the summary, then the message it was built on was withdrawn."""
+    client, store = world
+    agent = background(client)
+    caplog.set_level(logging.DEBUG)
+    taken = readable(store, 'raid tonight, bring the '+MARKER, 7300)
+    readable(store, 'what build for the raid', 7250)
+    built(agent, 'they planned a raid with the '+MARKER)
+    shown = store.chat_context('123', 'public:51', '20', True, True)['member_summary']
+    assert MARKER in shown['text']
+    body = turn(source(age=1, channel='51'), 'what did i plan', reply='your raid with the '+MARKER,
+                summary_generation=shown.get('generation', 0))
+    assert check(client, body).json() == {'ok': True}
+    assert withdraw(client, taken).json() == {'ok': True, 'removed': 1}
+    for _ in range(2):  # Asked again, the same answer.
+        refused = check(client, body)
+        assert refused.status_code == 409 and MARKER not in refused.text
+        assert post_turn(client, body).status_code == 409
+    assert MARKER not in str(store.chat_context('123', 'public:51', '20', True, True))
+    assert MARKER not in caplog.text
+
+
+def test_what_a_summary_withdrawal_leaves_alone(world):
+    client, store = world
+    agent = background(client)
+    taken = readable(store, 'raid tonight', 7300)
+    readable(store, 'what build for the raid', 7250)
+    readable(store, 'i main a healer', 7300, user='30', conversation='public:52')
+    readable(store, 'see you at the raid', 7250, user='30', conversation='public:52')
+    built(agent, 'they planned a raid')
+    built(agent, 'they main a healer')
+    mine, theirs = summary_generation(store), summary_generation(store, '30')
+    later = readable(store, 'said after the build', 30)
+
+    def reply(generation, user='20', age=1):
+        said = source(age=age, user=user, channel='51')
+        return turn(said, 'what did i plan', user=user, **({} if generation is None else {'summary_generation': generation}))
+    withdraw(client, later)  # Never read by the summary: it stays, and so does its generation.
+    assert summary_generation(store) == mine and check(client, reply(mine)).json() == {'ok': True}
+    withdraw(client, taken)
+    assert check(client, reply(mine)).status_code == 409
+    assert check(client, reply(None)).json() == {'ok': True}  # An older Fri says nothing, and is checked as before.
+    assert post_turn(client, reply(None, age=2)).json()['ok'] is True
+    assert check(client, reply(theirs, '30')).json() == {'ok': True}  # Another member's summary is untouched.
+    assert summary_generation(store, '30') == theirs
+    withdraw(client, taken)  # Again: nothing left to drop, nothing moves.
+    readable(store, 'the next day stuff', 3700)
+    readable(store, 'more of it', 3650)
+    with store.connection() as db:
+        db.execute("DELETE FROM fri_member_summary_calls WHERE user_id='20'")
+    built(agent, 'they talked about the next day')
+    assert summary_generation(store) != mine
+    assert check(client, reply(summary_generation(store))).json() == {'ok': True}
+
+
+@pytest.mark.parametrize('erase', ['disable', 'erase_user', 'clear_chats'])
+def test_erasure_still_takes_the_summary_and_its_generation(world, erase):
+    client, store = world
+    agent = background(client)
+    taken = readable(store, 'raid tonight', 7300)
+    readable(store, 'what build for the raid', 7250)
+    readable(store, 'i main a healer', 7300, user='30', conversation='public:52')
+    readable(store, 'see you at the raid', 7250, user='30', conversation='public:52')
+    built(agent, 'they planned a raid')
+    built(agent, 'they main a healer')
+    old = summary_generation(store)
+    withdraw(client, taken)
+    if erase == 'disable':
+        store.personal_control('20', 'disable')
+    else:
+        getattr(store, erase)('20')
+    assert summary(store) is None and summary(store, '30') == 'they main a healer'
+    assert check(client, turn(source(age=1, channel='51'), 'hi', summary_generation=old)).status_code == 409
+    with store.connection() as db:
+        assert [r[0] for r in db.execute('SELECT user_id FROM fri_member_summary_generations')] == []
+
+
+def test_a_purge_before_rollback_takes_the_generations_too(world, tmp_path):
+    from gene.fri_member_summary import purge
+    client, store = world
+    agent = background(client)
+    taken = readable(store, 'raid tonight', 7300)
+    readable(store, 'what build for the raid', 7250)
+    built(agent, 'they planned a raid')
+    withdraw(client, taken)
+    purge(store.path)
+    with store.connection() as db:
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert not tables & {'fri_member_summaries', 'fri_member_summary_generations'}
+
+
+def test_the_contract_offers_summary_generations_as_optional():
+    advertised = contract()
+    assert 'summary-generations' in advertised['capabilities']
+    assert compatible({**advertised, 'capabilities': [c for c in advertised['capabilities']
+                                                     if c != 'summary-generations']})

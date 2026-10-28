@@ -43,6 +43,11 @@ BACKUP_FILES = ('release.env', 'worker.env', 'fri-release.env', 'fri-release.jso
 SAVED_GENE = ('release.env', 'worker.env', 'fri-release.env', 'fri-release.json')  # what rollback-gene restores
 SAVED_FRI = ('fri-release.env', 'fri-release.json')  # what rollback-fri restores
 DOWNGRADES = re.compile(r'(?:gene\.[a-z_]+(?: gene\.[a-z_]+)*)?')
+# The modules batch-release.sh's downgrade_step knows; it dies on any other, partway through a rollback.
+DOWNGRADE_STEPS = {'gene.fri_reply_checks', 'gene.profile_downgrade', 'gene.fri_member_summary'}
+# What rollback-gene's compose and source steps read from installed-source once it is moved to source/;
+# a symlink among them would mean something else after the move.
+MOVED_ENTRIES = ('', '.release-sha', 'ops', 'ops/compose.yml', 'ops/fri-compose.yml')
 ZONE = 'America/Los_Angeles'
 EARLIEST = 1793059200  # 2026-10-27T00:00Z: a clock before the window policy existed is not trusted
 STALE = 50 * 60 * 60  # two missed daily windows
@@ -281,12 +286,18 @@ def batch_records(root):
             manifest = read_json(path / 'manifest.json')
         except (OSError, ValueError) as exc:
             raise ValueError(f'Malformed batch record {path.name}: unreadable manifest ({type(exc).__name__})') from None
-        records.append(batch_record(path.name, match, manifest, set(journal.read_text().split()),
-                                    journal.stat().st_mtime))
+        data = journal.read_bytes()
+        try:
+            words = set(data.decode().split())  # cleanup's prune_images reads marks this way
+        except UnicodeDecodeError:
+            raise ValueError(f'Malformed batch record {path.name}: its journal is not text') from None
+        # The phases ask has(), grep -x: whole lines, a carriage return included.
+        lines = {line.decode('utf-8', 'surrogateescape') for line in data.split(b'\n')}
+        records.append(batch_record(path.name, match, manifest, lines, journal.stat().st_mtime, words))
     return records
 
 
-def batch_record(name, match, manifest, marks, at):
+def batch_record(name, match, manifest, marks, at, words=None):
     def bad(why):
         return ValueError(f'Malformed batch record {name}: {why}')
     if (not isinstance(manifest, dict) or manifest.get('gene') != match[1]
@@ -315,6 +326,7 @@ def batch_record(name, match, manifest, marks, at):
             'images': images, 'marks': marks, 'at': at, 'backup': manifest.get('backup'),
             'old_pair': 'old_gene' in manifest and 'old_fri' in manifest, 'downgrades': manifest.get('downgrades'),
             'gene_changes': match[1] != old_gene,
+            'words': marks if words is None else words,
             'live': LIVE <= marks and not marks & {'intent:rollback', 'resumed_old'}}
 
 
@@ -327,14 +339,19 @@ def in_flight(record):
 
 def unfinished(record):
     """cleanup's rule: not back in service yet, so its next phase checks every image its manifest names."""
-    marks = record['marks']
+    marks = record['words']
     return 'resumed_old' not in marks and ('resumed' not in marks or 'intent:rollback' in marks)
 
 
 def switch_backup(root, record):
-    """The batch's switch backup directory, only directly under backups/ and never through a symlink."""
-    backup = Path(os.path.normpath(record['backup'])) if isinstance(record['backup'], str) else None
-    if backup is None or backup.parent != root / 'backups' or backup.is_symlink() or not backup.is_dir():
+    """The batch's switch backup directory: the manifest's path, used as written, as batch-release.sh uses it.
+    It must be canonical (absolute, no . or .. or trailing newline that the kernel or jget would reinterpret),
+    directly under backups/, and not a symlink."""
+    text = record['backup']
+    if not isinstance(text, str) or '\n' in text or not os.path.isabs(text) or os.path.normpath(text) != text:
+        return None
+    backup = Path(text)
+    if backup.parent != root / 'backups' or backup.is_symlink() or not backup.is_dir():
         return None
     return backup
 
@@ -352,12 +369,11 @@ def batch_evidence(root, record, by_tag):
             or any(by_tag.get(tag) != iid for tag, iid in (old['runtime'], old['worker']))):
         return []
     try:
-        pins = (read_pins(backup / 'release.env', {'GENE_RELEASE_SHA', 'GENE_RUNTIME_IMAGE'}),
-                read_pins(backup / 'worker.env', {'GENE_WORKER_IMAGE'}))
-    except (OSError, ValueError):
+        release, workers = (backup / 'release.env').read_bytes(), (backup / 'worker.env').read_bytes()
+    except OSError:
         return []
-    if pins != ({'GENE_RELEASE_SHA': old_gene, 'GENE_RUNTIME_IMAGE': old['runtime'][0]},
-                {'GENE_WORKER_IMAGE': old['worker'][0]}):
+    if (gene_pins(release) != {'GENE_RELEASE_SHA': old_gene, 'GENE_RUNTIME_IMAGE': old['runtime'][0]}
+            or worker_pin(workers, old_gene) != old['worker'][0]):
         return []
     return [old['runtime'][0], old['worker'][0]]
 
@@ -379,6 +395,9 @@ def batch_step(root, record, by_tag):
         raise incomplete('its journal has no ' + ', '.join(missing))
     if not isinstance(record['downgrades'], str) or not DOWNGRADES.fullmatch(record['downgrades']):
         raise incomplete('its manifest records no downgrades list')
+    unknown = sorted(set(record['downgrades'].split()) - DOWNGRADE_STEPS)
+    if unknown:
+        raise incomplete('downgrade_step has no step for ' + ', '.join(unknown))
     if new['runtime'][0] != 'gene-runtime:' + record['gene'] or new['worker'][0] != 'gene-worker:' + record['gene']:
         raise incomplete('its new Gene images are not tagged with its release')
     # check_manifest: every recorded tag still names the exact recorded image.
@@ -393,29 +412,14 @@ def batch_step(root, record, by_tag):
     missing = [path for path in BACKUP_FILES if not (backup / path).is_file()]
     if missing:
         raise incomplete(f'backup {backup.name} is missing ' + ', '.join(missing))
-    # rollback-gene moves installed-source back, then requires its marker to be baseline.json's source.
-    marker = backup / 'installed-source/.release-sha'
-    if (marker.read_text().strip() if marker.is_file() else 'unmarked') != baseline['source']:
-        raise incomplete(f'backup {backup.name} installed-source is not marked as the old release')
-    fri = read_pins(backup / 'fri-release.env', {'FRI_RELEASE_SHA', 'FRI_RUNTIME_IMAGE'})
+    # What the saved pins and Fri record say is checked once they are restored, by verify old's own reading.
+    saved = {name: (backup / name).read_bytes() for name in SAVED_GENE}
     old_fri = record['old_fri']
-    if (read_pins(backup / 'release.env', {'GENE_RELEASE_SHA', 'GENE_RUNTIME_IMAGE'})
-            != {'GENE_RELEASE_SHA': record['old_gene'], 'GENE_RUNTIME_IMAGE': old['runtime'][0]}
-            or read_pins(backup / 'worker.env', {'GENE_WORKER_IMAGE'}) != {'GENE_WORKER_IMAGE': old['worker'][0]}
-            or fri != {'FRI_RELEASE_SHA': old_fri, 'FRI_RUNTIME_IMAGE': old['fri'][0]}):
-        raise incomplete(f'backup {backup.name} disagrees with its manifest')
-    try:
-        fri_record = json.loads((backup / 'fri-release.json').read_text())
-    except ValueError:
-        fri_record = None
-    if not isinstance(fri_record, dict) or fri_record.get('sha') != old_fri:
-        raise incomplete(f'backup {backup.name} fri-release.json is not the old Fri')
     if new['fri'] != (old['fri'] if record['fri'] == old_fri else ('fri-runtime:' + record['fri'], new['fri'][1])):
         raise incomplete('its new Fri image is not its Fri release')
     if not (root / 'releases' / record['old_gene'] / 'cogs').is_dir():
         raise incomplete(f"the rollback cogs releases/{record['old_gene']} are missing")
-    return {'record': record, 'baseline': baseline, 'backup': backup,
-            'saved': {name: (backup / name).read_bytes() for name in SAVED_GENE}}
+    return {'record': record, 'baseline': baseline, 'backup': backup, 'saved': saved}
 
 
 def fri_step(root, record, by_tag, restores, source, gene_images):
@@ -455,16 +459,8 @@ def fri_step(root, record, by_tag, restores, source, gene_images):
     missing = [path for path in ('fri-release.env', 'fri-release.json') if not (backup / path).is_file()]
     if missing:
         raise incomplete(f'backup {backup.name} is missing ' + ', '.join(missing))
-    try:
-        fri_record = json.loads((backup / 'fri-release.json').read_text())
-    except ValueError:
-        fri_record = None
-    if (read_pins(backup / 'fri-release.env', {'FRI_RELEASE_SHA', 'FRI_RUNTIME_IMAGE'})
-            != {'FRI_RELEASE_SHA': record['old_fri'], 'FRI_RUNTIME_IMAGE': old['fri'][0]}
-            or not isinstance(fri_record, dict) or fri_record.get('sha') != record['old_fri']):
-        raise incomplete(f'backup {backup.name} disagrees with its manifest')
-    return {'record': record, 'baseline': baseline, 'backup': backup,
-            'saved': {name: (backup / name).read_bytes() for name in SAVED_FRI}}
+    saved = {name: (backup / name).read_bytes() for name in SAVED_FRI}  # checked restored, by verify old
+    return {'record': record, 'baseline': baseline, 'backup': backup, 'saved': saved}
 
 
 def live_images():
@@ -472,7 +468,7 @@ def live_images():
     found = {}
     for key, name in (('controller', 'gene-controller-1'), ('red', 'gene-red-1'), ('fri', 'fri-runtime-1')):
         try:
-            found[key] = command('docker', 'inspect', '-f', '{{.Image}}', name).strip()
+            found[key] = command('docker', 'inspect', '-f', '{{.Image}}', name).rstrip('\n')
         except subprocess.CalledProcessError:
             found[key] = 'none'
     return found
@@ -486,16 +482,47 @@ def live_pair_state(root, settings):
             return path.read_bytes()
         except FileNotFoundError:
             return None
-    marker = root / 'source/.release-sha'
-    source = marker.read_text().rstrip('\n') if marker.is_file() else 'unmarked' if (root / 'source').is_dir() else 'missing'
+    tree = root / 'source'
     return {'release.env': read(root / 'release.env'), 'worker.env': read(root / 'secrets/worker.env'),
             'fri release.env': read(FRI_ROOT / 'release.env'), 'fri release.json': read(FRI_ROOT / 'release.json'),
             'settings': {key: settings.get(key) for key in ('active_sha', 'previous_sha', 'fri_active_sha')},
-            'source': source} | live_images()
+            'source': source_state(tree), 'source_tree': tree if os.path.lexists(tree) else None} | live_images()
+
+
+def source_state(tree):
+    """batch-release.sh's source_state for a source tree, as $(source_state) yields it: [[ -f ]] and cat follow
+    symlinks; command substitution drops NUL bytes and trailing newlines and nothing else; else unmarked or
+    missing."""
+    marker = tree / '.release-sha'
+    if marker.is_file():
+        return marker.read_bytes().replace(b'\0', b'').rstrip(b'\n').decode('utf-8', 'surrogateescape')
+    return 'unmarked' if tree.is_dir() else 'missing'
+
+
+def gene_pins(data):
+    """state()'s gene_env from release.env bytes, or None where state() itself would fail on them."""
+    values = release_values(data)
+    return None if values is None else {key: values.get(key) for key in ('GENE_RELEASE_SHA', 'GENE_RUNTIME_IMAGE')}
+
+
+def fri_pins(data):
+    """state()'s fri_env from Fri's release.env bytes, or None where state() itself would fail on them."""
+    values = release_values(data)
+    return None if values is None else {key: values.get(key) for key in ('FRI_RELEASE_SHA', 'FRI_RUNTIME_IMAGE')}
+
+
+def worker_pin(data, *shas):
+    """state()'s worker_pin: the last of shas whose exact line grep -Fxc counts once in worker.env."""
+    pin = 'unknown'
+    for sha in shas:
+        if (data or b'').split(b'\n').count(f'GENE_WORKER_IMAGE=gene-worker:{sha}'.encode()) == 1:
+            pin = 'gene-worker:' + sha
+    return pin
 
 
 def release_values(data):
-    """release.env as state() and the deployer read it: every line with '=', split once, nothing stripped."""
+    """An env file as state()'s env() and the deployer read it: text with universal newlines, every line with
+    '=', split once, nothing stripped. None where decoding would fail them."""
     try:
         return dict(line.split('=', 1) for line in (data or b'').decode().splitlines() if '=' in line)
     except UnicodeDecodeError:
@@ -536,22 +563,84 @@ def pair_mirror(kind, step, state, root_text):
             'source': (state['source'], (step['backup'] / 'installed-source').is_dir())
                       in ((baseline['source'], False), (G, True), ('missing', True))}
     else:
-        values = release_values(state['release.env'])
-        pin = 'unknown'  # state()'s worker_pin: the release whose worker line appears exactly once
-        for sha in (G, OLD_G):
-            if (state['worker.env'] or b'').split(b'\n').count(f'GENE_WORKER_IMAGE=gene-worker:{sha}'.encode()) == 1:
-                pin = 'gene-worker:' + sha
         checks |= {
             'active_sha': settings.get('active_sha') == G,
-            'release.env': values is not None and {key: values.get(key) for key in ('GENE_RELEASE_SHA', 'GENE_RUNTIME_IMAGE')}
-                           == {'GENE_RELEASE_SHA': G, 'GENE_RUNTIME_IMAGE': old['runtime'][0]},
-            'worker_pin': pin == old['worker'][0], 'source': state['source'] == baseline['source'],
+            'release.env': gene_pins(state['release.env']) == {'GENE_RELEASE_SHA': G, 'GENE_RUNTIME_IMAGE': old['runtime'][0]},
+            'worker_pin': worker_pin(state['worker.env'], G, OLD_G) == old['worker'][0],
+            'source': state['source'] == baseline['source'],
             'controller_image': state['controller'] == old['runtime'][1], 'red_image': state['red'] == old['runtime'][1]}
     return [name for name, passed in checks.items() if not passed]
 
 
-def after_rollback(kind, step, state):
-    """The live state a successful rollback-gene ('gene') or rollback-fri ('fri') leaves."""
+def restore_source(step, state):
+    """rollback-gene's source step on a simulated state: a source marked with G moves aside to the backup;
+    if nothing is then at source/, installed-source is renamed into place; and the source must then read as
+    baseline.json's source, or the rollback dies there. Returns (failing checks, the source it reads, its tree).
+
+    rename(2) moves an entry as it is, so a symlink among what the recovery reads would point somewhere else
+    once moved: that refuses rather than guessing.
+    """
+    record, baseline, backup = step['record'], step['baseline'], step['backup']
+    tree, failing = state['source_tree'], []
+    if tree is not None and source_state(tree) == record['gene']:  # [[ -f marker && $(cat marker) == "$G" ]]
+        failed = backup / 'failed-source'
+        if os.path.lexists(failed) and not failed.exists():  # [[ ! -e ]] picks it, then rename_tree refuses
+            failing.append('a dangling failed-source is in the way')
+        tree = None
+    if tree is None or not tree.exists():  # [[ ! -e $ROOT/source ]]
+        installed = backup / 'installed-source'
+        if tree is not None:  # a dangling symlink at source/: rename_tree refuses to replace it
+            failing.append('a dangling source is in the way')
+        if not installed.is_dir():
+            failing.append('installed-source is missing')
+        elif any((installed / entry).is_symlink() for entry in MOVED_ENTRIES):
+            failing.append('installed-source has a symlink that would change meaning when moved')
+        tree = installed
+    source = source_state(tree)
+    # [[ $(source_state) == "$(jget "$BASELINE" source)" ]]: jget's print loses trailing newlines and NULs too.
+    if source != str(baseline['source']).replace('\0', '').rstrip('\n'):
+        failing.append('old source not in place')
+    return failing, source, tree
+
+
+def json_record(data):
+    """state()'s load() of a Fri release record: {} when unreadable, None when not an object (state() fails)."""
+    try:
+        value = json.loads((data or b'').decode()) if data is not None else {}
+    except ValueError:
+        value = {}
+    return value if isinstance(value, dict) else None
+
+
+def verify_mirror(step, state):
+    """The record checks of verify old, which ends rollback-gene, rollback-fri and resume-old, on the state the
+    rollback leaves, read as state() reads it. Health and idleness are the live release's own."""
+    record, baseline = step['record'], step['baseline']
+    old, settings = record['images']['old'], state['settings']
+    fri_record = json_record(state['fri release.json'])
+    checks = {
+        'controller_image': state['controller'] == old['runtime'][1],
+        'red_image': state['red'] == old['runtime'][1], 'fri_image': state['fri'] == old['fri'][1],
+        'gene_env': gene_pins(state['release.env'])
+                    == {'GENE_RELEASE_SHA': record['old_gene'], 'GENE_RUNTIME_IMAGE': old['runtime'][0]},
+        'worker_pin': worker_pin(state['worker.env'], record['gene'], record['old_gene']) == old['worker'][0],
+        'source': state['source'] == baseline['source'],
+        'fri_env': fri_pins(state['fri release.env']) == {'FRI_RELEASE_SHA': record['old_fri'],
+                                                          'FRI_RUNTIME_IMAGE': old['fri'][0]},
+        'fri_record': fri_record is not None and fri_record.get('sha') == record['old_fri'],
+        'release_settings': (settings.get('active_sha'), settings.get('previous_sha'))
+                            == (record['old_gene'], baseline['settings']['previous_sha']),
+        'fri_active_sha': settings.get('fri_active_sha') in (record['old_fri'], baseline['settings'].get('fri_active_sha'))}
+    return [name for name, passed in checks.items() if not passed]
+
+
+def recover(kind, step, state, root_text):
+    """One rollback-gene ('gene') or rollback-fri ('fri') on a simulated state: its first checks, what it
+    restores, and verify old. Returns (why it would refuse or stop, or None, the state it leaves)."""
+    what = 'rollback-gene' if kind == 'gene' else 'rollback-fri'
+    failing = pair_mirror(kind, step, state, root_text)
+    if failing:
+        return f"its {what} would refuse ({', '.join(failing)})", None
     record, saved, baseline = step['record'], step['saved'], step['baseline']
     old = record['images']['old']
     state = dict(state, settings=dict(state['settings']))
@@ -563,9 +652,16 @@ def after_rollback(kind, step, state):
         state['settings']['fri_active_sha'] = record['old_fri']
     if kind == 'gene':
         state.update({'release.env': saved['release.env'], 'worker.env': saved['worker.env'],
-                      'controller': old['runtime'][1], 'red': old['runtime'][1], 'source': baseline['source']})
+                      'controller': old['runtime'][1], 'red': old['runtime'][1]})
+        failing, source, tree = restore_source(step, state)
+        if failing:
+            return f"its {what} would stop restoring the source ({', '.join(failing)})", None
+        state.update(source=source, source_tree=tree)
         state['settings'].update(active_sha=record['old_gene'], previous_sha=baseline['settings']['previous_sha'])
-    return state
+    failing = verify_mirror(step, state)
+    if failing:
+        return f"its {what} would stop at verify old ({', '.join(failing)})", None
+    return None, state
 
 
 def after_deployer_rollback(root, step, state, root_text):
@@ -652,7 +748,7 @@ def snapshot(root, policy):
     want('gene-audio-resolver:' + audio.get('GENE_AUDIO_RESOLVER_SHA', audio['GENE_AUDIO_SHA']), AUDIO)
     live = [record for record in records if record['live']]
     # The images batch-release.sh cleanup keeps, so the two tools never disagree about a rollback.
-    resumed = sorted((r for r in records if 'resumed' in r['marks']), key=lambda r: r['at'], reverse=True)
+    resumed = sorted((r for r in records if 'resumed' in r['words']), key=lambda r: r['at'], reverse=True)
     for reason, chosen in ((RECENT, resumed[:KEEP_RELEASES]), (UNFINISHED, [r for r in records if unfinished(r)])):
         for record in chosen:
             for entries in record['images'].values():
@@ -828,12 +924,10 @@ def snapshot(root, policy):
                     raise ValueError(f"The owner's rollback of cog job {step['job']} through the deployer would refuse, "
                                      'so the batch levels below it cannot be reached')
             else:
-                failing = pair_mirror(kind, step, state, root_text)
-                if failing:
-                    what = 'rollback-gene' if kind == 'gene' else 'rollback-fri'
+                why, state = recover(kind, step, state, root_text)
+                if why:
                     raise ValueError(f"Batch {step['record']['name']} is not a complete rollback configuration: on the "
-                                     f"state the rollbacks above it leave, its {what} would refuse ({', '.join(failing)})")
-                state = after_rollback(kind, step, state)
+                                     f'state the rollbacks above it leave, {why}')
     if records:
         if live:
             latest = max(live, key=lambda record: record['at'])

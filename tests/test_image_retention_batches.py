@@ -319,7 +319,7 @@ def remove_journal_marks(root, n, *marks):
     ('missing_backup_file', 'is missing db/controller.sqlite3'),
     ('missing_source', 'is missing installed-source'),
     ('backup_outside', 'switch backup is missing or outside backups/'),
-    ('backup_disagrees', 'disagrees with its manifest'),
+    ('backup_disagrees', r'its rollback-gene would refuse \(worker.env\)'),
     ('old_image_changed', 'old runtime image gene-runtime:.* is missing or changed'),
     ('new_fri_missing', 'new fri image fri-runtime:.* is missing or changed'),
     ('missing_cogs', 'rollback cogs releases/' + gene(2) + ' are missing'),
@@ -756,8 +756,8 @@ def test_an_older_batch_that_does_not_check_out_supersedes_nothing(batch_host, m
     ('no_downgrades', 'its manifest records no downgrades'),
     ('no_attempt', 'its journal has no gene_attempted'),
     ('old_compose', 'is missing installed-source/ops/compose.yml'),
-    ('source_marker', 'installed-source is not marked as the old release'),
-    ('fri_record', 'fri-release.json is not the old Fri'),
+    ('source_marker', r'would stop restoring the source \(old source not in place\)'),
+    ('fri_record', r'its rollback-gene would stop at verify old \(fri_record\)'),
     ('old_format', 'manifest names no old pair'),
 ])
 def test_a_rollback_level_needs_everything_its_rollback_reads(batch_host, monkeypatch, change, message):
@@ -1127,12 +1127,21 @@ container_running() { [[ ($1 == gene-red-1 && $RED_IMAGE != none) || ($1 == fri-
 
 
 def script_function(name):
-    """A shell function from batch-release.sh, exactly as written."""
+    """A shell function from batch-release.sh, exactly as written: up to its closing brace, past heredocs."""
+    import re
     lines = SCRIPT.read_text().split('\n')
     start = next(i for i, line in enumerate(lines) if line.startswith(name + '() {'))
     if lines[start].rstrip().endswith('}'):
         return lines[start]
-    return '\n'.join(lines[start:next(i for i in range(start, len(lines)) if lines[i] == '}') + 1])
+    end, terminator = start, None
+    while True:
+        end += 1
+        if terminator:
+            terminator = None if lines[end] == terminator else terminator
+        elif match := re.search(r"<<'(\w+)'", lines[end]):
+            terminator = match[1]
+        elif lines[end] == '}':
+            return '\n'.join(lines[start:end + 1])
 
 
 def script_lines(function, first, last):
@@ -1140,6 +1149,17 @@ def script_lines(function, first, last):
     body = script_function(function).split('\n')
     begin = next(i for i, line in enumerate(body) if line.strip().startswith(first))
     return '\n'.join(body[begin:next(i for i in range(begin, len(body)) if body[i].strip().startswith(last))])
+
+
+def stubbed(name):
+    """A script function, with the controller DB read in state() replaced by the stubbed DB's answer. That read
+    is a heredoc inside $( … ), which bash before 4 cannot parse; everything else runs as written."""
+    import re
+    text = script_function(name)
+    if name == 'state':
+        text, count = re.subn(r"  db=\$\(db_py <<'PY'\n.*?\nPY\n  \)\n", '  db=$DB_JSON\n', text, flags=re.S)
+        assert count == 1, 'state() no longer reads the controller DB the way this harness stubs it'
+    return text
 
 
 def run_script(tmp, functions, body, env):
@@ -1152,10 +1172,10 @@ def run_script(tmp, functions, body, env):
         tools.mkdir()
         (tools / 'python3').symlink_to(sys.executable)
     program = '\n'.join(['set -Eeuo pipefail', 'SWITCHING=0', 'CONTROLLER=gene-controller-1', 'RED=gene-red-1',
-                          'FRI=fri-runtime-1', STUBS, *(script_function(name) for name in functions), body])
+                          'FRI=fri-runtime-1', STUBS, *(stubbed(name) for name in functions), body])
     done = subprocess.run([shutil.which('bash'), '-c', program], capture_output=True, text=True,
                           env={'PATH': f'{tools}:/usr/bin:/bin', 'LC_ALL': 'C', **env})
-    return done.returncode, done.stdout
+    return done.returncode, done.stdout + done.stderr
 
 
 def put_state(batch_host, state, health_dir, expect):
@@ -1280,8 +1300,8 @@ def test_retention_and_the_release_script_agree_on_every_rollback_check(batch_ho
             env |= batch_env(root, step['record'])
             body = 'pair_check' if kind == 'gene' else 'fri_pair_check && gene_unmoved'
             functions = ['jget', 'backup_dir', 'source_state', 'state', 'pair_check', 'fri_pair_check', 'gene_unmoved']
-            returncode, _ = run_script(tmp_path, functions, body, env)
-            assert (returncode == 0) == (not outcome), (number, name, outcome)
+            returncode, out = run_script(tmp_path, functions, body, env)
+            assert (returncode == 0) == (not outcome), (number, name, outcome, out[-800:])
         elif name == 'restore_source':  # rollback-gene's own lines, on copies of the trees it moves
             import shutil
             step, state = args
@@ -1298,7 +1318,7 @@ def test_retention_and_the_release_script_agree_on_every_rollback_check(batch_ho
                                           'BASELINE': batch_env(root, step['record'])['BASELINE'],
                                           'G': step['record']['gene']})
             failing_checks, source, _ = outcome
-            assert (returncode == 0) == (not failing_checks), (number, name, outcome)
+            assert (returncode == 0) == (not failing_checks), (number, name, outcome, out[-800:])
             if returncode == 0:
                 assert out.endswith(f'SOURCE<{source}>'), (out, source)
         else:  # verify old, on the state the rollback leaves
@@ -1307,8 +1327,8 @@ def test_retention_and_the_release_script_agree_on_every_rollback_check(batch_ho
             env = put_state(batch_host, state, tmp_path / 'health', (record['old_gene'], record['old_fri'],
                                                                      step['baseline']))
             env |= batch_env(root, record)
-            returncode, _ = run_script(tmp_path, ['jget', 'source_state', 'state', 'verify'], 'verify old', env)
-            assert (returncode == 0) == (not outcome), (number, name, outcome)
+            returncode, out = run_script(tmp_path, ['jget', 'source_state', 'state', 'verify'], 'verify old', env)
+            assert (returncode == 0) == (not outcome), (number, name, outcome, out[-800:])
 
 
 @pytest.mark.parametrize('case', ['source_crlf_live', 'source_space_saved', 'source_symlink_saved',

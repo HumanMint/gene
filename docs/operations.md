@@ -226,8 +226,31 @@ through the deployer is followed the same way (`store.rollback`, `deploy.activat
 above a batch therefore refuses: undoing it leaves `previous_sha` at the feature, which `pair_check`
 rejects, and the batch tooling needs that reconciled by hand anyway (`baseline` refuses it too). A
 legacy install's rollback has no script to mirror, so nothing below it is simulated. Bytes are only
-compared, never printed or stored. The tests run the script's own check programs on every state the
-tool simulates, so the two can't drift apart unnoticed. A legacy maintainer level is complete with
+compared, never printed or stored.
+
+Every rollback is simulated through to its end, reading files the way the script does:
+
+- **Source.** `rollback-gene`'s source step moves a source marked with G aside, renames `installed-source`
+  into place, and stops unless `source_state` then equals `baseline.json`'s source. The tool simulates
+  that step too.
+  - Markers are read as `$(source_state)` yields them: `[[ -f ]]` and `cat` follow symlinks, and command
+    substitution drops NUL bytes and trailing newlines and nothing else. So a CRLF or space-padded marker
+    reads as the script reads it.
+  - `rename(2)` moves entries as they are, so a symlink at `installed-source`, its `.release-sha`, `ops/`
+    or the compose files refuses. Those would point elsewhere once moved.
+- **`verify old`.** It ends `rollback-gene`, `rollback-fri` and `resume-old`, and checks the restored
+  pins, Fri record, settings, source and images as `state()` reads them: env lines split once with
+  nothing stripped, and `grep -Fx` for the worker pin. Health is the live release's own and isn't
+  simulated.
+- **Journals.** Phases ask `has`, which is `grep -x` on whole lines, so `resumed\r` is not `resumed`. Only
+  `cleanup`'s keep rule splits on whitespace, and the tool mirrors each where it applies.
+- **Downgrades.** Only modules `downgrade_step` knows count. The manifest's backup path is used as written,
+  so it must already be canonical.
+
+The tests run `batch-release.sh`'s own shell functions on every state the tool simulates: `state`,
+`pair_check`, `fri_pair_check`, `gene_unmoved`, `verify`, and `rollback-gene`'s source lines. Only Docker,
+curl and the controller DB read are stubbed. If either side changes how it reads these files, the
+tests catch the drift. A legacy maintainer level is complete with
 `installed-source/`, `controller.sqlite3`, `red.tar.gz`, `fri.tar.gz`, pins naming the previous
 release, and its cogs. An incomplete level inside the two protected levels refuses and names what
 is missing; levels beyond them are not consulted.

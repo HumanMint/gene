@@ -93,20 +93,45 @@ def unsafe_for_tokens(path: Path) -> str | None:
     if not path.parent.is_dir():
         return f'{path.parent} does not exist'
 
-    def git(*command, name=path.name):
+    def git(directory, *command):
         try:
-            return subprocess.run(['git', '-C', str(path.parent), *command, '--', name],
-                                  capture_output=True, text=True)
+            return subprocess.run(['git', '-C', str(directory), *command], capture_output=True, text=True)
         except OSError:
             return None
 
-    # Ignoring case: on a case-insensitive disk, .ENV.REVIEW is the tracked .env.review.
-    listed = git('ls-files', name=f':(literal,icase){path.name}')
-    if listed is None or listed.returncode != 0:
-        return "Git couldn't confirm it is untracked (is git installed, and is this a git checkout?)"
-    if listed.stdout.strip():
-        return 'Git tracks it'
-    ignored = git('check-ignore', '-q')
+    unsure = "Git couldn't confirm it is untracked (is git installed, and is this a git checkout?)"
+    folder = path.parent.resolve()
+    directory, nearest = folder, True
+    while True:  # Every enclosing checkout: a nested one could hide an outer checkout's tracked file.
+        top = git(directory, 'rev-parse', '--show-toplevel')
+        if top is None or top.returncode != 0 or not top.stdout.strip():
+            if nearest:
+                return unsure
+            break  # No checkout encloses this one.
+        top = Path(top.stdout.strip()).resolve()
+        try:
+            here = folder.relative_to(top).as_posix()
+        except ValueError:
+            return unsure
+        prefix = '' if here == '.' else here + '/'
+        # Literal and ignoring case: on a case-insensitive disk, .ENV.REVIEW is the tracked .env.review.
+        listed = git(top, 'ls-files', '-z', '--', f':(literal,icase){prefix}{path.name}')
+        if listed is None or listed.returncode != 0:
+            return unsure
+        if listed.stdout:
+            return 'Git tracks it'
+        if path.exists():  # Git folds only ASCII case; the disk may also fold .env.Ä into .env.ä.
+            siblings = git(top, 'ls-files', '-z', '--', f':(literal){prefix or "."}')
+            if siblings is None or siblings.returncode != 0:
+                return unsure
+            for name in filter(None, siblings.stdout.split('\0')):
+                other = top / name
+                if '/' not in name[len(prefix):] and other.exists() and os.path.samefile(other, path):
+                    return 'Git tracks it'
+        if top.parent == top:
+            break
+        directory, nearest = top.parent, False
+    ignored = git(path.parent, 'check-ignore', '-q', '--', path.name)
     if ignored is None or ignored.returncode not in (0, 1):
         return "Git couldn't confirm it is ignored"
     if ignored.returncode == 1:

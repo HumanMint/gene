@@ -195,6 +195,50 @@ def test_token_writes_refuse_a_tracked_file_named_in_another_case(tmp_path):
     assert (repo / '.env.review').read_text() == 'GENE_FRI_TOKEN=\nGENE_RUNTIME_TOKEN=\n'
 
 
+def tracked_status(repo):
+    """git status for tracked files only, to compare before and after a refused write."""
+    return subprocess.run(['git', '-C', str(repo), 'status', '--porcelain', '--untracked-files=no'],
+                          capture_output=True, text=True, check=True).stdout
+
+
+def test_token_writes_never_reach_a_tracked_file_through_a_non_ascii_case_alias(tmp_path):
+    # Git folds only ASCII case, but a case-insensitive disk also makes .env.ä the tracked .env.Ä.
+    path = initialized(tmp_path, **IDS)
+    repo = tmp_path / 'repo'
+    repo.mkdir()
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    (repo / '.gitignore').write_text('.env.*\n')
+    (repo / '.env.\u00c4').write_text('')
+    subprocess.run(['git', '-C', str(repo), 'add', '-f', '.env.\u00c4'], check=True)
+    alias = repo / '.env.\u00e4'
+    folds = alias.exists()  # The same file on this disk?
+    before = tracked_status(repo)
+    for command in (['--env', str(alias), 'init'], ['--env', str(path), 'fri-env', str(alias)]):
+        try:
+            dev.main(command)
+            assert not folds, 'wrote through an alias of a tracked file'
+        except SystemExit as refusal:
+            assert 'Git tracks it' in str(refusal)
+        assert tracked_status(repo) == before and (repo / '.env.\u00c4').read_text() == ''
+
+
+def test_token_writes_refuse_a_file_an_outer_checkout_tracks_under_a_nested_one(tmp_path):
+    path = initialized(tmp_path, **IDS)
+    outer = tmp_path / 'outer'
+    (outer / 'nested').mkdir(parents=True)
+    subprocess.run(['git', 'init', '-q', str(outer)], check=True)
+    (outer / 'nested' / '.env.local').write_text('GENE_FRI_TOKEN=\n')
+    subprocess.run(['git', '-C', str(outer), 'add', 'nested/.env.local'], check=True)
+    subprocess.run(['git', 'init', '-q', str(outer / 'nested')], check=True)  # Hides the outer index.
+    (outer / 'nested' / '.gitignore').write_text('.env*\n')
+    target = outer / 'nested' / '.env.local'
+    before = tracked_status(outer)
+    for command in (['--env', str(target), 'init'], ['--env', str(path), 'fri-env', str(target)]):
+        with pytest.raises(SystemExit, match='Git tracks it'):
+            dev.main(command)
+    assert target.read_text() == 'GENE_FRI_TOKEN=\n' and tracked_status(outer) == before
+
+
 def test_token_writes_need_an_ignored_file_in_a_working_checkout(tmp_path):
     path = initialized(tmp_path, **IDS)
     broken = tmp_path / 'broken'  # A checkout whose repository is gone: every git command fails.

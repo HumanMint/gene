@@ -389,6 +389,21 @@ To disable retention, stop/disable only `gene-image-retention.timer` and wait fo
 oneshot service to finish. Preserve its policy and audit files. The bot's services and the
 retained rollback bundles do not depend on this maintenance tool.
 
+Bot releases never install or update this tool or its systemd units. Updating retention needs a
+separate maintenance installation. Stop the old timer and wait for any active oneshot before
+switching the script and matching units together; preserve the old selector, units, policy and
+state for recovery. Keep `apply_enabled` false until the new installation's exact plan is reviewed.
+Enabling it authorizes future daily deletion of proven retired images under the same protections;
+it is not approval for a broader prune. Check `--status` alongside bot health after releases.
+
+**Build storage.** The runtime Dockerfiles install frozen third-party dependencies before copying
+source, so source-only releases reuse those layers. Build-time uv downloads use a temporary cache
+instead of retaining a second copy in each image. Gene's runtime and worker targets and Fri's
+runtime keep their existing names and UID 10001. CI checks the installed runtime and offline worker
+and compares actual image layers after a source-only rebuild. A dependency or base-image change
+can still add a large layer set: check filesystem headroom before staging, then check retention
+health after cleanup. These cache changes do not authorize deletion of existing unclassified images.
+
 ### Maintainer work requested in Codex
 
 The owner's direct request in this Codex chat authorizes implementation and deployment

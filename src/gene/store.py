@@ -1139,6 +1139,26 @@ class Store:
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
             self.advance_revision(db, user_id)
 
+    def withdraw_turn(self, guild_id, conversation_id, user_id, message_id):
+        """A member's message edited or deleted after Fri saved their exchange with it (fri #129): the exchanges
+        holding it go, as erasure removes them, so its old words don't come back as history. Fri's reply goes too,
+        since it may repeat them. Only that member's, in that conversation, and a repeat finds nothing. Not a
+        privacy change: their revision stays, so replies to their other messages still save. Other members'
+        replies that drew on it stay (fri #101)."""
+        with self.connection() as db:
+            db.execute('BEGIN IMMEDIATE')
+            removed = db.execute(
+                "DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? AND "
+                "(json_extract(NULLIF(source,''),'$.id')=? OR EXISTS (SELECT 1 FROM json_each(chat_turns.burst) b "
+                "WHERE json_extract(b.value,'$.source.id')=?))",
+                (guild_id, conversation_id, user_id, message_id, message_id)).rowcount
+            # A question it left open, and the research it permitted, go with it.
+            db.execute('DELETE FROM chat_pending WHERE guild_id=? AND conversation_id=? AND user_id=? AND source_id=?',
+                       (guild_id, conversation_id, user_id, message_id))
+            db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
+                       (guild_id, conversation_id, user_id, message_id))
+            return {'ok': True, 'removed': removed}
+
     def chat_models(self):
         with self.connection() as db:
             return {'selected': self._setting(db, 'chat_model'),

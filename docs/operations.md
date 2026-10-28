@@ -161,6 +161,85 @@ in the audio image for decoding, seeking, and timed sender checks without a comp
 
 ## Releases and recovery
 
+### Gene Docker image retention
+
+`scripts/gene_image_retention.py` is a standalone, root-owned host maintenance tool.
+It does not rebuild or restart Gene, change controller approvals, delete backup/source/data
+directories, or touch another application's images, containers, volumes or build cache.
+The only removable tags are `gene-runtime:<full-sha>` and `gene-worker:<full-sha>`.
+Unclassified untagged images and images with bootstrap, custom/function-specific, audio,
+base-image or other-application tags are outside cleanup scope. Inactivity is never
+retirement evidence. The classic Docker builder also retains unnamed intermediate images.
+Only exact unnamed ancestors of an approved retired Gene version may be collected; their
+ancestry evidence is saved before deleting the release. Tagged ancestors and configured
+references stay protected. Docker's normal dependency checks preserve any parent with
+remaining child images or containers. There is no forced removal or implicit parent prune.
+If Docker retains the exact retired runtime object after removing its last managed tag,
+that recorded ID remains eligible for a later reviewed plan after its worker children are
+collected. Unknown untagged images never gain eligibility from this retry behavior.
+Exact-ID removal intent is synced before invoking Docker, so acknowledgement loss or a
+process interruption cannot orphan a managed untagged version. Reconciliation still checks
+current protections, aliases and the normal saved plan before attempting removal.
+
+The maintenance policy and state live privately under `/srv/gene/maintenance/`:
+
+- `image-retention-policy.json`: version 1, `keep_images` (explicit planned/on-demand image
+  references or IDs) and `retired_images` (exact image IDs with `tags`, `retired_at`, and
+  `evidence`). The initial retirement inventory was checked against offline Git ancestry
+  and successful historical releases, not merely image timestamps or container counts.
+- `image-retention-state.json`: previously configured versions and their supersession
+  evidence. Subsequent successful maintainer backup records also identify replaced images,
+  including releases between timer runs. New, unclassified builds stay intact.
+- `image-retention-plan.json` and `image-retention-result.json`: latest planned and completed
+  removals. Dry runs also save the reviewable plan, without updating retirement state.
+  These contain image metadata, never environment credentials or conversation data.
+
+Always preserve all container references (including stopped containers), configured image
+references (including an idle worker and the running worker's inherited environment), pending
+proposal/approval versions, and explicit holds. Also retain the controller's current release
+and two previous successful maintainer image configurations, with their exact runtime/worker
+images, cog directories, source, configuration and database/Red/Fri backups. Ordinary cog-only
+feature/repair/rollback releases retain those installed images; their own controller/Red
+backup and previous cog directory are checked while traversing back to the two complete
+maintainer configurations. Missing or inconsistent rollback metadata,
+an active build/deployment, or an unacknowledged deployment receipt aborts cleanup.
+Superseded images receive a 24-hour grace period. Reactivation renews the grace period after
+the next supersession. Unknown aliases and candidates are never classified as obsolete by age.
+
+Install the reviewed script in an immutable directory
+`/srv/gene/maintenance/releases/<maintenance-sha>/gene_image_retention.py`; point `current`
+to that directory and record the maintenance SHA separately from the running bot SHA.
+Install `ops/gene-image-retention.service` and `.timer`, verify with
+`systemd-analyze verify`, and enable the timer only after reviewing a dry run:
+
+```sh
+sudo python3 /srv/gene/maintenance/current/gene_image_retention.py
+sudo python3 /srv/gene/maintenance/current/gene_image_retention.py --apply
+sudo systemctl enable --now gene-image-retention.timer
+```
+
+The timer runs hourly with up to five minutes of jitter. There is no broad Docker prune or
+forced image removal. References and exact image IDs are checked again before each image;
+container/configuration changes abort the remainder. A failed delete retains retry evidence.
+The hardened service allows controller-directory access for SQLite's WAL shared-memory and
+locking files. Controller queries use `mode=ro` and `query_only`; retention does not modify
+requests, approvals, usage, conversations or release records. Do not use SQLite `immutable=1`
+or copy an active database without its WAL to work around reader access, since that could
+hide current release references.
+
+Maintainers must acquire `/srv/gene/maintenance/image-retention.lock` with `flock` before
+building, retagging or changing deployment image references, and hold it through the switch
+and health checks. This coordinates manual releases with the timer; the tool's own lock is
+held across discovery and cleanup. Before planning to reuse an old version, add its tag or
+exact image ID to `keep_images` under that lock. Keep that hold until the function is retired.
+Never authorize image deletion from Discord text, imported history, or a feature job.
+The timer does not infer the purpose of an image that was never configured or explicitly
+retired by a maintainer. Review such images separately instead of widening the deletion rule.
+
+To disable retention, stop/disable only `gene-image-retention.timer` and wait for any current
+oneshot service to finish. Preserve its policy and audit files. The bot's services and the
+two retained rollback bundles do not depend on this maintenance tool.
+
 ### Maintainer work requested in Codex
 
 The owner's direct request in this Codex chat authorizes implementation and deployment

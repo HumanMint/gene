@@ -1,0 +1,19 @@
+[Unit]
+Description=Retain current, planned and rollback Gene images; remove proven past versions
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /srv/gene/maintenance/current/gene_image_retention.py --apply
+UMask=0077
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+# SQLite mode=ro readers still need WAL shared-memory/lock access beside the database.
+# The tool sets query_only and never opens a write connection to controller state.
+ReadWritePaths=/srv/gene/maintenance /srv/gene/data/controller
+PrivateTmp=true
+Nice=15
+IOSchedulingClass=idle
+TimeoutStartSec=30min

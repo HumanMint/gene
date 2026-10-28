@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly conservative Gene image retention
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=gene-image-retention.service
+
+[Install]
+WantedBy=timers.target

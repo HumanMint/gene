@@ -6,7 +6,7 @@ separate cogs and adapters; Red's installed source is not forked or edited.
 
 [Fri](https://github.com/HumanMint/fri) is the separate conversational companion.
 Gene continues to host the trusted controller, coding worker and deployment authority.
-Fri now owns its runtime, dependencies and releases in its own private repository.
+Fri now owns its runtime, dependencies and releases in its own repository.
 
 ## Features
 
@@ -82,3 +82,17 @@ baseline; future companion features belong in the Fri repository. See
 Tokens, auth sessions, raw history, databases and private context stay in ignored
 private paths. `gene forgetme true` erases stored user context and cancels pending
 proposals; existing Discord/GitHub messages, code and backups are separate records.
+
+## Credits
+
+Gene is maintained by [HumanMint](https://github.com/HumanMint). Its bot framework,
+core command system and music features come from
+[Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot), maintained by
+[Cog Creators and Red's contributors](https://github.com/Cog-Creators/Red-DiscordBot/graphs/contributors).
+Gene adds project-specific cogs, adapters and the trusted controller around the
+upstream package.
+
+Early implementation was developed with [OpenAI Codex](https://openai.com/codex/),
+using GPT-6 Astra and GPT-6.1 Sol. Development continues with Codex and Claude:
+Codex contributes code, tests and independent reviews; Claude contributes
+implementation and integration work.

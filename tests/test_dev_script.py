@@ -1,6 +1,7 @@
 import os
 import stat
 import subprocess
+import unicodedata
 
 import pytest
 
@@ -237,6 +238,60 @@ def test_token_writes_refuse_a_file_an_outer_checkout_tracks_under_a_nested_one(
         with pytest.raises(SystemExit, match='Git tracks it'):
             dev.main(command)
     assert target.read_text() == 'GENE_FRI_TOKEN=\n' and tracked_status(outer) == before
+
+
+def test_token_writes_never_reach_a_tracked_file_through_a_folder_alias(tmp_path):
+    # On macOS config/.env.ä can be the tracked Config/.env.Ä: the folder's case and the name's non-ASCII
+    # case both differ, so no spelling-based lookup finds it.
+    path = initialized(tmp_path, **IDS)
+    repo = tmp_path / 'repo'
+    (repo / 'Config').mkdir(parents=True)
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    (repo / '.gitignore').write_text('.env.*\n')
+    (repo / 'Config' / '.env.\u00c4').write_text('')
+    subprocess.run(['git', '-C', str(repo), 'add', '-f', 'Config/.env.\u00c4'], check=True)
+    alias = repo / 'config' / '.env.\u00e4'
+    folds = alias.exists()
+    before = tracked_status(repo)
+    for command in (['--env', str(alias), 'init'], ['--env', str(path), 'fri-env', str(alias)]):
+        try:
+            dev.main(command)
+            assert not folds, 'wrote through an alias of a tracked file'
+        except SystemExit as refusal:
+            assert not folds or 'Git tracks it' in str(refusal)
+        assert tracked_status(repo) == before and (repo / 'Config' / '.env.\u00c4').read_text() == ''
+
+
+def test_token_writes_refuse_when_an_outer_checkout_cannot_be_read(tmp_path):
+    # A broken outer checkout is a refusal, not the end of the search: it may track the file.
+    path = initialized(tmp_path, **IDS)
+    outer = tmp_path / 'outer'
+    (outer / 'nested').mkdir(parents=True)
+    subprocess.run(['git', 'init', '-q', str(outer)], check=True)
+    (outer / 'nested' / '.env.local').write_text('GENE_FRI_TOKEN=\n')
+    subprocess.run(['git', '-C', str(outer), 'add', 'nested/.env.local'], check=True)
+    subprocess.run(['git', 'init', '-q', str(outer / 'nested')], check=True)
+    (outer / 'nested' / '.gitignore').write_text('.env*\n')
+    with (outer / '.git' / 'config').open('a') as config:
+        config.write('[core\nbroken')
+    target = outer / 'nested' / '.env.local'
+    for command in (['--env', str(target), 'init'], ['--env', str(path), 'fri-env', str(target)]):
+        with pytest.raises(SystemExit, match="couldn't confirm"):
+            dev.main(command)
+    assert target.read_text() == 'GENE_FRI_TOKEN=\n'
+
+
+def test_a_folder_named_in_another_unicode_form_still_takes_its_ignored_env_file(tmp_path):
+    composed, decomposed = (unicodedata.normalize(form, 'caf\u00e9') for form in ('NFC', 'NFD'))
+    repo = tmp_path / composed
+    repo.mkdir()
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    (repo / '.gitignore').write_text('.env.local\n')
+    spelled = tmp_path / decomposed / '.env.local'
+    if not spelled.parent.exists():
+        pytest.skip('this disk keeps the two forms apart, so the other spelling is another folder')
+    dev.main(['--env', str(spelled), 'init'])
+    assert mode(repo / '.env.local') == 0o600
 
 
 def test_token_writes_need_an_ignored_file_in_a_working_checkout(tmp_path):

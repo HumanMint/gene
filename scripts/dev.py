@@ -22,6 +22,7 @@ import secrets
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from dataclasses import replace
 from pathlib import Path
 
@@ -83,6 +84,11 @@ def merged(lines: list[str], values: dict[str, str]) -> list[str]:
     return result + [f'{key}={value}' for key, value in pending.items()]
 
 
+def folded(name: str) -> str:
+    """A file name as a case-insensitive, normalizing disk (macOS's default) may compare it."""
+    return unicodedata.normalize('NFC', name).casefold()
+
+
 def unsafe_for_tokens(path: Path) -> str | None:
     """Why path mustn't receive a token, or None once Git confirms it is untracked and ignored.
 
@@ -92,45 +98,33 @@ def unsafe_for_tokens(path: Path) -> str | None:
         return 'it is a shared template'
     if not path.parent.is_dir():
         return f'{path.parent} does not exist'
+    environment = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
 
     def git(directory, *command):
         try:
-            return subprocess.run(['git', '-C', str(directory), *command], capture_output=True, text=True)
+            return subprocess.run(['git', '-C', str(directory), *command], capture_output=True,
+                                  encoding='utf-8', errors='surrogateescape', env=environment)
         except OSError:
             return None
 
     unsure = "Git couldn't confirm it is untracked (is git installed, and is this a git checkout?)"
     folder = path.parent.resolve()
-    directory, nearest = folder, True
-    while True:  # Every enclosing checkout: a nested one could hide an outer checkout's tracked file.
-        top = git(directory, 'rev-parse', '--show-toplevel')
-        if top is None or top.returncode != 0 or not top.stdout.strip():
-            if nearest:
-                return unsure
-            break  # No checkout encloses this one.
-        top = Path(top.stdout.strip()).resolve()
-        try:
-            here = folder.relative_to(top).as_posix()
-        except ValueError:
-            return unsure
-        prefix = '' if here == '.' else here + '/'
-        # Literal and ignoring case: on a case-insensitive disk, .ENV.REVIEW is the tracked .env.review.
-        listed = git(top, 'ls-files', '-z', '--', f':(literal,icase){prefix}{path.name}')
+    # Every checkout above it, found on disk rather than by asking Git, so a nested checkout can't hide
+    # an outer one's tracked file and a broken outer checkout is a refusal, not the end of the search.
+    checkouts = [above for above in (folder, *folder.parents) if (above / '.git').exists()]
+    if not checkouts:
+        return unsure
+    for checkout in checkouts:
+        listed = git(checkout, 'ls-files', '-z')
         if listed is None or listed.returncode != 0:
             return unsure
-        if listed.stdout:
-            return 'Git tracks it'
-        if path.exists():  # Git folds only ASCII case; the disk may also fold .env.Ä into .env.ä.
-            siblings = git(top, 'ls-files', '-z', '--', f':(literal){prefix or "."}')
-            if siblings is None or siblings.returncode != 0:
-                return unsure
-            for name in filter(None, siblings.stdout.split('\0')):
-                other = top / name
-                if '/' not in name[len(prefix):] and other.exists() and os.path.samefile(other, path):
-                    return 'Git tracks it'
-        if top.parent == top:
-            break
-        directory, nearest = top.parent, False
+        # Matched by the folder's identity on disk and the name as the disk may fold it, never by
+        # spelling: on macOS config/.env.ä can be the tracked Config/.env.Ä, whether it exists yet or not.
+        for name in filter(None, listed.stdout.split('\0')):
+            entry = checkout / name
+            if (folded(entry.name) == folded(path.name) and entry.parent.is_dir()
+                    and os.path.samefile(entry.parent, folder)):
+                return 'Git tracks it'
     ignored = git(path.parent, 'check-ignore', '-q', '--', path.name)
     if ignored is None or ignored.returncode not in (0, 1):
         return "Git couldn't confirm it is ignored"

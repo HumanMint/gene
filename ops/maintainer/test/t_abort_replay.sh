@@ -48,7 +48,8 @@ output_has "at Gene ${H:0:7}"
 journal_has resumed_old; journal_has done:unpause
 units up
 [[ $(setting paused) == false ]] || fail 'development was left paused'
-[[ $(setting active_sha) == "$H" ]] && grep -qx "GENE_RELEASE_SHA=$H" "$BATCH_ROOT/release.env" || fail 'Gene is no longer H'
+[[ $(setting active_sha) == "$H" ]] || fail 'the active release is no longer H'
+grep -qx "GENE_RELEASE_SHA=$H" "$BATCH_ROOT/release.env" || fail 'release.env no longer names H'
 python3 - "$BATCH_ROOT/production-actions.jsonl" <<'PY' || fail 'the resume-old line in the action log is not ok'
 import json, sys
 row = [json.loads(line) for line in open(sys.argv[1])][-1]

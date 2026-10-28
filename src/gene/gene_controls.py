@@ -114,7 +114,8 @@ def correction_text(text):
     return ' '.join(text.casefold().replace('’', "'").split())
 
 
-def words(text):
+def song_words(text):
+    """A title's words in order, without stray apostrophes ("believin'" and "believin" match)."""
     return [word.strip("'") for word in re.findall(r"[\w']+", text) if word.strip("'")]
 
 
@@ -124,13 +125,13 @@ def correction(text, argument):
     such a play is checked by Gene's control store (Controls.enqueue)."""
     text = correction_text(text)
     opening = OPENING.match(text)
-    named = words(argument.casefold()) if isinstance(argument, str) else []
+    named = song_words(argument.casefold()) if isinstance(argument, str) else []
     if not opening or not named or REFUSED.search(QUOTED.sub(' " ', text)):
         return False
     song = text[opening.end():]
     lead = LEAD.match(song)
     for replacement in (song, song[lead.end():] if lead else ''):
-        said = words(replacement)
+        said = song_words(replacement)
         first = said[1:2] if said[:1] in (['the'], ['a'], ['an']) else []  # "the X" may be named just "X".
         if said and named[0] in said[:1]+first and set(named) <= set(said):
             return True

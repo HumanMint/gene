@@ -322,3 +322,61 @@ def test_a_refused_reply_still_refuses_and_a_current_one_saves(world):
     assert post_turn(client, body).status_code == 409
     current = {**body, 'source': source(age=2, channel='51'), 'summary_generation': summary_generation_now(store)}
     assert post_turn(client, current).json()['ok'] is True
+
+
+def lapsed(store):
+    """The summary expired after a turn read it, with nothing pruning it since: no status check or build claim."""
+    from gene.fri_member_summary import TTL
+    with store.connection() as db:
+        db.execute('UPDATE fri_member_summaries SET refreshed=?', (time.time()-TTL-60,))
+
+
+def dropped(store, generation):
+    """The summary went, moving its generation, and a reply that drew on it keeps only its breadcrumb. Read straight
+    from the database: chat context would drop a lapsed summary itself."""
+    with store.connection() as db:
+        rows = db.execute('SELECT count(*) FROM fri_member_summaries').fetchone()[0]
+        kept = [row[0] for row in db.execute('SELECT reply FROM chat_turns')]
+    return rows == 0 and summary_generation_now(store) != generation and MARKER not in str(kept)
+
+
+@pytest.mark.parametrize('route', [check, post_turn])
+def test_a_turn_drawing_on_a_summary_that_lapsed_since_is_refused(world, route):
+    """gene #113: the turn check and the save find the summary expired but not yet pruned. It goes there, as a read
+    that finds it lapsed drops it, and the turn is refused."""
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, generation)
+    lapsed(store)
+    body = turn(source(age=1, channel='51'), 'what did i plan', reply=QUOTING, summary_generation=generation)
+    refused = route(client, body)
+    assert refused.status_code == 409 and MARKER not in refused.text
+    assert dropped(store, generation)
+    current = {**body, 'source': source(age=2, channel='51'), 'summary_generation': summary_generation_now(store)}
+    assert route(client, current).status_code == 200
+    older = {key: value for key, value in body.items() if key != 'summary_generation'}  # An older Fri: as before.
+    assert route(client, {**older, 'source': source(age=3, channel='51')}).status_code == 200
+
+
+@pytest.mark.parametrize('route,body,table', [('/workspace/save', work, 'fri_work'),
+                                              ('/social/reminders/prepare', reminder, 'fri_reminders')])
+def test_a_write_drawing_on_a_summary_that_lapsed_since_is_refused(world, route, body, table):
+    """gene #113: saved work or a reminder can't keep the words of a summary that expired before the write landed."""
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, generation)
+    lapsed(store)
+    refused = client.post(route, headers=headers('fri'), json=body(dm_source(), generation))
+    assert refused.status_code == 409 and MARKER not in refused.text
+    assert kept(store, table) == [] and dropped(store, generation)
+    current = client.post(route, headers=headers('fri'), json=body(dm_source(2), summary_generation_now(store)))
+    assert current.status_code == 200, current.text
+
+
+def test_a_turn_without_a_summary_leaves_a_lapsed_one_to_the_next_read(world):
+    """The check of a turn that drew on no summary writes nothing, as before."""
+    client, store = world
+    _, generation = summarized(client, store)
+    lapsed(store)
+    assert check(client, turn(source(age=1, channel='51'), 'hello')).json() == {'ok': True}
+    assert summary_generation_now(store) == generation

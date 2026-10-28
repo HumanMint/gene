@@ -297,11 +297,17 @@ def batch_records(root):
     return records
 
 
+def is_sha(value):
+    """A full SHA as batch-release.sh writes it: a JSON string. A number that jget would print as the same
+    digits is not one; neither is anything the script would read differently."""
+    return isinstance(value, str) and SHA.fullmatch(value) is not None
+
+
 def batch_record(name, match, manifest, marks, at, words=None):
     def bad(why):
         return ValueError(f'Malformed batch record {name}: {why}')
     if (not isinstance(manifest, dict) or manifest.get('gene') != match[1]
-            or (match[2] and manifest.get('fri') != match[2]) or not SHA.fullmatch(str(manifest.get('fri')))):
+            or (match[2] and manifest.get('fri') != match[2]) or not is_sha(manifest.get('fri'))):
         raise bad('the manifest names a different release')
     images = {}
     for kind in ('old', 'new'):
@@ -310,17 +316,18 @@ def batch_record(name, match, manifest, marks, at, words=None):
             raise bad(f'unexpected {kind} images')
         for role, entry in entries.items():
             if (not isinstance(entry, dict) or not isinstance(entry.get('tag'), str)
-                    or not REFERENCE.fullmatch(entry['tag']) or not IMAGE_ID.fullmatch(str(entry.get('id')))):
+                    or not REFERENCE.fullmatch(entry['tag']) or not isinstance(entry.get('id'), str)
+                    or not IMAGE_ID.fullmatch(entry['id'])):
                 raise bad(f'invalid {kind} {role} image')
         images[kind] = {role: (entry['tag'], entry['id']) for role, entry in entries.items()}
     if set(images['old']) != ROLES or ('resumed' in marks and set(images['new']) != ROLES):
         raise bad('incomplete image record')
     # batch-<G> manifests have no old pair. Their baseline pinned the old worker as gene-worker:<old Gene>.
     old_gene = manifest.get('old_gene', images['old']['worker'][0].removeprefix('gene-worker:'))
-    if not SHA.fullmatch(str(old_gene)) or images['old']['worker'][0] != 'gene-worker:' + old_gene:
+    if not is_sha(old_gene) or images['old']['worker'][0] != 'gene-worker:' + old_gene:
         raise bad('no old Gene release')
     old_fri = manifest.get('old_fri')  # batch-<G>: read from its backup's Fri pins when it is a rollback step
-    if old_fri is not None and not SHA.fullmatch(str(old_fri)):
+    if old_fri is not None and not is_sha(old_fri):
         raise bad('invalid old Fri release')
     return {'name': name, 'gene': match[1], 'fri': manifest['fri'], 'old_gene': old_gene, 'old_fri': old_fri,
             'images': images, 'marks': marks, 'at': at, 'backup': manifest.get('backup'),
@@ -612,6 +619,11 @@ def json_record(data):
     return value if isinstance(value, dict) else None
 
 
+def shell_text(value):
+    """What $(jget …) yields for a JSON value: print()'s text, less NUL bytes and trailing newlines."""
+    return str(value).replace('\0', '').rstrip('\n')
+
+
 def verify_mirror(step, state):
     """The record checks of verify old, which ends rollback-gene, rollback-fri and resume-old, on the state the
     rollback leaves, read as state() reads it. Health and idleness are the live release's own."""
@@ -630,7 +642,9 @@ def verify_mirror(step, state):
         'fri_record': fri_record is not None and fri_record.get('sha') == record['old_fri'],
         'release_settings': (settings.get('active_sha'), settings.get('previous_sha'))
                             == (record['old_gene'], baseline['settings']['previous_sha']),
-        'fri_active_sha': settings.get('fri_active_sha') in (record['old_fri'], baseline['settings'].get('fri_active_sha'))}
+        'fri_active_sha': settings.get('fri_active_sha') in (record['old_fri'], baseline['settings'].get('fri_active_sha')),
+        # The baseline half of gene_health and fri_health: only values of the type state() reports can match.
+        'gene_health': baseline_health(baseline, 'gene'), 'fri_health': baseline_health(baseline, 'fri')}
     return [name for name, passed in checks.items() if not passed]
 
 
@@ -657,7 +671,8 @@ def recover(kind, step, state, root_text):
         if failing:
             return f"its {what} would stop restoring the source ({', '.join(failing)})", None
         state.update(source=source, source_tree=tree)
-        state['settings'].update(active_sha=record['old_gene'], previous_sha=baseline['settings']['previous_sha'])
+        # prev=$(jget "$BASELINE" settings.previous_sha), then settings_transition stores that text.
+        state['settings'].update(active_sha=record['old_gene'], previous_sha=shell_text(baseline['settings']['previous_sha']))
     failing = verify_mirror(step, state)
     if failing:
         return f"its {what} would stop at verify old ({', '.join(failing)})", None
@@ -691,16 +706,26 @@ def baseline_of(root, record, incomplete):
         baseline = json.loads(path.read_text())
     except ValueError:
         raise incomplete('its baseline.json is unreadable') from None
+    # The types baseline() writes, from state(): the controller's settings as text, str(guild_id), and the
+    # health files' str(status) presence. A value that only prints alike fails the rollback that reads it.
     settings = baseline.get('settings') if isinstance(baseline, dict) else None
     if (not isinstance(settings, dict) or settings.get('active_sha') != record['old_gene']
-            or not SHA.fullmatch(str(settings.get('previous_sha')))
+            or not is_sha(settings.get('previous_sha'))
+            or not isinstance(settings.get('fri_active_sha', ''), (str, type(None)))
             or baseline.get('source') not in ('unmarked', record['old_gene'])):
         raise incomplete('its baseline.json is not the old release')
     for side in ('gene', 'fri'):
-        health = baseline.get(side)
-        if not isinstance(health, dict) or health.get('guild_id') in (None, 'None') or health.get('presence') is None:
-            raise incomplete(f'its baseline.json has no {side} guild and presence')
+        if not baseline_health(baseline, side):
+            raise incomplete(f'its baseline.json has no {side} guild and presence as the script writes them')
     return baseline
+
+
+def baseline_health(baseline, side):
+    """Whether verify old and the probes can ever match the baseline's guild and presence: state() reports
+    str(guild_id) and both health files write str(status), so only strings can match."""
+    health = baseline.get(side)
+    return (isinstance(health, dict) and isinstance(health.get('guild_id'), str) and health['guild_id'] != 'None'
+            and isinstance(health.get('presence'), str))
 
 
 def snapshot(root, policy):

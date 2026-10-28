@@ -246,9 +246,15 @@ Every rollback is simulated through to its end, reading files the way the script
   `cleanup`'s keep rule splits on whitespace, and the tool mirrors each where it applies.
 - **Downgrades.** Only modules `downgrade_step` knows count. The manifest's backup path is used as written,
   so it must already be canonical.
+- **Types.** Persisted fields must have the JSON types the script writes. In the manifest, SHAs, tags, image
+  IDs, the backup path and downgrades are strings. In `baseline.json`, the settings are the controller's
+  text, guild IDs are `str(guild_id)`, and presence is the health files' `str(status)`. A number that only
+  prints the same doesn't count: `jget` prints it, `settings_transition` stores the text, and `verify old`
+  then compares text with a number. The simulation restores settings the same way.
 
 The tests run `batch-release.sh`'s own shell functions on every state the tool simulates: `state`,
-`pair_check`, `fri_pair_check`, `gene_unmoved`, `verify`, and `rollback-gene`'s source lines. Only Docker,
+`pair_check`, `fri_pair_check`, `gene_unmoved`, `rollback-gene`'s source lines, the settings writers
+(`old_fri_pinned`, `set_fri_active`, `settings_transition`, on a scratch DB), and `verify`. Only Docker,
 curl and the controller DB read are stubbed. If either side changes how it reads these files, the
 tests catch the drift. A legacy maintainer level is complete with
 `installed-source/`, `controller.sqlite3`, `red.tar.gz`, `fri.tar.gz`, pins naming the previous

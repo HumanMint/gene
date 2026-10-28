@@ -6,7 +6,7 @@ import time
 import uuid
 
 from .fri_context import ChatSource
-from .gene_controls import COMMANDS, arguments, requested
+from .gene_controls import COMMANDS, CORRECTION_SECONDS, arguments, correction, requested
 
 
 def initialize(db):
@@ -48,6 +48,28 @@ def source_used(db, guild, source_id):
                            'SELECT 1 FROM gene_control_origins WHERE id=? LIMIT 1', (key, key)).fetchone())
 
 
+def correctable(db, user, guild, conversation):
+    """The member's play a correction would put right now: the latest one Gene finished for them in this
+    conversation in the last ten minutes, if it wasn't put right already; else None."""
+    for row in db.execute('SELECT id,payload FROM gene_controls WHERE user_id=? AND created>? AND state=? '
+                          'ORDER BY created DESC', (user, time.time()-CORRECTION_SECONDS, 'finished')):
+        payload = json.loads(row['payload'])
+        if (payload.get('action') == 'play' and payload.get('guild_id') == guild and
+                payload.get('conversation_id') == conversation):
+            used = db.execute('SELECT 1 FROM gene_control_origins WHERE id=?',
+                              (source_key(guild, 'correction:'+row['id']),)).fetchone()
+            return None if used else row['id']
+    return None
+
+
+def corrected(db, body):
+    """The member's own play that this message puts right ("not that one, X"): the latest one Gene finished in
+    this conversation in the last ten minutes. None if there's none, or it was put right already: one each."""
+    if body['action'] != 'play' or not correction(body['request_text'], body['argument']):
+        return None
+    return correctable(db, body['user_id'], body['guild_id'], body['conversation_id'])
+
+
 class Controls:
     def __init__(self, store):
         self.store = store
@@ -79,6 +101,11 @@ class Controls:
                 'responsive': responsive, 'runtime': report,
                 'limits': 'A fresh heartbeat and command poll do not prove a command completed or audio is audible. '
                           'A stale poll may mean a command is busy. No shell, process logs, or restart access.'}
+
+    def correctable(self, user, guild, conversation):
+        """Whether a correction ("not that one, X") would find a play of theirs to put right here now."""
+        with self.store.connection() as db:
+            return correctable(db, user, guild, conversation) is not None
 
     def recent(self, user, guild, conversation):
         """Small dated receipts, scoped like the original command and erased with chats."""
@@ -126,14 +153,17 @@ class Controls:
                 pending = burst
             body = {k: v for k, v in body.items() if k != 'continuation'}
             if not requested(body['request_text'], body['action']):
-                if (not pending or body.get('continuation_id') != pending['source']['id'] or
-                        not completion(pending, body['request_text'], body['action'], body['argument'],
-                                       body['source'], body['guild_id'], body['conversation_id'],
-                                       body['user_id'], body['revision'], body.get('addressed_bot_id', ''))):
-                    raise ValueError('Ask to play a song, or answer the current song question in this conversation')
-                if source_used(db, body['guild_id'], pending['source']['id']):
-                    raise ValueError('This request was already handled')
-                body['continuation'] = continuation_fields(pending)
+                if not body.get('continuation_id') and (prior := corrected(db, body)):
+                    body['correction_of'] = prior  # Puts right the song Gene just played for them.
+                else:
+                    if (not pending or body.get('continuation_id') != pending['source']['id'] or
+                            not completion(pending, body['request_text'], body['action'], body['argument'],
+                                           body['source'], body['guild_id'], body['conversation_id'],
+                                           body['user_id'], body['revision'], body.get('addressed_bot_id', ''))):
+                        raise ValueError('Ask to play a song, or answer the current song question in this conversation')
+                    if source_used(db, body['guild_id'], pending['source']['id']):
+                        raise ValueError('This request was already handled')
+                    body['continuation'] = continuation_fields(pending)
             if db.execute('SELECT 1 FROM gene_controls WHERE user_id=? AND created>?', (body['user_id'], time.time()-3)).fetchone():
                 raise ValueError('Give Gene a moment before another action')
             db.execute('INSERT INTO gene_controls(id,user_id,created,state,payload) VALUES (?,?,?,?,?)',
@@ -141,6 +171,9 @@ class Controls:
             if body.get('continuation'):
                 db.execute('INSERT INTO gene_control_origins VALUES (?,?)',
                            (source_key(body['guild_id'], pending['source']['id']), time.time()))
+            if body.get('correction_of'):
+                db.execute('INSERT INTO gene_control_origins VALUES (?,?)',
+                           (source_key(body['guild_id'], 'correction:'+body['correction_of']), time.time()))
             clear(db, body['guild_id'], body['conversation_id'], body['user_id'])
         return {'id': identifier}
 

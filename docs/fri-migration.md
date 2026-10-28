@@ -90,11 +90,15 @@ built from other members' messages.
   (Fri credential, the scope of `/chat/turn` without a mention grant): `guild_id`, `channel_id`,
   `conversation_id`, `user_id` and a Discord `message_id`. It deletes that member's saved turns in
   that conversation whose source, or a message of whose burst, is that message, with any pending
-  clarification or research permit it left. It answers `{"ok": true, "removed": n}`, so a repeat is
-  harmless, and moves no revision. Fri calls it when a member's message it saved a turn for is
-  edited or deleted while withdrawn, so the old words stop coming back as history (fri #129).
-  Other members' turns that drew on the message are untouched. An older controller lacks it and Fri
-  doesn't ask.
+  clarification or research permit the message or those turns left (a burst's name its final
+  message, gene #84). The member's summary, and a build of it in flight, go too if they could have
+  read the message: it was said in a conversation the summary or build drew on, before the newest
+  exchange it read (with five minutes' allowance for clock skew), even if its turn has been trimmed
+  since (gene #83). It answers `{"ok": true, "removed": n}`, so a repeat is harmless, and moves no
+  revision. Fri calls it when a member's message it saved a turn for is edited or deleted while
+  withdrawn, so the old words stop coming back as history (fri #129). Other members' turns and
+  summaries that drew on the message are untouched, as is a summary the member wrote in My memory.
+  An older controller lacks it and Fri doesn't ask.
 
 Provenance also reaches what follow-ups inherit:
 

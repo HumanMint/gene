@@ -4,9 +4,10 @@ The first model-written text about a member the controller keeps, so it is held 
 It is built only from the member's own words in exchanges said where everyone in the server could read
 them: never a DM, the /fri panel or a restricted channel. It carries whose words those drew on, and goes
 when any of them changes their privacy settings or the member's own revision moves (forget me, memory
-off, cleared chats, an edit). It lapses 30 days after its last refresh. Fri builds it in its background
-loop, since the controller has no model access: at most one call per member a day, kept only if nothing
-changed since the claim. Before a rollback to a controller without it:
+off, cleared chats, an edit), or when a message of theirs it may have read is withdrawn. It lapses
+30 days after its last refresh. Fri builds it in its background loop, since the controller has no
+model access: at most one call per member a day, kept only if nothing changed since the claim. Before
+a rollback to a controller without it:
 python -m gene.fri_member_summary purge <database>
 """
 
@@ -30,6 +31,7 @@ NEW = 2  # Exchanges since the last build before another is worth a call.
 EXCHANGES = 24  # The newest a build reads.
 DAILY = 50  # Builds a day across the server, however many members are active.
 CLAIM_TIMEOUT = 600
+SKEW = 300  # Seconds a Discord message's time may run ahead of the controller's clock.
 IDLE = 600  # Seconds before looking again when nobody is due.
 LENGTH = 500
 UNSAFE = re.compile(r'<[@#&:/]|://|```|\d{15,}')  # Mentions, links, code and ids never reach a summary.
@@ -60,6 +62,31 @@ def erase(db, user_id):
     db.execute("DELETE FROM fri_member_summaries WHERE user_id=? OR EXISTS (SELECT 1 FROM "
                "json_each(fri_member_summaries.provenance) p WHERE json_extract(p.value, '$.user_id')=?)",
                (user_id, user_id))
+
+
+def withdrawn(db, guild, user, conversation, message_id, saved):
+    """A member's message withdrawn (gene #83): their summary, and a build of it in flight, go if either could have
+    drawn on it, as its saved exchanges do. saved: when its exchanges just deleted were saved.
+
+    A build reads only exchanges saved by its `through`, in the conversations it records, and a message is sent
+    before its exchange is saved. So one sent after that (allowing for clock skew) never reached it, even if its
+    exchange has since been trimmed. Not anyone else's summary (fri #101), nor their own edit, which drew on none.
+    """
+    from .fri_agent_store import AgentStore
+    earliest = min([((int(message_id) >> 22)+1420070400000)/1000-SKEW, *saved])
+
+    def drew(conversations, through):
+        return conversation in conversations and earliest <= through
+    row = db.execute('SELECT origins,through FROM fri_member_summaries WHERE guild_id=? AND user_id=?',
+                     (guild, user)).fetchone()
+    gone = bool(row) and drew(json.loads(row['origins']), row['through'])
+    if gone:
+        db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+    record = AgentStore.get(db, CLAIM)
+    # The build in flight may have been sent the summary as well as its own exchanges.
+    if record and record['user_id'] == user and (gone or drew(
+            {*record['sources'], *(record['previous'] or {}).get('origins', [])}, record['through'])):
+        AgentStore.put(db, CLAIM, None)
 
 
 def _current(db, row):

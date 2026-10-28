@@ -413,3 +413,11 @@ def test_unknown_untagging_outcome_keeps_durable_exact_id_retry_evidence(host, m
     state = retention.read_json(root / 'maintenance/image-retention-state.json')
     assert state['removal_intents'][tag(5)]['id'] == iid(5)
     assert [row['id'] for row in retention.run(root)['delete_parents']] == [iid(5)]
+
+
+def test_an_incomplete_legacy_backup_names_what_is_missing(host):
+    root, _, _, _ = host
+    (root / 'backups' / ('maintainer-' + f'{1:040x}') / 'fri.tar.gz').unlink()
+    with pytest.raises(ValueError, match='is incomplete: missing fri.tar.gz'):
+        retention.run(root)
+    assert not (root / 'maintenance/image-retention-plan.json').exists()

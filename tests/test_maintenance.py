@@ -116,6 +116,89 @@ def test_the_release_script_refuses_a_clock_it_cannot_trust(tmp_path):
     assert out.returncode != 0
 
 
+# A running controller's SQLite creates and removes the DB's journal files at any moment. On 2026-10-28
+# one vanished between repair_sidecars' look and its stat, and the chown that followed failed the Gene switch.
+FAKE_STAT = '''#!/usr/bin/env bash
+for file; do :; done  # stat -c %u:%g FILE; owners come from $CTL/<name>.owner
+if [[ $file == "$(cat "$CTL/vanish-at-stat" 2>/dev/null)" ]]; then rm -f "$file"; fi
+[[ -e $file ]] || { echo "stat: cannot statx '$file': No such file or directory" >&2; exit 1; }
+cat "$CTL/${file##*/}.owner" 2>/dev/null || echo 10001:10001
+'''
+FAKE_CHOWN = '''#!/usr/bin/env bash
+echo "$1 ${2##*/}" >> "$CTL/chowned"
+if [[ $2 == "$(cat "$CTL/vanish-at-chown" 2>/dev/null)" ]]; then rm -f "$2"; fi
+[[ -e $2 ]] || { echo "chown: cannot dereference '$2': No such file or directory" >&2; exit 1; }
+[[ ! -e $CTL/chown-denied ]] || { echo "chown: changing ownership of '$2': Operation not permitted" >&2; exit 1; }
+echo "$1" > "$CTL/${2##*/}.owner"
+'''
+
+
+def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False):
+    """repair_sidecars on a root-owned or owner-owned WAL that SQLite removes at the chosen moment."""
+    ctl, data, bin_dir = tmp_path/'ctl', tmp_path/'data', tmp_path/'bin'
+    for path in ctl, data, bin_dir:
+        path.mkdir()
+    db = data/'gene.sqlite3'
+    db.touch()
+    (data/'gene.sqlite3-wal').touch()
+    (ctl/'gene.sqlite3-wal.owner').write_text(wal_owner+'\n')
+    if vanish:
+        (ctl/f'vanish-at-{vanish}').write_text(f'{db}-wal')
+    if denied:
+        (ctl/'chown-denied').touch()
+    for name, body in ('stat', FAKE_STAT), ('chown', FAKE_CHOWN):
+        (bin_dir/name).write_text(body)
+        (bin_dir/name).chmod(0o755)
+    shell = (f'set -Eeuo pipefail\nPHASE=gene DB={db} SWITCHING=0\n'
+             + functions('log', 'die', 'db_owner', 'sidecar_owner', 'repair_sidecars')
+             + '\nrepair_sidecars\necho repaired\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, 'CTL': str(ctl), 'PATH': f'{bin_dir}:{os.environ["PATH"]}'})
+    chowned = (ctl/'chowned').read_text().splitlines() if (ctl/'chowned').exists() else []
+    return out, chowned, data/'gene.sqlite3-wal'
+
+
+@pytest.mark.parametrize('wal_owner,vanish', [('0:0', 'stat'), ('0:0', 'chown'), ('10001:10001', 'stat')])
+def test_a_journal_file_that_vanishes_mid_repair_needs_nothing(tmp_path, wal_owner, vanish):
+    out, chowned, wal = sidecar_shell(tmp_path, wal_owner, vanish)
+    assert out.returncode == 0 and out.stdout.split() == ['repaired'], out.stderr
+    assert not wal.exists()
+    assert chowned == (['10001:10001 gene.sqlite3-wal'] if vanish == 'chown' else [])
+
+
+def test_a_root_owned_journal_file_goes_back_to_the_db_owner(tmp_path):
+    out, chowned, wal = sidecar_shell(tmp_path, '0:0')
+    assert out.returncode == 0 and 'giving gene.sqlite3-wal back to the database owner' in out.stderr
+    assert chowned == ['10001:10001 gene.sqlite3-wal'] and wal.exists()
+
+
+def test_a_chown_that_fails_on_a_journal_file_still_there_stops_the_script(tmp_path):
+    out, chowned, wal = sidecar_shell(tmp_path, '0:0', denied=True)
+    assert out.returncode != 0 and 'repaired' not in out.stdout
+    assert 'FAIL: could not give gene.sqlite3-wal back to the database owner' in out.stderr
+    assert wal.exists()
+
+
+@pytest.mark.parametrize('printed,stops', [('4096', False), ('', True)])
+def test_sizing_a_tree_counts_a_file_that_vanishes_as_gone(tmp_path, printed, stops):
+    bin_dir = tmp_path/'bin'
+    bin_dir.mkdir()
+    # GNU du prints the total, then fails, when a file goes between its readdir and its stat.
+    (bin_dir/'du').write_text('#!/usr/bin/env bash\n'
+                              f'[[ -z "{printed}" ]] || printf "%s\\t%s\\n" "{printed}" "$2"\n'
+                              'echo "du: cannot access \'$2/gene.sqlite3-wal\': No such file or directory" >&2\n'
+                              'exit 1\n')
+    (bin_dir/'du').chmod(0o755)
+    shell = ('set -Eeuo pipefail\nSWITCHING=0\n' + functions('log', 'die', 'du_bytes')
+             + f'\nsize=$(du_bytes {tmp_path})\necho "size=$size"\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'})
+    if stops:
+        assert out.returncode != 0 and 'size=' not in out.stdout
+    else:
+        assert out.returncode == 0 and out.stdout.split() == ['size=4096'], out.stderr
+
+
 def test_claims_wait_for_the_window_and_an_owner_rollback_does_not(store, monkeypatch):
     job = proposed(store)
     store.approve(job['id'], G, 'owner')

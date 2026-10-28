@@ -456,27 +456,6 @@ def test_a_cog_job_on_top_of_batches_and_a_batch_above_a_legacy_level(batch_host
     assert result['keep'][iid(RUNTIME + 2)]['reason'].startswith(retention.ROLLBACK + ' (deployment')
 
 
-def test_fri_only_and_gene_only_batches(batch_host):
-    root, images = batch_host.root, batch_host.images
-    images[iid(FRI + 5)] = {'tags': ['fri-runtime:' + fri(5)]}
-    stage = root / 'staging' / f'batch-{gene(4)}-{fri(5)}'
-    stage.mkdir()
-    old = {role: {'tag': t, 'id': i} for role, (t, i) in release_images(4).items()}
-    new = copy.deepcopy(old) | {'fri': {'tag': 'fri-runtime:' + fri(5), 'id': iid(FRI + 5)}}
-    (stage / 'manifest.json').write_text(json.dumps({'gene': gene(4), 'fri': fri(5), 'old_gene': gene(4),
-                                                     'old_fri': fri(4), 'old': old, 'new': new}))
-    (stage / 'journal').write_text('\n'.join(['baseline', 'staged', 'rehearsed', 'intent:pause', 'drained',
-                                              'gene_recorded', 'fri_backup', 'intent:fri', 'fri_switched',
-                                              'resumed']) + '\n')
-    with pytest.raises(ValueError, match='Live Fri is not the release batch ' + stage.name):
-        retention.run(root)
-    (batch_host.fri_root / 'release.env').write_text(f'FRI_RELEASE_SHA={fri(5)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(5)}\n')
-    result = retention.run(root)
-    assert [step['sha'] for step in result['lineage']] == [gene(4), gene(3)]  # Fri-only moves no Gene
-    assert result['keep'][iid(FRI + 5)]['reason'].startswith(retention.RECENT)
-    assert result['live'] == {'gene': gene(4), 'fri': fri(5)}
-
-
 def test_a_pending_deployment_receipt_skips_the_run(batch_host):
     root = batch_host.root
     (root / 'deploy-result.json').write_text('{}')
@@ -922,3 +901,161 @@ def test_a_batch_record_written_during_discovery_stops_the_run(batch_host, monke
         retention.run(root, apply=True)
     assert calls == []
     assert isinstance(stopped.value, retention.Busy) and 'Batch records changed during discovery' in str(stopped.value)
+
+
+# Sol round 2 on gene #80.
+
+FRI_ONLY = ['baseline', 'staged', 'rehearsed', 'intent:pause', 'drained', 'gene_recorded', 'fri_backup', 'intent:fri',
+            'fri_switched', 'evals_started', 'evals_ran', 'evaluated', 'verified_off', 'intent:services',
+            'done:unpause', 'resumed']
+
+
+def write_fri_only(root, images, n, new, old, at, backup=True, baseline=True, marks=FRI_ONLY):
+    """A Fri-only batch on Gene n, as batch-release.sh leaves it: its backup holds only Fri's pins and record."""
+    images.setdefault(iid(FRI + new), {'tags': ['fri-runtime:' + fri(new)]})
+    stage = root / 'staging' / f'batch-{gene(n)}-{fri(new)}'
+    stage.mkdir(parents=True)
+    gene_images = {role: {'tag': t, 'id': i} for role, (t, i) in release_images(n).items() if role != 'fri'}
+    old_images = gene_images | {'fri': {'tag': 'fri-runtime:' + fri(old), 'id': iid(FRI + old)}}
+    new_images = gene_images | {'fri': {'tag': 'fri-runtime:' + fri(new), 'id': iid(FRI + new)}}
+    manifest = {'gene': gene(n), 'fri': fri(new), 'old_gene': gene(n), 'old_fri': fri(old), 'old': old_images,
+                'new': new_images, 'archives': {'fri': 'c' * 64}, 'downgrades': ''}
+    if backup:
+        folder = root / 'backups' / f'maintainer-fri-{fri(new)}-{int(at)}'
+        folder.mkdir()
+        (folder / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(old)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(old)}\n')
+        (folder / 'fri-release.json').write_text(json.dumps({'sha': fri(old)}))
+        manifest['backup'] = str(folder)
+    (stage / 'manifest.json').write_text(json.dumps(manifest))
+    if baseline:
+        (stage / 'baseline.json').write_text(json.dumps({
+            'settings': {'active_sha': gene(n), 'previous_sha': gene(n - 1), 'fri_active_sha': fri(old)},
+            'source': gene(n), 'gene': {'guild_id': '123', 'presence': 'online'},
+            'fri': {'sha': fri(old), 'guild_id': '123', 'presence': 'online'}}))
+    (stage / 'journal').write_text(''.join(mark + '\n' for mark in marks))
+    os.utime(stage / 'journal', (at, at))
+    return stage
+
+
+def live_fri(batch_host, n):
+    (batch_host.fri_root / 'release.env').write_text(f'FRI_RELEASE_SHA={fri(n)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(n)}\n')
+    batch_host.containers['fri'] = iid(FRI + n)
+
+
+@pytest.mark.parametrize('case', ['complete', 'two_stacked', 'between_levels', 'no_backup', 'no_baseline', 'pointer',
+                                  'source', 'no_fri_backup_mark', 'discontinuous', 'gene_moved',
+                                  'between_levels_incomplete'])
+def test_a_fri_only_release_above_a_gene_level_must_roll_back_first(batch_host, monkeypatch, case):
+    root, images = batch_host.root, batch_host.images
+    on_top = {'no_backup': {'backup': False}, 'no_baseline': {'baseline': False},
+              'no_fri_backup_mark': {'marks': [m for m in FRI_ONLY if m != 'fri_backup']}}
+    names = []
+    if case.startswith('between_levels'):
+        # Gene 3 / Fri 7 came between batches 3 and 4, so rolling back batch 4 lands on Fri 7, not Fri 3.
+        images[iid(FRI + 7)] = {'tags': ['fri-runtime:' + fri(7)]}
+        latest = stage_of(root, 4)
+        edit_manifest(latest, lambda m: [m.update(old_fri=fri(7)),
+                                         m['old']['fri'].update(tag='fri-runtime:' + fri(7), id=iid(FRI + 7))])
+        (backup_of(latest) / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(7)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(7)}\n')
+        (backup_of(latest) / 'fri-release.json').write_text(json.dumps({'sha': fri(7)}))
+        middle = write_fri_only(root, images, 3, 7, 3, NOW - 1.5 * DAY, backup=case == 'between_levels')
+        names = [latest.name, middle.name, stage_of(root, 3).name]
+    else:
+        top = write_fri_only(root, images, 4, 5, 4, NOW - 0.5 * DAY, **on_top.get(case, {}))
+        live_fri(batch_host, 5)
+        names = [top.name, stage_of(root, 4).name, stage_of(root, 3).name]
+        if case == 'two_stacked':
+            second = write_fri_only(root, images, 4, 6, 5, NOW - 0.25 * DAY)
+            live_fri(batch_host, 6)
+            names.insert(0, second.name)
+        elif case == 'pointer':
+            edit_baseline(top, lambda b: b['settings'].update(previous_sha=gene(1)))
+        elif case == 'source':
+            edit_baseline(top, lambda b: b.update(source='unmarked'))
+        elif case == 'discontinuous':  # it says it replaced Fri 3, but batch 4 left Fri 4 running
+            edit_manifest(top, lambda m: [m.update(old_fri=fri(3)),
+                                          m['old']['fri'].update(tag='fri-runtime:' + fri(3), id=iid(FRI + 3))])
+            (backup_of(top) / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(3)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(3)}\n')
+            (backup_of(top) / 'fri-release.json').write_text(json.dumps({'sha': fri(3)}))
+        elif case == 'gene_moved':  # the runtime it ran beside isn't the one batch 4 put in service
+            runtime = {'tag': 'gene-runtime:' + gene(3), 'id': iid(RUNTIME + 3)}
+            edit_manifest(top, lambda m: [m[kind].update(runtime=runtime) for kind in ('old', 'new')])
+    monkeypatch.setattr(retention, 'command', removing(images))
+    if case in ('complete', 'two_stacked', 'between_levels'):
+        result = retention.run(root, apply=True)
+        assert [step['record'] for step in result['lineage']] == ['batch ' + name for name in names]
+        assert sum(1 for step in result['lineage'] if not step.get('fri_only')) == 2
+        for step in result['lineage']:
+            if step.get('fri_only'):
+                assert result['keep'][iid(FRI + int(step['fri'][-1]))]['reason'].startswith(retention.CONTAINER) or \
+                    result['keep'][iid(FRI + int(step['fri'][-1]))]['reason'].startswith(retention.ROLLBACK)
+        return
+    message = {'no_backup': 'switch backup is missing', 'no_baseline': 'baseline.json is missing',
+               'pointer': 'previous_sha .* is not the Gene release it sits on',
+               'source': 'baseline.json source is not the Gene release it sits on',
+               'no_fri_backup_mark': 'its journal has no fri_backup', 'discontinuous': 'Fri .* does not continue',
+               'gene_moved': 'its Gene images are not the ones', 'between_levels_incomplete': 'switch backup is missing'}
+    with pytest.raises(ValueError, match=message[case]):
+        retention.run(root, apply=True)
+    assert not (root / 'maintenance/image-retention-plan.json').exists()
+
+
+def test_the_lock_budget_covers_discovery_and_planning(batch_host, monkeypatch):
+    root = batch_host.root
+    clock = [1000.0]
+    monkeypatch.setattr(retention, 'monotonic', lambda: clock[0], raising=False)
+    details = retention.image_details
+
+    def slow_inspection(ids):
+        clock[0] += retention.LOCK_BUDGET + 1  # image inspection outlasts the lock budget
+        return details(ids)
+
+    monkeypatch.setattr(retention, 'image_details', slow_inspection)
+    monkeypatch.setattr(retention, 'command', lambda *args: pytest.fail(f'unexpected {args}'))
+    with pytest.raises(retention.Busy, match='batch-release.lock'):
+        retention.run(root, apply=True)
+    assert not (root / 'maintenance/image-retention-plan.json').exists()
+    handle = batch_start(root)  # the lock went back with the skip
+    assert handle is not None
+    handle.close()
+
+
+def test_every_command_is_bounded_by_the_time_left_on_the_lock(monkeypatch):
+    clock, seen = [1000.0], []
+    monkeypatch.setattr(retention, 'monotonic', lambda: clock[0], raising=False)
+    monkeypatch.setattr(retention, 'DEADLINE', 1030.0, raising=False)
+
+    def check_output(args, text, timeout):
+        seen.append(timeout)
+        if args[1] == 'slow':
+            raise retention.subprocess.TimeoutExpired(args, timeout)
+        return 'ok'
+
+    monkeypatch.setattr(retention.subprocess, 'check_output', check_output)
+    assert retention.command('docker', 'fast') == 'ok' and seen == [30.0]
+    with pytest.raises(retention.Busy, match='batch-release.lock'):
+        retention.command('docker', 'slow')
+    clock[0] = 1030.0
+    with pytest.raises(retention.Busy, match='batch-release.lock'):
+        retention.command('docker', 'fast')
+    assert len(seen) == 2  # nothing starts once the budget is spent
+    monkeypatch.setattr(retention, 'DEADLINE', None)
+    assert retention.command('systemctl', 'show') == 'ok' and seen[-1] == 120
+
+
+def test_a_skip_never_clears_an_unresolved_failure(batch_host, monkeypatch):
+    root = batch_host.root
+    assert retention.execute(root)[0] == 0
+    (stage_of(root, 4) / 'manifest.json').write_text('{}')
+    with pytest.raises(ValueError):
+        retention.execute(root)
+    lock = (root / 'maintenance/image-retention.lock').open('a')
+    retention.fcntl.flock(lock, retention.fcntl.LOCK_EX | retention.fcntl.LOCK_NB)
+    try:
+        assert retention.execute(root) == (retention.REFUSED, None)
+    finally:
+        lock.close()
+    monkeypatch.setattr(retention, 'command', systemctl())  # exit 4 counts as a successful service run
+    report = retention.status(root, NOW + 60)
+    assert report['status'] == 'failing' and not report['healthy']
+    assert any('Malformed batch record' in reason for reason in report['reasons'])

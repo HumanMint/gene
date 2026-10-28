@@ -132,7 +132,7 @@ def check(args):
     tokens = [env.get(key, '') for key in SERVICE_TOKENS]
     short = [key for key, token in zip(SERVICE_TOKENS, tokens) if len(token) < 32]
     if short:
-        problems.append(f'{", ".join(short)} must be at least 32 characters; `init` fills empty ones')
+        problems.append(f'{", ".join(short)} must be at least 32 characters; `dev.py token` prints one to paste')
     elif len(set(tokens)) != len(tokens):
         problems.append('the four service tokens must all differ')
     for key in ID_KEYS:

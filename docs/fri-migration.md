@@ -127,6 +127,9 @@ built from other members' messages.
   on an older summary of them. Nothing from it is retained here.") and marked not verbatim, and a
   question it left pending goes. History, a reference to Fri's message and reply checks then carry
   none of its words; the member's own words stay. A turn saved without a generation (an older Fri, or no summary in its request) is untouched.
+  `/chat/messages/sources` checks the summary first as well: one that lapsed with nothing pruning it
+  yet goes in the lookup's own transaction, so a reply that drew on it is reported as not verbatim
+  (gene #120). Only a lookup that finds such a reply takes the write lock.
   A controller start retires any an older controller left behind during a rollback window: with a
   moved generation, with none on record (its privacy changes delete the generation, so a save records
   generation zero too), or saved under a revision of the member's that has moved since (gene #114). The

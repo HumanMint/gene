@@ -842,12 +842,26 @@ class Store:
         return kept
 
     def message_sources(self, guild_id, message_ids):
-        """Resolve Fri's delivered messages to the members they drew on, for later references."""
+        """Resolve Fri's delivered messages to the members they drew on, for later references.
+
+        A reply that drew on the member's summary is reported only once that summary is checked: one that lapsed with
+        nothing pruning it yet goes here, as a read that finds it lapsed drops it, so the reply is a breadcrumb before
+        it's reported (gene #120). Only such a reply takes the write lock; any other lookup reads, as before.
+        """
+        from .fri_member_summary import lapsed
         found = {}
         with self.connection() as db:
+            def turn(message_id):
+                return db.execute('SELECT user_id,provenance,verbatim,speaker_revision,summary_generation FROM chat_turns '
+                                  'WHERE guild_id=? AND reply_message_id=?', (guild_id, message_id)).fetchone()
             for message_id in message_ids:
-                row = db.execute('SELECT user_id,provenance,verbatim,speaker_revision FROM chat_turns WHERE guild_id=? '
-                                 'AND reply_message_id=?', (guild_id, message_id)).fetchone()
+                row = turn(message_id)
+                if row and row['summary_generation'] is not None:
+                    if not db.in_transaction:  # The drop and the reads around it, in one go: read again once locked.
+                        db.execute('BEGIN IMMEDIATE')
+                        row = turn(message_id)
+                    if row and row['summary_generation'] is not None and lapsed(db, guild_id, row['user_id']):
+                        row = turn(message_id)  # Retired with it.
                 if not row or row['speaker_revision'] is None:
                     continue
                 sources = json.loads(row['provenance'] or '[]') + [

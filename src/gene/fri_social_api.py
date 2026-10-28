@@ -19,6 +19,8 @@ class Reminder(Event):
     body: str = Field(min_length=1, max_length=1000)
     local_time: str = Field(min_length=16, max_length=19)
     timezone: str = Field(min_length=1, max_length=80)
+    # As for saved work: refused once the member summary the turn drew on has moved (fri #171).
+    summary_generation: int | None = Field(default=None, ge=0)
 
 
 class Plan(Event):
@@ -58,7 +60,8 @@ def register(app, store, settings, auth, chat_scope):
 
     @app.post('/social/reminders/prepare', dependencies=[auth('fri')])
     def reminder_prepare(body: Reminder):
-        return social.reminder_prepare(scope(body, 'reminder'), body.source, body.revision, body.body, body.local_time, body.timezone)
+        return social.reminder_prepare(scope(body, 'reminder'), body.source, body.revision, body.body, body.local_time,
+                                       body.timezone, summary_generation=body.summary_generation)
 
     @app.post('/social/reminders/list', dependencies=[auth('fri')])
     def reminder_list(body: Scope):

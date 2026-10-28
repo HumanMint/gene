@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Gene: a private Discord assistant with an owner-approved development loop"
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    "red-audio-adapter @ git+https://github.com/HumanMint/red-audio-adapter@a7ef2f8048d401f3f5d908d173549666f564f97e",
+    "red-audio-adapter @ git+https://github.com/HumanMint/red-audio-adapter@ea07f40f820625e3210ef49f23f9306d605c6f2a",
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
     "httpx>=0.28,<1",

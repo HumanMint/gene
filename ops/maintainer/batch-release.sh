@@ -493,7 +493,9 @@ checks = {
 }
 bad = [k for k, v in checks.items() if not v]
 if bad:
-    sys.exit('live state is outside the recorded old/new pair ('+', '.join(bad)+'); reconcile by hand, nothing was changed')
+    print('live state is outside the recorded old/new pair ('+', '.join(bad)+'); reconcile by hand, nothing was changed',
+          file=sys.stderr)
+    sys.exit(3 if 'release.env' in bad else 1)  # 3: release.env is neither release's, so a deployment moved Gene
 print('live state is built from the recorded old and new releases')
 PY
 }
@@ -647,6 +649,12 @@ du_bytes() {  # path: its size in bytes
   [[ $size =~ ^[0-9]+$ ]] || die "could not measure $1"
   echo "$size"
 }
+measure() {  # var path: the path's size in bytes, into var. Measured in an assignment of its own, so a failure
+  # stops this shell (mid-switch, by rolling back) instead of dropping out of an arithmetic sum (gene #100).
+  local bytes
+  bytes=$(du_bytes "$2") || die "could not measure $2"
+  printf -v "$1" '%s' "$bytes"
+}
 
 rename_tree() {  # src dst: a single rename(2) that fails rather than copying; dst must not exist
   python3 - "$1" "$2" <<'PY'
@@ -777,23 +785,36 @@ stage() {
     mset "archives.$name" "$(cut -d' ' -f1 "$STAGE/$name.tar.sha256")"
   done
   if gene_changes; then [[ ! -e $ROOT/releases/$G ]] || die "$ROOT/releases/$G already exists; inspect it before staging"; fi
-  local images=0
+  # Every size is read in an assignment of its own and checked, so a failed read stops the phase rather than
+  # dropping out of a sum (gene #100).
+  local images=0 size db_size red_size source_size fri_size tars=0 gene_tar docker_root disk
   for kind in runtime worker fri; do
-    if changes "$kind"; then images=$(( images + $(docker image inspect -f '{{.Size}}' "$(jget "$MANIFEST" "old.$kind.tag")") )); fi
+    changes "$kind" || continue
+    size=$(docker image inspect -f '{{.Size}}' "$(jget "$MANIFEST" "old.$kind.tag")") && [[ $size =~ ^[0-9]+$ ]] \
+      || die "could not read the size of the old $kind image"
+    images=$(( images + size ))
   done
-  local db_size tars=0 gene_tar disk
-  db_size=$(du_bytes "$ROOT/data/controller")
-  for name in "${names[@]}"; do tars=$(( tars + $(stat -c %s "$STAGE/$name.tar") )); done
-  disk=("docker=$(docker info -f '{{.DockerRootDir}}'):$images" "staging=$STAGE:$(( 2*tars + 2*db_size ))")
+  measure db_size "$ROOT/data/controller"
+  for name in "${names[@]}"; do
+    size=$(stat -c %s "$STAGE/$name.tar") && [[ $size =~ ^[0-9]+$ ]] || die "could not read the size of $name.tar"
+    tars=$(( tars + size ))
+  done
+  docker_root=$(docker info -f '{{.DockerRootDir}}') || die 'could not read the Docker root dir'
+  disk=("docker=$docker_root:$images" "staging=$STAGE:$(( 2*tars + 2*db_size ))")
   mkdir -p "$ROOT/backups" "$FRI_ROOT/backups"
   if gene_changes; then
     mkdir -p "$ROOT/releases"
     rename_preflight "$ROOT/backups"
     gene_tar=$(stat -c %s "$STAGE/gene.tar")
-    disk+=("gene_backup=$ROOT/backups:$(( db_size + $(du_bytes "$ROOT/data/red") + $(du_bytes "$ROOT/source") ))"
+    measure red_size "$ROOT/data/red"
+    measure source_size "$ROOT/source"
+    disk+=("gene_backup=$ROOT/backups:$(( db_size + red_size + source_size ))"
            "releases=$ROOT/releases:$gene_tar" "source=$ROOT:$gene_tar")
   fi
-  if fri_changes; then disk+=("fri_backup=$FRI_ROOT/backups:$(( $(du_bytes "$ROOT/data/fri") + db_size ))"); fi
+  if fri_changes; then
+    measure fri_size "$ROOT/data/fri"
+    disk+=("fri_backup=$FRI_ROOT/backups:$(( fri_size + db_size ))")
+  fi
   disk_admission "${disk[@]}"
   for name in "${names[@]}"; do
     clear_interrupted "$STAGE/$name-src"
@@ -981,7 +1002,13 @@ fence() {  # Pause new work, let current work finish, then stop the worker and d
     (( waited < WAIT_WINDOW )) || die 'work is still building or deploying after 30 minutes; development stays paused'
     log 'waiting for current work to finish'; sleep 30; waited=$(( waited + 30 ))
   done
-  systemctl stop gene-worker gene-deployer
+  if ! touched; then
+    # Someone else paused development before this batch touched it, so that pause stays theirs (skipped:pause).
+    # The stop is journaled before it happens all the same: if the fence dies after it, resume-old starts the
+    # worker and deployer again and reports the pause it leaves (gene #94).
+    mark intent:pause; mark skipped:pause
+  fi
+  systemctl stop gene-worker gene-deployer || die 'the worker and deployer did not stop'
   if systemctl is-active -q gene-worker || systemctl is-active -q gene-deployer; then die 'worker or deployer still active'; fi
   busy=$(state_value busy_jobs)
   [[ $busy == 0 ]] || die 'a job started while stopping the units'
@@ -1022,8 +1049,14 @@ on_gene_error() {
 }
 
 gene_disk() {  # What the switch itself writes: the backups, the cogs and the source move.
-  disk_admission "gene_backup=$ROOT/backups:$(( $(du_bytes "$ROOT/data/controller") + $(du_bytes "$ROOT/data/red") + $(du_bytes "$ROOT/source") ))" \
-    "releases=$ROOT/releases:$(du_bytes "$STAGE/cogs-ready")" "source=$ROOT:$(du_bytes "$STAGE/gene-src")"
+  local db_size red_size source_size cogs_size tree_size
+  measure db_size "$ROOT/data/controller"
+  measure red_size "$ROOT/data/red"
+  measure source_size "$ROOT/source"
+  measure cogs_size "$STAGE/cogs-ready"
+  measure tree_size "$STAGE/gene-src"
+  disk_admission "gene_backup=$ROOT/backups:$(( db_size + red_size + source_size ))" \
+    "releases=$ROOT/releases:$cogs_size" "source=$ROOT:$tree_size"
 }
 
 backup_db() {  # dir: an online copy at dir/db/controller.sqlite3, made as the DB owner, then root-only
@@ -1172,22 +1205,32 @@ rollback_gene() {
   # Reconciles from actual state, so it is safe to repeat. errexit stays on: any failure stops here.
   trap - ERR
   SWITCHING=0
-  local B prev old_id owner
+  aborting && die 'nothing was changed: an earlier rollback-gene stopped before it restored development, so run resume-old first'
+  local B prev old_id owner checked=0
   B=$(backup_dir)
   prev=$(jget "$BASELINE" settings.previous_sha)
   old_id=$(jget "$MANIFEST" old.runtime.id)
   owner=$(db_owner)
   repair_sidecars
   log 'rollback: check that live state is built from the recorded releases'
-  pair_check
-  # From here the forward phases refuse: a half-done rollback is finished by repeating rollback-gene.
-  has intent:rollback || mark intent:rollback
+  pair_check || exit 1
+  # From here the forward phases refuse: a half-done rollback is finished by repeating rollback-gene. Every run
+  # journals its start, so resume-old can tell a rollback ran after an earlier stop (as_is).
+  mark intent:rollback
   log 'rollback: fence development'
   fence
   lock_fri
   # The fence can wait for work that finishes a deployment, so check again with nothing left running.
   log 'rollback: check again with development fenced and Fri releases locked out'
-  pair_check
+  pair_check || checked=$?
+  if (( checked == 3 )); then
+    # A deployment the fence waited out rewrote release.env: Gene moved, and this rollback changed nothing but
+    # its fence, so development goes back as it is (gene #93). The stop is journaled first, as the drain's is:
+    # if restoring stops, resume-old replays it.
+    resume_as_is
+    die "Gene moved during the fence; nothing was rolled back and $(resumed_as)"
+  fi
+  (( checked == 0 )) || exit 1
   log 'rollback: Fri first'
   restore_old_fri
   if has intent:start_new && ! has done:downgrade; then
@@ -1382,6 +1425,9 @@ resume_as_is() {  # After a fence that Gene may have moved under (a deployment l
 aborting() {  # A stop after a fence whose restore hasn't finished
   [[ -f $JOURNAL && $({ grep -x -e intent:abort -e resumed_old "$JOURNAL" || true; } | tail -n 1) == intent:abort ]]
 }
+as_is() {  # The batch's latest stop came after a fence, and no rollback has run since: it stays as it is
+  [[ -f $JOURNAL && $({ grep -x -e intent:abort -e intent:rollback "$JOURNAL" || true; } | tail -n 1) == intent:abort ]]
+}
 gene_moved() {  # The live Gene isn't the old release: before a batch drains, only a deployment moves it
   local live
   live=$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)
@@ -1452,11 +1498,18 @@ resume() {
 
 resume_old() {
   check_manifest
-  if has gene_attempted && ! has gene_rolled_back; then die 'a Gene switch was attempted; run rollback-gene first'; fi
   touched || die "phase needs 'drained' first"  # A drain that timed out after pausing still resumes here.
   # A stop after a fence whose restore didn't finish, or a batch that never drained and whose Gene a deployment
-  # has moved since: the old pair is gone, and the batch changed nothing but its fence.
-  if aborting || { ! has drained && gene_moved; }; then resume_as_is; return; fi
+  # has moved since: the old pair is gone, and the batch changed nothing but its fence. That includes
+  # rollback-gene's stop, so this comes before its own check.
+  if aborting; then resume_as_is; return; fi
+  if as_is; then  # A repeat once that stop is restored: still as it is, at the live Gene (gene #95).
+    log 'this batch already resumed development as it is; starting it again at the live Gene'
+    resume_services "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)"
+    return
+  fi
+  if ! has drained && gene_moved; then resume_as_is; return; fi
+  if has gene_attempted && ! has gene_rolled_back; then die 'a Gene switch was attempted; run rollback-gene first'; fi
   if ! has intent:services_old; then
     verify old
     mark intent:services_old
@@ -1534,7 +1587,7 @@ rollback_fri() {
     resume_as_is
     die "Gene moved during the fence; Fri was not changed and $(resumed_as)"
   fi
-  has intent:rollback || mark intent:rollback  # From here on, only a repeat of rollback-fri finishes it.
+  mark intent:rollback  # From here on, only a repeat of rollback-fri finishes it. Every run journals it (as_is).
   restore_old_fri
   probe_fri "$OLD_F" "$(jget "$MANIFEST" old.fri.id)"
   verify old

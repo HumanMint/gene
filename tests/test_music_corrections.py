@@ -25,6 +25,15 @@ FIX = 'not the one, i meant join us for a bite'
     ('"not that one, i meant join us for a bite" is what he said', 'join us for a bite', False),
     ("not that one, don't play join us for a bite", 'join us for a bite', False),
     (FIX, '', False),
+    # Sol r1 S1: someone else's words in a blockquote or code never supply the song.
+    ('not that one\n> alex: Never Gonna Give You Up', 'Never Gonna Give You Up', False),
+    ('not that one\n```Never Gonna Give You Up```', 'Never Gonna Give You Up', False),
+    # Sol r1 S2: chat that names no replacement, reported speech and questions aren't requests.
+    ('i meant to say thanks', 'thanks', False),
+    ('not the one i wanted lol', 'the one', False),
+    ('he said not that one, i meant join us for a bite', 'join us for a bite', False),
+    ('could you tell me if not that one, i meant join us for a bite works', 'join us for a bite', False),
+    ('join us for a bite, not that one', 'join us for a bite', False),  # The song comes after the correction.
 ])
 def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argument, expected):
     assert correction(text, argument) is expected
@@ -98,3 +107,21 @@ def test_gene_runs_a_correction_the_controller_found_and_nothing_else_without_a_
         finally:
             await bot.close()
     asyncio.run(scenario())
+
+
+def test_fri_hears_whether_a_correction_would_find_a_play_even_past_three_reads(store, monkeypatch):
+    """Sol r1 S3: the three receipts can all be reads, so the controller says whether one would count."""
+    controls = Controls(store)
+    assert not controls.correctable('20', '123', 'public:1')
+    played(store)
+    for action, text in (('queue', 'fri show the queue'), ('now_playing', "fri what's playing"), ('status', 'fri gene status')):
+        with store.connection() as db:
+            db.execute('UPDATE gene_controls SET created=created-5')
+        controls.enqueue(control_body(**{'action': action, 'argument': '', 'request_text': text,
+            'source': {**control_body()['source'], 'id': str(discord.utils.time_snowflake(
+                dt.datetime.now(dt.timezone.utc)-dt.timedelta(seconds=30-len(action))))}}))
+        claim = controls.poll([action])
+        controls.finish(claim['id'], claim['lease'], {'output': 'ok'})
+    assert [r['action'] for r in controls.recent('20', '123', 'public:1')] == ['status', 'now_playing', 'queue']
+    assert controls.correctable('20', '123', 'public:1')
+    assert not controls.correctable('20', '123', 'public:2')

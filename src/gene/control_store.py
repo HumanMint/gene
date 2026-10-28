@@ -48,20 +48,26 @@ def source_used(db, guild, source_id):
                            'SELECT 1 FROM gene_control_origins WHERE id=? LIMIT 1', (key, key)).fetchone())
 
 
+def correctable(db, user, guild, conversation):
+    """The member's play a correction would put right now: the latest one Gene finished for them in this
+    conversation in the last ten minutes, if it wasn't put right already; else None."""
+    for row in db.execute('SELECT id,payload FROM gene_controls WHERE user_id=? AND created>? AND state=? '
+                          'ORDER BY created DESC', (user, time.time()-CORRECTION_SECONDS, 'finished')):
+        payload = json.loads(row['payload'])
+        if (payload.get('action') == 'play' and payload.get('guild_id') == guild and
+                payload.get('conversation_id') == conversation):
+            used = db.execute('SELECT 1 FROM gene_control_origins WHERE id=?',
+                              (source_key(guild, 'correction:'+row['id']),)).fetchone()
+            return None if used else row['id']
+    return None
+
+
 def corrected(db, body):
     """The member's own play that this message puts right ("not that one, X"): the latest one Gene finished in
     this conversation in the last ten minutes. None if there's none, or it was put right already: one each."""
     if body['action'] != 'play' or not correction(body['request_text'], body['argument']):
         return None
-    for row in db.execute('SELECT id,payload FROM gene_controls WHERE user_id=? AND created>? AND state=? '
-                          'ORDER BY created DESC', (body['user_id'], time.time()-CORRECTION_SECONDS, 'finished')):
-        payload = json.loads(row['payload'])
-        if (payload.get('action') == 'play' and payload.get('guild_id') == body['guild_id'] and
-                payload.get('conversation_id') == body['conversation_id']):
-            used = db.execute('SELECT 1 FROM gene_control_origins WHERE id=?',
-                              (source_key(body['guild_id'], 'correction:'+row['id']),)).fetchone()
-            return None if used else row['id']
-    return None
+    return correctable(db, body['user_id'], body['guild_id'], body['conversation_id'])
 
 
 class Controls:
@@ -95,6 +101,11 @@ class Controls:
                 'responsive': responsive, 'runtime': report,
                 'limits': 'A fresh heartbeat and command poll do not prove a command completed or audio is audible. '
                           'A stale poll may mean a command is busy. No shell, process logs, or restart access.'}
+
+    def correctable(self, user, guild, conversation):
+        """Whether a correction ("not that one, X") would find a play of theirs to put right here now."""
+        with self.store.connection() as db:
+            return correctable(db, user, guild, conversation) is not None
 
     def recent(self, user, guild, conversation):
         """Small dated receipts, scoped like the original command and erased with chats."""

@@ -374,6 +374,16 @@ def test_a_long_repetitive_message_is_read_once_not_per_occurrence():
     assert time.perf_counter() - started < 0.25
 
 
+def test_a_punctuation_heavy_message_is_read_in_one_pass():
+    body = 'i like chess i love go i play league ' * 8
+    for pad in (',', ', ', ',!.,'):  # Before every occurrence, a run of separators for the filler check to cross.
+        text = (pad * 4000)[:4000-len(body)] + body
+        started = time.perf_counter()
+        for evidence in ('i like chess', 'i love go', 'i play league'):
+            personal_note({'category': 'games', 'evidence': evidence}, text)
+        assert time.perf_counter() - started < 0.25, pad
+
+
 def test_the_same_words_too_many_times_keep_nothing():
     note = {'category': 'games', 'evidence': 'i like chess'}
     assert personal_note(note, 'i like chess. ' * 8) == ('games', 'i like chess')

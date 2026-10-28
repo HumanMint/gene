@@ -19,9 +19,10 @@ SINGLE = re.compile(r"(?<!\w)(['‘])(?=\S)(?!(?i:cause|cuz|coz|bout|til|till|em
 PRIOR = re.compile(r"(?i)(?:\b(?:said|says|wrote|writes|texted|asked|goes|told me|tells me)\b\W*|:\s*)$")
 # Common fillers that only look like a denial or a report, on their own or after "i": "not gonna lie, i like
 # chess", "i have to say i like chess". After anyone else, "they have to say …" stays a report, and so does
-# "they honestly have to say …": "also", "honestly" and "tbh" start a filler only where a clause does.
+# "they honestly have to say …": "also", "honestly" and "tbh" start a filler only where a clause does. After
+# punctuation only spaces may follow, so a run of commas is crossed once, not once from each comma.
 STARTER = r"lol|lmao|haha|ok|okay|yeah|yea|ya|so|and|but|fri|bro|dude|hey|yo|oh|well|btw"
-FILLER = re.compile(rf"(?i)(^\W*|\b(?:{STARTER})\W+|(?:^|[^\w\s']|\b(?:{STARTER}))\W*\b(?:also|honestly|tbh)\W+|"
+FILLER = re.compile(rf"(?i)(^\W*|\b(?:{STARTER})\W+|(?:^\W*|[^\w\s']\s*|\b(?:{STARTER})\W*)\b(?:also|honestly|tbh)\W+|"
                     r"\b(?:i|i'd|i'll|i'm|im|i am|i've|ive)\s+(?:(?:really|just|honestly)\s+)?)"
                     r"(?:not (?:gonna|going to) lie|not to brag|no (?:cap|lie|offen[cs]e)|"
                     r"(?:gotta|got to|have to|must|needless to) say|if (?:i'm|im|i am) honest|if you ask me)\b")

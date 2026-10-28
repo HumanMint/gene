@@ -52,11 +52,11 @@ def write_batch(root, new, old, at, marks=LIVE, legacy_format=False, backup=True
         folder = root / 'backups' / f'maintainer-batch-{gene(new)}-{int(at)}'
         (folder / 'db').mkdir(parents=True)
         (folder / 'installed-source').mkdir()
-        (folder / 'release.env').write_text(f'GENE_RELEASE_SHA={gene(old)}\nGENE_ROOT=/srv/gene\n'
+        (folder / 'release.env').write_text(f'GENE_RELEASE_SHA={gene(old)}\nGENE_ROOT={root}\n'
                                             f'GENE_RUNTIME_IMAGE=gene-runtime:{gene(old)}\n')
         (folder / 'worker.env').write_text(f'GENE_WORKER_IMAGE=gene-worker:{gene(old)}\nGENE_WORKER_TOKEN=tok-3f9a-secret\n')
         (folder / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(old)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(old)}\n')
-        (folder / 'fri-release.json').write_text(json.dumps({'sha': fri(old)}))
+        (folder / 'fri-release.json').write_text(json.dumps({'sha': fri(old), 'previous': fri(old - 1)}))
         for name in ('db/controller.sqlite3', 'red.tar.gz'):
             (folder / name).touch()
         # The old source tree, marked with its release, with the compose files a rollback starts it from.
@@ -87,11 +87,14 @@ def batch_host(tmp_path, monkeypatch):
     for path in ('maintenance', 'secrets', 'data/controller', 'releases', 'backups', 'staging'):
         (root / path).mkdir(parents=True)
     fri_root.mkdir()
-    (root / 'release.env').write_text(f'GENE_RELEASE_SHA={gene(4)}\nGENE_ROOT=/srv/gene\n'
+    (root / 'release.env').write_text(f'GENE_RELEASE_SHA={gene(4)}\nGENE_ROOT={root}\n'
                                       f'GENE_RUNTIME_IMAGE=gene-runtime:{gene(4)}\n')
+    (root / 'source').mkdir()
+    (root / 'source/.release-sha').write_text(gene(4) + '\n')
     (root / 'secrets/worker.env').write_text(f'GENE_WORKER_IMAGE=gene-worker:{gene(4)}\nGENE_WORKER_TOKEN=tok-3f9a-secret\n')
     (root / 'audio-release.env').write_text(f'GENE_AUDIO_SHA={AUDIO}\n')
     (fri_root / 'release.env').write_text(f'FRI_RELEASE_SHA={fri(4)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(4)}\n')
+    (fri_root / 'release.json').write_text(json.dumps({'sha': fri(4), 'previous': fri(3), 'at': 1}))
     images = {}
     for n in range(5):
         for tag, image in release_images(n).values():
@@ -106,7 +109,8 @@ def batch_host(tmp_path, monkeypatch):
     db = sqlite3.connect(root / 'data/controller/gene.sqlite3')
     db.executescript('CREATE TABLE settings (key,value); CREATE TABLE jobs(id,kind,state,proposal,approved_sha);'
                      'CREATE TABLE deployments(job_id,sha,previous_sha,at,state);')
-    db.executemany('INSERT INTO settings VALUES (?,?)', [('active_sha', gene(4)), ('previous_sha', gene(3))])
+    db.executemany('INSERT INTO settings VALUES (?,?)', [('active_sha', gene(4)), ('previous_sha', gene(3)),
+                                                         ('fri_active_sha', fri(4))])
     db.commit()
     policy = {'version': 1, 'keep_images': [], 'retired_images': {}, 'apply_enabled': True}
     retention.save_json(root / 'maintenance/image-retention-policy.json', policy)
@@ -119,6 +123,8 @@ def batch_host(tmp_path, monkeypatch):
     monkeypatch.setattr(retention, 'docker_inventory', lambda: (copy.deepcopy(images), dict(containers)))
     monkeypatch.setattr(retention, 'process_refs', lambda: [])
     monkeypatch.setattr(retention, 'image_metadata', lambda ref: copy.deepcopy(metadata[ref]))
+    monkeypatch.setattr(retention, 'live_images', lambda: {key: containers[key] for key in ('controller', 'red', 'fri')},
+                        raising=False)
     # Layer chains as the classic builder leaves them: one base under every Gene image, a runtime layer,
     # then the worker's layer on top of its runtime.
     details = {iid(201): chain(['audio'], 900), iid(202): chain(['resolver'], 800),
@@ -433,28 +439,45 @@ def test_cleanup_recent_releases_are_kept_and_older_batch_evidence_waits_out_the
     assert result['keep'][iid(RUNTIME + 0)]['reason'] == '24-hour supersession grace period'
 
 
-def test_a_cog_job_on_top_of_batches_and_a_batch_above_a_legacy_level(batch_host):
+def cog_on_top(batch_host, kind):
+    """A deployer release above batch 4: a feature job (cog c on Gene 4), or the owner's rollback to Gene 3."""
     root, db = batch_host.root, batch_host.db
-    cog = 'c' * 40
-    (root / 'release.env').write_text(f'GENE_RELEASE_SHA={cog}\nGENE_RUNTIME_IMAGE=gene-runtime:{gene(4)}\n')
-    (root / 'releases' / gene(4) / 'cogs').mkdir(parents=True)
+    sha, base = ('c' * 40, gene(4)) if kind == 'feature' else (gene(3), gene(4))
+    (root / 'release.env').write_text(f'GENE_RELEASE_SHA={sha}\nGENE_ROOT={root}\nGENE_RUNTIME_IMAGE=gene-runtime:{gene(4)}\n')
+    (root / 'releases' / base / 'cogs/gene').mkdir(parents=True)
+    (root / 'releases' / base / 'cogs/gene/__init__.py').touch()
     (root / 'backups/cog-job').mkdir()
     for name in ('controller.sqlite3', 'red.tar.gz'):
         (root / 'backups/cog-job' / name).touch()
-    db.execute("UPDATE settings SET value=? WHERE key='active_sha'", (cog,))
-    db.execute("UPDATE settings SET value=? WHERE key='previous_sha'", (gene(4),))
+    db.execute("UPDATE settings SET value=? WHERE key='active_sha'", (sha,))
+    db.execute("UPDATE settings SET value=? WHERE key='previous_sha'", (base,))
     db.execute('INSERT INTO jobs VALUES (?,?,?,?,?)',
-               ('cog-job', 'feature', 'deployed', json.dumps({'sha': cog, 'base_sha': gene(4)}), cog))
-    db.execute('INSERT INTO deployments VALUES (?,?,?,?,?)', ('cog-job', cog, gene(4), NOW - 3600, 'deployed'))
+               ('cog-job', kind, 'deployed', json.dumps({'sha': sha, 'base_sha': base}), sha))
+    db.execute('INSERT INTO deployments VALUES (?,?,?,?,?)', ('cog-job', sha, base, NOW - 3600, 'deployed'))
     db.commit()
-    result = retention.run(root)
+
+
+def test_a_deployer_release_above_batches(batch_host):
+    root = batch_host.root
+    cog_on_top(batch_host, 'rollback')
+    result = retention.run(root)  # undoing the owner's rollback restores the pair batch 4's rollback expects
     assert [step['record'].split()[0] for step in result['lineage']] == ['cog', 'batch', 'batch']
-    # Batch 3 and its predecessors replaced by one legacy install: batch above a complete legacy level.
+
+
+def test_a_feature_deploy_above_a_batch_leaves_it_unrecoverable_by_the_release_script(batch_host):
+    cog_on_top(batch_host, 'feature')
+    # Undoing the feature through the deployer leaves previous_sha at the feature, which pair_check refuses.
+    with pytest.raises(ValueError, match=r'rollback-gene would refuse \(release settings\)'):
+        retention.run(batch_host.root)
+
+
+def test_a_batch_above_a_complete_legacy_install(batch_host):
+    root, db = batch_host.root, batch_host.db
     for n in (1, 2, 3):
         (stage_of(root, n) / 'journal').unlink()
     legacy_level(root, db, gene(3), gene(2), NOW - 3 * DAY, complete=True)
     result = retention.run(root)
-    assert [step['record'].split()[0] for step in result['lineage']] == ['cog', 'batch', 'deployment']
+    assert [step['record'].split()[0] for step in result['lineage']] == ['batch', 'deployment']
     assert result['keep'][iid(RUNTIME + 2)]['reason'].startswith(retention.ROLLBACK + ' (deployment')
 
 
@@ -759,7 +782,7 @@ def test_a_rollback_level_needs_everything_its_rollback_reads(batch_host, monkey
     elif change == 'source_marker':
         (backup_of(latest) / 'installed-source/.release-sha').write_text(gene(2) + '\n')
     elif change == 'fri_record':
-        (backup_of(behind) / 'fri-release.json').write_text(json.dumps({'sha': fri(1)}))
+        (backup_of(behind) / 'fri-release.json').write_text(json.dumps({'sha': fri(1), 'previous': fri(0)}))
     elif change == 'old_format':
         edit_manifest(behind, lambda m: [m.pop('old_gene'), m.pop('old_fri')])
     monkeypatch.setattr(retention, 'command', removing(batch_host.images))
@@ -912,7 +935,7 @@ FRI_ONLY = ['baseline', 'staged', 'rehearsed', 'intent:pause', 'drained', 'gene_
             'done:unpause', 'resumed']
 
 
-def write_fri_only(root, images, n, new, old, at, backup=True, baseline=True, marks=FRI_ONLY):
+def write_fri_only(root, images, n, new, old, at, backup=True, baseline=True, marks=FRI_ONLY, record=None):
     """A Fri-only batch on Gene n, as batch-release.sh leaves it: its backup holds only Fri's pins and record."""
     images.setdefault(iid(FRI + new), {'tags': ['fri-runtime:' + fri(new)]})
     stage = root / 'staging' / f'batch-{gene(n)}-{fri(new)}'
@@ -926,7 +949,7 @@ def write_fri_only(root, images, n, new, old, at, backup=True, baseline=True, ma
         folder = root / 'backups' / f'maintainer-fri-{fri(new)}-{int(at)}'
         folder.mkdir()
         (folder / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(old)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(old)}\n')
-        (folder / 'fri-release.json').write_text(json.dumps({'sha': fri(old)}))
+        (folder / 'fri-release.json').write_text(json.dumps(record or {'sha': fri(old), 'previous': fri(old - 1)}))
         manifest['backup'] = str(folder)
     (stage / 'manifest.json').write_text(json.dumps(manifest))
     if baseline:
@@ -939,8 +962,12 @@ def write_fri_only(root, images, n, new, old, at, backup=True, baseline=True, ma
     return stage
 
 
-def live_fri(batch_host, n):
+def live_fri(batch_host, n, previous=None):
+    """Fri n live, as gene.fri_release leaves it: pins, record, the controller's setting and the container."""
     (batch_host.fri_root / 'release.env').write_text(f'FRI_RELEASE_SHA={fri(n)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(n)}\n')
+    (batch_host.fri_root / 'release.json').write_text(json.dumps({'sha': fri(n), 'previous': fri(previous or n - 1)}))
+    batch_host.db.execute("UPDATE settings SET value=? WHERE key='fri_active_sha'", (fri(n),))
+    batch_host.db.commit()
     batch_host.containers['fri'] = iid(FRI + n)
 
 
@@ -959,7 +986,7 @@ def test_a_fri_only_release_above_a_gene_level_must_roll_back_first(batch_host, 
         edit_manifest(latest, lambda m: [m.update(old_fri=fri(7)),
                                          m['old']['fri'].update(tag='fri-runtime:' + fri(7), id=iid(FRI + 7))])
         (backup_of(latest) / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(7)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(7)}\n')
-        (backup_of(latest) / 'fri-release.json').write_text(json.dumps({'sha': fri(7)}))
+        (backup_of(latest) / 'fri-release.json').write_text(json.dumps({'sha': fri(7), 'previous': fri(3)}))
         middle = write_fri_only(root, images, 3, 7, 3, NOW - 1.5 * DAY, backup=case == 'between_levels')
         names = [latest.name, middle.name, stage_of(root, 3).name]
     else:
@@ -978,7 +1005,7 @@ def test_a_fri_only_release_above_a_gene_level_must_roll_back_first(batch_host, 
             edit_manifest(top, lambda m: [m.update(old_fri=fri(3)),
                                           m['old']['fri'].update(tag='fri-runtime:' + fri(3), id=iid(FRI + 3))])
             (backup_of(top) / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(3)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(3)}\n')
-            (backup_of(top) / 'fri-release.json').write_text(json.dumps({'sha': fri(3)}))
+            (backup_of(top) / 'fri-release.json').write_text(json.dumps({'sha': fri(3), 'previous': fri(2)}))
         elif case == 'gene_moved':  # the runtime it ran beside isn't the one batch 4 put in service
             runtime = {'tag': 'gene-runtime:' + gene(3), 'id': iid(RUNTIME + 3)}
             edit_manifest(top, lambda m: [m[kind].update(runtime=runtime) for kind in ('old', 'new')])
@@ -1061,3 +1088,119 @@ def test_a_skip_never_clears_an_unresolved_failure(batch_host, monkeypatch):
     report = retention.status(root, NOW + 60)
     assert report['status'] == 'failing' and not report['healthy']
     assert any('Malformed batch record' in reason for reason in report['reasons'])
+
+
+# Sol round 3 on gene #80: each rollback must pass the release script's own first checks on the state the
+# rollbacks above it leave, saved Fri records included.
+
+@pytest.mark.parametrize('saved_by, change', [('fri_only', 'missing'), ('fri_only', 'wrong'),
+                                              ('gene', 'missing'), ('gene', 'wrong')])
+def test_a_saved_fri_record_must_pass_the_next_rollbacks_check(batch_host, monkeypatch, saved_by, change):
+    root, images = batch_host.root, batch_host.images
+    previous = {} if change == 'missing' else {'previous': fri(1)}
+    if saved_by == 'fri_only':  # rollback-fri restores this record, then batch 4's pair_check reads it
+        write_fri_only(root, images, 4, 5, 4, NOW - 0.5 * DAY, record={'sha': fri(4)} | previous)
+        live_fri(batch_host, 5)
+    else:  # batch 4's rollback-gene restores this record, then batch 3's pair_check reads it
+        (backup_of(stage_of(root, 4)) / 'fri-release.json').write_text(json.dumps({'sha': fri(3)} | previous))
+    monkeypatch.setattr(retention, 'command', removing(images))
+    with pytest.raises(ValueError, match=r'would refuse \(fri release.json\)'):
+        retention.run(root, apply=True)
+    assert not (root / 'maintenance/image-retention-plan.json').exists()
+
+
+REPO = retention.Path(__file__).parents[1]
+
+
+def script_check(function):
+    """The Python program batch-release.sh runs for one of its pair checks, taken from the script itself."""
+    text = (REPO / 'ops/maintainer/batch-release.sh').read_text()
+    start = text.index(f'\n{function}() {{')
+    body = text[text.index("<<'PY'\n", start) + len("<<'PY'\n"):]
+    return body[:body.index('\nPY\n')] + '\n'
+
+
+def script_state(state, record):
+    """The JSON state() would print for the files and records in a simulated state."""
+    def env(data):
+        values = dict(line.split('=', 1) for line in (data or b'').decode().splitlines() if '=' in line)
+        return {key: values.get(key) for key in ('GENE_RELEASE_SHA', 'GENE_RUNTIME_IMAGE')}
+    pin = 'unknown'
+    for sha in (record['gene'], record['old_gene']):
+        if state['worker.env'] is not None and \
+                state['worker.env'].split(b'\n').count(f'GENE_WORKER_IMAGE=gene-worker:{sha}'.encode()) == 1:
+            pin = 'gene-worker:' + sha
+    return json.dumps({'settings': state['settings'], 'source': state['source'], 'gene_env': env(state['release.env']),
+                       'worker_pin': pin, 'controller': {'image': state['controller']}, 'red': {'image': state['red']},
+                       'fri_container': {'image': state['fri']}})
+
+
+def run_script_check(function, args):
+    import subprocess
+    import sys
+    return subprocess.run([sys.executable, '-I', '-', *args], input=script_check(function), text=True,
+                          capture_output=True).returncode == 0
+
+
+@pytest.mark.parametrize('case', ['plain', 'fri_only', 'two_stacked', 'between_levels', 'owner_rollback',
+                                  'fri_only_missing_previous', 'gene_wrong_previous', 'feature'])
+def test_retention_and_the_release_script_agree_on_every_rollback_check(batch_host, monkeypatch, case):
+    """Each simulated check runs again through the script's own program, on the same files and state."""
+    root, images = batch_host.root, batch_host.images
+    if case in ('fri_only', 'two_stacked', 'fri_only_missing_previous'):
+        record = {'sha': fri(4)} if case == 'fri_only_missing_previous' else None
+        write_fri_only(root, images, 4, 5, 4, NOW - 0.5 * DAY, record=record)
+        live_fri(batch_host, 5)
+        if case == 'two_stacked':
+            write_fri_only(root, images, 4, 6, 5, NOW - 0.25 * DAY)
+            live_fri(batch_host, 6)
+    elif case == 'between_levels':
+        images[iid(FRI + 7)] = {'tags': ['fri-runtime:' + fri(7)]}
+        latest = stage_of(root, 4)
+        edit_manifest(latest, lambda m: [m.update(old_fri=fri(7)),
+                                         m['old']['fri'].update(tag='fri-runtime:' + fri(7), id=iid(FRI + 7))])
+        (backup_of(latest) / 'fri-release.env').write_text(f'FRI_RELEASE_SHA={fri(7)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(7)}\n')
+        (backup_of(latest) / 'fri-release.json').write_text(json.dumps({'sha': fri(7), 'previous': fri(3)}))
+        write_fri_only(root, images, 3, 7, 3, NOW - 1.5 * DAY)
+        live_fri(batch_host, 4, previous=7)
+    elif case == 'gene_wrong_previous':
+        (backup_of(stage_of(root, 4)) / 'fri-release.json').write_text(json.dumps({'sha': fri(3), 'previous': fri(1)}))
+    elif case in ('owner_rollback', 'feature'):
+        cog_on_top(batch_host, 'rollback' if case == 'owner_rollback' else 'feature')
+    checked, mirror = [], retention.pair_mirror
+
+    def recording(kind, step, state, root_text):
+        failing = mirror(kind, step, state, root_text)
+        checked.append((kind, step, copy.deepcopy(state), failing))
+        return failing
+
+    monkeypatch.setattr(retention, 'pair_mirror', recording)
+    monkeypatch.setattr(retention, 'command', removing(images))
+    refused = case in ('fri_only_missing_previous', 'gene_wrong_previous', 'feature')
+    try:
+        retention.run(root)
+    except ValueError as error:
+        assert refused and 'would refuse' in str(error)
+    else:
+        assert not refused
+    assert checked and [bool(failing) for *_, failing in checked] == [False] * (len(checked) - refused) + [True] * refused
+    for kind, step, state, failing in checked:
+        record, stage = step['record'], root / 'staging' / step['record']['name']
+        # Put the simulated live files in place, then ask the script.
+        for path, key in ((root / 'release.env', 'release.env'), (root / 'secrets/worker.env', 'worker.env'),
+                          (batch_host.fri_root / 'release.env', 'fri release.env'),
+                          (batch_host.fri_root / 'release.json', 'fri release.json')):
+            path.unlink(missing_ok=True)
+            if state[key] is not None:
+                path.write_bytes(state[key])
+        state_json = script_state(state, record)
+        manifest, baseline, backup = str(stage / 'manifest.json'), str(stage / 'baseline.json'), str(step['backup'])
+        if kind == 'gene':
+            accepted = run_script_check('pair_check', [state_json, manifest, baseline, backup, str(root),
+                                                       str(batch_host.fri_root), record['gene'], record['fri'],
+                                                       record['old_gene'], record['old_fri']])
+        else:
+            accepted = (run_script_check('fri_pair_check', [state_json, manifest, backup, str(batch_host.fri_root),
+                                                            record['fri'], record['old_fri']])
+                        and run_script_check('gene_unmoved', [state_json, manifest, baseline, record['gene']]))
+        assert accepted is not failing, (record['name'], failing)

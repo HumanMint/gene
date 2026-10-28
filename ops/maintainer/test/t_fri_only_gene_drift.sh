@@ -65,7 +65,7 @@ run 1 rollback-fri 2
 [[ -e $MOCK/on-sleep.ran ]] || fail 'the deployment never finished during the fence'
 units down
 [[ $(setting paused) == true ]] || fail 'the fence did not pause development'
-at 2026-10-28T05:30:00-07:00
+at 2026-10-28T08:00:00-07:00
 run 1 rollback-fri 2
 output_has 'run resume-old'
 units down

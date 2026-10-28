@@ -136,10 +136,10 @@ in `GENE_GUILD_ID`. Try `/gene menu` or `!help` (`GENE_PREFIX` sets the prefix).
 ## Music (advanced)
 
 Playback needs a Red-compatible Lavalink node (`GENE_AUDIO_HOST`, `GENE_AUDIO_PORT`,
-`GENE_AUDIO_PASSWORD`). The repository builds one in `ops/Dockerfile.audio`, and the
-production arrangement, with its resolver, cache and optional home download relay, is in
-[Operations: audio](operations.md#audio-on-hostinger-downloads-through-the-mac). There's
-no scripted local path yet. Without those settings Red runs without its audio cog.
+`GENE_AUDIO_PASSWORD`). The repository builds one in `ops/Dockerfile.audio`; the
+resolver, the cache and an optional download relay are covered in the
+[operator runbook](operations.md). There's no scripted local path yet. Without those
+settings Red runs without its audio cog.
 
 ## Tests and lint
 

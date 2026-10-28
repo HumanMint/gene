@@ -83,9 +83,9 @@ model access on the Fri side. Installing on a server is [host installation](docs
   checks. For music, join a voice channel before queuing a track.
 - Owner-reviewed feature requests, isolated development, exact-commit releases, backups
   and code rollback. Verified automatic repairs stay within existing features.
-- Optional audio services and a lightweight home-network download relay. The home machine
-  downloads and transfers files; playback and the bounded week-long media cache stay on
-  the server, and the relay deletes temporary files after transfers.
+- Optional audio services and an optional download relay. The relay only downloads and
+  transfers files, then deletes its temporary copies; playback and the bounded media
+  cache stay on the bot host.
 
 ## Repository layout
 
@@ -106,7 +106,7 @@ model access on the Fri side. Installing on a server is [host installation](docs
 | [Quickstart](docs/quickstart.md) | running Gene locally, pairing with Fri, adding Red |
 | [Architecture](docs/architecture.md) | the parts, service tokens, the Fri contract, jobs and releases |
 | [Host installation](docs/setup.md) | operators: a production-style Linux install |
-| [Operations](docs/operations.md) | operators: the production host, audio, releases, recovery, privacy |
+| [Operator runbook](docs/operations.md) | operators: production operations, audio, releases, recovery, privacy |
 | [Maintainer release](ops/maintainer/batch-release.md) | operators: the Gene + Fri batch release script |
 | [Fri migration](docs/fri-migration.md) | what moved to the Fri repository and what stays here |
 | [Fri workspace](docs/fri-foundation.md), [Fri tool results](docs/fri-reliability.md) | Fri behaviour the controller backs: images, reminders, plans, receipts |

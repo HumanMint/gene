@@ -114,7 +114,7 @@ against that exact controller commit.
   `ops/maintainer/batch-release.sh` ([its guide](../ops/maintainer/batch-release.md)).
 
 Discord messages, imported history and reactions are untrusted evidence; they never
-grant approval. [Operations](operations.md) covers the production side.
+grant approval. The [operator runbook](operations.md) covers production.
 
 ## Where things live
 

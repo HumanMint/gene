@@ -2,6 +2,7 @@
 import copy
 import json
 import os
+import shutil
 import sqlite3
 from types import SimpleNamespace
 
@@ -58,9 +59,21 @@ def write_batch(root, new, old, at, marks=LIVE, legacy_format=False, backup=True
         (folder / 'fri-release.json').write_text(json.dumps({'sha': fri(old)}))
         for name in ('db/controller.sqlite3', 'red.tar.gz'):
             (folder / name).touch()
+        # The old source tree, marked with its release, with the compose files a rollback starts it from.
+        (folder / 'installed-source/ops').mkdir()
+        (folder / 'installed-source/.release-sha').write_text(gene(old) + '\n')
+        for name in ('compose.yml', 'fri-compose.yml'):
+            (folder / 'installed-source/ops' / name).write_text('services: {}\n')
         manifest['backup'] = str(folder)
     (root / 'releases' / gene(old) / 'cogs').mkdir(parents=True, exist_ok=True)
     (stage / 'manifest.json').write_text(json.dumps(manifest, indent=1))
+    # baseline.json is batch-release.sh's state snapshot before the batch: what rollback and resume-old check.
+    (stage / 'baseline.json').write_text(json.dumps({
+        'settings': {'active_sha': gene(old), 'previous_sha': gene(old - 1), 'paused': 'false',
+                     'fri_active_sha': fri(old)},
+        'source': gene(old), 'busy_jobs': 0,
+        'gene': {'sha': gene(old), 'guild_id': '123', 'presence': 'online', 'guild_connected': True},
+        'fri': {'sha': fri(old), 'guild_id': '123', 'presence': 'online', 'guild_connected': True}}))
     journal = stage / 'journal'
     journal.write_text(''.join(mark + '\n' for mark in marks))
     os.utime(journal, (at, at))
@@ -329,7 +342,7 @@ def test_malformed_unfinished_rolled_back_or_ambiguous_history_refuses(batch_hos
     elif mutation == 'missing_backup_file':
         (backup_of(behind) / 'db/controller.sqlite3').unlink()
     elif mutation == 'missing_source':
-        (backup_of(behind) / 'installed-source').rmdir()
+        shutil.rmtree(backup_of(behind) / 'installed-source')
     elif mutation == 'backup_outside':
         edit_manifest(live, lambda m: m.update(backup=str(root / 'backups' / '..' / 'staging')))
     elif mutation == 'backup_disagrees':
@@ -728,3 +741,172 @@ def test_an_interrupted_removal_run_still_logs_what_it_removed(batch_host, monke
     assert line['outcome'] == 'skipped: A batch-release command holds its lock; retry in the next window'
     assert line['images']['removed_tags'] == ['gene-worker:' + gene(0)]
     assert retention.read_json(root / 'maintenance/image-retention-result.json')['removed_tags'] == held
+
+
+# Sol round 1 on gene #80.
+
+def removing(images, calls=None, on_inspect=None):
+    """Docker for an apply run: inspect names the tag's image, rm drops it from the inventory."""
+    def docker(*args):
+        if args[:3] == ('docker', 'image', 'inspect'):
+            if on_inspect:
+                on_inspect(args[3])
+            return json.dumps([{'Id': next(i for i, row in images.items() if args[3] in row['tags'])}])
+        assert args[:4] == ('docker', 'image', 'rm', '--no-prune')
+        if calls is not None:
+            calls.append(args[4])
+        images.pop(args[4] if args[4] in images else next(i for i, row in images.items() if args[4] in row['tags']))
+        return ''
+    return docker
+
+
+@pytest.mark.parametrize('change', ['manifest', 'manifest_and_backup', 'no_backup'])
+def test_an_older_batch_that_does_not_check_out_supersedes_nothing(batch_host, monkeypatch, change):
+    root, images = batch_host.root, batch_host.images
+    image, tag = iid(999), 'gene-runtime:' + gene(9)
+    images[image] = {'tags': [tag]}
+    batch_host.metadata[image] = {'id': image, 'parent': '', 'tags': [tag]}
+    batch_host.details[image] = chain(['unexpected'], 123)
+    stage = stage_of(root, 1)
+    if change == 'no_backup':  # pruned: its pins can no longer be checked
+        shutil.rmtree(backup_of(stage))
+    else:
+        edit_manifest(stage, lambda m: m['old']['runtime'].update(tag=tag, id=image))
+    if change == 'manifest_and_backup':
+        (backup_of(stage) / 'release.env').write_text(f'GENE_RELEASE_SHA={gene(0)}\nGENE_RUNTIME_IMAGE={tag}\n')
+    calls = []
+    monkeypatch.setattr(retention, 'command', removing(images, calls))
+    result = retention.run(root, apply=True)
+    assert calls == [] and image in images
+    if change != 'no_backup':
+        assert result['keep'][image]['reason'] == 'no evidence that this image was superseded'
+    assert result['keep'][iid(WORKER + 0)]['reason'] == 'no evidence that this image was superseded'
+
+
+@pytest.mark.parametrize('change, message', [
+    ('no_baseline', 'baseline.json is missing'),
+    ('unreadable_baseline', 'baseline.json is unreadable'),
+    ('baseline_release', 'baseline.json is not the old release'),
+    ('baseline_presence', 'baseline.json has no gene guild and presence'),
+    ('baseline_pointer', 'baseline.json previous_sha .* is not the next rollback level'),
+    ('no_downgrades', 'its manifest records no downgrades'),
+    ('no_attempt', 'its journal has no gene_attempted'),
+    ('old_compose', 'is missing installed-source/ops/compose.yml'),
+    ('source_marker', 'installed-source is not marked as the old release'),
+    ('fri_record', 'fri-release.json is not the old Fri'),
+    ('old_format', 'manifest names no old pair'),
+])
+def test_a_rollback_level_needs_everything_its_rollback_reads(batch_host, monkeypatch, change, message):
+    root = batch_host.root
+    latest, behind = stage_of(root, 4), stage_of(root, 3)
+    if change == 'no_baseline':
+        (latest / 'baseline.json').unlink()
+    elif change == 'unreadable_baseline':
+        (behind / 'baseline.json').write_text('{"settings": ')
+    elif change == 'baseline_release':
+        edit_baseline(behind, lambda b: b['settings'].update(active_sha=gene(7)))
+    elif change == 'baseline_presence':
+        edit_baseline(latest, lambda b: b['gene'].pop('presence'))
+    elif change == 'baseline_pointer':
+        edit_baseline(latest, lambda b: b['settings'].update(previous_sha=gene(1)))
+    elif change == 'no_downgrades':
+        edit_manifest(behind, lambda m: m.pop('downgrades'))
+    elif change == 'no_attempt':
+        remove_journal_marks(root, 4, 'gene_attempted')
+    elif change == 'old_compose':
+        (backup_of(behind) / 'installed-source/ops/compose.yml').unlink()
+    elif change == 'source_marker':
+        (backup_of(latest) / 'installed-source/.release-sha').write_text(gene(2) + '\n')
+    elif change == 'fri_record':
+        (backup_of(behind) / 'fri-release.json').write_text(json.dumps({'sha': fri(1)}))
+    elif change == 'old_format':
+        edit_manifest(behind, lambda m: [m.pop('old_gene'), m.pop('old_fri')])
+    monkeypatch.setattr(retention, 'command', removing(batch_host.images))
+    with pytest.raises(ValueError, match=message):
+        retention.run(root, apply=True)
+    assert not (root / 'maintenance/image-retention-plan.json').exists()
+
+
+def edit_baseline(stage, change):
+    path = stage / 'baseline.json'
+    baseline = json.loads(path.read_text())
+    change(baseline)
+    path.write_text(json.dumps(baseline))
+
+
+def batch_start(root):
+    """A batch-release.sh command starting: exec 8>> batch-release.lock; flock -n 8."""
+    handle = open(root / 'batch-release.lock', 'a')
+    try:
+        retention.fcntl.flock(handle, retention.fcntl.LOCK_EX | retention.fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
+
+
+def test_no_batch_command_can_start_while_retention_runs(batch_host, monkeypatch):
+    root, images = batch_host.root, batch_host.images
+    inventory, attempts = retention.docker_inventory, []
+
+    def snapshot_inventory():
+        # A batch starting now could stage a new release that names a planned image.
+        handle = batch_start(root)
+        attempts.append(handle is not None)
+        if handle is not None:
+            handle.close()
+        return inventory()
+
+    monkeypatch.setattr(retention, 'docker_inventory', snapshot_inventory)
+    calls = []
+    monkeypatch.setattr(retention, 'command', removing(images, calls))
+    retention.run(root, apply=True)
+    assert calls == ['gene-worker:' + gene(0), 'gene-runtime:' + gene(0)]
+    assert len(attempts) == 5 and not any(attempts)
+    handle = batch_start(root)  # and the lock is free again afterwards
+    assert handle is not None
+    handle.close()
+
+
+def test_a_running_batch_command_skips_the_run_and_its_own_lock_check_is_untouched(batch_host, monkeypatch):
+    root = batch_host.root
+    handle = batch_start(root)
+    try:
+        monkeypatch.setattr(retention, 'command', lambda *args: pytest.fail(f'unexpected {args}'))
+        assert retention.execute(root, apply=True) == (retention.REFUSED, None)
+    finally:
+        handle.close()
+    assert actions(root)[-1]['outcome'] == 'skipped: A batch-release command holds its lock; retry in the next window'
+    assert not (root / 'maintenance/image-retention-plan.json').exists()
+
+
+@pytest.mark.parametrize('path', ['tag', 'ancestor'])
+def test_the_window_is_checked_again_right_before_each_removal(batch_host, monkeypatch, path):
+    root, images, metadata = batch_host.root, batch_host.images, batch_host.metadata
+    clock = [NOW]
+    monkeypatch.setattr(retention.time, 'time', lambda: clock[0])
+    calls = []
+    if path == 'tag':  # 05:00 passes while the first tag is inspected
+        docker = removing(images, calls, on_inspect=lambda tag: clock.__setitem__(0, NOW + 3600))
+    else:  # an unnamed parent of release 0's runtime, collected after the tags
+        images[iid(500)] = {'tags': []}
+        metadata[iid(500)] = {'id': iid(500), 'parent': iid(204), 'tags': []}
+        metadata[iid(RUNTIME + 0)]['parent'] = iid(500)
+        batch_host.details[iid(500)] = chain(['base', 'parent-0'], 550, iid(204))
+        lookup = retention.image_metadata
+
+        def inspect(ref):
+            if ref == iid(500) and iid(RUNTIME + 0) not in images:
+                clock[0] = NOW + 3600  # 05:00 passes while the ancestor is inspected
+            return lookup(ref)
+        monkeypatch.setattr(retention, 'image_metadata', inspect)
+        docker = removing(images, calls)
+    monkeypatch.setattr(retention, 'command', docker)
+    result = retention.run(root, apply=True)
+    assert 'window closed' in result['deferred']
+    if path == 'tag':
+        assert calls == []
+        state = retention.read_json(root / 'maintenance/image-retention-state.json')
+        assert state.get('removal_intents', {}) == {}
+    else:
+        assert calls == ['gene-worker:' + gene(0), 'gene-runtime:' + gene(0)] and iid(500) in images

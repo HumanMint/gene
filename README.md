@@ -150,3 +150,17 @@ Tokens, auth sessions, raw history, databases and private context stay in ignore
 private paths (`.env.local`, `.secrets/`, `.state/`) and never in Git. `gene forgetme
 true` erases stored user context and cancels pending proposals; existing Discord and
 GitHub messages, code and backups are separate records.
+
+## Credits
+
+Gene is maintained by [HumanMint](https://github.com/HumanMint). Its bot framework,
+core command system and music features come from
+[Red-DiscordBot](https://github.com/Cog-Creators/Red-DiscordBot), maintained by
+[Cog Creators and Red's contributors](https://github.com/Cog-Creators/Red-DiscordBot/graphs/contributors).
+Gene adds project-specific cogs, adapters and the trusted controller around the
+upstream package.
+
+Early implementation was developed with [OpenAI Codex](https://openai.com/codex/),
+using GPT-6 Astra and GPT-6.1 Sol. Development continues with Codex and Claude:
+Codex contributes code, tests and independent reviews; Claude contributes
+implementation and integration work.

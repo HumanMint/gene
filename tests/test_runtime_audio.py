@@ -104,8 +104,8 @@ class RedAudio:
     maybe_reset_error_counter = PlayerUtilities.maybe_reset_error_counter
     increase_error_counter = PlayerUtilities.increase_error_counter
 
-    def __init__(self):
-        settings = {'disconnect': False, 'repeat': False, 'notify': False, 'auto_play': False}
+    def __init__(self, repeat=False):
+        settings = {'disconnect': False, 'repeat': repeat, 'notify': False, 'auto_play': False}
         self.bot = SimpleNamespace(cog_disabled_in_guild=AsyncMock(return_value=False), dispatch=Mock(),
             get_embed_color=AsyncMock(return_value=discord.Colour.red()),
             _i18n_cache=SimpleNamespace(get_locale=AsyncMock(return_value='en-US'),
@@ -124,11 +124,12 @@ def stack(monkeypatch):
     """Installed red-lavalink's Node, Player, dispatch and event parsing, without a websocket."""
     monkeypatch.setattr(Node, 'no_stop_play', Node.no_stop_play)  # Restore after install().
     monkeypatch.setattr(Node, 'send', Node.send)
+    monkeypatch.setattr(Player, 'skip', Player.skip)
     monkeypatch.setattr(lavalink.node, '_nodes', [])
     monkeypatch.setattr(lavalink.lavalink, '_event_listeners', [])
 
-    async def build(adapter):
-        adapter.install(Node)
+    async def build(adapter, repeat=False):
+        adapter.install(Node, Player)
         node = Node(event_handler=lavalink.lavalink.dispatch, host='127.0.0.1', password='offline',
                     user_id=99, num_shards=1, port=2333)
         node.state = NodeState.READY
@@ -138,12 +139,14 @@ def stack(monkeypatch):
         player = Player(SimpleNamespace(user=SimpleNamespace(id=99)), SimpleNamespace(id=2, name='voice', guild=guild))
         node._players_dict[123] = player
         player.store('notify_channel', channel.id)  # As Red's !play does.
+        player.repeat = repeat
         events = []
         async def record(player, event, extra):
             events.append((event, extra))
+        audio = RedAudio(repeat)
         lavalink.register_event_listener(record)
-        lavalink.register_event_listener(RedAudio().lavalink_event_handler)
-        return SimpleNamespace(node=node, player=player, channel=channel, events=events)
+        lavalink.register_event_listener(audio.lavalink_event_handler)
+        return SimpleNamespace(node=node, player=player, channel=channel, events=events, audio=audio)
     return build
 
 
@@ -157,6 +160,10 @@ async def settle():
 
 def plays(node):
     return [row['track'] for row in node._queue if row['op'] == 'play']
+
+
+def ops(node):
+    return [(row['op'], row.get('track')) for row in node._queue if row['op'] in ('play', 'stop')]
 
 
 def track_error(red):
@@ -189,6 +196,109 @@ def test_failed_preparation_reaches_red_through_lavalink_dispatch_and_playback_r
         finally:
             await red.node.session.close()
     asyncio.run(scenario())
+
+
+def hold(red, name):
+    """Pause Red's Track Error handler at one of its awaits (its first, or the embed colour)."""
+    reached, release = asyncio.Event(), asyncio.Event()
+    original = getattr(red.audio.bot, name)
+    async def paused(*args, **kwargs):
+        reached.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+    setattr(red.audio.bot, name, paused)
+    return reached, release
+
+
+def failing(*identifiers):
+    async def prepare(identifier):
+        if identifier in identifiers:
+            raise TimeoutError
+    return AsyncMock(side_effect=prepare)
+
+
+@pytest.mark.parametrize('pause', ['cog_disabled_in_guild', 'get_embed_color'])
+@pytest.mark.parametrize('repeat', [False, True])
+def test_a_member_skip_during_reds_track_error_keeps_the_newer_track_playing(stack, pause, repeat):
+    async def scenario():
+        adapter = AudioPreparation('http://gene-audio:2334', TOKEN, 123)
+        adapter.prepare = failing(LONG)
+        red = await stack(adapter, repeat=repeat)
+        try:
+            reached, release = hold(red, pause)
+            red.player.add(None, song(LONG))
+            red.player.add(None, song(SHORT))
+            await red.player.play()
+            await reached.wait()  # Red holds A's Track Error; the member skips to B meanwhile.
+            await red.player.skip()
+            assert ops(red.node) == [('play', 'encoded-' + SHORT)]
+            release.set()
+            await settle()
+            # Red still reports A, but its automatic skip no longer stops or restarts B.
+            assert track_error(red).startswith(GENERIC + '\n')
+            assert ops(red.node) == [('play', 'encoded-' + SHORT)]
+            assert [event for event, extra in red.events] == [LavalinkEvents.TRACK_EXCEPTION]
+            assert red.player.current.track_identifier == 'encoded-' + SHORT
+            assert not adapter.pending
+        finally:
+            await red.node.session.close()
+    asyncio.run(scenario())
+
+
+def test_a_member_stop_during_reds_track_error_is_not_repeated(stack):
+    async def scenario():
+        adapter = AudioPreparation('http://gene-audio:2334', TOKEN, 123)
+        adapter.prepare = failing(LONG)
+        red = await stack(adapter)
+        try:
+            reached, release = hold(red, 'get_embed_color')
+            red.player.add(None, song(LONG))
+            red.player.add(None, song(SHORT))
+            await red.player.play()
+            await reached.wait()
+            await red.player.stop()
+            release.set()
+            await settle()
+            assert ops(red.node) == [('stop', None)]
+            assert [event for event, extra in red.events] == [LavalinkEvents.TRACK_EXCEPTION, LavalinkEvents.QUEUE_END]
+            assert red.player.current is None
+        finally:
+            await red.node.session.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('repeat', [False, True])
+def test_failed_preparation_still_skips_to_the_next_track(stack, repeat):
+    async def scenario():
+        adapter = AudioPreparation('http://gene-audio:2334', TOKEN, 123)
+        adapter.prepare = failing(LONG)
+        red = await stack(adapter, repeat=repeat)
+        try:
+            red.player.add(None, song(LONG))
+            red.player.add(None, song(SHORT))
+            await red.player.play()
+            await settle()
+            assert ops(red.node) == [('play', 'encoded-' + SHORT)]
+            assert red.player.current.track_identifier == 'encoded-' + SHORT
+            # The member's own skip afterwards is unaffected: B ends the queue, or repeats under repeat.
+            await red.player.skip()
+            await settle()
+            assert ops(red.node)[1:] == ([('play', 'encoded-' + SHORT)] if repeat else [('stop', None)])
+        finally:
+            await red.node.session.close()
+    asyncio.run(scenario())
+
+
+def test_production_install_guards_reds_automatic_skip(monkeypatch):
+    monkeypatch.setattr(Node, 'no_stop_play', Node.no_stop_play)
+    monkeypatch.setattr(Node, 'send', Node.send)
+    monkeypatch.setattr(Player, 'skip', Player.skip)
+    original = Player.skip
+    monkeypatch.setenv('GENE_AUDIO_PREPARE_URL', 'http://gene-audio:2334')
+    monkeypatch.setenv('GENE_AUDIO_PREPARE_TOKEN', TOKEN)
+    monkeypatch.setenv('GENE_GUILD_ID', '123')
+    runtime_audio.install_audio_preparation(None)
+    assert Player.skip is not original and Node.no_stop_play.__module__ == 'gene.runtime_audio'
 
 
 def extractor(identifier, options):

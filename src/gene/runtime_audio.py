@@ -2,9 +2,12 @@
 
 A pinned-client adapter, installed outside Red. No player/queue implementation is
 replaced. Stop, skip, disconnect, pause and seek remain effective during preparation.
+Player.skip is wrapped only to drop Red's automatic skip after a failed preparation once a
+newer play or stop has superseded the failed track (gene #75).
 """
 
 import asyncio
+import contextvars
 import logging
 import os
 import re
@@ -21,6 +24,9 @@ REFUSALS = {
     'unsupported': "Gene plays ordinary public YouTube tracks only, not live streams. Pick another one.",
 }
 FAILED = 'The audio download could not be prepared. Try again shortly or choose another track.'
+# The failed play whose Track Error is being handled. lavalink's dispatch starts its listener
+# tasks inside report_failure's call, so only those tasks (Red's handler among them) carry it.
+HANDLING = contextvars.ContextVar('gene_audio_failed_play', default=None)
 
 
 def youtube_id(track):
@@ -67,12 +73,14 @@ class AudioPreparation:
             if response.json().get('ready') is not True:
                 raise ValueError('Audio preparation was not confirmed')
 
-    def install(self, node_class):
+    def install(self, node_class, player_class=None):
         original_play, original_send = node_class.no_stop_play, node_class.send
-        pending = self.pending
+        pending, latest = self.pending, {}  # latest: each player's newest play marker, cleared on stop.
 
         async def send(node, data):
             key = (node, int(data.get('guildId', 0)))
+            if data.get('op') in ('stop', 'destroy'):
+                latest.pop(key, None)
             current = pending.get(key)
             if current:
                 if data.get('op') in ('stop', 'destroy'):
@@ -85,8 +93,8 @@ class AudioPreparation:
 
         async def play(node, guild_id, track, replace=True, start=0, pause=False):
             key = (node, guild_id)
-            marker = {'pause': pause, 'start': start}
-            pending[key] = marker  # A newer skip/play supersedes an older download.
+            marker = {'pause': pause, 'start': start, 'track': track}
+            pending[key] = latest[key] = marker  # A newer skip/play supersedes an older download.
             identifier = youtube_id(track)
             try:
                 if guild_id == self.guild_id and identifier:
@@ -100,7 +108,11 @@ class AudioPreparation:
                             # Only a fixed code, status or exception class: never URLs or upstream text.
                             LOG.warning('Selected audio preparation failed (%s); playback was not started',
                                         reason or status or type(exc).__name__)
-                            report_failure(node, guild_id, reason)
+                            handling = HANDLING.set((key, marker))
+                            try:
+                                report_failure(node, guild_id, reason)
+                            finally:
+                                HANDLING.reset(handling)
                         return
                 if pending.get(key) is marker:
                     return await original_play(node, guild_id, track, replace=replace,
@@ -110,6 +122,26 @@ class AudioPreparation:
                     pending.pop(key, None)
 
         node_class.no_stop_play, node_class.send = play, send
+        if player_class is None:
+            return
+        original_skip = player_class.skip
+
+        async def skip(player):
+            failed = HANDLING.get()
+            if failed is None:
+                return await original_skip(player)
+            HANDLING.set(None)  # Only the handler's own skip for this failure is checked.
+            key, marker = failed
+            newer = latest.get(key)
+            if newer is marker:
+                return await original_skip(player)
+            # A member's skip, play or stop superseded the failed track while Red reported it.
+            # Red's repeat path cleared player.current: point it back at the track now playing.
+            if player.current is None and newer:
+                player.current = newer['track']
+            LOG.info('A newer play superseded the failed track; its automatic skip was not applied')
+
+        player_class.skip = skip
 
 
 def install_audio_preparation(bot):
@@ -117,4 +149,6 @@ def install_audio_preparation(bot):
     if not url:
         return
     from lavalink.node import Node
-    AudioPreparation(url, os.environ['GENE_AUDIO_PREPARE_TOKEN'], int(os.environ['GENE_GUILD_ID'])).install(Node)
+    from lavalink.player import Player
+    AudioPreparation(url, os.environ['GENE_AUDIO_PREPARE_TOKEN'],
+                     int(os.environ['GENE_GUILD_ID'])).install(Node, Player)

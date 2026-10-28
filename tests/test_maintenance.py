@@ -124,6 +124,9 @@ for file; do :; done  # stat -c %u:%g FILE; owners come from $CTL/<name>.owner
 if [[ $file == "$(cat "$CTL/vanish-at-stat" 2>/dev/null)" ]]; then rm -f "$file"; fi
 [[ -e $file ]] || { echo "stat: cannot statx '$file': No such file or directory" >&2; exit 1; }
 if [[ $file == "$(cat "$CTL/stat-eio" 2>/dev/null)" ]]; then echo "stat: cannot statx '$file': Input/output error" >&2; exit 1; fi
+if [[ $file == "$(cat "$CTL/reappear-at-stat" 2>/dev/null)" ]]; then  # Gone at stat, a new one there after.
+  echo "stat: cannot statx '$file': No such file or directory" >&2; exit 1
+fi
 cat "$CTL/${file##*/}.owner" 2>/dev/null || echo 10001:10001
 '''
 FAKE_CHOWN = '''#!/usr/bin/env bash
@@ -135,7 +138,7 @@ echo "$1" > "$CTL/${2##*/}.owner"
 '''
 
 
-def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False, eio=False):
+def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False, eio=False, reappear=False):
     """repair_sidecars on a root-owned or owner-owned WAL that SQLite removes at the chosen moment."""
     ctl, data, bin_dir = tmp_path/'ctl', tmp_path/'data', tmp_path/'bin'
     for path in ctl, data, bin_dir:
@@ -150,6 +153,8 @@ def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False, eio=False):
         (ctl/'chown-denied').touch()
     if eio:
         (ctl/'stat-eio').write_text(f'{db}-wal')
+    if reappear:
+        (ctl/'reappear-at-stat').write_text(f'{db}-wal')
     for name, body in ('stat', FAKE_STAT), ('chown', FAKE_CHOWN):
         (bin_dir/name).write_text(body)
         (bin_dir/name).chmod(0o755)
@@ -191,14 +196,20 @@ def test_a_journal_file_that_cant_be_read_but_is_there_stops_the_script(tmp_path
     assert chowned == [] and wal.exists()
 
 
+def test_a_journal_file_gone_at_stat_and_back_after_needs_nothing(tmp_path):
+    """2026-10-28, second release: SQLite removed -shm at stat and made a new one before a recheck. Gone at
+    stat is gone: the new one is the controller's own, so the repair skips it and the switch goes on."""
+    out, chowned, wal = sidecar_shell(tmp_path, '0:0', reappear=True)
+    assert out.returncode == 0 and out.stdout.split() == ['repaired'], out.stderr
+    assert chowned == [] and wal.exists()
+
+
 @pytest.mark.parametrize('error', ["du: cannot read directory '{root}/sub': Permission denied",
-                                   "du: cannot access '{root}/here': No such file or directory",
                                    "du: fts_read failed: Input/output error"])
 def test_sizing_a_tree_stops_on_any_error_but_a_file_gone(tmp_path, error):
     """Review: a partial total after a permission or I/O error would undercount; it stops instead."""
     bin_dir = tmp_path/'bin'
     bin_dir.mkdir()
-    (tmp_path/'here').touch()  # Said to be missing, but there.
     message = error.format(root=tmp_path).replace("'", "'\\''")
     (bin_dir/'du').write_text('#!/usr/bin/env bash\n'
                               'printf "%s\\t%s\\n" 4096 "$2"\n'
@@ -213,10 +224,12 @@ def test_sizing_a_tree_stops_on_any_error_but_a_file_gone(tmp_path, error):
     assert 'FAIL: could not measure' in out.stderr
 
 
-@pytest.mark.parametrize('printed,stops', [('4096', False), ('', True)])
-def test_sizing_a_tree_counts_a_file_that_vanishes_as_gone(tmp_path, printed, stops):
+@pytest.mark.parametrize('printed,stops,back', [('4096', False, False), ('', True, False), ('4096', False, True)])
+def test_sizing_a_tree_counts_a_file_that_vanishes_as_gone(tmp_path, printed, stops, back):
     bin_dir = tmp_path/'bin'
     bin_dir.mkdir()
+    if back:  # A new one there by the time anyone looks again: still counted as gone.
+        (tmp_path/'gene.sqlite3-wal').touch()
     # GNU du prints the total, then fails, when a file goes between its readdir and its stat.
     (bin_dir/'du').write_text('#!/usr/bin/env bash\n'
                               f'[[ -z "{printed}" ]] || printf "%s\\t%s\\n" "{printed}" "$2"\n'

@@ -7,11 +7,11 @@ describe the retained legacy installation and are not the new companion deployme
 
 ## Hosts and credentials
 
-The trusted checkout and service files live under `/srv/gene` on Hostinger. Docker
-containers run as UID 10001. The small trusted worker/deployer wrappers run as root
-to orchestrate isolated containers, backups, and release mounts. They are part of
-the control plane, never editable by automated feature jobs. Existing Hostinger
-applications and OpenClaw are separate and are not managed by this project.
+The trusted checkout and service files live under `/srv/gene` on the bot host, a Linux
+machine with Docker and systemd. Docker containers run as UID 10001. The small trusted
+worker/deployer wrappers run as root to orchestrate isolated containers, backups, and
+release mounts. They are part of the control plane, never editable by automated feature
+jobs. Other applications on the same host are separate and are not managed by this project.
 
 - `source/`: installed control plane; update deliberately as a maintainer.
 - `secrets/{controller,runtime,fri,worker,deployer}.env`: separate service credentials.
@@ -51,7 +51,7 @@ are never included in repository files, tool output, or Discord messages.
 8. Enable the `gene-worker` and `gene-deployer` systemd units after checks pass.
    Development starts paused. `/fri → Owner settings → Resume development` resumes new jobs.
 
-Compose command prefix on Hostinger:
+Compose command prefix on the bot host:
 
 ```bash
 sudo docker compose --project-name gene --env-file /srv/gene/release.env \
@@ -432,7 +432,7 @@ applied. The controller advertises this as the optional `usage-window` capabilit
 sends a window only to a controller that offers it, and names the window only when every
 row carries it, so a controller rolled back under a running Fri reads as all-time.
 
-### Connect Fri on the personal VM
+### Connect Fri on the bot host
 
 Create a distinct Discord bot application. Enable Message Content Intent so Fri can recognize
 her name in normal messages. Enable the application's Server Members Intent for complete
@@ -442,15 +442,15 @@ locally, enter the bot token privately, and use its printed invite if Fri is not
 It writes `.secrets/fri.env`; Gene's existing bot identity is untouched.
 
 Run `uv run --no-sync python scripts/connect_fri_chatgpt.py`. This uses the official
-Sign in with ChatGPT flow for a personal self-hosted VM, with PKCE, nonce/state validation,
+Sign in with ChatGPT flow for a self-hosted VM, with PKCE, nonce/state validation,
 signed ID-token checks, and the `chatgpt.tokens.use.direct` plan scope. The stable opaque
-VM identity is `.secrets/fri-hostinger-id.json`; reuse it when reconnecting this VM.
+host identity is `.secrets/fri-hostinger-id.json`; reuse it when reconnecting the same host.
 No API key, copied Codex token, or private ChatGPT endpoint is used for chat.
 
 Transfer the verified session over SSH to `/srv/gene/secrets/fri-chatgpt/session.json`,
 mode 0600, with the containing directory owned by UID 10001 (0700). Only Fri mounts that
 directory, read/write, so it can atomically rotate refresh credentials under a lock.
-After transfer, the VM owns refreshes. Never overwrite a live rotated token with a stale
+After transfer, the bot host owns refreshes. Never overwrite a live rotated token with a stale
 local copy. Reconnection is a new interactive authorization; stop Fri before replacing
 its session and mark/remove the transferred local credential. Keep the host identity.
 
@@ -715,7 +715,7 @@ Keep at most 7 days of backups and failed-job diagnostics once the lab has stabi
 ## Lab acceptance checklist
 
 Bootstrap verification on 2026-10-18: GitHub CLI authentication, private repository,
-Hostinger services, invisible Discord connection, and lab-only slash registration
+bot host services, invisible Discord connection, and lab-only slash registration
 are verified. The core suite has 70 passing checks. A real GPT-6 Astra request
 (`152a3c1aea3f`) repaired its failing test, passed 85 candidate checks and lint in the
 isolated container, and published [the first draft proposal](https://github.com/HumanMint/gene/pull/1).
@@ -723,7 +723,7 @@ GitHub Actions also passed. That Discord proposal remains unapproved and has not
 deployed. Subsequent maintainer changes added the separate panel and external audio
 source. The combined suite now has 119 passing checks, including owner review and
 DM failure recovery coverage. The preceding playback/panel suite also passed isolated
-Hostinger tests. A complete 174-second cached Nanobii Rainbow Road decode finished
+tests on the bot host. A complete 174-second cached track decode finished
 with zero buffer underruns, as did the direct-stream comparison; the reported voice
 pauses were not reproduced by these source-level checks. Rollback paths have isolated
 test coverage. Sustained listening in Discord remains a human acceptance step.
@@ -733,7 +733,7 @@ test coverage. Sustained listening in Discord remains a human acceptance step.
 - One real Codex job publishes a tested private branch and records actual usage.
 - Owner approves exact commit; it becomes healthy; a broken release restores prior code.
 - Meme add/remove/dual/self votes, deleted originals, duplicate events, restart recovery.
-- Play/search/queue and at least two sustained tracks in voice; then a Mac-offline test.
+- Play/search/queue and at least two sustained tracks in voice; then a relay-offline test.
 - Controller/worker unavailable while ordinary Red commands remain usable.
 - Historical evidence reviewed before restoring any original-server behavior.
 
@@ -813,7 +813,7 @@ Do not restore those rows into active chat context during rollback. Test scripts
 that previously injected owner conversations are retired; source receipts and the
 isolated evaluator are required for future validation.
 
-Fri now has a persistent Hostinger heartbeat and a Discord adapter. Gene's Red
+Fri now has a persistent heartbeat on the bot host and a Discord adapter. Gene's Red
 extensions and separate audio services are unchanged. Promote Fri and the
 controller's primary guild/workshop together to FF; preserve the prior Lab env
 and command registration for rollback. Set `FRI_PRESENCE=online` in fri.env for

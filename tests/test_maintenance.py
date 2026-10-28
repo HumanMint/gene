@@ -1,6 +1,7 @@
 import datetime as dt
 import json
 import os
+import re
 import sqlite3
 import stat
 import subprocess
@@ -29,21 +30,25 @@ def clock(monkeypatch, text):
     monkeypatch.setattr(maintenance, 'clock', lambda: at(text))
 
 
+# Owner policy, 2026-10-28: [03:30, 07:30) America/Los_Angeles.
 BOUNDARIES = [
-    ('2026-10-28T03:59:59-07:00', False),
-    ('2026-10-28T04:00:00-07:00', True),
-    ('2026-10-28T04:59:59-07:00', True),
-    ('2026-10-28T05:00:00-07:00', False),
+    ('2026-10-28T03:29:59-07:00', False),
+    ('2026-10-28T03:30:00-07:00', True),
+    ('2026-10-28T07:29:59-07:00', True),
+    ('2026-10-28T07:30:00-07:00', False),
     ('2026-10-28T16:30:00-07:00', False),  # an overdue wake is no daytime catch-up
-    # Fall back (2026-11-01 02:00 PDT -> 01:00 PST): the window opens at 12:00Z, not 11:00Z.
-    ('2026-11-01T11:30:00+00:00', False),
-    ('2026-11-01T04:00:00-08:00', True),
-    ('2026-11-01T04:59:59-08:00', True),
-    ('2026-11-01T05:00:00-08:00', False),
-    # Spring forward (2027-03-14 02:00 PST -> 03:00 PDT): the window opens at 11:00Z, not 12:00Z.
-    ('2027-03-13T04:30:00-08:00', True),
-    ('2027-03-14T11:00:00+00:00', True),
-    ('2027-03-14T12:30:00+00:00', False),
+    # Fall back (2026-11-01 02:00 PDT -> 01:00 PST): the window opens at 11:30Z, not 10:30Z.
+    ('2026-11-01T10:30:00+00:00', False),
+    ('2026-11-01T11:29:59+00:00', False),
+    ('2026-11-01T03:30:00-08:00', True),
+    ('2026-11-01T07:29:59-08:00', True),
+    ('2026-11-01T07:30:00-08:00', False),
+    # Spring forward (2027-03-14 02:00 PST -> 03:00 PDT): the window opens at 10:30Z, not 11:30Z.
+    ('2027-03-13T03:30:00-08:00', True),
+    ('2027-03-14T10:29:59+00:00', False),
+    ('2027-03-14T10:30:00+00:00', True),
+    ('2027-03-14T14:29:59+00:00', True),
+    ('2027-03-14T14:30:00+00:00', False),
 ]
 
 
@@ -56,6 +61,11 @@ def bash_major():
 
 
 needs_bash4 = pytest.mark.skipif(bash_major() < 4, reason='batch-release.sh needs bash 4 or later')
+
+
+def window_settings():
+    """The release script's own copy of the window: the lines that set it, which window() reads."""
+    return '\n'.join(line for line in SCRIPT.read_text().splitlines() if re.match(r'WINDOW(_OPENS|_CLOSES)?=', line))
 
 
 def functions(*names):
@@ -92,9 +102,37 @@ def test_window_boundaries_and_daylight_saving(when, inside):
 @needs_bash4
 @pytest.mark.parametrize('when,inside', BOUNDARIES)
 def test_the_release_script_keeps_the_same_window(when, inside):
-    out = subprocess.run(['bash', '-c', functions('window') + f'\nwindow {int(at(when))}'],
+    out = subprocess.run(['bash', '-c', window_settings() + '\n' + functions('window') + f'\nwindow {int(at(when))}'],
                          capture_output=True, text=True, check=True)
     assert out.stdout.split()[0] == ('open' if inside else 'closed')
+
+
+def test_every_copy_of_the_window_is_the_same():
+    """The release script and image retention run without this package, so each keeps its own copy."""
+    from scripts import gene_image_retention as retention
+    assert (maintenance.OPENS, maintenance.CLOSES) == (dt.time(3, 30), dt.time(7, 30))  # owner policy, 2026-10-28
+    assert maintenance.WINDOW == '[03:30, 07:30) America/Los_Angeles'
+    settings = dict(line.split('  #')[0].split('=', 1) for line in window_settings().splitlines())
+    assert settings['WINDOW_OPENS'] == f'{maintenance.OPENS:%H:%M}'
+    assert settings['WINDOW_CLOSES'] == f'{maintenance.CLOSES:%H:%M}'
+    assert (retention.OPENS, retention.CLOSES, retention.ZONE) == (maintenance.OPENS, maintenance.CLOSES, maintenance.ZONE)
+    assert retention.WINDOW == maintenance.WINDOW
+
+
+def test_the_docs_and_messages_name_the_window_the_code_keeps():
+    """Every [hh:mm, hh:mm) in the docs, scripts and code is the window or the deployer's claim window."""
+    root = SCRIPT.parents[2]
+    window = f'[{maintenance.OPENS:%H:%M}, {maintenance.CLOSES:%H:%M})'
+    claims = f'[{maintenance.OPENS:%H:%M}, {maintenance.closes(maintenance.CLAIM_MARGIN):%H:%M})'
+    assert claims == '[03:30, 07:20)'
+    found = {}
+    for path in [root/'AGENTS.md', root/'README.md', *(root/'docs').rglob('*.md'), *(root/'ops').rglob('*'),
+                 *(root/'src').rglob('*.py'), *(root/'scripts').rglob('*.py'), *(root/'tests').rglob('*.py')]:
+        if path.is_file():
+            for text in re.findall(r'\[\d\d:\d\d, \d\d:\d\d\)', path.read_text(errors='replace')):
+                found.setdefault(text, set()).add(str(path.relative_to(root)))
+    assert set(found) <= {window, claims}, found
+    assert 'ops/maintainer/batch-release.md' in found[claims]
 
 
 def test_an_unknown_clock_or_zone_is_closed(monkeypatch):
@@ -110,9 +148,10 @@ def test_an_unknown_clock_or_zone_is_closed(monkeypatch):
 
 @needs_bash4
 def test_the_release_script_refuses_a_clock_it_cannot_trust(tmp_path):
-    out = subprocess.run(['bash', '-c', functions('window') + '\nwindow 1000000000'], capture_output=True, text=True)
+    out = subprocess.run(['bash', '-c', window_settings() + '\n' + functions('window') + '\nwindow 1000000000'],
+                         capture_output=True, text=True)
     assert out.returncode != 0
-    out = subprocess.run(['bash', '-c', functions('now_epoch', 'window', 'window_open') + '\nwindow_open'],
+    out = subprocess.run(['bash', '-c', window_settings() + '\n' + functions('now_epoch', 'window', 'window_open') + '\nwindow_open'],
                          capture_output=True, text=True, env=fake_date(tmp_path, 'not-a-number'))
     assert out.returncode != 0
 
@@ -236,18 +275,44 @@ def test_sizing_a_tree_counts_a_file_that_vanishes_as_gone(tmp_path, printed, st
 def test_claims_wait_for_the_window_and_an_owner_rollback_does_not(store, monkeypatch):
     job = proposed(store)
     store.approve(job['id'], G, 'owner')
-    for when in ('2026-10-28T03:59:59-07:00', '2026-10-28T04:50:00-07:00', '2026-10-28T05:20:00-07:00',
+    for when in ('2026-10-28T03:29:59-07:00', '2026-10-28T07:20:00-07:00', '2026-10-28T07:50:00-07:00',
                  '2026-10-28T16:00:00-07:00'):
         clock(monkeypatch, when)
         assert store.claim_deploy() is None
     assert store.get(job['id'])['state'] == 'approved'  # deferred, untouched
-    clock(monkeypatch, '2026-10-29T04:49:59-07:00')  # the last claim leaves time for the switch
+    clock(monkeypatch, '2026-10-29T07:19:59-07:00')  # the last claim leaves time for the switch
     release = store.claim_deploy()
     assert release['id'] == job['id']
     store.finish_deploy(release['id'], release['lease'], True, 'Healthy')
     clock(monkeypatch, '2026-10-29T13:00:00-07:00')
     rollback = store.rollback('guild', 'owner')
     assert store.claim_deploy()['id'] == rollback['id']
+
+
+CLAIM_EDGES = [
+    ('2026-10-28T03:29:59-07:00', False),
+    ('2026-10-28T03:30:00-07:00', True),
+    ('2026-10-28T07:19:59-07:00', True),
+    ('2026-10-28T07:20:00-07:00', False),  # ten minutes before the close, so a claimed switch starts in time
+    # The days daylight saving ends and starts: the same local edges.
+    ('2026-11-01T11:29:59+00:00', False),
+    ('2026-11-01T03:30:00-08:00', True),
+    ('2026-11-01T07:19:59-08:00', True),
+    ('2026-11-01T07:20:00-08:00', False),
+    ('2027-03-14T10:29:59+00:00', False),
+    ('2027-03-14T10:30:00+00:00', True),
+    ('2027-03-14T14:19:59+00:00', True),
+    ('2027-03-14T14:20:00+00:00', False),
+]
+
+
+@pytest.mark.parametrize('when,claimed', CLAIM_EDGES)
+def test_automatic_claims_run_from_the_open_until_ten_minutes_before_the_close(store, monkeypatch, when, claimed):
+    job = approved(store, G, 'message-1')
+    clocks(monkeypatch, when)
+    result = store.claim_deploy()
+    assert (result and result['id']) == (job['id'] if claimed else None)
+    assert store.get(job['id'])['state'] == ('deploying' if claimed else 'approved')
 
 
 def test_an_unknown_zone_defers_every_claim_but_a_rollback(store, monkeypatch):
@@ -330,7 +395,7 @@ def test_a_critical_fix_skips_the_cap_but_not_the_window(store, monkeypatch, tmp
     clocks(monkeypatch, '2026-10-28T04:20:00-07:00')
     assert store.claim_deploy() is None
     assert maintenance.mark_critical(store.path, job['id'], 'P0: replies leak a DM', 'maintainer:test') == G
-    clocks(monkeypatch, '2026-10-28T05:20:00-07:00')
+    clocks(monkeypatch, '2026-10-28T07:50:00-07:00')
     assert store.claim_deploy() is None  # still only inside the window
     clocks(monkeypatch, '2026-10-28T04:30:00-07:00')
     assert store.claim_deploy()['id'] == job['id']
@@ -426,7 +491,7 @@ def deployer(tmp_path):
 
 
 def test_the_deployer_never_starts_a_feature_switch_outside_the_window(tmp_path, monkeypatch):
-    clock(monkeypatch, '2026-10-28T05:00:00-07:00')
+    clock(monkeypatch, '2026-10-28T07:30:00-07:00')
     worker = deployer(tmp_path)
     job = {'id': 'job', 'kind': 'feature', 'proposal': {'sha': G, 'base_sha': OLD_G}}
     with pytest.raises(RuntimeError, match='Outside the maintenance window'):
@@ -435,6 +500,25 @@ def test_the_deployer_never_starts_a_feature_switch_outside_the_window(tmp_path,
     worker.compose.assert_not_called()
     worker.process(job | {'kind': 'rollback'})  # restoring service runs at any hour
     worker.compose.assert_called_once_with('stop', 'red')
+
+
+@pytest.mark.parametrize('when,switches', [
+    ('2026-10-28T03:29:59-07:00', False),
+    ('2026-10-28T03:30:00-07:00', True),
+    ('2026-10-28T07:29:59-07:00', True),  # a job claimed before 07:20 still switches until the close
+    ('2026-10-28T07:30:00-07:00', False),
+])
+def test_a_claimed_feature_switches_only_inside_the_window(tmp_path, monkeypatch, when, switches):
+    clock(monkeypatch, when)
+    worker = deployer(tmp_path)
+    job = {'id': 'job', 'kind': 'feature', 'proposal': {'sha': G, 'base_sha': OLD_G}}
+    if switches:
+        worker.process(job)
+        worker.compose.assert_any_call('stop', 'red')
+    else:
+        with pytest.raises(RuntimeError, match='Outside the maintenance window'):
+            worker.process(job)
+        worker.compose.assert_not_called()
 
 
 def test_each_deployment_leaves_a_bounded_record_without_member_content(tmp_path, monkeypatch):
@@ -472,9 +556,9 @@ def fri_root(tmp_path, record):
 
 @pytest.mark.parametrize('when,sha,exception,allowed', [
     ('2026-10-28T04:30:00-07:00', F, '', True),
-    ('2026-10-28T05:00:00-07:00', F, '', False),
-    ('2026-10-28T05:00:00-07:00', OLD_F, '', True),  # rolling back to the Fri this one replaced
-    ('2026-10-28T05:00:00-07:00', F, 'owner: emergency fix, 2026-10-28', True),
+    ('2026-10-28T07:30:00-07:00', F, '', False),
+    ('2026-10-28T07:30:00-07:00', OLD_F, '', True),  # rolling back to the Fri this one replaced
+    ('2026-10-28T07:30:00-07:00', F, 'owner: emergency fix, 2026-10-28', True),
 ])
 def test_fri_releases_start_only_in_the_window(tmp_path, monkeypatch, when, sha, exception, allowed):
     clock(monkeypatch, when)
@@ -482,13 +566,13 @@ def test_fri_releases_start_only_in_the_window(tmp_path, monkeypatch, when, sha,
 
 
 def test_a_refused_fri_release_changes_nothing_and_is_recorded(tmp_path, monkeypatch):
-    clock(monkeypatch, '2026-10-28T05:10:00-07:00')
+    clock(monkeypatch, '2026-10-28T07:40:00-07:00')
     root, gene_root = fri_root(tmp_path, {'sha': OLD_F, 'previous': None}), tmp_path/'gene'
     gene_root.mkdir()
     monkeypatch.setattr(sys, 'argv', ['fri_release', F, '--root', str(root), '--gene-root', str(gene_root)])
     monkeypatch.delenv('MAINTENANCE_EXCEPTION', raising=False)
     monkeypatch.setattr(fri_release, 'FriRelease', Mock(side_effect=AssertionError('no release object')))
-    with pytest.raises(SystemExit, match='Outside the maintenance window'):
+    with pytest.raises(SystemExit, match=re.escape('Outside the maintenance window [03:30, 07:30) America/Los_Angeles')):
         fri_release.main()
     row = json.loads((gene_root/'production-actions.jsonl').read_text())
     assert row['outcome'].startswith('refused') and row['before'] == {'fri': OLD_F} == row['after']
@@ -521,11 +605,12 @@ def script(tmp_path, phase, when, journal=(), extra_env=None, g=G, db=True):
 
 
 @needs_bash4
-@pytest.mark.parametrize('when', ['2026-10-28T03:59:59-07:00', '2026-10-28T05:00:00-07:00',
+@pytest.mark.parametrize('when', ['2026-10-28T03:29:59-07:00', '2026-10-28T07:30:00-07:00',
                                   '2026-10-28T13:00:00-07:00'])
 def test_baseline_outside_the_window_takes_no_lock_and_writes_no_staging(tmp_path, when):
     out, root, rows = script(tmp_path, 'baseline', when)
-    assert out.returncode == 4 and 'REFUSED: outside the maintenance window' in out.stderr
+    assert out.returncode == 4
+    assert 'REFUSED: outside the maintenance window [03:30, 07:30) America/Los_Angeles' in out.stderr
     assert not (root/'batch-release.lock').exists() and not (root/'staging').exists()
     assert rows[-1]['action'] == 'batch-release baseline' and rows[-1]['outcome'].startswith('refused')
     assert rows[-1]['tz'] == 'America/Los_Angeles' and rows[-1]['at'].startswith(when[:16])
@@ -553,7 +638,7 @@ def test_baseline_outside_the_window_takes_no_lock_and_writes_no_staging(tmp_pat
     ('resume-old', ('baseline', 'drained'), False),
 ])
 def test_after_the_close_only_the_restore_path_runs(tmp_path, phase, journal, gated):
-    out, _, rows = script(tmp_path, phase, '2026-10-28T05:20:00-07:00', journal)
+    out, _, rows = script(tmp_path, phase, '2026-10-28T07:50:00-07:00', journal)
     if gated:
         assert out.returncode == 4 and 'REFUSED' in out.stderr
     else:
@@ -564,9 +649,9 @@ def test_after_the_close_only_the_restore_path_runs(tmp_path, phase, journal, ga
 
 @needs_bash4
 def test_a_refusal_names_the_batchs_safe_path(tmp_path):
-    out, _, _ = script(tmp_path, 'gene', '2026-10-28T05:20:00-07:00', ('baseline', 'drained'))
+    out, _, _ = script(tmp_path, 'gene', '2026-10-28T07:50:00-07:00', ('baseline', 'drained'))
     assert 'Run resume-old.' in out.stderr
-    out, _, _ = script(tmp_path, 'evals', '2026-10-28T05:20:00-07:00', ('baseline', 'drained', 'intent:fri'))
+    out, _, _ = script(tmp_path, 'evals', '2026-10-28T07:50:00-07:00', ('baseline', 'drained', 'intent:fri'))
     assert 'Run rollback-fri, then resume-old.' in out.stderr
 
 
@@ -928,16 +1013,16 @@ def test_an_unreadable_clock_never_blocks_recovery(tmp_path):
 @needs_bash4
 def test_the_eval_rules_decision_is_recorded_with_its_reason(tmp_path):
     journal = ('baseline', 'drained', 'gene_recorded', 'fri_switched', 'evals_ran')
-    out, root, _ = script(tmp_path, 'accept-evals', '2026-10-28T05:20:00-07:00', journal)
+    out, root, _ = script(tmp_path, 'accept-evals', '2026-10-28T07:50:00-07:00', journal)
     assert out.returncode == 1 and 'set EVALS_ACCEPTED' in out.stderr
-    out, root, rows = script(tmp_path, 'accept-evals', '2026-10-28T05:20:00-07:00', journal,
+    out, root, rows = script(tmp_path, 'accept-evals', '2026-10-28T07:50:00-07:00', journal,
                              {'EVALS_ACCEPTED': 'known sass miss; rerun passed'})
     assert out.returncode == 0 and 'evals accepted: known sass miss' in out.stdout
     assert (root/f'staging/batch-{G}-{F}/journal').read_text().splitlines()[-1] == 'evaluated'
 
 
 def test_the_deployer_takes_back_a_feature_whose_preparation_ran_past_the_close(tmp_path, monkeypatch):
-    times = iter([at('2026-10-28T04:49:00-07:00'), at('2026-10-28T05:00:30-07:00')])
+    times = iter([at('2026-10-28T07:19:00-07:00'), at('2026-10-28T07:30:30-07:00')])
     monkeypatch.setattr(maintenance, 'clock', lambda: next(times))
     worker = deployer(tmp_path)
     worker.prepare = Mock(side_effect=lambda job: (tmp_path/'releases'/G/'cogs').mkdir(parents=True))
@@ -965,12 +1050,12 @@ def test_fri_release_rechecks_the_window_right_before_its_switch(tmp_path):
     (('baseline', 'drained', 'evals_started', 'evals_ran', 'verified_off', 'evals_started'), True),
 ])
 def test_only_the_last_evals_runs_result_admits_resume_after_the_close(tmp_path, journal, gated):
-    out, _, _ = script(tmp_path, 'resume', '2026-10-28T05:20:00-07:00', journal)
+    out, _, _ = script(tmp_path, 'resume', '2026-10-28T07:50:00-07:00', journal)
     assert ('REFUSED' in out.stderr) is gated
 
 
 @needs_bash4
 def test_accepting_needs_the_last_evals_run_finished(tmp_path):
     journal = ('baseline', 'drained', 'evals_started', 'evals_ran', 'evals_started')
-    out, _, _ = script(tmp_path, 'accept-evals', '2026-10-28T05:20:00-07:00', journal, {'EVALS_ACCEPTED': 'why'})
+    out, _, _ = script(tmp_path, 'accept-evals', '2026-10-28T07:50:00-07:00', journal, {'EVALS_ACCEPTED': 'why'})
     assert out.returncode == 4

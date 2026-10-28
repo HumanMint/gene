@@ -31,7 +31,7 @@ with sqlite3.connect(sys.argv[1]) as db:
     db.execute("UPDATE settings SET value=? WHERE key=\"previous_sha\"", (sys.argv[2],))
     db.execute("UPDATE settings SET value=? WHERE key=\"active_sha\"", (sys.argv[3],))' "$DB" "$OLD_G" "$H"
 sed -i "s/^GENE_RELEASE_SHA=.*/GENE_RELEASE_SHA=$H/" "$BATCH_ROOT/release.env"
-at 2026-10-28T05:30:00-07:00
+at 2026-10-28T08:00:00-07:00
 run 4 drain 1
 output_has 'Run resume-old.'
 run 0 resume-old 2

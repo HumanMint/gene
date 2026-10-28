@@ -1,5 +1,6 @@
 """Image retention against batch-release.sh's records (gene #76): synthetic paths, no Docker."""
 import copy
+import datetime as dt
 import json
 import os
 import shutil
@@ -14,6 +15,7 @@ from tests.test_image_retention import NOW, iid
 REAL_CLOCK = retention.time.time  # bound before any fixture pins time.time; the script runs on the real clock
 
 DAY = 24 * 60 * 60
+CLOSED = NOW + 3.5 * 60 * 60  # 07:40, after the window's close
 RUNTIME, WORKER, FRI = 100, 110, 120  # image IDs: iid(base + release number)
 AUDIO = 'a' * 40
 LIVE = ['baseline', 'staged', 'rehearsed', 'intent:pause', 'drained', 'gene_attempted', 'intent:cogs',
@@ -290,7 +292,7 @@ def test_apply_waits_for_the_policy_to_enable_deletion(batch_host, monkeypatch):
 
 def test_removals_stop_when_the_window_closes(batch_host, monkeypatch):
     root, images = batch_host.root, batch_host.images
-    clock = iter([NOW] * 6 + [NOW + 3600] * 100)  # the plan and first removal at 04:10, then 05:10
+    clock = iter([NOW] * 6 + [CLOSED] * 100)  # the plan and first removal at 04:10, then 07:40
     monkeypatch.setattr(retention.time, 'time', lambda: next(clock))
 
     def docker(*args):
@@ -557,7 +559,7 @@ def actions(root):
 
 def test_outside_the_window_a_run_takes_no_lock_and_writes_only_its_log_line(batch_host, monkeypatch):
     root = batch_host.root
-    monkeypatch.setattr(retention.time, 'time', lambda: NOW + 3600)  # 05:10
+    monkeypatch.setattr(retention.time, 'time', lambda: CLOSED)
     assert retention.execute(root, apply=True) == (retention.REFUSED, None)
     assert sorted(p.name for p in (root / 'maintenance').iterdir()) == ['image-retention-policy.json']
     [line] = actions(root)
@@ -684,12 +686,14 @@ def test_the_status_command_is_read_only(batch_host, monkeypatch, capsys):
 
 def test_the_window_matches_the_controllers_copy():
     from gene import maintenance
-    day, hour = 24 * 3600, 3600
+    day, half_hour = 24 * 3600, 1800
+    assert (retention.OPENS, retention.CLOSES, retention.WINDOW) == (maintenance.OPENS, maintenance.CLOSES,
+                                                                      maintenance.WINDOW)
     moments = [retention.EARLIEST - 1, float('nan'), float('inf')]
     # The daylight-saving ends of 2026 and 2027 and an ordinary day, by the quarter hour and at the edges.
     for start in (1793145600, 1793664000, 1804982400):  # 2026-10-28, 2026-11-01, 2027-03-14 at 00:00Z
         moments += [start + step * 900 for step in range(4 * 24 * 2)]
-        moments += [start + offset for h in range(0, 2 * day, hour) for offset in (h - 1, h, h + 1)]
+        moments += [start + offset for h in range(0, 2 * day, half_hour) for offset in (h - 1, h, h + 1)]
     for moment in moments:
         assert retention.window_open(moment) is maintenance.is_open(moment), moment
 
@@ -702,9 +706,11 @@ def test_the_units_run_once_a_day_inside_the_window_and_skips_are_not_failures()
     service.read(units / 'gene-image-retention.service')
     calendar = timer['Timer']['OnCalendar']
     assert calendar.endswith(' America/Los_Angeles')
-    hour, minute, _ = calendar.split()[1].split(':')
-    delay = int(timer['Timer']['RandomizedDelaySec'].removesuffix('min'))
-    assert int(hour) == 4 and int(minute) + delay < 50  # starts with room before 05:00
+    start = dt.datetime.combine(dt.date(2026, 10, 28), dt.time.fromisoformat(calendar.split()[1]))
+    delay = dt.timedelta(minutes=int(timer['Timer']['RandomizedDelaySec'].removesuffix('min')))
+    # Inside the window, and its latest start still gives back batch-release.lock before the close.
+    assert retention.OPENS <= start.time()
+    assert (start + delay + dt.timedelta(seconds=retention.LOCK_BUDGET)).time() <= retention.CLOSES
     assert timer['Timer']['Persistent'] == 'false'
     assert service['Service']['SuccessExitStatus'] == str(retention.REFUSED)
     assert service['Service']['ExecStart'].endswith('gene_image_retention.py --apply')
@@ -852,8 +858,8 @@ def test_the_window_is_checked_again_right_before_each_removal(batch_host, monke
     clock = [NOW]
     monkeypatch.setattr(retention.time, 'time', lambda: clock[0])
     calls = []
-    if path == 'tag':  # 05:00 passes while the first tag is inspected
-        docker = removing(images, calls, on_inspect=lambda tag: clock.__setitem__(0, NOW + 3600))
+    if path == 'tag':  # 07:30 passes while the first tag is inspected
+        docker = removing(images, calls, on_inspect=lambda tag: clock.__setitem__(0, CLOSED))
     else:  # an unnamed parent of release 0's runtime, collected after the tags
         images[iid(500)] = {'tags': []}
         metadata[iid(500)] = {'id': iid(500), 'parent': iid(204), 'tags': []}
@@ -863,7 +869,7 @@ def test_the_window_is_checked_again_right_before_each_removal(batch_host, monke
 
         def inspect(ref):
             if ref == iid(500) and iid(RUNTIME + 0) not in images:
-                clock[0] = NOW + 3600  # 05:00 passes while the ancestor is inspected
+                clock[0] = CLOSED  # 07:30 passes while the ancestor is inspected
             return lookup(ref)
         monkeypatch.setattr(retention, 'image_metadata', inspect)
         docker = removing(images, calls)

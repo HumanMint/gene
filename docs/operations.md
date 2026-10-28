@@ -321,10 +321,11 @@ equal (`exact`) once every prefix is known. They assume every removal succeeds, 
 Docker's uncompressed sizes: with the containerd image store, compressed blobs are freed too.
 Measure `df` before and after. Docker's own reclaimable figure is not used.
 
-**Schedule and the window.** The timer starts the service daily at 04:40 America/Los_Angeles, with up
-to five minutes' delay and no catch-up (`Persistent=false`). Planning and removal both run only
-inside the maintenance window, [04:00, 05:00): a plan run takes the tool's lock and writes the plan
-and status files, so it is a production action too. Outside the window a run takes no lock, writes
+**Schedule and the window.** The timer starts the service daily at 07:10 America/Los_Angeles, late in
+the window so the day's batch has usually resumed, with up to five minutes' delay and no catch-up
+(`Persistent=false`), so its hold on `batch-release.lock`, ten minutes at most, ends by the close.
+Planning and removal both run only inside the maintenance window, [03:30, 07:30): a plan run takes
+the tool's lock and writes the plan and status files, so it is a production action too. Outside the window a run takes no lock, writes
 nothing but its log line and exits 4; `MAINTENANCE_EXCEPTION='<who, when, why>'`, on the owner's
 explicit words, lets it run and is logged. The window is checked again right before each Docker removal, after
 that image's inspection and recorded intent; at the close the rest wait for the next window (`deferred`). Removal needs both `--apply` (the service
@@ -373,7 +374,7 @@ from Discord text, imported history, or a feature job.
 **Install or update, in the window only.** Install the reviewed script in an immutable directory
 `/srv/gene/maintenance/releases/<maintenance-sha>/gene_image_retention.py` and point `current` to it;
 record the maintenance SHA separately from the running bot SHA. Install the two unit files, then
-check them: `systemd-analyze verify` and `systemd-analyze calendar '*-*-* 04:40 America/Los_Angeles'`
+check them: `systemd-analyze verify` and `systemd-analyze calendar '*-*-* 07:10 America/Los_Angeles'`
 (a zone in `OnCalendar` needs systemd 235 or later), then `systemctl daemon-reload`. Run a plan:
 
 ```sh
@@ -391,7 +392,7 @@ retained rollback bundles do not depend on this maintenance tool.
 ### Maintainer work requested in Codex
 
 The owner's direct request in this Codex chat authorizes implementation and deployment
-without a second approval, inside the production maintenance window: [04:00, 05:00)
+without a second approval, inside the production maintenance window: [03:30, 07:30)
 America/Los_Angeles, one production batch a day across the maintainer batch and automatic
 deployments, unless it's a critical fix (`ops/maintainer/batch-release.md`). Test the change, commit and push it, record the complete
 release SHA, and retain the GitHub diff for review. Do not automatically merge to `main`.

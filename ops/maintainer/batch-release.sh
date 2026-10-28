@@ -1599,13 +1599,17 @@ cleanup() {
   done
 }
 
-# Production maintenance window (owner policy, 2026-10-27). Forward phases start only in [04:00, 05:00)
-# America/Los_Angeles, following daylight saving, and one production batch runs per local day across
+# Production maintenance window (owner policy, 2026-10-27; widened 2026-10-28). Forward phases start
+# only in WINDOW, following daylight saving, and one production batch runs per local day across
 # both routes: a batch that drains here, or an automatic feature or repair deployment. A wait that
 # crosses the close takes the batch's safe path instead of switching. Recovery runs at any hour, and
 # an unknown clock or zone counts as closed. MAINTENANCE_EXCEPTION carries the owner's explicit
 # exception; CRITICAL_FIX, a P0 fix's reason, lifts only the daily cap. The log records both.
-# src/gene/maintenance.py holds the same window and cap for the deployer.
+# src/gene/maintenance.py holds the same window and cap for the deployer; tests/test_maintenance.py
+# keeps WINDOW_OPENS and WINDOW_CLOSES equal to its OPENS and CLOSES.
+WINDOW_OPENS=03:30
+WINDOW_CLOSES=07:30
+WINDOW="[$WINDOW_OPENS, $WINDOW_CLOSES) America/Los_Angeles"
 ACTIONS=$ROOT/production-actions.jsonl
 EXCEPTION=${MAINTENANCE_EXCEPTION:-}
 CRITICAL=${CRITICAL_FIX:-}
@@ -1615,14 +1619,14 @@ STARTED_AT=$(date +%s 2>/dev/null || true)  # Instrumentation only: an unreadabl
 RESTART_S='' REFUSED='' NOTE=''  # NOTE: why resume_services left development as it was
 now_epoch() { TZ=UTC date +%s; }  # The window's clock; the offline tests shift only this call.
 window() {  # epoch: "open|closed <local date> <local time>"; fails on an unknown zone or clock
-  python3 - "$1" <<'PY'
+  python3 - "$1" "$WINDOW_OPENS" "$WINDOW_CLOSES" <<'PY'
 import datetime as dt, sys
 from zoneinfo import ZoneInfo
-stamp = int(sys.argv[1])
+stamp, opens, closes = int(sys.argv[1]), dt.time.fromisoformat(sys.argv[2]), dt.time.fromisoformat(sys.argv[3])
 if stamp < 1793059200:  # 2026-10-27T00:00Z: a clock that reads earlier than the policy is wrong
     sys.exit('the clock reads before 2026-10-27')
 local = dt.datetime.fromtimestamp(stamp, ZoneInfo('America/Los_Angeles'))
-print('open' if dt.time(4) <= local.time() < dt.time(5) else 'closed', local.date().isoformat(), local.isoformat())
+print('open' if opens <= local.time() < closes else 'closed', local.date().isoformat(), local.isoformat())
 PY
 }
 window_open() {
@@ -1745,7 +1749,7 @@ gate() {
     refuse 'this batch stopped after its fence and has not restored development yet; a retry is a new batch (BATCH_ATTEMPT) in a later window'
   fi
   if [[ -n $EXCEPTION ]]; then log "maintenance exception: $EXCEPTION"; return 0; fi
-  window_open || refuse 'outside the maintenance window [04:00, 05:00) America/Los_Angeles, or the clock or zone is unknown'
+  window_open || refuse "outside the maintenance window $WINDOW, or the clock or zone is unknown"
   local used
   if [[ $PHASE =~ ^(baseline|stage|rehearse|drain)$ ]] && ! has drained && used=$(drained_today); then
     [[ -n $CRITICAL ]] || refuse "$used; one production batch per local day. Only a P0 fix goes ahead, with CRITICAL_FIX='<reason>'"

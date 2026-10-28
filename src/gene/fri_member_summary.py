@@ -55,12 +55,16 @@ def initialize(db):
     ''')
 
 
-def drop(db, guild, user):
-    """The member's summary goes, and its generation moves, whatever took it: a reply that already drew on it fails its
-    check and save (gene #91), as once it's gone a later withdrawal finds nothing to move."""
-    db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+def advance(db, guild, user):
+    """The member's summary generation moves: a reply that drew on the summary it had fails its check and save (gene
+    #91). Whatever took or replaced that summary, since once it's gone a later withdrawal finds nothing to move."""
     db.execute('INSERT INTO fri_member_summary_generations VALUES (?,?,1) ON CONFLICT(guild_id, user_id) '
                'DO UPDATE SET generation=generation+1', (guild, user))
+
+
+def drop(db, guild, user):
+    db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+    advance(db, guild, user)
 
 
 def prune(db, now=None):
@@ -230,6 +234,9 @@ def finish(agent, claim_id, summary, status, conversations, previous):
             db.commit()  # The claim is spent either way.
             raise Conflict('Memory changed while Fri was summarizing. Nothing was kept.')
         origins = sorted(set(kept) | set((earlier or {}).get('origins', [])))
+        if db.execute('SELECT 1 FROM fri_member_summaries WHERE guild_id=? AND user_id=?',
+                      (agent.settings.guild_id, record['user_id'])).fetchone():
+            advance(db, agent.settings.guild_id, record['user_id'])  # Replacing one a reply may hold.
         db.execute('INSERT INTO fri_member_summaries VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE '
                    'SET body=excluded.body,revision=excluded.revision,provenance=excluded.provenance,'
                    'origins=excluded.origins,refreshed=excluded.refreshed,through=excluded.through',

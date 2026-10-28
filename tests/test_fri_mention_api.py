@@ -335,4 +335,5 @@ def test_a_mention_saves_fingerprint_is_the_one_an_older_controller_kept(h):
     with h.store.connection() as db:
         assert db.execute('SELECT turn_hash FROM mention_grants').fetchone()[0] == older
     assert post(h, '/chat/turn', payload).status_code == 200
-    assert post(h, '/chat/turn', {**payload, 'summary_generation': None}).status_code == 200
+    for generation in (None, 0, 7):  # Whatever it says, a field a mention never uses doesn't change it.
+        assert post(h, '/chat/turn', {**payload, 'summary_generation': generation}).status_code == 200

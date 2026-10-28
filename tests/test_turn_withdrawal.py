@@ -587,3 +587,25 @@ def test_a_late_save_of_a_withdrawn_message_leaves_a_newer_question_pending(worl
     assert post_turn(client, late).json() == {'ok': True, 'first_memory': False, 'kept': False}
     pending = store.chat_context('123', 'public:51', '20', True, True)['pending']
     assert pending and pending['question'] == 'which song?' and MARKER not in str(pending)
+
+
+def test_a_rebuilt_summary_moves_the_generation_too(world):
+    """Round 2: a rebuild that wasn't sent the old summary replaces it, so a later withdrawal of the old one's source
+    finds nothing; the replacement moves the generation instead, and the reply holding the old one is refused."""
+    from gene.fri_member_summary import finish as finished
+    client, store = world
+    taken, body = drawn_on(client, store)
+    agent = client.app.state.agent
+    readable(store, 'new plans over here', 5000, conversation='public:52')  # After the first one's, settled.
+    readable(store, 'and more of them', 4900, conversation='public:52')
+    with store.connection() as db:
+        db.execute('DELETE FROM fri_member_summary_calls')  # Due again today.
+    claim_id, conversations, offer = claimed(agent)
+    assert finished(agent, claim_id, 'they made new plans', 'completed', conversations, False) == {'kept': True}
+    assert summary(store) == 'they made new plans'
+    withdraw(client, taken)
+    refused = check(client, body)
+    assert refused.status_code == 409 and MARKER not in refused.text
+    assert post_turn(client, body).status_code == 409
+    current = {**body, 'summary_generation': summary_generation_now(store)}
+    assert check(client, current).json() == {'ok': True}  # One drawing on the new summary passes.

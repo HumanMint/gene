@@ -74,8 +74,9 @@ downgrade_step() {  # module db docker-run-words...: remove the module's data fo
     *) die "no downgrade step for $module" ;;
   esac
 }
-owns_pause() {  # This release paused development and has not unpaused it since, by its journal.
-  [[ -f $JOURNAL && $({ grep -x -e intent:pause -e done:unpause "$JOURNAL" || true; } | tail -n 1) == intent:pause ]]
+owns_pause() {  # This release paused development and has not unpaused it since, by its journal. skipped:pause:
+  # its fence found development already paused, by someone else, so that pause was never its own.
+  [[ -f $JOURNAL && $({ grep -x -e intent:pause -e done:unpause -e skipped:pause "$JOURNAL" || true; } | tail -n 1) == intent:pause ]]
 }
 pause_id() {  # The audit id of this release's latest pause; empty when it was killed before journaling it
   [[ -f $JOURNAL ]] || return 0
@@ -203,22 +204,39 @@ print('release settings recorded', dict(db.execute(keys)))
 PY
 }
 
-pause_development() {  # The writes Store.set_paused makes, without needing the controller. The audit row
-  # names this batch, and its id goes in the journal: unpause_if_ours lifts only that pause.
-  local id
+pause_development() {  # The writes Store.set_paused makes, without needing the controller, only if development
+  # is still unpaused: checked and changed in one transaction, so an owner's /pause since the fence read the
+  # setting stays theirs. The audit row names this batch, and its id goes in the journal: unpause_if_ours
+  # lifts only that pause.
+  local id rc=0
   id=$(db_py "${STAGE##*/}" <<'PY'
 import sqlite3, sys, time
 db = sqlite3.connect('/data/gene.sqlite3', timeout=30, isolation_level=None)
 db.execute('BEGIN IMMEDIATE')
-if db.execute("UPDATE settings SET value='true' WHERE key='paused'").rowcount != 1:
-    raise SystemExit('the controller has no paused setting')
-row = db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
-                 (time.time(), 'maintainer:claude', 'pause', sys.argv[1], ''))
-db.execute('COMMIT')
-print(row.lastrowid)
+try:
+    row = db.execute("SELECT value FROM settings WHERE key='paused'").fetchone()
+    if row is None or row[0] not in ('true', 'false'):
+        raise SystemExit('unexpected paused setting: '+repr(row))
+    if row[0] == 'true':  # Paused since the fence looked: that pause is not this batch's.
+        db.execute('ROLLBACK')
+        sys.exit(3)
+    db.execute("UPDATE settings SET value='true' WHERE key='paused'")
+    audit = db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
+                       (time.time(), 'maintainer:claude', 'pause', sys.argv[1], '')).lastrowid
+    db.execute('COMMIT')
+except BaseException:
+    if db.in_transaction:
+        db.execute('ROLLBACK')
+    raise
+print(audit)
 PY
-  )
-  [[ $id =~ ^[0-9]+$ ]] || die "unexpected pause record: $id"
+  ) || rc=$?
+  if (( rc == 3 )); then
+    mark skipped:pause
+    log 'development was paused meanwhile by someone else; that pause stays theirs'
+    return 0
+  fi
+  if (( rc != 0 )) || [[ ! $id =~ ^[0-9]+$ ]]; then die "could not pause development: ${id:-no answer from the controller DB}"; fi
   mark "paused:$id"
   log "development paused (audit $id)"
 }
@@ -896,7 +914,8 @@ state_value() {  # dotted.key of a fresh state read; use it in an assignment, so
 fence() {  # Pause new work, let current work finish, then stop the worker and deployer.
   # Checked against the live setting every time, so a fence after resume pauses again. The intent
   # line and the pause's audit id are the ownership record: resume unpauses only while the latest pause
-  # in the journal is ours and the controller has recorded no pause or resume after it.
+  # in the journal is ours and the controller has recorded no pause or resume after it. The pause itself
+  # rechecks the setting, so one made between this read and it is never taken for ours.
   local paused busy waited=0
   paused=$(state_value settings.paused)
   [[ $paused == true || $paused == false ]] || die "unexpected paused setting: $paused"

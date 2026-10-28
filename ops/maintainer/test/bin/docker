@@ -71,6 +71,17 @@ def controller_env():
     return env_file(ROOT+'/secrets/controller.env') | {'GENE_DB': ROOT+'/data/controller/gene.sqlite3'}
 
 
+def kill_batch_shell():
+    """SIGKILL the batch shell that ran this docker command, with any subshell between it and here."""
+    pid, shells = os.getppid(), []
+    command = open(f'/proc/{pid}/cmdline', 'rb').read()
+    while pid > 1 and open(f'/proc/{pid}/cmdline', 'rb').read() == command:  # subshells share the command line
+        shells.append(pid)
+        pid = int(open(f'/proc/{pid}/stat').read().rsplit(')', 1)[1].split()[1])
+    for shell in reversed(shells):  # the batch shell first, so nothing it runs next survives it
+        os.kill(shell, 9)
+
+
 def run(rest):
     flags, mounts, env, user, network, i = set(), {}, {}, None, None, 0
     while rest[i].startswith('-'):
@@ -160,7 +171,7 @@ def run(rest):
     if (os.environ.get('MOCK_KILL_AFTER_PAUSE') and script and "SET value='true' WHERE key='paused'" in script
             and not os.path.exists(M+'/killed-after-pause')):
         open(M+'/killed-after-pause', 'w').close()
-        os.kill(os.getppid(), 9)
+        kill_batch_shell()
     return result.returncode
 
 

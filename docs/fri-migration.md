@@ -117,6 +117,24 @@ built from other members' messages.
   send (and an extra field would be ignored). Privacy changes delete the member's generation with
   their summary; their revision moves at the same time, so an older turn still fails. The purge below
   drops the generations too.
+- **What a summary-derived turn keeps.** A saved turn keeps the `summary_generation` it was sent (fri
+  #172). Whenever the member's generation moves (a withdrawal, a rebuild, an expiry, another member's
+  privacy change), and when their own privacy change erases the summary, every saved reply of theirs
+  that drew on a summary is replaced in the same transaction by a breadcrumb ("Earlier answer drawing
+  on an older summary of them. Nothing from it is retained here.") and marked not verbatim. History,
+  a reference to Fri's message and reply checks then carry none of its words; the member's own words
+  stay. A turn saved without a generation (an older Fri, or no summary in its request) is untouched.
+  A controller start retires any an older controller left behind with a moved generation during a
+  rollback window, and the purge below retires all of them first. The cost: a rebuild (at most daily)
+  also turns the member's earlier summary-derived replies into breadcrumbs, as gene #97 accepted
+  refusing a reply in flight across one.
+- **Summary-derived writes.** The optional `summary-generation-writes` capability extends the check to
+  a tool's writes (fri #171). `/workspace/save` and `/social/reminders/prepare` take the same optional
+  top-level `summary_generation` and refuse with a 409 (no text) once it has moved, in the write's own
+  transaction, so saved work or a reminder can't keep the summary's words after their source went. It
+  stays out of their idempotency digests, so a retry with or without it answers as the first did. A
+  controller without the capability rejects the unknown field, so Fri sends it only when offered.
+  Work and reminders saved while the summary was current stay: the member asked for them.
 
 Provenance also reaches what follow-ups inherit:
 
@@ -259,7 +277,8 @@ as a recorded downgrade):
 python -m gene.fri_member_summary purge "$GENE_DB"
 ```
 
-It drops the summaries, their daily call stamps and their generations; exchanges and notes stay. Rolling back Fri alone
+It drops the summaries, their daily call stamps and their generations, and leaves each saved reply that drew on a
+summary only its breadcrumb; exchanges and notes stay. Rolling back Fri alone
 needs no cleanup: an older Fri doesn't send `summaries`, so the controller never gives it one and no
 builder runs. Summaries already stored stay unseen until a newer Fri returns, they expire (30 days),
 or the member's "forget me", memory off or Forget my chats removes them; run the purge as well if they

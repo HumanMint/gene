@@ -22,9 +22,9 @@ from gene.runtime_audio import AudioPreparation
 
 TOKEN, RELAY_TOKEN = 'x' * 40, 'y' * 40
 create_resolver = audio_resolver.create_app
-LONG, SHORT = 'aBcDeFgH123', 'bBcDeFgH123'
+LONG, SHORT, OTHER = 'aBcDeFgH123', 'bBcDeFgH123', 'cBcDeFgH123'
 # Red's search picked a 90m18s first result in the gene #73 incident.
-DURATIONS = {LONG: 5418, SHORT: 174}
+DURATIONS = {LONG: 5418, SHORT: 174, OTHER: 200}
 GENERIC = 'The audio download could not be prepared. Try again shortly or choose another track.'
 TOO_LONG = "That track is longer than 30 minutes, so Gene can't play it. Pick a shorter one."
 
@@ -240,6 +240,56 @@ def test_a_member_skip_during_reds_track_error_keeps_the_newer_track_playing(sta
             assert [event for event, extra in red.events] == [LavalinkEvents.TRACK_EXCEPTION]
             assert red.player.current.track_identifier == 'encoded-' + SHORT
             assert not adapter.pending
+        finally:
+            await red.node.session.close()
+    asyncio.run(scenario())
+
+
+def hold_each(red, name):
+    """Pause every call of one of Red's handler awaits separately, in arrival order, to release them in any order."""
+    calls, arrived = [], asyncio.Event()
+    original = getattr(red.audio.bot, name)
+    async def paused(*args, **kwargs):
+        release = asyncio.Event()
+        calls.append(release)
+        arrived.set()
+        await release.wait()
+        return await original(*args, **kwargs)
+    setattr(red.audio.bot, name, paused)
+    async def wait_for(count):
+        while len(calls) < count:
+            arrived.clear()
+            await arrived.wait()
+    return calls, wait_for
+
+
+@pytest.mark.parametrize('order', ['older_first', 'newer_first'])
+def test_two_overlapping_failures_under_repeat_never_requeue_the_failed_track(stack, order):
+    """Review of #96: A and B both fail while Red holds A's Track Error; A's guard must not restore failed B as
+    current, or B's own skip requeues it under repeat for another failed retry. C plays either way."""
+    async def scenario():
+        adapter = AudioPreparation('http://gene-audio:2334', TOKEN, 123)
+        adapter.prepare = failing(LONG, OTHER)
+        red = await stack(adapter, repeat=True)
+        try:
+            calls, wait_for = hold_each(red, 'get_embed_color')
+            for identifier in (LONG, OTHER, SHORT):
+                red.player.add(None, song(identifier))
+            await red.player.play()
+            await wait_for(1)  # Red holds A's Track Error; the member skips to B, which fails too.
+            await red.player.skip()
+            await wait_for(2)
+            first, second = (calls[0], calls[1]) if order == 'older_first' else (calls[1], calls[0])
+            first.set()
+            await asyncio.sleep(0)
+            for _ in range(5):
+                await asyncio.sleep(0)
+            second.set()
+            await settle()
+            assert ops(red.node) == [('play', 'encoded-' + SHORT)]
+            assert red.player.current.track_identifier == 'encoded-' + SHORT
+            assert 'encoded-' + OTHER not in [track.track_identifier for track in red.player.queue]
+            assert 'encoded-' + LONG not in [track.track_identifier for track in red.player.queue]
         finally:
             await red.node.session.close()
     asyncio.run(scenario())

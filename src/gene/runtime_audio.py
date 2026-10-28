@@ -108,6 +108,7 @@ class AudioPreparation:
                             # Only a fixed code, status or exception class: never URLs or upstream text.
                             LOG.warning('Selected audio preparation failed (%s); playback was not started',
                                         reason or status or type(exc).__name__)
+                            marker['failed'] = True  # Before dispatch: an older failure's guard must not restore it.
                             handling = HANDLING.set((key, marker))
                             try:
                                 report_failure(node, guild_id, reason)
@@ -136,8 +137,9 @@ class AudioPreparation:
             if newer is marker:
                 return await original_skip(player)
             # A member's skip, play or stop superseded the failed track while Red reported it.
-            # Red's repeat path cleared player.current: point it back at the track now playing.
-            if player.current is None and newer:
+            # Red's repeat path cleared player.current: point it back at the track now playing, unless that
+            # newer track failed too; its own handler skips past it, and repeat must not requeue it.
+            if player.current is None and newer and not newer.get('failed'):
                 player.current = newer['track']
             LOG.info('A newer play superseded the failed track; its automatic skip was not applied')
 

@@ -122,6 +122,7 @@ FAKE_STAT = '''#!/usr/bin/env bash
 for file; do :; done  # stat -c %u:%g FILE; owners come from $CTL/<name>.owner
 if [[ $file == "$(cat "$CTL/vanish-at-stat" 2>/dev/null)" ]]; then rm -f "$file"; fi
 [[ -e $file ]] || { echo "stat: cannot statx '$file': No such file or directory" >&2; exit 1; }
+if [[ $file == "$(cat "$CTL/stat-eio" 2>/dev/null)" ]]; then echo "stat: cannot statx '$file': Input/output error" >&2; exit 1; fi
 cat "$CTL/${file##*/}.owner" 2>/dev/null || echo 10001:10001
 '''
 FAKE_CHOWN = '''#!/usr/bin/env bash
@@ -133,7 +134,7 @@ echo "$1" > "$CTL/${2##*/}.owner"
 '''
 
 
-def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False):
+def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False, eio=False):
     """repair_sidecars on a root-owned or owner-owned WAL that SQLite removes at the chosen moment."""
     ctl, data, bin_dir = tmp_path/'ctl', tmp_path/'data', tmp_path/'bin'
     for path in ctl, data, bin_dir:
@@ -146,6 +147,8 @@ def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False):
         (ctl/f'vanish-at-{vanish}').write_text(f'{db}-wal')
     if denied:
         (ctl/'chown-denied').touch()
+    if eio:
+        (ctl/'stat-eio').write_text(f'{db}-wal')
     for name, body in ('stat', FAKE_STAT), ('chown', FAKE_CHOWN):
         (bin_dir/name).write_text(body)
         (bin_dir/name).chmod(0o755)
@@ -177,6 +180,36 @@ def test_a_chown_that_fails_on_a_journal_file_still_there_stops_the_script(tmp_p
     assert out.returncode != 0 and 'repaired' not in out.stdout
     assert 'FAIL: could not give gene.sqlite3-wal back to the database owner' in out.stderr
     assert wal.exists()
+
+
+def test_a_journal_file_that_cant_be_read_but_is_there_stops_the_script(tmp_path):
+    """Review: only a file that's gone counts as gone; an I/O error on one still there isn't skipped."""
+    out, chowned, wal = sidecar_shell(tmp_path, '0:0', eio=True)
+    assert out.returncode != 0 and 'repaired' not in out.stdout
+    assert 'FAIL: could not read the owner of gene.sqlite3-wal' in out.stderr
+    assert chowned == [] and wal.exists()
+
+
+@pytest.mark.parametrize('error', ["du: cannot read directory '{root}/sub': Permission denied",
+                                   "du: cannot access '{root}/here': No such file or directory",
+                                   "du: fts_read failed: Input/output error"])
+def test_sizing_a_tree_stops_on_any_error_but_a_file_gone(tmp_path, error):
+    """Review: a partial total after a permission or I/O error would undercount; it stops instead."""
+    bin_dir = tmp_path/'bin'
+    bin_dir.mkdir()
+    (tmp_path/'here').touch()  # Said to be missing, but there.
+    message = error.format(root=tmp_path).replace("'", "'\\''")
+    (bin_dir/'du').write_text('#!/usr/bin/env bash\n'
+                              'printf "%s\\t%s\\n" 4096 "$2"\n'
+                              f"echo '{message}' >&2\n"
+                              'exit 1\n')
+    (bin_dir/'du').chmod(0o755)
+    shell = ('set -Eeuo pipefail\nSWITCHING=0\n' + functions('log', 'die', 'du_bytes')
+             + f'\nsize=$(du_bytes {tmp_path})\necho "size=$size"\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'})
+    assert out.returncode != 0 and 'size=' not in out.stdout
+    assert 'FAIL: could not measure' in out.stderr
 
 
 @pytest.mark.parametrize('printed,stops', [('4096', False), ('', True)])

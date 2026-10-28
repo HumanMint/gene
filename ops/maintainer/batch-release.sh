@@ -122,10 +122,13 @@ db_owner() {  # uid:gid of the controller DB; its directory must agree, since SQ
   echo "$owner"
 }
 
-sidecar_owner() {  # file: its uid:gid, or nothing when it is gone
+sidecar_owner() {  # file: its uid:gid, or nothing when it is gone; fails when it can't be read but is there
   # A running controller's SQLite creates and removes the DB's journal files at any moment, so each is
-  # read once, and one that vanishes before or during the read has nothing to check.
-  stat -c %u:%g "$1" 2>/dev/null || true
+  # read once, and one that vanishes before or during the read has nothing to check. Any other failure
+  # (an I/O error, say) is the caller's to stop on: it returns non-zero rather than dying in a subshell.
+  local owner
+  if owner=$(stat -c %u:%g "$1" 2>/dev/null); then echo "$owner"; return 0; fi
+  [[ ! -e $1 && ! -L $1 ]]
 }
 
 repair_sidecars() {
@@ -136,12 +139,12 @@ repair_sidecars() {
   local owner file current
   owner=$(db_owner)
   for file in "$DB-wal" "$DB-shm" "$DB-journal"; do
-    current=$(sidecar_owner "$file")
+    current=$(sidecar_owner "$file") || die "could not read the owner of ${file##*/}"
     [[ -n $current && $current != "$owner" ]] || continue
     log "giving ${file##*/} back to the database owner" >&2
     if ! chown "$owner" "$file"; then
       # Removed meanwhile, or already replaced by the owner's own: nothing is left to repair.
-      current=$(sidecar_owner "$file")
+      current=$(sidecar_owner "$file") || die "could not read the owner of ${file##*/}"
       [[ -z $current || $current == "$owner" ]] || die "could not give ${file##*/} back to the database owner"
       log "${file##*/} was removed or replaced meanwhile; nothing to repair" >&2
     fi
@@ -533,9 +536,17 @@ PY
 }
 du_bytes() {  # path: its size in bytes
   # A file removed while du walks the tree, such as a running controller's SQLite journal, makes du
-  # fail after it prints the total; that file just isn't counted.
-  local size
-  size=$(du -sb "$1" 2>/dev/null | cut -f1 || true)
+  # fail after it prints the total; that file just isn't counted. Any other error (a permission or I/O
+  # error, which would undercount) stops the script, and so does a "no such file" for a path still there.
+  local size errors line gone re="^du: cannot access '(.*)': No such file or directory$"
+  errors=$(mktemp)
+  size=$(LC_ALL=C du -sb "$1" 2>"$errors" | cut -f1) || true
+  while IFS= read -r line; do
+    gone=''
+    [[ $line =~ $re ]] && gone=${BASH_REMATCH[1]}
+    if [[ -z $gone || -e $gone || -L $gone ]]; then rm -f "$errors"; die "could not measure $1: $line"; fi
+  done < "$errors"
+  rm -f "$errors"
   [[ $size =~ ^[0-9]+$ ]] || die "could not measure $1"
   echo "$size"
 }
@@ -603,7 +614,7 @@ baseline() {
   local owner file current
   owner=$(db_owner)
   for file in "$DB-wal" "$DB-shm" "$DB-journal"; do
-    current=$(sidecar_owner "$file")
+    current=$(sidecar_owner "$file") || die "could not read the owner of ${file##*/}"
     [[ -z $current || $current == "$owner" ]] || die "${file##*/} is not owned by the database owner"
   done
   mkdir -p "$STAGE"; chmod 700 "$ROOT/staging" "$STAGE"

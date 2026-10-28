@@ -244,6 +244,126 @@ def test_harmless_lead_ins_still_keep_a_note(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
 
 
+# How members actually type: lowercase, no apostrophe, one everyday adverb, "fav". Each line is the whole
+# message; None means no word-start excerpt of it can be kept, whatever a model proposes.
+@pytest.mark.parametrize('category,text,kept', [
+    ('games', 'I play valorant most nights', 'I play valorant most nights'),
+    ('games', 'i play valorant most nights', 'i play valorant most nights'),
+    ('projects', 'im building a minecraft mod', 'im building a minecraft mod'),
+    ('projects', "I'm building a minecraft mod", "I'm building a minecraft mod"),
+    ('projects', 'ive been playing elden ring', 'ive been playing elden ring'),
+    ('projects', "I've been playing elden ring", "I've been playing elden ring"),
+    ('hobbies', 'i really like chess', 'i really like chess'),
+    ('hobbies', 'i also play chess', 'i also play chess'),
+    ('music', 'my fav band is radiohead', 'my fav band is radiohead'),
+    ('music', 'my fave band is radiohead', 'my fave band is radiohead'),
+    ('music', "i'm really into shoegaze", None),
+    ('music', 'been listening to a lot of shoegaze', None),
+    ('nickname', 'call me dan', 'call me dan'),
+    ('nickname', 'u can call me dan', 'call me dan'),
+    ('hobbies', "i'm into bouldering", None),
+    ('games', 'i dont play league anymore', None),
+    ('projects', "i'm working on my thesis", "i'm working on my thesis"),
+    ('projects', 'working on a discord bot rn', None),
+])
+def test_the_ways_members_type_a_disclosure(category, text, kept):
+    words = text.split(' ')
+    found = next((note[1] for at in range(len(words)) if (note := personal_note(
+        {'category': category, 'evidence': ' '.join(words[at:])}, text))), None)
+    assert found == kept
+
+
+@pytest.mark.parametrize('category,evidence,text', [
+    ('projects', 'im building a minecraft mod', 'lol im building a minecraft mod rn'),
+    ('projects', 'Im working on a discord bot', 'Im working on a discord bot for the server'),
+    ('projects', 'im working on my portfolio', 'yeah im working on my portfolio'),
+    ('projects', 'im still working on my portfolio', 'ngl im still working on my portfolio'),
+    ('projects', 'i’m just building a synth', 'i’m just building a synth'),
+    ('projects', 'I am also building a keyboard', 'I am also building a keyboard'),
+    ('projects', 'Ive been playing hades', 'Ive been playing hades all week'),
+    ('projects', 'ive also been playing hollow knight', 'ive also been playing hollow knight'),
+    ('games', 'i still play league', 'i still play league with my brother'),
+    ('games', 'i kinda like chess', 'tbh i kinda like chess'),
+    ('music', 'i lowkey love shoegaze', 'i lowkey love shoegaze'),
+    ('games', 'i mostly play support', 'i mostly play support'),
+    ('games', 'i just like chess', 'idk i just like chess'),
+    ('music', 'I really like Radiohead', 'I really like Radiohead'),
+    ('games', 'i also enjoy factorio', 'i also enjoy factorio'),
+    ('games', 'i really prefer pc', 'honestly i really prefer pc'),
+    ('music', 'my favs are radiohead and slowdive', 'my favs are radiohead and slowdive'),
+    ('music', 'my faves are radiohead and slowdive', 'my faves are radiohead and slowdive'),
+    ('games', 'my favorites are chess and go', 'my favorites are chess and go'),
+    ('games', 'My Fav game is hades', 'My Fav game is hades'),
+    ('games', 'i like chess', 'i am not gonna lie, i like chess'),
+    ('games', 'i like chess', 'lol honestly not gonna lie i like chess'),
+    ('games', 'i like chess', 'honestly have to say i like chess'),
+    ('games', 'i like chess', 'the server is dead, honestly not gonna lie, i like chess'),
+    ('games', 'i like chess', 'but also have to say i like chess'),
+])
+def test_casual_typing_keeps_a_note(category, evidence, text):
+    assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
+
+
+@pytest.mark.parametrize('category,evidence,text', [
+    # Left out by design: "into" opens disclosures the denylist can't catch, and there's no "i" in the last.
+    ('music', "i'm really into shoegaze", "i'm really into shoegaze"),
+    ('hobbies', 'im into bouldering', 'im into bouldering'),
+    ('projects', 'working on a discord bot rn', 'working on a discord bot rn'),
+    # One adverb from a closed list, nothing else between.
+    ('games', 'i really really like chess', 'i really really like chess'),
+    ('games', 'i rlly like chess', 'i rlly like chess'),
+    ('games', 'i def like chess', 'i def like chess'),
+    ('games', 'i used to play league', 'i used to play league'),
+    ('projects', 'im currently building a mod', 'im currently building a mod'),
+    ('projects', 'im kinda into building mods', 'im kinda into building mods'),
+    ('projects', 'i have been playing hades', 'i have been playing hades'),
+    ('games', 'my favor is chess', 'my favor is chess'),
+    ('games', 'my favela', 'my favela'),
+    # Still not a word start: "him building", "swim working on", "five been playing".
+    ('projects', 'im building a mod', 'watching him building a mod'),
+    ('projects', 'im working on it', 'swim working on it'),
+    ('projects', 'ive been playing hades', 'five been playing hades'),
+    ('games', 'i really like chess', 'wasabi really like chess'),
+    # Still denied, reported, asked, quoted or taken back.
+    ('nickname', 'call me dan', 'dont call me dan'),
+    ('nickname', 'call me dan', 'my friends call me dan'),
+    ('games', "i don't play league anymore", "i don't play league anymore"),
+    ('games', 'i dont play league', 'i dont play league anymore'),
+    ('games', 'i no longer play league', 'i no longer play league'),
+    ('hobbies', 'i really like chess', "i don't think i really like chess"),
+    ('hobbies', 'i also play chess', 'not that i also play chess'),
+    ('projects', 'im building a mod', 'she said im building a mod'),
+    ('projects', 'im building a mod', 'they think im building a mod'),
+    ('projects', 'im building a mod', 'kev keeps saying "im building a mod"'),
+    ('projects', 'ive been playing elden ring', 'ive been playing elden ring?'),
+    ('games', 'i still play league', 'do i still play league'),
+    ('games', 'i also play chess', 'should i also play chess'),
+    ('games', 'i really like chess', 'i really like chess jk'),
+    ('music', 'my fav band is radiohead', 'my fav band is radiohead said no one ever'),
+    ('music', 'my fav band is radiohead', '"my fav band is radiohead"'),
+    ('projects', 'im building a mod', '> im building a mod'),
+    ('projects', 'im building a mod', '`im building a mod`'),
+    ('projects', 'im building a mod', 'im building a mod. jk'),
+    ('nickname', 'call me crazy', 'lol call me crazy'),
+    # Still a report when someone else has to say it, even after "honestly" or "also".
+    ('games', 'i like chess', 'they honestly have to say i like chess'),
+    ('games', 'i like chess', 'they also have to say i like chess'),
+    ('games', 'i like chess', 'my mom tbh has to say i like chess'),
+    ('games', 'i like chess', "the boys' honestly have to say i like chess"),
+    # A project is only ever a projects note, and a projects note only ever says what they're doing.
+    ('games', 'im building a mod', 'im building a mod'),
+    ('hobbies', 'ive been playing hades', 'ive been playing hades'),
+    ('projects', 'i really like chess', 'i really like chess'),
+    ('projects', 'my fav game is hades', 'my fav game is hades'),
+    # The denylist is unchanged.
+    ('hobbies', 'i really like my medical drama', 'i really like my medical drama'),
+    ('projects', 'im building a deploy bot', 'im building a deploy bot'),
+    ('music', 'my fav song is about religion', 'my fav song is about religion'),
+])
+def test_casual_typing_keeps_every_other_rule(category, evidence, text):
+    assert personal_note({'category': category, 'evidence': evidence}, text) is None
+
+
 def test_a_long_repetitive_message_is_read_once_not_per_occurrence():
     text = ('i play ' * 572)[:4000]
     long = ('blah ' * 90 + 'i like chess ') * 8  # One 3,700-character sentence, at the cap.

@@ -18,9 +18,11 @@ SINGLE = re.compile(r"(?<!\w)(['‘])(?=\S)(?!(?i:cause|cuz|coz|bout|til|till|em
 # A sentence ending in "she said:", so the next one is her words.
 PRIOR = re.compile(r"(?i)(?:\b(?:said|says|wrote|writes|texted|asked|goes|told me|tells me)\b\W*|:\s*)$")
 # Common fillers that only look like a denial or a report, on their own or after "i": "not gonna lie, i like
-# chess", "i have to say i like chess". After anyone else, "they have to say …" stays a report.
-FILLER = re.compile(r"(?i)(^\W*|\b(?:lol|lmao|haha|ok|okay|yeah|yea|ya|so|and|but|also|honestly|tbh|fri|bro|dude|"
-                    r"hey|yo|oh|well|btw)\W+|\b(?:i|i'd|i'll|i'm|im|i've|ive)\s+(?:(?:really|just|honestly)\s+)?)"
+# chess", "i have to say i like chess". After anyone else, "they have to say …" stays a report, and so does
+# "they honestly have to say …": "also", "honestly" and "tbh" start a filler only where a clause does.
+STARTER = r"lol|lmao|haha|ok|okay|yeah|yea|ya|so|and|but|fri|bro|dude|hey|yo|oh|well|btw"
+FILLER = re.compile(rf"(?i)(^\W*|\b(?:{STARTER})\W+|(?:^|[^\w\s']|\b(?:{STARTER}))\W*\b(?:also|honestly|tbh)\W+|"
+                    r"\b(?:i|i'd|i'll|i'm|im|i am|i've|ive)\s+(?:(?:really|just|honestly)\s+)?)"
                     r"(?:not (?:gonna|going to) lie|not to brag|no (?:cap|lie|offen[cs]e)|"
                     r"(?:gotta|got to|have to|must|needless to) say|if (?:i'm|im|i am) honest|if you ask me)\b")
 # Someone else's words, a supposition or a quotation: nothing after it in the sentence is the member's claim.
@@ -51,6 +53,13 @@ IDIOM = re.compile(r"(?i)call me\s+(?:an?\s+)?(?:crazy|insane|nuts|mad|weirdo?|o
                    r"stupid|dumb|idiot|naive|picky|petty|biased|basic|cringe|lazy|snob|hater|boomer|romantic|"
                    r"sentimental|cynical|sucker|extra|dramatic|hypocrite|cheap|whatever|anything|out)\b")
 
+# The starts a note may have, as members type them: "im" and "ive" without the apostrophe, "fav" and "fave",
+# and at most one everyday adverb before the verb ("i really like", "im still working on"). Never "i'm into".
+ADVERB = r"(?:(?:really|also|kinda|lowkey|mostly|still|just) )?"
+DOING = re.compile(rf"(?i)^(?:i(?:['’]?m| am) {ADVERB}(?:working on|building)|i main|i['’]?ve {ADVERB}been playing)\b")
+LIKES = re.compile(rf"(?i)^(?:i {ADVERB}(?:like|love|prefer|enjoy|play|usually|mostly)|my (?:fav(?:e|ou?rite)?s?|nickname)|"
+                   r"call me)\b")
+
 
 def personal_note(candidate, text):
     """Keep a short exact self-disclosure, not a model-written biography/instruction."""
@@ -73,10 +82,7 @@ def personal_note(candidate, text):
     if not all(source.claims(at, evidence) for at in spots):
         return None
     # What a member is doing is only ever a projects note, and a projects note only ever says what they're doing.
-    if candidate['category'] == 'projects':
-        if not re.match(r"(?i)^(?:i(?:['’]m| am) (?:working on|building)|i main|i['’]ve been playing)\b", evidence):
-            return None
-    elif not re.match(r"(?i)^(?:i (?:like|love|prefer|enjoy|play|usually|mostly)|my (?:favorite|favourite|nickname)|call me)\b", evidence):
+    if not (DOING if candidate['category'] == 'projects' else LIKES).match(evidence):
         return None
     # Defense in depth; notes are still untrusted data even after validation.
     if re.search(r'(?i)\b(?:ignore|instructions?|system|developer|password|token|secret|address|diagnos\w*|'

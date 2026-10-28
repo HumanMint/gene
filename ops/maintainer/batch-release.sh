@@ -74,10 +74,12 @@ downgrade_step() {  # module db docker-run-words...: remove the module's data fo
     *) die "no downgrade step for $module" ;;
   esac
 }
-owns_pause() {  # This release paused development and has not unpaused it since, by its journal. skipped:pause:
-  # its fence found development already paused, by someone else, so that pause was never its own.
-  [[ -f $JOURNAL && $({ grep -x -e intent:pause -e done:unpause -e skipped:pause "$JOURNAL" || true; } | tail -n 1) == intent:pause ]]
+pause_mark() {  # The journal's latest pause line, empty when this release never paused. skipped:pause: its
+  # fence found development already paused, by someone else, so that pause was never its own.
+  [[ -f $JOURNAL ]] || return 0
+  { grep -x -e intent:pause -e done:unpause -e skipped:pause "$JOURNAL" || true; } | tail -n 1
 }
+owns_pause() { [[ $(pause_mark) == intent:pause ]]; }  # This release paused development and has not unpaused it since.
 pause_id() {  # The audit id of this release's latest pause; empty when it was killed before journaling it
   [[ -f $JOURNAL ]] || return 0
   awk '$0 == "intent:pause" {id = ""} /^paused:[0-9]+$/ {id = substr($0, 8)} END {print id}' "$JOURNAL"
@@ -284,6 +286,25 @@ except BaseException:
         db.execute('ROLLBACK')
     raise
 print(f"development resumed: this batch's pause (audit {latest[0]}) was still the latest")
+PY
+}
+
+pause_kept() {  # Why development is still paused when this batch doesn't own the pause; nothing when it isn't
+  # paused. Reporting only: the pause stays, whoever made it.
+  db_py "$(pause_mark)" <<'PY'
+import sqlite3, sys
+from contextlib import closing
+with closing(sqlite3.connect('file:/data/gene.sqlite3?mode=ro', uri=True, timeout=30)) as db:
+    paused = db.execute("SELECT value FROM settings WHERE key='paused'").fetchone()
+    latest = db.execute("SELECT id FROM audit WHERE action='pause' ORDER BY id DESC LIMIT 1").fetchone()
+if paused is None or paused[0] != 'true':
+    sys.exit(0)
+if latest is None:
+    print('development stays paused: no pause is in the audit, and this batch never paused it')
+elif sys.argv[1] == 'skipped:pause':
+    print(f'development stays paused: someone else paused it first (audit {latest[0]}), so this batch never took a pause of its own')
+else:
+    print(f"development stays paused: the latest pause (audit {latest[0]}) is not this batch's")
 PY
 }
 
@@ -946,8 +967,8 @@ drain() {
     # batch changed nothing but the fence, and the deployment may have moved Gene, so development
     # resumes as it is, without the old-pair check resume-old makes. The batch never goes forward.
     if [[ -z $EXCEPTION && -z $CRITICAL ]] && used=$(drained_today); then
-      resume_services "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)"
-      mark resumed_old
+      log "today's batch was used during the drain ($used)"
+      resume_as_is
       die "today's batch was used during the drain ($used); $(resumed_as), and this pair waits for a later day"
     fi
     audit "$DRAINED" "${STAGE##*/}"  # Before the journal line, so a drained batch always holds the controller's claims.
@@ -1298,19 +1319,42 @@ PY
 }
 
 resume_services() {  # gene_sha
-  systemctl start gene-worker gene-deployer
+  systemctl start gene-worker gene-deployer || die 'the worker and deployer did not start'
   systemctl is-active -q gene-worker || die 'gene-worker did not start'
   systemctl is-active -q gene-deployer || die 'gene-deployer did not start'
+  local said rc=0
   if owns_pause; then
-    local said rc=0
     said=$(unpause_if_ours) || rc=$?
     case $rc in
       0) mark done:unpause; log "$said" ;;
       3) NOTE=$said; log "$said" ;;  # The log line and the exit message carry it too.
       *) die "could not resume development: ${said:-no answer from the controller DB}" ;;
     esac
+  elif said=$(pause_kept); then  # Someone else's pause stays, and is said the same way.
+    if [[ -n $said ]]; then NOTE=$said; log "$said"; fi
+  else
+    NOTE='development was left as it was, and whether it is still paused could not be read'
+    log "WARN: $NOTE"
   fi
   audit maintainer_services_resumed "$1"
+}
+resume_as_is() {  # After a fence that Gene may have moved under (a deployment landing during its wait): this
+  # batch changed nothing but the fence, so development goes back as it is, without the old-pair check. The
+  # stop is journaled before anything is restored: if restoring stops, resume-old replays it, at any hour.
+  local live
+  aborting || mark intent:abort
+  live=$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)
+  log "resuming development as it is, at Gene ${live:0:7}"
+  resume_services "$live"
+  mark resumed_old
+}
+aborting() {  # A stop after a fence whose restore hasn't finished
+  [[ -f $JOURNAL && $({ grep -x -e intent:abort -e resumed_old "$JOURNAL" || true; } | tail -n 1) == intent:abort ]]
+}
+gene_moved() {  # The live Gene isn't the old release: before a batch drains, only a deployment moves it
+  local live
+  live=$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)
+  [[ $live =~ ^[0-9a-f]{40}$ && $live != "$OLD_G" ]]
 }
 resumed_as() {  # How development came back, for an exit message
   if [[ -n $NOTE ]]; then echo "the worker and deployer are running again, but $NOTE"; else echo 'development resumed as it was'; fi
@@ -1379,6 +1423,9 @@ resume_old() {
   check_manifest
   if has gene_attempted && ! has gene_rolled_back; then die 'a Gene switch was attempted; run rollback-gene first'; fi
   touched || die "phase needs 'drained' first"  # A drain that timed out after pausing still resumes here.
+  # A stop after a fence whose restore didn't finish, or a batch that never drained and whose Gene a deployment
+  # has moved since: the old pair is gone, and the batch changed nothing but its fence.
+  if aborting || { ! has drained && gene_moved; }; then resume_as_is; return; fi
   if ! has intent:services_old; then
     verify old
     mark intent:services_old
@@ -1446,13 +1493,14 @@ rollback_fri() {
   # actual state through the backup the fri phase took, so it is safe to repeat.
   gene_changes && die 'this release changes Gene; rollback-gene puts the old Fri back first'
   need fri_backup; check_manifest
+  aborting && die 'nothing was changed: an earlier rollback-fri stopped before it restored development, so run resume-old first'
   fri_pair_check
   gene_unmoved || die 'nothing was changed'
   fence
   lock_fri
   fri_pair_check  # The fence can wait for a deployment that lands a third Fri,
   if ! gene_unmoved; then  # or a Gene release: development goes back as it was, with Fri untouched.
-    resume_services "$G"
+    resume_as_is
     die "Gene moved during the fence; Fri was not changed and $(resumed_as)"
   fi
   has intent:rollback || mark intent:rollback  # From here on, only a repeat of rollback-fri finishes it.
@@ -1638,9 +1686,10 @@ PY
     *) echo "today's batches could not be read"; return 0 ;;
   esac
 }
-touched() { has drained || has intent:pause; }  # This batch has paused development, or begun to.
+touched() { has drained || has intent:pause || has intent:abort; }  # This batch has fenced development, or begun to.
 safe_path() {  # What this batch may do outside the window, from its journal.
   if ! touched; then echo 'Production is untouched; start again in the next window.'
+  elif aborting; then echo 'Run resume-old: it resumes development as it is, without the old-pair check.'
   elif has resumed || has resumed_old; then echo 'This batch has resumed; cleanup waits for the next window.'
   elif latest evaluated; then echo 'Its evals passed: verify-off, then resume, run at any hour (or roll back).'
   elif latest evals_ran; then echo 'Its evals ran with failures: under the eval rule, accept-evals (EVALS_ACCEPTED=<why>), verify-off and resume, or roll back.'
@@ -1661,6 +1710,9 @@ gate() {
   esac
   if has resumed_old && [[ $PHASE =~ ^(drain|gene|fri|evals|resume)$ ]]; then
     refuse 'this batch already resumed the old release; a retry is a new batch (BATCH_ATTEMPT) in a later window'
+  fi
+  if aborting && [[ $PHASE =~ ^(drain|gene|fri|evals|resume)$ ]]; then
+    refuse 'this batch stopped after its fence and has not restored development yet; a retry is a new batch (BATCH_ATTEMPT) in a later window'
   fi
   if [[ -n $EXCEPTION ]]; then log "maintenance exception: $EXCEPTION"; return 0; fi
   window_open || refuse 'outside the maintenance window [04:00, 05:00) America/Los_Angeles, or the clock or zone is unknown'

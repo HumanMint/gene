@@ -1,0 +1,14 @@
+[Unit]
+Description=Daily conservative Gene image retention, inside the production maintenance window
+
+[Timer]
+# Production changes start only in [04:00, 05:00) America/Los_Angeles (owner policy, 2026-10-27).
+# Late in the window, so the day's batch release has usually resumed; one still in flight skips the day.
+OnCalendar=*-*-* 04:40:00 America/Los_Angeles
+RandomizedDelaySec=5min
+# No catch-up: a missed window waits for the next one instead of running at another hour.
+Persistent=false
+Unit=gene-image-retention.service
+
+[Install]
+WantedBy=timers.target

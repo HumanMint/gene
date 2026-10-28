@@ -164,3 +164,8 @@ Early implementation was developed with [OpenAI Codex](https://openai.com/codex/
 using GPT-6 Astra and GPT-6.1 Sol. Development continues with Codex and Claude:
 Codex contributes code, tests and independent reviews; Claude contributes
 implementation and integration work.
+
+## License
+
+Gene is licensed under the [GNU General Public License v3.0](LICENSE) (GPL-3.0-only).
+Its cogs run on Red-DiscordBot, which is also GPL-3.0.

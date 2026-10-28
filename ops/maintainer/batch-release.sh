@@ -131,13 +131,15 @@ db_owner() {  # uid:gid of the controller DB; its directory must agree, since SQ
   echo "$owner"
 }
 
-sidecar_owner() {  # file: its uid:gid, or nothing when it is gone; fails when it can't be read but is there
-  # A running controller's SQLite creates and removes the DB's journal files at any moment, so each is
-  # read once, and one that vanishes before or during the read has nothing to check. Any other failure
-  # (an I/O error, say) is the caller's to stop on: it returns non-zero rather than dying in a subshell.
-  local owner
-  if owner=$(stat -c %u:%g "$1" 2>/dev/null); then echo "$owner"; return 0; fi
-  [[ ! -e $1 && ! -L $1 ]]
+sidecar_owner() {  # file: its uid:gid, or nothing when it is gone; fails on any other read error
+  # A running controller's SQLite removes and recreates the DB's journal files at any moment, so each is
+  # read once. stat's own "no such file" means it was gone then, even if a new one has appeared since:
+  # the controller made that one, as the DB owner (2026-10-28: an -shm gone at stat was back at a recheck).
+  # Any other failure (an I/O error, say) is the caller's to stop on: it returns non-zero rather than
+  # dying in a subshell.
+  local out
+  if out=$(LC_ALL=C stat -c %u:%g "$1" 2>&1); then echo "$out"; return 0; fi
+  [[ $out == *'No such file or directory'* ]]
 }
 
 repair_sidecars() {
@@ -632,15 +634,14 @@ PY
 }
 du_bytes() {  # path: its size in bytes
   # A file removed while du walks the tree, such as a running controller's SQLite journal, makes du
-  # fail after it prints the total; that file just isn't counted. Any other error (a permission or I/O
-  # error, which would undercount) stops the script, and so does a "no such file" for a path still there.
-  local size errors line gone re="^du: cannot access '(.*)': No such file or directory$"
+  # fail after it prints the total; that file just isn't counted, even if a new one appears since. Any
+  # other error (a permission or I/O error, which would undercount) stops the script.
+  local size errors line re="^du: cannot access '.*': No such file or directory$"
   errors=$(mktemp)
   size=$(LC_ALL=C du -sb "$1" 2>"$errors" | cut -f1) || true
   while IFS= read -r line; do
-    gone=''
-    [[ $line =~ $re ]] && gone=${BASH_REMATCH[1]}
-    if [[ -z $gone || -e $gone || -L $gone ]]; then rm -f "$errors"; die "could not measure $1: $line"; fi
+    [[ $line =~ $re ]] && continue
+    rm -f "$errors"; die "could not measure $1: $line"
   done < "$errors"
   rm -f "$errors"
   [[ $size =~ ^[0-9]+$ ]] || die "could not measure $1"

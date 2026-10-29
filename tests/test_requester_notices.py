@@ -505,9 +505,9 @@ def test_recording_again_after_a_lost_answer_hears_what_was_recorded(store, outc
         finish(store, job['id'], 'f'*32, outcome)
 
 
-def test_a_finished_claim_keeps_its_place_for_an_older_controller(tmp_path):
-    """Rows this controller writes open on an older one: it reads a finished lease as nothing, and refuses a
-    claim while any send is on its way. Checked by hand against Gene main too (see the PR)."""
+def test_preparing_and_authorizing_need_no_schema_change(tmp_path):
+    """New states are values in the same text column, so an older controller opens the table as it is. How an
+    older one treats them (it refuses a claim while any send is on its way) was checked against Gene main."""
     from gene.store import Store
     store = Store(tmp_path/'gene.sqlite3')
     store.bootstrap('a'*40)

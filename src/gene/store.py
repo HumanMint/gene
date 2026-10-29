@@ -930,6 +930,9 @@ class Store:
                        'state=CASE WHEN state IN ("awaiting_owner","queued","building","review","approved") '
                        'THEN "rejected" ELSE state END WHERE id=?',
                        (user, text, time.time(), 'erased:' + row['id'], json.dumps(proposal) if proposal else None, row['id']))
+            # Its reply to the reporter keeps only that it was told, so it's never told twice (gene #139). A reply
+            # still on its way keeps its lease: recording it then finds the report gone and never keeps its link.
+            db.execute("UPDATE requester_notices SET message_id='' WHERE job_id=?", (row['id'],))
 
     @staticmethod
     def advance_revision(db, user_id):

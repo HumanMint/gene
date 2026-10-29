@@ -442,6 +442,20 @@ def test_a_restart_retires_a_reply_whose_generation_came_back_under_a_newer_revi
     assert retired(replies(store)[-1])
 
 
+def test_an_upgrade_keeps_a_reply_on_a_first_summary_an_older_controller_saved(world):
+    """The controller before gene #118 recorded no generation for a summary that never moved, so a reply saved on a
+    member's first summary has none on record. An upgrade starts from that state: the reply still holds. An erasure
+    that deleted a generation moved the member's revision, which still retires (see the test above)."""
+    client, store = world
+    _, generation = summarized(client, store)
+    assert generation == 0
+    quoted(store, generation, message_id='707')
+    with store.connection() as db:  # As the older controller left it: generation zero was never written.
+        db.execute('DELETE FROM fri_member_summary_generations')
+    Store(store.path)
+    assert replies(store)[-1] == QUOTING and referenced(store, '707')['verbatim'] is True
+
+
 def test_a_plain_restart_keeps_current_summary_derived_replies(world):
     """No rollback in between: a generation-zero reply, and one a rebuild sent the old summary carried forward."""
     from gene.fri_member_summary import finish

@@ -153,8 +153,10 @@ def manageable(conversation, scope, profiles=True):
     return conversation.startswith('private:') or scope in visible(conversation)
 
 
-def entries(store, guild, conversation, user, profiles=True, summaries=False):
-    """summaries: a Fri that shows the member's summary, which only a private conversation lists."""
+def entries(store, guild, conversation, user, profiles=True, summaries=False, sources=False):
+    """summaries: a Fri that shows the member's summary, which only a private conversation lists. sources: each note
+    also names the messages it was learned from (None if unknown), for a Fri that holds back one whose withdrawal is
+    still on its way (fri #215)."""
     with store.connection() as db:
         profile = store._personal_context(db, guild, conversation, user, profiles)
         row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
@@ -162,8 +164,9 @@ def entries(store, guild, conversation, user, profiles=True, summaries=False):
         for scope in [r[0] for r in db.execute('SELECT DISTINCT channel_id FROM personal_notes WHERE guild_id=? '
                                                 'AND user_id=? ORDER BY channel_id', (guild, user))]:
             if manageable(conversation, scope, profiles):
-                notes += [{**dict(r), 'scope': scope} for r in db.execute(
-                    'SELECT id,category,evidence,at,origin FROM personal_notes WHERE guild_id=? AND channel_id=? '
+                notes += [{**{key: r[key] for key in ('id', 'category', 'evidence', 'at', 'origin')}, 'scope': scope,
+                           **({'sources': learned(r)} if sources else {})} for r in db.execute(
+                    'SELECT id,category,evidence,at,origin,sources FROM personal_notes WHERE guild_id=? AND channel_id=? '
                     'AND user_id=? ORDER BY at DESC,id DESC LIMIT ?', (guild, scope, user, limit(scope)))]
         # The profile first, then this conversation, then anywhere else; newest first within each.
         order = {SERVER: 0, conversation: 1}

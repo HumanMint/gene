@@ -119,32 +119,42 @@ built from other members' messages.
   It answers `{"ok": true, "removed": n}`. An older controller lacks it and Fri asks only about the
   messages it saved since it started, as before.
 - **What else a withdrawn message reached (gene #141).** Both withdrawals above also take:
-  - **Notes learned from it.** Each personal note records the Discord messages it was learned from
-    (`personal_notes.sources`, a JSON list: the turn's message and its burst, a learning batch's
-    message; `[]` for words typed in My memory; NULL, unknown, for a note saved before this or by an
-    older controller). A note naming the withdrawn message goes wherever it shows, profile included.
-    One of unknown source goes if the withdrawn exchange holds its words and it was said there or in
+  - **Notes learned from it.** Each personal note records the Discord message it was learned from
+    (`personal_notes.sources`, a JSON list: the message whose words hold the note's, so in a burst only
+    the one that says it, or a learning batch's message; `[]` for words typed in My memory; NULL, unknown,
+    for a note saved before this or by an older controller). A note naming the withdrawn message goes
+    wherever it shows, profile included, whether the message was edited or deleted. One of unknown source
+    goes if the withdrawn message's own words in that exchange hold its words and it was said there or in
     the profile. Share and Keep carry the sources; the same note learned again comes from the newer
     message, so withdrawing the older one leaves it. By ID, a note whose exchange was trimmed goes too
     (a note outlasts six exchanges), with a fence for the member and message, so a learning batch already
     reading the message keeps nothing from it, as a late save already did (gene #90).
-  - **Replies that carried it.** With the optional `withdrawal-sources` capability, `/chat/turn` and
-    `/chat/turn/check` take `drew_on`: up to 1000 Discord message IDs the turn's model requests carried
-    besides its own (the channel's view, what it answers or quotes, what a read showed, saved history).
-    A save keeps them (`chat_turns.drew_on`, NULL for none). Once one is withdrawn, any member's saved
-    reply that carried it, or carried Fri's reply to it, or a reply of Fri's that did, keeps only a
-    breadcrumb, as one drawn on a withdrawn summary does: not verbatim, so a reference fails closed,
-    and any question it left goes. The member's own words stay. By ID, one that only such a reply
-    holds retires that reply and writes no fence (its author is unknown there). A check whose `drew_on`
-    holds a message withdrawn within the week refuses with the 409 above; such a save keeps nothing.
+  - **Replies that carried it, once deleted.** With the optional `withdrawal-sources` capability,
+    `/chat/turn` and `/chat/turn/check` take `drew_on`: up to 1000 Discord message IDs the turn's model
+    requests carried besides its own (the channel's view, what it answers or quotes, what a read showed,
+    saved history). A save keeps them (`chat_turns.drew_on`, NULL for none). Both withdrawals take
+    `deleted` (default false: an edit). Once a message is deleted, any member's saved reply that carried
+    it, or carried Fri's reply to it, or a reply of Fri's that did, keeps only a breadcrumb, as one drawn on
+    a withdrawn summary does: not verbatim, so a reference fails closed, and any question it left goes.
+    The member's own words stay. An edit leaves those replies, as before (gene #150). A deletion is kept a
+    week by message ID alone (`chat_turn_deletions`: no author, no words, apart from the fences, which an
+    older controller writes positionally); a check whose `drew_on` holds one refuses with the 409 above,
+    and such a save keeps nothing. By ID, a deletion that only such a reply holds retires that reply and
+    writes no fence (its author is unknown there).
+  - **Nothing about a member after a privacy change.** `/chat/turn/withdraw` also takes `revision`, the
+    member's privacy revision when the exchange was saved. One that arrives after the member's revision
+    moved ("forget me", say), or with their memory off, still takes anything that holds the message but
+    writes no fence or deletion, since a late save under that revision is refused anyway. An older Fri
+    sends no revision; memory off still writes nothing.
   - **Where it came from, when asked.** `/chat/context` with `sources: true` (sent only by a Fri that
     knows the capability) adds `note_sources`, a list beside `personal_memory.notes` in the same order
-    (each note's message IDs, or null), and a `messages` list on each `elsewhere` row. Without it the
-    answer is as before. Fri uses them to keep that context out of a request while a withdrawal is
-    still on its way (fri #215).
-  - **Start.** An older controller withdraws exchanges and fences their messages but keeps the rest:
-    the next start here drops notes and retires replies naming a fenced message. A reply that carried
-    only Fri's answer to it can't be found then, as that answer went with no record of its ID.
+    (each note's message IDs, or null), and a `messages` list on each `elsewhere` row. So does
+    `/chat/memory/notes`, for My memory: a `sources` list on each entry. Without it the answer is as
+    before. Fri uses them to keep that context out of a request, and out of memory views, while a
+    withdrawal is still on its way (fri #215).
+  - **Start.** An older controller withdraws exchanges and fences their messages but keeps their notes:
+    the next start here drops notes naming a fenced message, one query per fence over that member's
+    notes. It doesn't record which messages were deleted, so replies that carried them stay, as on main.
   - The mention fingerprint leaves `drew_on` out. An older Fri sends none and asks nothing, so it gets
     what it did before, plus notes going with withdrawn messages.
 - **Summary generations.** The optional `summary-generations` capability closes the gap for a reply

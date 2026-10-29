@@ -177,8 +177,9 @@ class ChatTurn(ChatScope):
 
 
 class ContextRequest(ChatScope):
-    # Sent by a Fri that keeps what a withdrawn message taught out of its requests until the withdrawal lands (fri
-    # #215): each note and exchange elsewhere then names the messages it came from. An older Fri never gets them.
+    # Sent by a Fri that keeps what a withdrawn message taught out of its requests and memory views until the
+    # withdrawal lands (fri #215): each note (and exchange elsewhere) then names the messages it came from. An older
+    # Fri never gets them.
     sources: bool = False
 
 
@@ -194,6 +195,11 @@ class TurnWithdrawal(Actor):
     channel_id: str
     conversation_id: str = Field(pattern=r'^(private|public):[0-9]{1,25}$')
     message_id: str = Field(pattern=r'^[0-9]{1,25}$')
+    # From a Fri offering withdrawal-sources: deleted, not edited, so replies that carried it retire too (gene #141,
+    # #150); and the member's privacy revision when the exchange was saved, so one reaching the controller after a
+    # "forget me" writes nothing about them again. An older Fri sends neither: an edit, checked as before.
+    deleted: bool = False
+    revision: int | None = Field(default=None, ge=0)
 
 
 class SavedWithdrawal(BaseModel):
@@ -201,6 +207,7 @@ class SavedWithdrawal(BaseModel):
     model_config = ConfigDict(extra='forbid')
     guild_id: str = Field(pattern=r'^[0-9]{1,25}$')
     message_ids: list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]] = Field(min_length=1, max_length=10)
+    deleted: bool = False  # As above: all of them deleted.
 
 
 class ResearchStart(ChatScope):
@@ -513,13 +520,14 @@ def create_app(settings: Settings | None = None):
     @app.post('/chat/turn/withdraw', dependencies=[auth('fri')])
     def chat_turn_withdraw(body: TurnWithdrawal):
         chat_scope(body)
-        return store.withdraw_turn(body.guild_id, body.conversation_id, body.user_id, body.message_id)
+        return store.withdraw_turn(body.guild_id, body.conversation_id, body.user_id, body.message_id,
+                                   deleted=body.deleted, revision=body.revision)
 
     @app.post('/chat/turn/withdraw/saved', dependencies=[auth('fri')])
     def chat_turn_withdraw_saved(body: SavedWithdrawal):
         if body.guild_id != settings.guild_id and not (settings.test_guild_id and body.guild_id == settings.test_guild_id):
             raise HTTPException(403, 'Use Fri in a configured server')
-        return store.withdraw_saved(body.guild_id, body.message_ids)
+        return store.withdraw_saved(body.guild_id, body.message_ids, deleted=body.deleted)
 
     @app.post('/chat/messages/sources', dependencies=[auth('fri')])
     def chat_message_sources(body: MessageSources):
@@ -542,10 +550,11 @@ def create_app(settings: Settings | None = None):
         return {'ok': True}
 
     @app.post('/chat/memory/notes', dependencies=[auth('fri')])
-    def personal_notes(body: ChatScope):
+    def personal_notes(body: ContextRequest):
         chat_scope(body)
         from .fri_memory_store import entries
-        return entries(store, body.guild_id, body.conversation_id, body.user_id, body.profiles, body.summaries)
+        return entries(store, body.guild_id, body.conversation_id, body.user_id, body.profiles, body.summaries,
+                       sources=body.sources)
 
     @app.post('/chat/memory/summary', dependencies=[auth('fri')])
     def edit_summary(body: SummaryEdit):

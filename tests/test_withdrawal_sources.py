@@ -51,9 +51,10 @@ def chatter(store, count, *, start=50):
                         source=source(age=start-i, channel='51'), provenance=[])
 
 
-def learn(store, text, *, user='20', conversation='public:51', age=0, evidence=None, category='hobbies', **extra):
+def learn(store, text, *, user='20', conversation='public:51', age=0, evidence=None, category='hobbies', revision=0,
+          **extra):
     said = extra.pop('source', None) or source(age=age, user=user, channel=conversation.split(':')[1])
-    result = store.save_chat('123', conversation, user, 0, text, 'okay', 'model', 'high', source=said,
+    result = store.save_chat('123', conversation, user, revision, text, 'okay', 'model', 'high', source=said,
                              provenance=extra.pop('provenance', []),
                              notes=[{'category': category, 'evidence': evidence or text}], **extra)
     return said['id'], result
@@ -320,7 +321,7 @@ def test_context_names_where_notes_and_exchanges_elsewhere_came_from_only_when_a
     asked = client.post('/chat/context', headers=headers('fri'), json={**scope, 'sources': True}).json()
     assert 'note_sources' not in plain and all('messages' not in row for row in plain['elsewhere'])
     sources = dict(zip((note['evidence'] for note in asked['personal_memory']['notes']), asked['note_sources']))
-    assert sources == {LIKE: [taken], 'i play chess on weekends': sorted([first['id'], last['id']]),
+    assert sources == {LIKE: [taken], 'i play chess on weekends': [last['id']],  # The message that says it.
                        'i love trance': None}  # None: unknown.
     assert [row['messages'] for row in asked['elsewhere']] == [[taken], sorted([first['id'], last['id']])]
     for row in asked['elsewhere']:
@@ -362,7 +363,7 @@ def test_a_note_belongs_to_the_message_in_its_burst_that_says_it(world):
     with store.connection() as db:  # Saved before notes named messages, or by an older controller.
         db.execute("UPDATE personal_notes SET sources=NULL WHERE evidence='i play chess on weekends'")
     withdraw(client, hello['id'])
-    assert sorted(notes(store)) == ['i play chess on weekends', LIKE]
+    assert sorted(notes(store)) == sorted(['i play chess on weekends', LIKE])
     withdraw(client, said['id'])
     assert notes(store) == ['i play chess on weekends']
 
@@ -397,10 +398,10 @@ def test_a_withdrawal_sent_before_an_erasure_writes_nothing_after_it(world):
     store.personal_control('20', 'enable')  # Back on, revision 2: a stale one still writes nothing.
     assert withdraw(client, taken, revision=0).json() == {'ok': True, 'removed': 0}
     assert fences(store) == []
-    said = learn(store, 'i play chess on weekends', age=5)[0]
     with store.connection() as db:
         revision = db.execute("SELECT revision FROM chat_revisions WHERE user_id='20'").fetchone()[0]
-    assert withdraw(client, said, revision=revision).json()['removed'] == 0  # Saved under an older one, say.
+    said = learn(store, 'i play chess on weekends', age=5, revision=revision)[0]
+    assert withdraw(client, said, revision=revision).json()['removed'] == 1  # Saved under the current one: as before.
     assert fences(store) == [said]
 
 

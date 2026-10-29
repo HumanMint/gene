@@ -110,8 +110,8 @@ REFUSED = re.compile(
     # still counts).
     r"|\bi meant to\b(?!\s+(?:the|a|an|my|your|his|her|our|their|this|that|these|those|me|you|him|us|them|all)\b)")
 # Someone else's words introducing more ("alex said X"; a title like "She Said" ends there). Their own "i said ..." or
-# "we said ..." aren't someone else's, nor is an artist's name ("'All I Got' by Said The Sky"), so it's read with that
-# masked.
+# "we said ..." aren't someone else's, nor is an artist's name ("'All I Got' by Said The Sky"), so it's read with the
+# first word of that masked, as WITHDRAWN reads it, which keeps the count of words before a verb.
 ATTRIBUTED = re.compile(rf"{CLAUSE}(?!(?:i|we)\b)(?:[\w']+\s+){{1,3}}?(?:said|says|asked for|suggested|suggests|recommended"
                         r"|recommends|requested|requests|mentioned)\b(?=[\s,:]*[\w\"'‘“])")
 # After the song, a change of heart withdraws it: "wrong song, Love Story, actually no", "... not that one either",
@@ -273,7 +273,7 @@ def replacement(text, song, start, named):
     artists = [m for m in ARTIST.finditer(text, title) if m.start() <= limit]
     plain = masked(text, [(m.end(1), m.end('first')) for m in artists])
     nameless = masked(text, [(m.end(1), m.end()) for m in artists])
-    return not (REFUSED.search(text) or ATTRIBUTED.search(nameless) or WITHDRAWN.search(plain[song:])
+    return not (REFUSED.search(text) or ATTRIBUTED.search(plain) or WITHDRAWN.search(plain[song:])
                 or DISOWNED.match(nameless, clause) or DISOWNED.match(nameless, song_end)
                 or handed_off(nameless, clause, song_end))
 

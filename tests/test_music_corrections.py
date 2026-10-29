@@ -287,6 +287,10 @@ FIX = 'not the one, i meant join us for a bite'
     ('wrong song, Love Story is what we heard alex say', 'Love Story', False),
     ('wrong song, Love Story is what we were told', 'Love Story', False),
     ('wrong song, Love Story is what we said alex wanted', 'Love Story', False),
+    ('wrong song, Love Story, we said it already', 'Love Story', True),
+    ('wrong song, Love Story, we said no to that', 'Love Story', False),
+    ('wrong song, Love Story, we said not to play it', 'Love Story', False),
+    ('not that one, we said Love Story', 'Love Story', False),  # Only "i said" may lead the song.
 ])
 def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argument, expected):
     assert correction(text, argument) is expected
@@ -299,7 +303,9 @@ def test_a_long_message_is_read_without_backtracking():
               'love'+' from x'*568, 'love story'+' i just'*664+' said', "love story "+"don't "*664, 'i meant '+'to '*1328,
               'love story'+' is not what'*331, 'love '+'by the '*664, 'love story'+' i said no'*398, 'love story'+', say'*797,
               'love story '+'x '*1990+'is not what i meant', 'love story'+' is absolutely'*363,
-              'love story'+', i said no to that'*222, 'love story'+' not to ever'*363, 'i like '+'you say '*499]
+              'love story'+', i said no to that'*222, 'love story'+' not to ever'*363, 'i like '+'you say '*499,
+              "love story"+" isn't what"*363, 'love story, i said no'+' this time'*397+' x', 'love story'+' we just'*568+' said',
+              'love story'+', we said no to that'*210, 'love story, i said not to'+' ever again'*361+' x']
     for shape in shapes:
         text = ('wrong song, '+shape)[:4000]
         began = time.perf_counter()

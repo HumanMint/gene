@@ -613,3 +613,69 @@ def test_fri_can_ask_for_the_send_on_the_owners_behalf_only(tmp_path):
     assert 'requester-notice-authorize' in advertised['capabilities']
     assert compatible({**advertised, 'capabilities': [c for c in advertised['capabilities']
                                                       if c != 'requester-notice-authorize']})
+
+
+def older_claim(store, job_id):
+    """Gene main's claim (0cc024e) as a rollback target runs it on these rows: its row logic, word for word."""
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT state FROM requester_notices WHERE job_id=?', (job_id,)).fetchone()
+        if row and row['state'] == 'sent':
+            raise Conflict('The reporter was already told')
+        if row and row['state'] != 'failed':
+            raise Conflict('A reply to the reporter may already have posted, so it is not tried again')
+        lease = 'older-'+job_id
+        db.execute("INSERT INTO requester_notices(job_id,lease,state,at) VALUES (?,?,'sending',?) "
+                   "ON CONFLICT(job_id) DO UPDATE SET lease=excluded.lease,state='sending',message_id='',at=excluded.at",
+                   (job_id, lease, 0))
+        return lease
+
+
+def older_finish(store, job_id, lease, state, message_id=''):
+    """Gene main's finish (0cc024e), its row logic word for word (the recheck aside)."""
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT lease,state FROM requester_notices WHERE job_id=?', (job_id,)).fetchone()
+        if not row or row['state'] != 'sending' or row['lease'] != lease:
+            raise Conflict('This reply has already been recorded')
+        db.execute('UPDATE requester_notices SET state=?,message_id=?,lease=NULL,at=? WHERE job_id=?',
+                   (state, message_id if state == 'sent' else '', 0, job_id))
+
+
+@pytest.mark.parametrize('rolled_back_at', ['prepared', 'cleared', 'refused'])
+def test_a_rollback_mid_tap_leaves_rows_an_older_controller_settles(store, rolled_back_at):
+    """Rolled back to a Gene without requester-notice-authorize, nothing stays stuck that it wouldn't leave stuck
+    itself, and nothing is sent twice: a preparation is free for its claim, and a cleared send is one it records."""
+    job = shipped(store)
+    lease = notices.claim(store, job['id'], 'owner', prepare=True)['lease']
+    if rolled_back_at == 'refused':
+        rolled_back(store)
+        with pytest.raises(Conflict):
+            notices.authorize(store, job['id'], lease)
+        finish(store, job['id'], lease, 'failed')
+    if rolled_back_at == 'cleared':
+        notices.authorize(store, job['id'], lease)
+    assert notice_row(store, job['id'])['state'] in ('sending', 'sent', 'failed', 'uncertain', 'invalidated')
+    if rolled_back_at == 'cleared':  # Fri may be sending it: the older one records it with the tap's lease.
+        with pytest.raises(Conflict, match='may already'):
+            older_claim(store, job['id'])
+        older_finish(store, job['id'], lease, 'sent', '555')
+        assert notice_row(store, job['id'])['state'] == 'sent'
+    else:  # Nothing has posted, and the older one has no authorize route, so nothing can from this tap.
+        older = older_claim(store, job['id'])
+        older_finish(store, job['id'], older, 'sent', '555')
+        assert notice_row(store, job['id'])['state'] == 'sent'
+
+
+def test_a_send_never_recorded_stays_refused(store):
+    """A cleared send whose outcome never came back may have posted. It's never tried again, however long ago:
+    looking for it in Discord can't tell the notice from another reply of Fri's to the report."""
+    job = shipped(store)
+    lease = notices.claim(store, job['id'], 'owner', prepare=True)['lease']
+    notices.authorize(store, job['id'], lease)
+    aged(store, job['id'], 7*86400)
+    with pytest.raises(Conflict, match='may already'):
+        notices.claim(store, job['id'], 'owner', prepare=True)
+    with pytest.raises(Conflict, match='may already'):
+        claim(store, job['id'], 'owner')
+    assert finish(store, job['id'], lease, 'sent', '555')['state'] == 'sent'  # Its own tap can still record it.

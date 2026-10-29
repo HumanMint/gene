@@ -1,6 +1,7 @@
 """A member putting right the song Gene just played for them ("not that one, X") gets X queued, once."""
 import asyncio
 import datetime as dt
+import gc
 import time
 from types import SimpleNamespace
 
@@ -291,29 +292,94 @@ FIX = 'not the one, i meant join us for a bite'
     ('wrong song, Love Story, we said no to that', 'Love Story', False),
     ('wrong song, Love Story, we said not to play it', 'Love Story', False),
     ('not that one, we said Love Story', 'Love Story', False),  # Only "i said" may lead the song.
+    # gene #133 (1): "no more" and "not now" take the song back after "i said" or "we said", like "no" and "not".
+    ('wrong song, Love Story, we said no more', 'Love Story', False),
+    ('wrong song, Love Story, we said not now', 'Love Story', False),
+    ('wrong song, Love Story, i said no more', 'Love Story', False),
+    ('wrong song, Love Story, i said not now', 'Love Story', False),
+    ('wrong song, Love Story, we said not right now lol', 'Love Story', False),
+    ('wrong song, Love Story, i told you not anymore', 'Love Story', False),
+    ('wrong song, Love Story, we said no more of that please', 'Love Story', False),
+    ('wrong song, Love Story, i said now', 'Love Story', True),
+    ('wrong song, Love Story, we said no more Shake It Off', 'Love Story', True),
+    ("wrong song, 'We Said No More'", 'We Said No More', True),
+    # gene #133 (2): their own denial with someone else alongside ("alex and i") is still theirs.
+    ("wrong song, Love Story isn't what alex and i asked for", 'Love Story', False),
+    ('wrong song, Love Story is not what you and i wanted', 'Love Story', False),
+    ("wrong song, Love Story is what alex and i didn't ask for", 'Love Story', False),
+    ("wrong song, Love Story isn't the one alex, sam and i picked", 'Love Story', False),
+    ('wrong song, Love Story is what alex and i asked for', 'Love Story', True),
+    ("wrong song, 'Love Story Isn't What You and I Wanted'", "Love Story Isn't What You and I Wanted", True),
+    # gene #133 (3): an artist's name is no one's words, after a quoted title as after a plain one.
+    ("wrong song, 'All I Got' by Said The Sky", 'All I Got', True),
+    ('wrong song, "Love" by Said The Sky', 'Love', True),
+    ('wrong song, Love by Said The Sky', 'Love', True),
+    ('wrong song, All I Got by Said The Sky', 'All I Got', True),
+    ("wrong song, 'All I Got' by Said The Sky, alex said so", 'All I Got', False),
+    ("wrong song, 'All I Got', alex said so", 'All I Got', False),
 ])
 def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argument, expected):
     assert correction(text, argument) is expected
 
 
+# Worst cases for each check, cut to the length of a message.
+SHAPES = ["'"+"a' "*1330, "'"+"rockin' "*498, "''a "*997, "' "*1994, '"'+'a '*1993, 'love story nah'+' lol'*990+' x',
+          'love story'+', no lol'*497+' x', 'love story'+' ,'*1990+'x', 'love story'+', a b said'*398, 'love '+'by '*1328,
+          'love'+' from x'*568, 'love story'+' i just'*664+' said', "love story "+"don't "*664, 'i meant '+'to '*1328,
+          'love story'+' is not what'*331, 'love '+'by the '*664, 'love story'+' i said no'*398, 'love story'+', say'*797,
+          'love story '+'x '*1990+'is not what i meant', 'love story'+' is absolutely'*363,
+          'love story'+', i said no to that'*222, 'love story'+' not to ever'*363, 'i like '+'you say '*499,
+          "love story"+" isn't what"*363, 'love story, i said no'+' this time'*397+' x', 'love story'+' we just'*568+' said',
+          'love story'+', we said no to that'*210, 'love story, i said not to'+' ever again'*361+' x',
+          'love story'+', we said no more'*235, 'love story, i said not right now'+' lol'*992+' x',
+          'love story'+" isn't what alex and"*199+' i said', "'all i got'"+' by said the sky'*249]
+
+
+def read(text):
+    """Every check, for the arguments a correction might propose."""
+    for argument in ('love story', 'a', text[12:200]):
+        correction(text, argument)
+
+
 def test_a_long_message_is_read_without_backtracking():
     """Each check runs in about linear time, so a 4000-character worst case takes milliseconds, not minutes."""
-    shapes = ["'"+"a' "*1330, "'"+"rockin' "*498, "''a "*997, "' "*1994, '"'+'a '*1993, 'love story nah'+' lol'*990+' x',
-              'love story'+', no lol'*497+' x', 'love story'+' ,'*1990+'x', 'love story'+', a b said'*398, 'love '+'by '*1328,
-              'love'+' from x'*568, 'love story'+' i just'*664+' said', "love story "+"don't "*664, 'i meant '+'to '*1328,
-              'love story'+' is not what'*331, 'love '+'by the '*664, 'love story'+' i said no'*398, 'love story'+', say'*797,
-              'love story '+'x '*1990+'is not what i meant', 'love story'+' is absolutely'*363,
-              'love story'+', i said no to that'*222, 'love story'+' not to ever'*363, 'i like '+'you say '*499,
-              "love story"+" isn't what"*363, 'love story, i said no'+' this time'*397+' x', 'love story'+' we just'*568+' said',
-              'love story'+', we said no to that'*210, 'love story, i said not to'+' ever again'*361+' x']
-    correction('wrong song, '+shapes[0], 'love story')  # Warmed up first: a slow CI runner's first call isn't backtracking.
-    for shape in shapes:
-        text = ('wrong song, '+shape)[:4000]
+    correction('wrong song, '+SHAPES[0], 'love story')  # Warmed up first: a slow CI runner's first call isn't backtracking.
+    for shape in SHAPES:
         began = time.perf_counter()
-        for argument in ('love story', 'a', text[12:200]):
-            correction(text, argument)
+        read(('wrong song, '+shape)[:4000])
         # Milliseconds here; backtracking would take seconds to minutes, so the bound has room for a busy runner.
         assert time.perf_counter()-began < 2, shape[:20]
+
+
+def fastest_reads(texts, runs=5):
+    """Each text's fastest read in CPU time, taking turns so a slow spell on the runner hits them alike."""
+    best = [float('inf')]*len(texts)
+    for _ in range(runs):
+        for i, text in enumerate(texts):
+            began = time.thread_time()  # Not the runner's other work.
+            read(text)
+            best[i] = min(best[i], time.thread_time()-began)
+    return best
+
+
+def test_reading_time_grows_with_the_length_not_its_square():
+    """The ceiling above only catches backtracking slow enough to cross it (gene #140). Four times the characters
+    takes about four times as long when every check reads in linear time, and about sixteen when one backtracks
+    quadratically, however fast it still is, so the ratio of each shape's 4000-character read to its 1000 must stay
+    under 8."""
+    gc.collect()
+    gc.disable()  # A collection during a read is noise, not reading time.
+    try:
+        for shape in SHAPES:
+            texts = [('wrong song, '+shape)[:size] for size in (1000, 4000)]
+            fastest_reads(texts, runs=1)  # Warmed up first.
+            ratios = []
+            while len(ratios) < 3 and (not ratios or ratios[-1] >= 8):  # Backtracking is slow on every try; noise, rarely.
+                small, large = fastest_reads(texts)
+                ratios.append(large/small)
+            assert ratios[-1] < 8, (shape[:20], ratios)
+    finally:
+        gc.enable()
 
 
 def played(store, **changes):

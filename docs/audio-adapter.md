@@ -22,8 +22,15 @@ The `GENE_*` configuration and `X-Gene-*` protocol names remain compatible. Exis
 
 ## Existing installation
 
-The daily runtime batch installs the pinned Python dependency but does not rebuild or
-switch the independently deployed audio node, resolver or relay. Keep the existing
+New runtime images install the pinned Python dependency when built. An existing
+installation also needs a separately reviewed host-environment transition and
+rollback plan: the daily batch checks the host's editable installation and refuses
+dependency or lockfile changes. Complete that transition before staging this
+integration, with the manifest checks kept enabled. A new Docker image alone does
+not update the host's Python environment.
+
+The runtime batch does not rebuild or switch the independently deployed audio node,
+resolver or relay. Keep the existing
 audio image pins, configuration, media/cache metadata, leases, private tokens, installed
 service labels and rollback releases until an explicit audio migration is verified.
 

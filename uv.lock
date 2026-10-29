@@ -345,7 +345,7 @@ requires-dist = [
     { name = "pillow", marker = "extra == 'red'", specifier = ">=13,<14" },
     { name = "pip", marker = "extra == 'red'", specifier = ">=25,<27" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.10,<3" },
-    { name = "red-audio-adapter", git = "https://github.com/HumanMint/red-audio-adapter?rev=ea07f40f820625e3210ef49f23f9306d605c6f2a" },
+    { name = "red-audio-adapter", git = "https://github.com/HumanMint/red-audio-adapter?rev=74cc0083f79b5dc00d7d4152a3405a26bbb61568" },
     { name = "red-discordbot", marker = "extra == 'red'", specifier = "==3.5.24" },
     { name = "uvicorn", specifier = ">=0.34,<1" },
 ]
@@ -750,7 +750,7 @@ wheels = [
 [[package]]
 name = "red-audio-adapter"
 version = "0.1.0"
-source = { git = "https://github.com/HumanMint/red-audio-adapter?rev=ea07f40f820625e3210ef49f23f9306d605c6f2a#ea07f40f820625e3210ef49f23f9306d605c6f2a" }
+source = { git = "https://github.com/HumanMint/red-audio-adapter?rev=74cc0083f79b5dc00d7d4152a3405a26bbb61568#74cc0083f79b5dc00d7d4152a3405a26bbb61568" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },

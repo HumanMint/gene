@@ -1260,3 +1260,90 @@ def test_accepting_needs_the_last_evals_run_finished(tmp_path):
     journal = ('baseline', 'drained', 'evals_started', 'evals_ran', 'evals_started')
     out, _, _ = script(tmp_path, 'accept-evals', '2026-10-28T07:50:00-07:00', journal, {'EVALS_ACCEPTED': 'why'})
     assert out.returncode == 4
+
+
+PYPROJECT = (Path(__file__).parents[1]/'pyproject.toml').read_text()
+# gene #116: changes to the live pyproject.toml, as (old, new) or text to append. Metadata may differ...
+METADATA_CHANGES = {
+    'license': ('description = ', 'license = "GPL-3.0-only"\ndescription = '),
+    'description': ('description = "', 'description = "an older line. '),
+    'authors': ('description = ', 'authors = [{name = "someone"}]\ndescription = '),
+    'urls': '\n[project.urls]\nSource = "https://example.invalid/gene"\n',
+    'ruff': ('line-length = 100', 'line-length = 110'),
+    'pytest': ('testpaths = ["tests"]', 'testpaths = ["tests", "more"]'),
+}
+# ...but nothing the editable install installs from, or how.
+INSTALL_CHANGES = {
+    'project.dependencies': ('"httpx>=0.28,<1",', '"httpx>=0.28,<1",\n    "anyio>=4,<5",'),
+    'project.optional-dependencies': ('"pillow>=13,<14",', '"pillow>=12,<14",'),
+    'project.requires-python': ('">=3.11,<3.12"', '">=3.11,<3.13"'),
+    'project.version': ('version = "0.1.0"', 'version = "0.1.1"'),
+    'project.scripts': ('gene-deployer = "gene.deploy:main"', 'gene-deployer = "gene.deploy:run"'),
+    'build-system.requires': ('hatchling==1.27.0', 'hatchling==1.26.3'),
+    'dependency-groups.dev': ('"pytest>=8,<9"', '"pytest>=8,<10"'),
+    'tool.hatch': ('packages = ["src/gene"]', 'packages = ["src/gene", "src/other"]'),
+    'tool.uv': '\n[tool.uv]\nindex-url = "https://example.invalid/simple"\n',
+}
+
+
+def edited(change):
+    if isinstance(change, str):
+        return PYPROJECT + change
+    old, new = change
+    assert PYPROJECT.count(old) == 1, old
+    return PYPROJECT.replace(old, new)
+
+
+def installs_same(tmp_path, live, tomllib=True, staged=None):
+    """batch-release.sh's stage check of the live pyproject.toml against the candidate's (this checkout's, or
+    `staged`)."""
+    bin_dir = tmp_path/'bin'
+    bin_dir.mkdir(parents=True)
+    (bin_dir/'python3').write_text(f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n')
+    (bin_dir/'python3').chmod(0o755)
+    (tmp_path/'live.toml').write_text(live)
+    candidate = SCRIPT.parents[2]/'pyproject.toml'
+    if staged is not None:
+        candidate = tmp_path/'staged.toml'
+        candidate.write_text(staged)
+    env = {**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'}
+    if not tomllib:  # A python3 older than 3.11: the import fails.
+        (tmp_path/'shadow').mkdir()
+        (tmp_path/'shadow/tomllib.py').write_text('raise ImportError("no tomllib here")\n')
+        env['PYTHONPATH'] = str(tmp_path/'shadow')
+    shell = ('set -Eeuo pipefail\n' + functions('installs_same')
+             + f'\ninstalls_same {tmp_path}/live.toml {candidate}\n')
+    return subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30, env=env)
+
+
+@pytest.mark.parametrize('name', sorted(METADATA_CHANGES))
+def test_stage_lets_a_metadata_only_pyproject_change_through(tmp_path, name):
+    out = installs_same(tmp_path, edited(METADATA_CHANGES[name]))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.startswith('pyproject.toml differs only in metadata:') and name in out.stdout
+
+
+@pytest.mark.parametrize('name', sorted(INSTALL_CHANGES))
+def test_stage_refuses_a_pyproject_change_in_what_the_venv_installs(tmp_path, name):
+    out = installs_same(tmp_path, edited(INSTALL_CHANGES[name]))
+    assert out.returncode != 0
+    assert 'pyproject.toml changes what the host venv installs:' in out.stderr and name in out.stderr
+
+
+def test_stage_refuses_a_pyproject_it_cant_parse_or_compare(tmp_path):
+    out = installs_same(tmp_path/'broken', PYPROJECT + 'broken = [\n')
+    assert out.returncode != 0 and 'could not parse' in out.stderr
+    out = installs_same(tmp_path/'not-a-table', 'project = "gene"\n')
+    assert out.returncode != 0 and '[project] is not a table' in out.stderr
+    out = installs_same(tmp_path/'no-tomllib', edited(METADATA_CHANGES['license']), tomllib=False)
+    assert out.returncode != 0 and 'no tomllib' in out.stderr and 'differs only' not in out.stdout
+
+
+@pytest.mark.parametrize('live, staged', [
+    ('[tool.uv]\npackage = 1\n', '[tool.uv]\npackage = true\n'),
+    ('[tool.uv]\nconstraint-dependencies = [1]\n', '[tool.uv]\nconstraint-dependencies = [1.0]\n'),
+    ('[tool.hatch.build]\nreproducible = 1\n', '[tool.hatch.build]\nreproducible = true\n'),
+])
+def test_stage_refuses_a_setting_that_only_changed_type(tmp_path, live, staged):
+    out = installs_same(tmp_path, PYPROJECT + '\n' + live, staged=PYPROJECT + '\n' + staged)
+    assert out.returncode != 0 and 'pyproject.toml changes what the host venv installs:' in out.stderr

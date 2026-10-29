@@ -7,7 +7,8 @@ REPO=$(cd "$H/../../.." && pwd)
 R=$BATCH_ROOT FR=$BATCH_FRI_ROOT
 rm -rf "$MOCK"; mkdir -p "$MOCK"; chmod 755 "$MOCK"
 mkdir -p "$R"/{secrets,data/controller,data/red,data/fri,source/ops,source/src,releases/"$OLD_G"/cogs,backups,venv/bin} "$FR/backups" "$MOCK/docker"
-cp "$REPO"/pyproject.toml "$REPO"/uv.lock "$R/source/"
+# The live release's own manifests, so stage compares the candidate's with what is really installed (gene #116).
+git -C "$REPO" archive "$OLD_G" pyproject.toml uv.lock | tar -x -C "$R/source"
 git -C "$REPO" archive "$OLD_G" ops/compose.yml ops/fri-compose.yml ops/gene-worker.service ops/gene-deployer.service | tar -x -C "$R/source"
 echo old > "$R/source/src/marker"
 [[ $OLD_SOURCE == unmarked ]] || echo "$OLD_SOURCE" > "$R/source/.release-sha"

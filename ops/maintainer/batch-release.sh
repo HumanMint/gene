@@ -722,6 +722,59 @@ print('switch moves are plain renames')
 PY
 }
 
+installs_same() {  # live staged: two pyproject.toml files that differ in nothing the host venv installs from
+  # The venv is an editable install of the source tree, so only metadata may change (gene #116). It relies on
+  # python3's tomllib (Python 3.11 or later): without it, or with a file it can't parse, nothing passes.
+  python3 - "$1" "$2" <<'PY'
+import sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit("the host's python3 has no tomllib (Python 3.11 or later), so pyproject.toml can't be compared")
+# Metadata only: nothing here decides what the editable install installs or how. Everything else must match,
+# build-system, [project] dependencies, optional dependencies, requires-python, scripts, version and [tool.uv]
+# among it.
+METADATA = {'project': {'description', 'readme', 'license', 'license-files', 'authors', 'maintainers', 'keywords',
+                        'classifiers', 'urls'},
+            'tool': {'ruff', 'pytest'}}  # settings only those tools read
+def parts(path):  # (installed, metadata): the file's tables split into what may change and what may not
+    try:
+        with open(path, 'rb') as handle:
+            data = tomllib.load(handle)
+    except (OSError, ValueError) as error:  # TOMLDecodeError is a ValueError
+        sys.exit(f'could not parse {path}: {error}')
+    metadata = {}
+    for table, keys in METADATA.items():
+        values = data.get(table, {})
+        if not isinstance(values, dict):
+            sys.exit(f'could not parse {path}: [{table}] is not a table')
+        metadata[table] = {key: value for key, value in values.items() if key in keys}
+        data[table] = {key: value for key, value in values.items() if key not in keys}
+    return data, metadata
+def same(a, b):  # equal and of the same types all the way down: true, 1 and 1.0 aren't the same setting
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(same(a[key], b[key]) for key in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+    return a == b
+def changed(old, new):  # dotted names of the top-level keys and table entries that differ
+    names = []
+    for key in sorted(set(old) | set(new)):
+        a, b = old.get(key), new.get(key)
+        if isinstance(a, dict) and isinstance(b, dict):
+            names += [f'{key}.{sub}' for sub in sorted(set(a) | set(b)) if not same(a.get(sub), b.get(sub))]
+        elif not same(a, b):
+            names.append(key)
+    return names
+(live, live_meta), (staged, staged_meta) = parts(sys.argv[1]), parts(sys.argv[2])
+if changed(live, staged):
+    sys.exit('pyproject.toml changes what the host venv installs: '+', '.join(changed(live, staged)))
+print('pyproject.toml differs only in metadata:', ', '.join(changed(live_meta, staged_meta)) or 'formatting')
+PY
+}
+
 check_manifest() {  # Every phase after baseline runs against the same G, F and images.
   [[ -f $MANIFEST ]] || die 'no manifest; run baseline'
   [[ $(jget "$MANIFEST" gene) == "$G" && $(jget "$MANIFEST" fri) == "$F" ]] || die 'manifest is for a different G/F'
@@ -850,9 +903,12 @@ stage() {
   done
   if gene_changes; then
     echo "$G" > "$STAGE/gene-src/.release-sha"
-    for file in pyproject.toml uv.lock; do
-      cmp -s "$ROOT/source/$file" "$STAGE/gene-src/$file" || die "$file changed: the host venv needs its own plan"
-    done
+    # The host venv is an editable install of the source tree: the lock must match byte for byte, and
+    # pyproject.toml in everything but metadata.
+    cmp -s "$ROOT/source/uv.lock" "$STAGE/gene-src/uv.lock" || die 'uv.lock changed: the host venv needs its own plan'
+    if ! cmp -s "$ROOT/source/pyproject.toml" "$STAGE/gene-src/pyproject.toml"; then
+      installs_same "$ROOT/source/pyproject.toml" "$STAGE/gene-src/pyproject.toml" || die 'the host venv needs its own plan'
+    fi
     for file in ops/compose.yml ops/fri-compose.yml ops/gene-worker.service ops/gene-deployer.service; do
       if ! cmp -s "$ROOT/source/$file" "$STAGE/gene-src/$file"; then
         diff -u "$ROOT/source/$file" "$STAGE/gene-src/$file" || true

@@ -165,7 +165,7 @@ class ChatTurn(ChatScope):
     # quotes, what a read showed, saved history), from a Fri offering withdrawal-sources. One withdrawn since refuses
     # the check and keeps nothing at the save; withdrawn later, the saved reply keeps only a breadcrumb (gene #141). An
     # older Fri sends none: checked and kept as before.
-    drew_on: Annotated[list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]], Field(max_length=500)] = []
+    drew_on: Annotated[list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]], Field(max_length=1000)] = []
 
     @model_validator(mode='after')
     def private_stays_private(self):

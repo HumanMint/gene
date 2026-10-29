@@ -129,7 +129,7 @@ built from other members' messages.
     (a note outlasts six exchanges), with a fence for the member and message, so a learning batch already
     reading the message keeps nothing from it, as a late save already did (gene #90).
   - **Replies that carried it.** With the optional `withdrawal-sources` capability, `/chat/turn` and
-    `/chat/turn/check` take `drew_on`: up to 500 Discord message IDs the turn's model requests carried
+    `/chat/turn/check` take `drew_on`: up to 1000 Discord message IDs the turn's model requests carried
     besides its own (the channel's view, what it answers or quotes, what a read showed, saved history).
     A save keeps them (`chat_turns.drew_on`, NULL for none). Once one is withdrawn, any member's saved
     reply that carried it, or carried Fri's reply to it, or a reply of Fri's that did, keeps only a

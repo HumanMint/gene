@@ -295,7 +295,7 @@ def test_the_api_takes_and_bounds_drew_on(world):
     withdraw(client, taken)
     assert replies(store) != ['ok'] and replies(store) == [controller.DRAWN]  # Its words no longer kept.
     assert client.post('/chat/turn/check', headers=headers('fri'), json=body(drew_on=[taken])).status_code == 409
-    for bad in (['abc'], [str(i) for i in range(1, 502)], [1.5]):
+    for bad in (['abc'], [str(i) for i in range(1, 1002)], [1.5]):
         assert client.post('/chat/turn', headers=headers('fri'), json=body(drew_on=bad)).status_code == 422
 
 

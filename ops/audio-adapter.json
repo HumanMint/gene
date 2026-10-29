@@ -1,0 +1,13 @@
+{
+  "schema": 2,
+  "repository": "https://github.com/HumanMint/red-audio-adapter",
+  "sha": "480672790d937266affad28186d2b0d9002d87c3",
+  "version": "0.1.0",
+  "modules": {
+    "audio_resolver.py": "0f2a4f6583ab66eccf83f54c4a981bd267b62920eacf21711322fdff12026053",
+    "runtime_audio.py": "66233369cedb523465d0cb7184ae225e4c69aa5705f6514300c1fabf56fa362f",
+    "__init__.py": "b7c2c532782037a479dec5f51bb7b1d2d9ea892486c9daceea34a69ff1004be9",
+    "audio_cache.py": "90104943f5e13bc7257f4967599eaa8091d73f6438fb7c8828f98a2e4ec9938e",
+    "audio_relay_server.py": "ea241935b0d4a189f319f7eba15e3d0ed85b6a07a833796f2348248ede39a7c6"
+  }
+}

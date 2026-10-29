@@ -68,8 +68,8 @@ Then, in [the quickstart](docs/quickstart.md):
 
 - **Pair with a local Fri**: add your test server's IDs to `.env.local` and give Fri the
   same values (`dev.py fri-env` prints them).
-- **Add Gene's Red bot** (optional): `uv sync --frozen --extra red`, a bot token, then
-  `dev.py red`.
+- **Add Gene's Red bot** (optional): install Red and the pinned audio hook, add a bot
+  token, then run `dev.py red` as shown in the quickstart.
 - **Music** (advanced) needs a Red-compatible Lavalink node.
 
 Real credentials come in only at those steps: a Discord bot token for each bot, and Fri's
@@ -119,6 +119,7 @@ model access on the Fri side. Installing on a server is [host installation](docs
 
 ```sh
 uv sync --frozen --extra red
+uv run --no-sync python scripts/install_audio_adapter.py
 uv run --no-sync pytest -q
 uv run --no-sync ruff check .
 ```

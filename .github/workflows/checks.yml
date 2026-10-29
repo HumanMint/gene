@@ -23,12 +23,13 @@ jobs:
         run: |
           chmod -R go-rwx src cogs tests
           docker build -f ops/Dockerfile --target dependencies -t gene-dependencies:check .
+          docker build -f ops/Dockerfile --target audio-dependencies -t gene-audio-dependencies:check .
           docker build -f ops/Dockerfile --target worker-dependencies -t gene-worker-dependencies:check .
           docker build -f ops/Dockerfile --target runtime --label org.opencontainers.image.revision=${{ github.sha }} -t gene-runtime:check .
           docker build -f ops/Dockerfile --target worker --label org.opencontainers.image.revision=${{ github.sha }} -t gene-worker:check .
       - name: Check the runtime and offline worker as UID 10001
         run: |
-          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true gene-runtime:check python -c "import os, importlib.metadata, gene.api, gene.store, gene.runtime, gene.fri_release, gene.fri_reply_checks, gene.deploy, gene.provenance_downgrade, redbot; assert os.getuid() == 10001; assert importlib.metadata.version('Red-DiscordBot') == '3.5.24'"
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true gene-runtime:check python -c "import os, importlib.metadata, json, gene.api, gene.store, gene.runtime, gene.fri_release, gene.fri_reply_checks, gene.deploy, gene.provenance_downgrade, redbot; assert os.getuid() == 10001; assert importlib.metadata.version('Red-DiscordBot') == '3.5.24'; pin=json.load(open('/opt/audio-adapter-pin.json')); direct=json.loads(importlib.metadata.distribution('red-audio-adapter').read_text('direct_url.json')); assert direct['vcs_info']['commit_id']==pin['sha']"
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,nosuid,size=512m -e HOME=/tmp -e PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 gene-worker:check python -m pytest -q -p no:cacheprovider tests/test_worker.py tests/test_repair_worker.py
           docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true gene-worker:check codex --version
           docker run --rm --network none --read-only --user 0 gene-worker:check python -c "from pathlib import Path; assert not Path('/root/.cache/uv').exists()"
@@ -42,6 +43,7 @@ jobs:
           def inspect(name):
               return json.loads(subprocess.check_output(['docker', 'image', 'inspect', name]))[0]
           dependencies = inspect('gene-dependencies:check')['RootFS']['Layers']
+          audio_dependencies = inspect('gene-audio-dependencies:check')['RootFS']['Layers']
           worker_dependencies = inspect('gene-worker-dependencies:check')['RootFS']['Layers']
           layers = []
           for name in ('gene-runtime:check', 'gene-worker:check', 'gene-runtime:source-check', 'gene-worker:source-check'):
@@ -50,6 +52,7 @@ jobs:
               assert image['Config']['Labels']['org.opencontainers.image.revision'] == '${{ github.sha }}', name
               current = image['RootFS']['Layers']
               assert current[:len(dependencies)] == dependencies, name
+              assert current[:len(audio_dependencies)] == audio_dependencies, name
               if name.startswith('gene-worker:'):
                   assert current[:len(worker_dependencies)] == worker_dependencies, name
               layers.append(current)
@@ -73,5 +76,6 @@ jobs:
           key: uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
           restore-keys: uv-${{ runner.os }}-
       - run: uv sync --frozen --extra red
+      - run: uv run --no-sync python scripts/install_audio_adapter.py
       - run: uv run --no-sync pytest -q
       - run: uv run --no-sync ruff check .

@@ -41,12 +41,10 @@ def test_installed_dependency_is_the_exact_recorded_git_source():
     from importlib.metadata import distribution
 
     root = Path(__file__).resolve().parents[1]
-    pin = json.loads((root / 'docs/audio-adapter.json').read_text())
+    pin = json.loads((root / 'ops/audio-adapter.json').read_text())
     project = tomllib.loads((root / 'pyproject.toml').read_text())
-    expected = 'red-audio-adapter @ git+https://github.com/HumanMint/red-audio-adapter@' + pin['sha']
-    assert expected in project['project']['dependencies']
+    assert not any('red-audio-adapter' in x for x in project['project']['dependencies'])
     lock = tomllib.loads((root / 'uv.lock').read_text())
-    package = next(p for p in lock['package'] if p['name'] == 'red-audio-adapter')
-    assert package['source']['git'].endswith('#' + pin['sha'])
+    assert not any(p['name'] == 'red-audio-adapter' for p in lock['package'])
     installed = json.loads(distribution('red-audio-adapter').read_text('direct_url.json'))
     assert installed['vcs_info']['commit_id'] == pin['sha']

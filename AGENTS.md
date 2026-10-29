@@ -11,7 +11,11 @@ or expand feature-job paths to the Fri repository.
 
 ## Working here
 
-- Python 3.11; `uv sync`, `uv run pytest`, `uv run ruff check .`.
+- Python 3.11; prepare checks with `uv sync --frozen --extra red` and
+  `uv run --no-sync python scripts/install_audio_adapter.py`, then run
+  `uv run --no-sync pytest` and `uv run --no-sync ruff check .`.
+  The controller/host wrappers use the unchanged core environment; the separate
+  pinned audio bundle is for the Red image and development/worker tests.
 - Local controller (and optional Red) for development or a local Fri: `scripts/dev.py`,
   documented in `docs/quickstart.md`. `docs/architecture.md` is the overview.
 - `cogs/`: live Red extensions; `src/gene/`: trusted controller/worker/deployer.

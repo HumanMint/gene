@@ -6,7 +6,7 @@
     uv run python scripts/dev.py check        # offline config check and controller dry run
     uv run python scripts/dev.py controller   # serve the controller on http://127.0.0.1:8787
     uv run python scripts/dev.py fri-env      # the lines a local Fri needs from this controller
-    uv run python scripts/dev.py red          # optional: Gene's Red bot (uv sync --extra red)
+    uv run --no-sync python scripts/dev.py red  # optional: prepare Red/audio per quickstart
 
 Nothing here contacts Discord or writes a token into a file: `token` prints a fresh one for you to
 paste, and nothing else prints one. State stays under .state/ in this checkout.
@@ -205,6 +205,8 @@ def fri_env(args):
 def red(args):
     if importlib.util.find_spec('redbot') is None:
         raise SystemExit('Red is not installed here. Run: uv sync --frozen --extra red')
+    if importlib.util.find_spec('red_audio_adapter') is None:
+        raise SystemExit('Install the pinned audio hook: uv run --no-sync python scripts/install_audio_adapter.py')
     env = load(args.env)
     missing = [key for key in RED_KEYS if not env.get(key)]
     if missing:

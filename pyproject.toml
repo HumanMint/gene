@@ -8,7 +8,6 @@ version = "0.1.0"
 description = "Gene: a private Discord assistant with an owner-approved development loop"
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    "red-audio-adapter @ git+https://github.com/HumanMint/red-audio-adapter@480672790d937266affad28186d2b0d9002d87c3",
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
     "httpx>=0.28,<1",
@@ -21,6 +20,7 @@ red = [
     "pillow>=13,<14",
     "pip>=25,<27",
 ]
+audio = ["yt-dlp[default]==2026.8.19"]
 
 [dependency-groups]
 dev = ["pytest>=8,<9", "ruff>=0.11,<1"]
@@ -32,9 +32,6 @@ gene-deployer = "gene.deploy:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/gene"]
-
-[tool.hatch.metadata]
-allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

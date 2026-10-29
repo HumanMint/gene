@@ -3,8 +3,9 @@
 [red-audio-adapter](https://github.com/HumanMint/red-audio-adapter) owns Gene's
 external Lavalink source, resolver/cache, optional private download relay, images and
 audio transport tests. Gene owns its Red cog/commands, diagnostics and deployment
-authority. The exact Python dependency is recorded in [audio-adapter.json](audio-adapter.json)
-and `uv.lock`; do not replace it with an unreviewed branch tip.
+authority. The exact image/development bundle is recorded in
+[audio-adapter.json](../ops/audio-adapter.json), including its Git commit and five
+module hashes. Do not replace it with an unreviewed branch tip.
 
 ## New setup
 
@@ -22,12 +23,19 @@ The `GENE_*` configuration and `X-Gene-*` protocol names remain compatible. Exis
 
 ## Existing installation
 
-New runtime images install the pinned Python dependency when built. An existing
-installation also needs a separately reviewed host-environment transition and
-rollback plan: the daily batch checks the host's editable installation and refuses
-dependency or lockfile changes. Complete that transition before staging this
-integration, with the manifest checks kept enabled. A new Docker image alone does
-not update the host's Python environment.
+Runtime and worker images install the pinned package in a separate read-only
+bundle, exposed through a `.pth` file. Their exact core `uv sync --frozen` remains
+unchanged. The host controller/worker/deployer wrappers do not import the adapter,
+and Gene's `pyproject.toml` and `uv.lock` remain byte-identical to the prior core
+environment. The existing stage dependency gate therefore stays enabled; no host
+venv migration is part of this extraction. The legacy `audio` extra remains in the
+core manifests for compatibility, while new audio services use the adapter repo.
+
+For local Red or test development, run `uv sync --frozen --extra red`, then
+`uv run --no-sync python scripts/install_audio_adapter.py`. The helper verifies
+Git provenance, module hashes and the existing core dependency versions before
+selecting the bundle. Repeating an exact core sync retains the bundle; it never
+resolves additional dependencies into the host environment.
 
 The runtime batch does not rebuild or switch the independently deployed audio node,
 resolver or relay. Keep the existing

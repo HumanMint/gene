@@ -189,6 +189,8 @@ FIX = 'not the one, i meant join us for a bite'
     ('wrong song, Glad You Came by The Wanted, alex said', 'Glad You Came', False),
     ('wrong song, Glad You Came by The Wanted is what alex said', 'Glad You Came', False),
     ('wrong song, Love Story by Taylor Swift alex said', 'Love Story', False),
+    ('wrong song, Hell No by The Wanted', 'Hell No', True),
+    ('wrong song, Love Story from the example', 'Love Story', False),
     # gene #119 (3): a title ends at its closing quote, or unquoted at a clause break, whatever the proposed song
     # covers...
     ("wrong song, 'Love Story' was an example", 'Love Story was an example', False),
@@ -209,6 +211,8 @@ FIX = 'not the one, i meant join us for a bite'
     ("wrong song, I Don't Want to Miss a Thing", "I Don't Want to Miss a Thing", True),
     ('wrong song, Please Please Please Let Me Get What I Want', 'Please Please Please Let Me Get What I Want', True),
     ('wrong song, Stand By Me by Ben E. King', 'Stand By Me Ben E. King', True),
+    ('wrong song, Say You, Say Me by Nope', 'Say You, Say Me', True),
+    ('wrong song, This Is What You Came For by Said The Sky', 'This Is What You Came For', True),
     # gene #119 (4): their own words don't vouch for a song they deny...
     ('wrong song, Love Story, I said not to play it', 'Love Story', False),
     ('wrong song, Love Story is not what I meant', 'Love Story', False),
@@ -219,6 +223,7 @@ FIX = 'not the one, i meant join us for a bite'
     ("wrong song, Love Story is what i didn't ask for", 'Love Story', False),
     ('wrong song, Love Story, i said no', 'Love Story', False),
     ('wrong song, Love Story, i told you not to', 'Love Story', False),
+    ('wrong song, Say You, Say Me by The Wanted is not what i meant', 'Say You, Say Me', False),
     # ...while they still count, and a complaint about the song Gene played isn't a denial.
     ('wrong song, Love Story is what i meant', 'Love Story', True),
     ('wrong song, Love Story, i said it already', 'Love Story', True),

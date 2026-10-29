@@ -842,12 +842,26 @@ class Store:
         return kept
 
     def message_sources(self, guild_id, message_ids):
-        """Resolve Fri's delivered messages to the members they drew on, for later references."""
+        """Resolve Fri's delivered messages to the members they drew on, for later references.
+
+        A reply that drew on the member's summary is reported only once that summary is checked: one that lapsed with
+        nothing pruning it yet goes here, as a read that finds it lapsed drops it, so the reply is a breadcrumb before
+        it's reported (gene #120). Only such a reply takes the write lock; any other lookup reads, as before.
+        """
+        from .fri_member_summary import lapsed
         found = {}
         with self.connection() as db:
+            def turn(message_id):
+                return db.execute('SELECT user_id,provenance,verbatim,speaker_revision,summary_generation FROM chat_turns '
+                                  'WHERE guild_id=? AND reply_message_id=?', (guild_id, message_id)).fetchone()
             for message_id in message_ids:
-                row = db.execute('SELECT user_id,provenance,verbatim,speaker_revision FROM chat_turns WHERE guild_id=? '
-                                 'AND reply_message_id=?', (guild_id, message_id)).fetchone()
+                row = turn(message_id)
+                if row and row['summary_generation'] is not None:
+                    if not db.in_transaction:  # The drop and the reads around it, in one go: read again once locked.
+                        db.execute('BEGIN IMMEDIATE')
+                        row = turn(message_id)
+                    if row and row['summary_generation'] is not None and lapsed(db, guild_id, row['user_id']):
+                        row = turn(message_id)  # Retired with it.
                 if not row or row['speaker_revision'] is None:
                     continue
                 sources = json.loads(row['provenance'] or '[]') + [
@@ -970,6 +984,8 @@ class Store:
         the reply (gene #90). summary_generation: the member summary's the turn drew on, if it did (gene #91).
         """
         with self.connection() as db:
+            if summary_generation is not None:  # A lapsed summary goes here (see _summary_unchanged), in one go.
+                db.execute('BEGIN IMMEDIATE')
             if self._privacy_state(db, user_id)[0] != revision:
                 raise Conflict('This conversation was cleared while Fri was replying. Start again.')
             self._checked_provenance(db, user_id, provenance)
@@ -988,10 +1004,17 @@ class Store:
 
     @staticmethod
     def _summary_unchanged(db, guild_id, user_id, summary_generation):
-        """A turn that drew on the member's summary fails closed once a withdrawal dropped it (gene #91). A turn that
-        says nothing, from an older Fri or one that drew on none, is checked as before."""
-        from .fri_member_summary import generation
-        if summary_generation is not None and generation(db, guild_id, user_id) != summary_generation:
+        """A turn that drew on the member's summary fails closed once a withdrawal dropped it (gene #91), or once it
+        lapsed: one that expired with nothing pruning it yet goes here, as a read that finds it lapsed drops it, so
+        its generation moves before it's compared (gene #113). A turn that says nothing, from an older Fri or one that
+        drew on none, is checked as before."""
+        from .fri_member_summary import generation, lapsed
+        if summary_generation is None:
+            return
+        if lapsed(db, guild_id, user_id):
+            db.commit()  # It stays gone, and its replies retired, though the refusal undoes the rest.
+            raise Conflict(SUMMARY_CHANGED)
+        if generation(db, guild_id, user_id) != summary_generation:
             raise Conflict(SUMMARY_CHANGED)
 
     def check_authors(self, authors):
@@ -1092,6 +1115,9 @@ class Store:
                        'AND user_id=? ORDER BY at DESC LIMIT ?)',
                        (guild_id, scope, user_id, guild_id, scope, user_id, limit(scope)))
             # With the summary generation it drew on: once that moves, the reply keeps only a breadcrumb (fri #172).
+            if summary_generation is not None:
+                from .fri_member_summary import keep as keep_generation
+                keep_generation(db, guild_id, user_id)
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
                        'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
                        'reply_message_id,verbatim,speaker_revision,attributed,audience,summary_generation) '

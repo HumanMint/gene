@@ -6,6 +6,7 @@ sends the generation is refused once it has moved, in the write's own transactio
 """
 
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -322,3 +323,188 @@ def test_a_refused_reply_still_refuses_and_a_current_one_saves(world):
     assert post_turn(client, body).status_code == 409
     current = {**body, 'source': source(age=2, channel='51'), 'summary_generation': summary_generation_now(store)}
     assert post_turn(client, current).json()['ok'] is True
+
+
+def lapsed(store):
+    """The summary expired after a turn read it, with nothing pruning it since: no status check or build claim."""
+    from gene.fri_member_summary import TTL
+    with store.connection() as db:
+        db.execute('UPDATE fri_member_summaries SET refreshed=?', (time.time()-TTL-60,))
+
+
+def dropped(store, generation):
+    """The summary went, moving its generation, and a reply that drew on it keeps only its breadcrumb. Read straight
+    from the database: chat context would drop a lapsed summary itself."""
+    with store.connection() as db:
+        rows = db.execute('SELECT count(*) FROM fri_member_summaries').fetchone()[0]
+        kept = [row[0] for row in db.execute('SELECT reply FROM chat_turns')]
+    return rows == 0 and summary_generation_now(store) != generation and MARKER not in str(kept)
+
+
+@pytest.mark.parametrize('route', [check, post_turn])
+def test_a_turn_drawing_on_a_summary_that_lapsed_since_is_refused(world, route):
+    """gene #113: the turn check and the save find the summary expired but not yet pruned. It goes there, as a read
+    that finds it lapsed drops it, and the turn is refused."""
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, generation)
+    lapsed(store)
+    body = turn(source(age=1, channel='51'), 'what did i plan', reply=QUOTING, summary_generation=generation)
+    refused = route(client, body)
+    assert refused.status_code == 409 and MARKER not in refused.text
+    assert dropped(store, generation)
+    current = {**body, 'source': source(age=2, channel='51'), 'summary_generation': summary_generation_now(store)}
+    assert route(client, current).status_code == 200
+    older = {key: value for key, value in body.items() if key != 'summary_generation'}  # An older Fri: as before.
+    assert route(client, {**older, 'source': source(age=3, channel='51')}).status_code == 200
+
+
+@pytest.mark.parametrize('route,body,table', [('/workspace/save', work, 'fri_work'),
+                                              ('/social/reminders/prepare', reminder, 'fri_reminders')])
+def test_a_write_drawing_on_a_summary_that_lapsed_since_is_refused(world, route, body, table):
+    """gene #113: saved work or a reminder can't keep the words of a summary that expired before the write landed."""
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, generation)
+    lapsed(store)
+    refused = client.post(route, headers=headers('fri'), json=body(dm_source(), generation))
+    assert refused.status_code == 409 and MARKER not in refused.text
+    assert kept(store, table) == [] and dropped(store, generation)
+    current = client.post(route, headers=headers('fri'), json=body(dm_source(2), summary_generation_now(store)))
+    assert current.status_code == 200, current.text
+
+
+def test_a_turn_without_a_summary_leaves_a_lapsed_one_to_the_next_read(world):
+    """The check of a turn that drew on no summary writes nothing, as before."""
+    client, store = world
+    _, generation = summarized(client, store)
+    lapsed(store)
+    assert check(client, turn(source(age=1, channel='51'), 'hello')).json() == {'ok': True}
+    assert summary_generation_now(store) == generation
+
+
+@pytest.fixture
+def older(monkeypatch):
+    """The controller before gene #112, run in a rollback window: the same privacy changes and drops, retiring
+    nothing. Its saves leave the generation column empty."""
+    import gene.fri_member_summary as summaries
+
+    @contextmanager
+    def running():
+        with monkeypatch.context() as patched:
+            patched.setattr(summaries, 'retire', lambda *args, **kwargs: None)
+            yield
+    return running
+
+
+def note_edited_elsewhere(store, user='20'):
+    """A note edit in another of the member's conversations: its chats go and their revision moves; these stay."""
+    from gene.fri_memory_store import cleared
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        cleared(store, db, '123', user, 'private:8', store._privacy_state(db, user)[0])
+
+
+def test_a_restart_retires_a_reply_whose_generation_an_older_controller_erased(world, older):
+    """gene #114's repro: a generation-zero reply is saved, the older controller runs and a note edit elsewhere erases
+    the summary and the member's generation with it, and the newer controller starts again."""
+    client, store = world
+    _, generation = summarized(client, store)
+    assert generation == 0
+    quoted(store, generation)
+    quoted(store, None, reply='an older fri said '+MARKER, message_id='701')
+    with older():
+        note_edited_elsewhere(store)
+    with store.connection() as db:
+        assert db.execute('SELECT count(*) FROM fri_member_summary_generations').fetchone()[0] == 0
+    assert replies(store)[-2] == QUOTING  # As the older controller left it.
+    Store(store.path)
+    assert retired(replies(store)[-2]) and replies(store)[-1] == 'an older fri said '+MARKER
+    assert referenced(store) is None  # Its revision moved too, so a reference fails closed as before.
+
+
+def test_a_restart_retires_a_reply_whose_generation_came_back_under_a_newer_revision(world, older):
+    """The older controller erased the generation, then a drop there wrote it again at the number the reply carries.
+    The erasure moved the member's revision, which the reply was saved under, so it still can't be confirmed."""
+    from gene.fri_member_summary import advance, drop
+    client, store = world
+    summarized(client, store)
+    with store.connection() as db:
+        advance(db, '123', '20')
+    quoted(store, summary_generation_now(store))
+    assert summary_generation_now(store) == 1
+    with older():
+        note_edited_elsewhere(store)
+        with store.connection() as db:  # Another build there, dropped: its generation starts again at one.
+            drop(db, '123', '20')
+    assert summary_generation_now(store) == 1 and replies(store)[-1] == QUOTING
+    Store(store.path)
+    assert retired(replies(store)[-1])
+
+
+def test_a_plain_restart_keeps_current_summary_derived_replies(world):
+    """No rollback in between: a generation-zero reply, and one a rebuild sent the old summary carried forward."""
+    from gene.fri_member_summary import finish
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, generation, message_id='706')
+    Store(store.path)
+    assert replies(store)[-1] == QUOTING and referenced(store, '706')['verbatim'] is True
+    readable(store, 'new plans over here', 5000, conversation='public:52')
+    readable(store, 'and more of them', 4900, conversation='public:52')
+    with store.connection() as db:
+        db.execute('DELETE FROM fri_member_summary_calls')
+    claim_id, conversations, _ = claimed(client.app.state.agent)
+    assert finish(client.app.state.agent, claim_id, 'they made new plans', 'completed', conversations, True)['kept']
+    Store(store.path)
+    assert replies(store)[-1] == QUOTING and referenced(store, '706')['verbatim'] is True
+
+
+def sources(client, *message_ids):
+    answer = client.post('/chat/messages/sources', headers=headers('fri'),
+                         json={'guild_id': '123', 'message_ids': list(message_ids)})
+    assert answer.status_code == 200, answer.text
+    return answer.json()['messages']
+
+
+def test_a_reference_to_a_reply_on_a_summary_that_lapsed_since_is_retired(world):
+    """gene #120: the sources lookup finds the summary a reply drew on expired but not yet pruned. It goes there, as a
+    read that finds it lapsed drops it, so the reply is reported as a breadcrumb, not verbatim, and stays one."""
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, generation, conversation='public:51')
+    quoted(store, None, reply='an older fri said hi', message_id='701', conversation='public:51')
+    assert sources(client, '700')['700']['verbatim'] is True
+    assert summary_generation_now(store) == generation  # A current summary stays.
+    lapsed(store)
+    found = sources(client, '700', '701')
+    assert found['700']['verbatim'] is False and found['701']['verbatim'] is True
+    assert dropped(store, generation)
+    assert sources(client, '700')['700']['verbatim'] is False
+
+
+def traced(store, monkeypatch):
+    """The statements the store runs from here on."""
+    ran, opened = [], store.connection
+
+    @contextmanager
+    def connection():
+        with opened() as db:
+            db.set_trace_callback(ran.append)
+            yield db
+    monkeypatch.setattr(store, 'connection', connection)
+    return ran
+
+
+def test_a_reference_to_a_reply_that_drew_on_no_summary_stays_a_plain_read(world, monkeypatch):
+    """Only a reply that drew on a summary takes the write lock: the lookup of any other reads, as before, and leaves a
+    lapsed summary to the next read."""
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, None, reply='an older fri said hi', message_id='701')
+    lapsed(store)
+    ran = traced(store, monkeypatch)
+    assert sources(client, '701', '702') == {'701': {'verbatim': True, 'provenance': [{'user_id': '20', 'revision': 0}]}}
+    assert ran and all(statement.lstrip().upper().startswith('SELECT') for statement in ran), ran
+    monkeypatch.undo()
+    assert summary_generation_now(store) == generation

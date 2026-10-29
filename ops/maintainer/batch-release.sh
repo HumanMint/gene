@@ -787,8 +787,14 @@ check_manifest() {  # Every phase after baseline runs against the same G, F and 
     for name in runtime worker fri; do
       python3 -c 'import json, sys; m = json.load(open(sys.argv[1])); sys.exit(0 if sys.argv[3] in m.get(sys.argv[2], {}) else 1)' \
         "$MANIFEST" "$kind" "$name" || continue
-      [[ $(image_id "$(jget "$MANIFEST" "$kind.$name.tag")") == "$(jget "$MANIFEST" "$kind.$name.id")" ]] \
-        || die "image $(jget "$MANIFEST" "$kind.$name.tag") changed since it was recorded"
+      [[ $(image_id "$(jget "$MANIFEST" "$kind.$name.tag")") == "$(jget "$MANIFEST" "$kind.$name.id")" ]] && continue
+      # The new images are provisional until stage's checks pass: a stage the close cut off may have rebuilt one
+      # after recording it, and the next stage builds, records and checks them all again (gene #63).
+      if [[ $kind == new ]] && ! has staged; then
+        log "image $(jget "$MANIFEST" "$kind.$name.tag") changed since an unfinished stage recorded it; stage records it again"
+        continue
+      fi
+      die "image $(jget "$MANIFEST" "$kind.$name.tag") changed since it was recorded"
     done
   done
 }

@@ -334,6 +334,10 @@ def test_turns_that_vanish_before_a_retry_still_cost_their_call(setup):
 
 def test_daily_allowance_and_interrupted_claims(setup, monkeypatch):
     store, agent, checks, _ = setup
+    # Today's noon UTC, so the moves below stay inside one UTC day whenever this runs (gene #125: 601 s past 23:50
+    # is tomorrow, with a fresh allowance).
+    clock = time.time()//86400*86400+12*3600
+    monkeypatch.setattr(fri_reply_checks.time, 'time', lambda: clock)
     agent.update({'reply_check_daily_pairs': 10}, 1, '10')
     for user in range(12):
         exchange(store, user=str(100+user))
@@ -341,7 +345,6 @@ def test_daily_allowance_and_interrupted_claims(setup, monkeypatch):
     assert len(first) == 10
     due(agent)
     assert checks.claim() is None  # One claim at a time.
-    clock = fri_reply_checks.time.time()
     monkeypatch.setattr(fri_reply_checks.time, 'time', lambda: clock+601)
     due(agent)
     assert checks.claim() is None  # The interrupted call spent today's allowance.

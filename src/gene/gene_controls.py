@@ -116,19 +116,21 @@ ATTRIBUTED = re.compile(rf"{CLAUSE}(?!(?:i|we)\b)(?:[\w']+\s+){{1,3}}?(?:said|sa
                         r"|recommends|requested|requests|mentioned)\b(?=[\s,:]*[\w\"'‘“])")
 # After the song, a change of heart withdraws it: "wrong song, Love Story, actually no", "... not that one either",
 # a bare "nope" or "no thanks", or a closing "nah" or "no" after a pause, whatever punctuation or filler follows
-# ("nah, lol"; "Hell No" stays a title), or a closing "i said no (to that)", "i told you not to", "we said no", "we said
-# no more" or "i said not now", which may end "this time" or "ever again". Checked after the correction only, since
-# "actually no, wrong song, X" opens one.
+# ("nah, lol"; "Hell No" stays a title), a closing "not now" or "no more" after a pause or a "no" ("..., no, not right
+# now"), or a closing "i said no (to that)", "i told you not to", "we said no more" or "i said not now", which may end
+# "this time" or "ever again". Checked after the correction only, since "actually no, wrong song, X" opens one.
 CLOSING = (r"(?:[\s,;:.!?…—–\-'\"”]|\b(?:lol|lmao|lmfao|haha|bro|bruh|dude|man|fri|thanks|thank you|thx|ty|tho|though"
            r"|sorry|please|pls|plz|again|ever again|this time)\b)*+$")
+LATER = (r"(?:not\s+(?:(?:right|just)\s+)?(?:now|rn)|not\s+(?:for\s+now|any\s*more|today|tonight)"
+         r"|no\s+more(?:\s+(?:of\s+)?(?:(?:that|this|these|those|it|them)(?:\s+(?:ones?|songs?|tracks?))?|music|songs?))?)\b")
 WITHDRAWN = re.compile(r"\b(?:actually,?\s+(?:no(?:pe|t that)?|nah)|no,?\s+wait|wait,?\s+no|(?:i\s+)?change[ds]?\s+my\s+mind"
                        r"|on second thought|never\s+mind|leave it|nope|n(?:o|ah)[\s,]+(?:thanks|thank you|thx|ty)"
                        r"|not\s+(?:(?:that|this|the|it)\s+)?(?:(?:one|song|track)\s+)?either)\b"
                        rf"|\bnah\b{CLOSING}|[,;:.!?…—–\-'\"]\s*no\b{CLOSING}"
+                       rf"|(?:[,;:.!?…—–\-'\"]|\bn(?:o|ah)\b[,.!]?)\s*{LATER}{CLOSING}"
                        r"|\b(?:i|we)(?:'ve|'d)?\s+(?:(?:just|already|literally|clearly|even|actually|originally)\s+){0,2}"
-                       r"(?:said|told\s+(?:you|u)|asked(?:\s+(?:you|u))?|meant)\s+(?:not\s+(?:(?:right\s+)?now|any\s*more|today|tonight)"
-                       r"|(?:not|never)(?:\s+to(?:\s+do\s+(?:that|this|it))?)?|no\s+more(?:\s+(?:of\s+)?(?:that|this|it|them|music|songs?))?"
-                       rf"|(?:no(?:pe)?|nah)(?:\s+to\s+(?:that|this|it)(?:\s+(?:one|song|track))?)?)\b{CLOSING}")
+                       rf"(?:said|told\s+(?:you|u)|asked(?:\s+(?:you|u))?|meant)\s+(?:{LATER}|(?:not|never)(?:\s+to(?:\s+do\s+"
+                       rf"(?:that|this|it))?)?|(?:no(?:pe)?|nah)(?:\s+to\s+(?:that|this|it)(?:\s+(?:one|song|track))?)?)\b{CLOSING}")
 # After the song, a clause handing it to someone else, quoting someone or calling it an example takes it back too:
 # "'Love Story' was an example", "... is what i heard alex say", "..., alex said", "... was a quote from alex". Their
 # own "i said" or "i asked for it" doesn't, nor does an inclusive "we want".

@@ -377,8 +377,8 @@ def create_app(settings: Settings | None = None):
         else:
             requester_notice_scope(job_id, body)
         from .requester_notices import finish
-        finish(store, job_id, body.lease, body.state, body.message_id)
-        return {'ok': True}
+        # state is what was recorded: "invalidated" when a sent reply's claim stopped holding, and reason says why.
+        return {'ok': True, **finish(store, job_id, body.lease, body.state, body.message_id)}
 
     @app.post('/requests/{job_id}/reject', dependencies=[auth('fri')])
     def reject(job_id: str, body: Actor):

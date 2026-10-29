@@ -9,10 +9,14 @@ stopped holding while the claim was on its way to Fri, or while Fri sent, is nev
 (gene #47), and Fri hears why.
 
 A Fri that offers it (requester-notice-authorize) claims only to prepare. Once its last Discord read is done
-it asks for the send itself, which runs the checks again right before it sends (fri #214). Preparing never
-posts, so a claim left by a Fri that stopped is taken over once it's old. A cleared send that was never
-recorded may have posted: once it has settled, the next claim has Fri look for it in Discord before it's tried
-again (gene #139). The lease stays with what was recorded, so a finish whose answer was lost hears it again.
+it asks for the send itself, which runs the checks again right before it sends (fri #214). Rows stay in the
+states an older controller knows, so a rollback settles them as it does its own. A preparation is failed with
+its lease still held: nothing has posted, and an older controller, which can't clear a send, claims it as
+refused. A cleared send is sending, which an older one records with the tap's lease. Preparing never posts, so
+a claim left by a Fri that stopped before it was cleared is taken over once it's old (gene #139). A cleared
+send whose outcome never came back may have posted, so like an unconfirmed one it's never tried again: Discord
+can't tell the notice from another reply of Fri's to the report. Recorded outcomes that may have posted keep
+their lease, so a finish whose answer was lost hears it again.
 """
 
 import json
@@ -21,16 +25,15 @@ import uuid
 
 from .store import Conflict
 
-FINISHED = ('sent', 'failed', 'uncertain')  # failed: Discord refused it before anything posted, so it may be tried again.
+FINISHED = ('sent', 'failed', 'uncertain')  # failed: nothing posted, so it may be tried again.
 # A reply Fri sent after its claim stopped holding. It may still be up, so like uncertain it is never tried again.
 INVALIDATED = 'invalidated'
-SENDING = 'sending'  # Claimed by a Fri that sends without asking: it may have posted.
-PREPARING = 'preparing'  # Claimed by a Fri that asks before it sends: nothing has posted.
-AUTHORIZED = 'authorized'  # That Fri asked and was cleared: it may have posted.
-RECONCILING = 'reconciling'  # A cleared send never recorded, which a later tap's Fri looks for in Discord.
-ON_ITS_WAY = (SENDING, PREPARING, AUTHORIZED, RECONCILING)
-PREPARE_SECONDS = 120  # A tap still reading Discord. Older, its Fri stopped, and the next tap takes over.
-SETTLE_SECONDS = 600  # A send not recorded by then has posted or never will: Fri gives a send 25 s.
+PREPARE_SECONDS = 120  # A tap still reading Discord. Older, its Fri stopped before the send, and the next tap takes over.
+
+
+def preparing(row):
+    """A tap that claimed to prepare and wasn't cleared to send: failed, with its lease still held."""
+    return row is not None and row['state'] == 'failed' and row['lease'] is not None
 
 
 def initialize(db):
@@ -77,27 +80,19 @@ def claim(store, job_id, actor, prepare=False):
         job = store._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
         if reason := unqualified(store, db, job):
             raise Conflict(reason)
-        row = db.execute('SELECT state,at FROM requester_notices WHERE job_id=?', (job_id,)).fetchone()
-        now = time.time()
-        state, at, since = PREPARING if prepare else SENDING, now, None
+        row = db.execute('SELECT state,lease,at FROM requester_notices WHERE job_id=?', (job_id,)).fetchone()
         if row and row['state'] == 'sent':
             raise Conflict('The reporter was already told')
-        if row and row['state'] == PREPARING and now-row['at'] < PREPARE_SECONDS:
+        if preparing(row) and time.time()-row['at'] < PREPARE_SECONDS:
             raise Conflict('Another tap is replying to the reporter right now')
-        if row and row['state'] in (SENDING, AUTHORIZED, RECONCILING):
-            # It may have posted. Once it has settled, a Fri that can look for it in Discord does, first.
-            if not prepare or now-row['at'] < SETTLE_SECONDS:
-                raise Conflict('A reply to the reporter may already have posted, so it is not tried again')
-            state, at, since = RECONCILING, row['at'], row['at']  # Kept: where to look, for a tap that stops too.
-        elif row and row['state'] not in ('failed', PREPARING):
+        if row and row['state'] != 'failed':  # A send cleared, or one that may have posted.
             raise Conflict('A reply to the reporter may already have posted, so it is not tried again')
         lease = uuid.uuid4().hex
         db.execute("INSERT INTO requester_notices(job_id,lease,state,at) VALUES (?,?,?,?) ON CONFLICT(job_id) "
                    "DO UPDATE SET lease=excluded.lease,state=excluded.state,message_id='',at=excluded.at",
-                   (job_id, lease, state, at))
+                   (job_id, lease, 'failed' if prepare else 'sending', time.time()))
         store._audit(db, actor, 'requester_notice', job_id)
-        claimed = {'lease': lease, 'job': {key: job[key] for key in ('id', 'guild_id', 'user_id', 'source_url', 'approved_sha')}}
-        return claimed if since is None else {**claimed, 'reconcile': {'since': since}}
+        return {'lease': lease, 'job': {key: job[key] for key in ('id', 'guild_id', 'user_id', 'source_url', 'approved_sha')}}
 
 
 def authorize(store, job_id, lease):
@@ -107,11 +102,11 @@ def authorize(store, job_id, lease):
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute('SELECT lease,state FROM requester_notices WHERE job_id=?', (job_id,)).fetchone()
-        if not row or row['state'] not in (PREPARING, RECONCILING) or row['lease'] != lease:
+        if not preparing(row) or row['lease'] != lease:
             raise Conflict('This tap no longer holds the reply, so it is not sent')
         if reason := unqualified(store, db, store._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())):
             raise Conflict(reason)
-        db.execute('UPDATE requester_notices SET state=?,at=? WHERE job_id=?', (AUTHORIZED, time.time(), job_id))
+        db.execute("UPDATE requester_notices SET state='sending',at=? WHERE job_id=?", (time.time(), job_id))
 
 
 def finish(store, job_id, lease, state, message_id=''):
@@ -123,11 +118,12 @@ def finish(store, job_id, lease, state, message_id=''):
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
         row = db.execute('SELECT lease,state FROM requester_notices WHERE job_id=?', (job_id,)).fetchone()
-        if row and row['lease'] == lease and row['state'] not in ON_ITS_WAY:
+        if row and row['lease'] == lease and row['state'] in ('sent', 'uncertain', INVALIDATED):
             why = db.execute('SELECT detail FROM audit WHERE action="requester_notice_invalidated" AND target=? '
                              'ORDER BY id DESC LIMIT 1', (job_id,)).fetchone()
             return {'state': row['state'], 'reason': why[0] if why and row['state'] == INVALIDATED else None}
-        if not row or row['state'] not in ON_ITS_WAY or row['lease'] != lease:
+        # A claim sending, or a tap preparing (failed with its lease held).
+        if not row or row['state'] not in ('sending', 'failed') or row['lease'] != lease:
             raise Conflict('This reply has already been recorded')
         reason = None
         if state == 'sent':  # A rollback, a newer release or the reporter's erasure that landed since the claim.
@@ -137,6 +133,8 @@ def finish(store, job_id, lease, state, message_id=''):
             state = INVALIDATED
             store._audit(db, 'controller', 'requester_notice_invalidated', job_id, reason)
         # Only a reply that holds keeps its link: an erased reporter's job keeps nothing that points at them.
-        db.execute('UPDATE requester_notices SET state=?,message_id=?,at=? WHERE job_id=?',
-                   (state, message_id if state == 'sent' else '', time.time(), job_id))
+        # A refusal lets its lease go, so failed with a lease only ever means a tap preparing.
+        db.execute('UPDATE requester_notices SET state=?,message_id=?,lease=?,at=? WHERE job_id=?',
+                   (state, message_id if state == 'sent' else '', None if state == 'failed' else lease, time.time(),
+                    job_id))
     return {'state': state, 'reason': reason}

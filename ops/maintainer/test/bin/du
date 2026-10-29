@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# The real du, unless a test arms $MOCK/du-fails with "<path> <n>": the n-th du of that path prints its total,
+# then an I/O error, and fails ($MOCK/du-seen counts them).
+for path; do :; done
+if [[ -n ${MOCK:-} && -f $MOCK/du-fails ]]; then
+  read -r target nth < "$MOCK/du-fails"
+  if [[ $path == "$target" ]]; then
+    seen=$(( $(cat "$MOCK/du-seen" 2>/dev/null || echo 0) + 1 ))
+    echo "$seen" > "$MOCK/du-seen"
+    if (( seen == nth )); then
+      /usr/bin/du "$@" || true
+      echo "du: cannot read directory '$path/settings': Input/output error" >&2
+      exit 1
+    fi
+  fi
+fi
+exec /usr/bin/du "$@"

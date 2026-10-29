@@ -12,7 +12,8 @@ for file in "$DB-wal" "$DB-shm"; do
   chown 0:0 "$file"; chmod 600 "$file"
 done
 run 0 drain 1
-journal_lacks intent:pause
+journal_has skipped:pause  # The fence journals its stop, but never takes the owner's pause for its own (gene #94).
+! grep -q '^paused:' "$JOURNAL" || fail 'the batch took a pause of its own'
 run 0 gene 0; run 0 fri 0; run 0 resume 1
 expect new true up
 finish

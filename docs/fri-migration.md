@@ -126,11 +126,10 @@ built from other members' messages.
     (`personal_notes.sources_at`). An older controller that learns the same note again moves its time and
     leaves both, so a note whose time moved since counts as one of unknown source, never judged by those
     stale messages. A note naming the withdrawn message goes
-    wherever it shows, profile included, whether the message was edited or deleted. One of unknown source
-    goes if the withdrawn message's own words in that exchange hold its words and it was said there or in
-    the profile; one with stale sources only if it wasn't renewed after that message was sent (its time is
-    no later than the message's, from its ID, plus five minutes for clock skew), since a renewal after it
-    means a later message said it too. Share and Keep carry the sources; the same note learned again comes from the newer
+    wherever it shows, profile included, whether the message was edited or deleted. One of unknown or
+    stale source stays, as before: nothing shows which message supplied it (an older controller may have
+    learned it again from another), so it isn't traced to this one, and it expires as before (gene #149
+    tracks a sound way to trace it). Share and Keep carry the sources; the same note learned again comes from the newer
     message, so withdrawing the older one leaves it. By ID, a note whose exchange was trimmed goes too
     (a note outlasts six exchanges), with a fence for the member and message, so a learning batch already
     reading the message keeps nothing from it, as a late save already did (gene #90).

@@ -5,8 +5,8 @@
    the withdrawn exchange holds its words. Nothing learns it again: a late save or a learning batch already reading
    it keeps nothing.
 2. Another member's saved reply whose model request carried it (`drew_on`, from a Fri offering withdrawal-sources):
-   that reply keeps only a breadcrumb, as one that drew on a withdrawn summary does, and so does one that carried
-   Fri's reply to it, or a reply of Fri's that did.
+   once it's deleted, that reply keeps only a breadcrumb, as one that drew on a withdrawn summary does, and so does one
+   that carried Fri's reply to it, or a reply of Fri's that did. An edit leaves those replies, as before (gene #150).
 
 Chat context names the messages a note or an exchange elsewhere came from, beside them, for a Fri that asks, so it can
 keep them out of a request while a withdrawal is still on its way (fri #215).
@@ -222,7 +222,7 @@ def test_another_members_reply_that_carried_it_keeps_only_a_breadcrumb(world):
     other_reply = str(int(taken)+1)  # Fri's reply to the other member, on Discord.
     turn(store, 'what did they mean', drew_on=[taken], reply_id=other_reply, age=20)
     turn(store, 'and unrelated', drew_on=[source(age=25, channel='51')['id']], reply='fine', age=10)
-    assert withdraw(client, taken).json()['removed'] == 1
+    assert withdraw(client, taken, deleted=True).json()['removed'] == 1
     assert replies(store) == [controller.DRAWN, 'fine']
     assert inputs(store, '30') == ['what did they mean', 'and unrelated']  # Their own words stay.
     assert store.message_sources('123', [other_reply])[other_reply]['verbatim'] is False  # A reference fails closed.
@@ -236,7 +236,7 @@ def test_one_that_carried_fris_reply_to_it_goes_too_and_one_that_carried_that(wo
                     source=said, provenance=[], reply_message_id=first_reply, verbatim=True)
     turn(store, 'say that again', drew_on=[first_reply], reply_id=second_reply, age=30)  # Fri's reply to it, in view.
     turn(store, 'and again', user='40', drew_on=[second_reply], reply_id=third_reply, age=20)  # Two deep.
-    withdraw(client, said['id'])
+    withdraw(client, said['id'], deleted=True)
     assert replies(store) == [controller.DRAWN] and replies(store, '40') == [controller.DRAWN]
 
 
@@ -245,7 +245,9 @@ def test_by_id_alone_with_no_exchange_of_its_own(world):
     client, store = world
     nearby = source(age=30, channel='51')['id']
     turn(store, 'what did they mean', drew_on=[nearby], age=20)
-    assert withdraw_saved(client, nearby).json() == {'ok': True, 'removed': 0}
+    assert withdraw_saved(client, nearby).json() == {'ok': True, 'removed': 0}  # An edit: it stays.
+    assert replies(store) == ['about that: '+MARKER]
+    assert withdraw_saved(client, nearby, deleted=True).json() == {'ok': True, 'removed': 0}
     assert replies(store) == [controller.DRAWN]
     with store.connection() as db:  # Nobody's exchange went, so no fence: its author is unknown here.
         assert db.execute('SELECT count(*) FROM chat_turn_withdrawals').fetchone()[0] == 0
@@ -254,7 +256,7 @@ def test_by_id_alone_with_no_exchange_of_its_own(world):
 def test_a_reply_saved_after_it_was_withdrawn_keeps_nothing_and_its_check_refuses(world):
     client, store = world
     taken, _ = learn(store, 'explain '+MARKER, age=30)
-    withdraw(client, taken)
+    withdraw(client, taken, deleted=True)
     with pytest.raises(Conflict):
         store.check_chat('30', 0, [{'user_id': '20', 'revision': 0}], guild_id='123', drew_on=[taken])
     said = source(age=2, user='30', channel='51')
@@ -273,15 +275,16 @@ def test_an_ordinary_reply_is_unchanged(world):
     assert replies(store) == ['about that: '+MARKER]*2
 
 
-def test_a_dependent_an_older_controller_left_is_retired_at_start(world):
+def test_a_dependent_an_older_controller_left_stays_as_it_would_on_main(world):
+    """An older controller's withdrawals don't say whether the message was edited or deleted, so a start leaves the
+    replies that carried it, as main does. Only a deletion retires them (gene #150)."""
     client, store = world
     taken, _ = learn(store, 'explain '+MARKER, age=30)
     turn(store, 'what did they mean', drew_on=[taken], age=20)
     with store.connection() as db:  # As an older controller withdraws it: the exchange and its fence only.
         db.execute("DELETE FROM chat_turns WHERE json_extract(source,'$.id')=?", (taken,))
         db.execute('INSERT INTO chat_turn_withdrawals VALUES (?,?,?,?)', ('123', '20', taken, time.time()))
-    assert replies(store) == ['about that: '+MARKER]
-    assert replies(Store(store.path)) == [controller.DRAWN]
+    assert replies(Store(store.path)) == ['about that: '+MARKER]
 
 
 def test_the_api_takes_and_bounds_drew_on(world):
@@ -292,7 +295,7 @@ def test_the_api_takes_and_bounds_drew_on(world):
                 'reply': 'ok', 'model': 'model', 'effort': 'high', 'provenance': [], **extra}
     taken, _ = learn(store, 'explain '+MARKER, age=30)
     assert client.post('/chat/turn', headers=headers('fri'), json=body(drew_on=[taken])).status_code == 200
-    withdraw(client, taken)
+    withdraw(client, taken, deleted=True)
     assert replies(store) != ['ok'] and replies(store) == [controller.DRAWN]  # Its words no longer kept.
     assert client.post('/chat/turn/check', headers=headers('fri'), json=body(drew_on=[taken])).status_code == 409
     for bad in (['abc'], [str(i) for i in range(1, 1002)], [1.5]):
@@ -337,7 +340,115 @@ def test_nothing_it_logs_or_keeps_holds_the_words(world, caplog):
     caplog.set_level(logging.DEBUG)
     taken, _ = learn(store, LIKE, age=30)
     turn(store, 'what did they mean', drew_on=[taken], age=20)
-    withdraw(client, taken)
+    withdraw(client, taken, deleted=True)
     assert LIKE not in caplog.text and MARKER not in caplog.text
     with store.connection() as db:
         assert LIKE not in json.dumps([dict(r) for r in db.execute('SELECT * FROM chat_turn_withdrawals')])
+
+
+# Sol round 1 of gene #145.
+
+def test_a_note_belongs_to_the_message_in_its_burst_that_says_it(world):
+    """Its exact words come from one message of the burst: withdrawing another leaves the note, as main does, and
+    withdrawing that one takes it."""
+    client, store = world
+    hello, said = source(age=6, channel='51'), source(age=4, channel='51')
+    store.save_chat('123', 'public:51', '20', 0, LIKE, 'okay', 'model', 'high', source=said, provenance=[],
+                    burst=[{'source': hello, 'text': 'hello'}, {'source': said, 'text': LIKE}],
+                    notes=[{'category': 'hobbies', 'evidence': LIKE}])
+    second = source(age=2, channel='51')
+    store.save_chat('123', 'public:51', '20', 0, 'i play chess on weekends', 'okay', 'model', 'high', source=second,
+                    provenance=[], notes=[{'category': 'games', 'evidence': 'i play chess on weekends'}])
+    with store.connection() as db:  # Saved before notes named messages, or by an older controller.
+        db.execute("UPDATE personal_notes SET sources=NULL WHERE evidence='i play chess on weekends'")
+    withdraw(client, hello['id'])
+    assert sorted(notes(store)) == ['i play chess on weekends', LIKE]
+    withdraw(client, said['id'])
+    assert notes(store) == ['i play chess on weekends']
+
+
+def test_a_note_of_unknown_source_goes_only_with_the_message_that_says_it(world):
+    client, store = world
+    hello, said = source(age=6, channel='51'), source(age=4, channel='51')
+    store.save_chat('123', 'public:51', '20', 0, LIKE, 'okay', 'model', 'high', source=said, provenance=[],
+                    burst=[{'source': hello, 'text': 'hello'}, {'source': said, 'text': LIKE}],
+                    notes=[{'category': 'hobbies', 'evidence': LIKE}])
+    with store.connection() as db:
+        db.execute('UPDATE personal_notes SET sources=NULL')
+    withdraw(client, hello['id'])  # The burst's exchange goes; the note it didn't say stays.
+    assert notes(store) == [LIKE]
+
+
+def fences(store, user='20'):
+    with store.connection() as db:
+        return [row[0] for row in db.execute('SELECT message_id FROM chat_turn_withdrawals WHERE user_id=?', (user,))]
+
+
+def test_a_withdrawal_sent_before_an_erasure_writes_nothing_after_it(world):
+    """A queued or in-flight withdrawal that reaches the controller after the member's "forget me" (or any privacy
+    change since its exchange was saved) leaves no trace of them: no fence. Anything it would take still goes."""
+    client, store = world
+    taken = learn(store, LIKE, age=30)[0]
+    store.personal_control('20', 'disable')  # "forget me": revision 0 -> 1, memory off.
+    assert withdraw(client, taken).json() == {'ok': True, 'removed': 0}  # An older Fri says no revision: memory is off.
+    assert fences(store) == []
+    assert withdraw(client, taken, revision=0).json() == {'ok': True, 'removed': 0}
+    assert fences(store) == []
+    store.personal_control('20', 'enable')  # Back on, revision 2: a stale one still writes nothing.
+    assert withdraw(client, taken, revision=0).json() == {'ok': True, 'removed': 0}
+    assert fences(store) == []
+    said = learn(store, 'i play chess on weekends', age=5)[0]
+    with store.connection() as db:
+        revision = db.execute("SELECT revision FROM chat_revisions WHERE user_id='20'").fetchone()[0]
+    assert withdraw(client, said, revision=revision).json()['removed'] == 0  # Saved under an older one, say.
+    assert fences(store) == [said]
+
+
+def test_a_stale_withdrawal_still_takes_what_holds_the_message(world):
+    """A privacy change that cleared one conversation leaves the member's exchanges elsewhere: a withdrawal saved
+    under the older revision still takes those, without a fence, since a late save under it is refused anyway."""
+    client, store = world
+    taken = learn(store, 'yo '+LIKE, evidence=LIKE, conversation='public:52', age=30)[0]
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        store.advance_revision(db, '20')  # A note edited elsewhere, say: this exchange stays.
+    assert inputs(store, conversation='public:52') == ['yo '+LIKE]
+    assert withdraw(client, taken, revision=0, conversation_id='public:52', channel_id='52').json()['removed'] == 1
+    assert inputs(store, conversation='public:52') == [] and fences(store) == []
+
+
+def test_an_edit_takes_the_members_exchange_and_notes_but_not_others_replies(world):
+    """gene #150: only a deletion retires other members' replies that carried the message."""
+    client, store = world
+    taken, _ = learn(store, LIKE, age=30)
+    turn(store, 'what did they mean', drew_on=[taken], age=20)
+    assert withdraw(client, taken).json()['removed'] == 1  # An edit: no `deleted`.
+    assert notes(store) == [] and inputs(store) == []
+    assert replies(store) == ['about that: '+MARKER]
+    assert store.check_chat('30', 0, [{'user_id': '20', 'revision': 0}], guild_id='123', drew_on=[taken]) == {'ok': True}
+    withdraw(client, taken, deleted=True)  # Then deleted: now they go.
+    assert replies(store) == [controller.DRAWN]
+
+
+def test_withdrawals_say_whether_it_was_deleted(world):
+    client, store = world
+    for path, body in (('/chat/turn/withdraw', {'guild_id': '123', 'channel_id': '51', 'conversation_id': 'public:51',
+                                                 'user_id': '20', 'message_id': '1'}),
+                       ('/chat/turn/withdraw/saved', {'guild_id': '123', 'message_ids': ['1']})):
+        for deleted in (True, False):
+            assert client.post(path, headers=headers('fri'), json={**body, 'deleted': deleted}).status_code == 200
+        assert client.post(path, headers=headers('fri'), json={**body, 'deleted': 'maybe'}).status_code == 422
+    assert client.post('/chat/turn/withdraw', headers=headers('fri'), json={
+        'guild_id': '123', 'channel_id': '51', 'conversation_id': 'public:51', 'user_id': '20', 'message_id': '1',
+        'revision': -1}).status_code == 422
+
+
+def test_my_memory_names_where_each_note_came_from_only_when_asked(world):
+    client, store = world
+    taken, _ = learn(store, LIKE, age=30)
+    scope = {'guild_id': '123', 'channel_id': '52', 'conversation_id': 'private:52', 'user_id': '20', 'profiles': True}
+    plain = client.post('/chat/memory/notes', headers=headers('fri'), json=scope).json()
+    asked = client.post('/chat/memory/notes', headers=headers('fri'), json={**scope, 'sources': True}).json()
+    assert all('sources' not in row for row in plain['entries'])
+    assert [row.pop('sources') for row in asked['entries']] == [[taken]]
+    assert asked == plain

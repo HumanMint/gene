@@ -1376,3 +1376,17 @@ def test_stage_refuses_a_timestamp_written_differently(tmp_path, live, staged):
 def test_stage_lets_an_unchanged_timestamp_through(tmp_path, live, staged):
     out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(live), staged=PYPROJECT + '\n' + STAMP.format(staged))
     assert out.returncode == 0, out.stderr
+
+
+# A float is the setting bit for bit: 0.0 and -0.0 can steer a build hook differently (math.copysign), and an
+# unchanged nan is unchanged, not a reason to stop.
+@pytest.mark.parametrize('live, staged', [('0.0', '-0.0'), ('-0.0', '0.0'), ('nan', '-nan'), ('{a = [0.0]}', '{a = [-0.0]}')])
+def test_stage_refuses_a_float_that_changed_sign(tmp_path, live, staged):
+    out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(live), staged=PYPROJECT + '\n' + STAMP.format(staged))
+    assert out.returncode != 0 and 'changes what the host venv installs: tool.hatch' in out.stderr
+
+
+@pytest.mark.parametrize('value', ['nan', '-nan', 'inf', '0.0', '-0.0', '{a = [nan]}'])
+def test_stage_lets_an_unchanged_float_through(tmp_path, value):
+    out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(value), staged=PYPROJECT + '\n' + STAMP.format(value))
+    assert out.returncode == 0, out.stderr

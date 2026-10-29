@@ -726,7 +726,7 @@ installs_same() {  # live staged: two pyproject.toml files that differ in nothin
   # The venv is an editable install of the source tree, so only metadata may change (gene #116). It relies on
   # python3's tomllib (Python 3.11 or later): without it, or with a file it can't parse, nothing passes.
   python3 - "$1" "$2" <<'PY'
-import sys
+import datetime, struct, sys
 try:
     import tomllib
 except ImportError:
@@ -758,6 +758,10 @@ def same(a, b):  # equal and of the same types all the way down: true, 1 and 1.0
         return a.keys() == b.keys() and all(same(a[key], b[key]) for key in a)
     if isinstance(a, list):
         return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+    if isinstance(a, (datetime.date, datetime.time)):  # as written: the same instant at another offset isn't (gene #124)
+        return a.isoformat() == b.isoformat()
+    if isinstance(a, float):  # bit for bit: 0.0 and -0.0 differ, and an unchanged nan is unchanged
+        return struct.pack('>d', a) == struct.pack('>d', b)
     return a == b
 def changed(old, new):  # dotted names of the top-level keys and table entries that differ
     names = []
@@ -783,8 +787,14 @@ check_manifest() {  # Every phase after baseline runs against the same G, F and 
     for name in runtime worker fri; do
       python3 -c 'import json, sys; m = json.load(open(sys.argv[1])); sys.exit(0 if sys.argv[3] in m.get(sys.argv[2], {}) else 1)' \
         "$MANIFEST" "$kind" "$name" || continue
-      [[ $(image_id "$(jget "$MANIFEST" "$kind.$name.tag")") == "$(jget "$MANIFEST" "$kind.$name.id")" ]] \
-        || die "image $(jget "$MANIFEST" "$kind.$name.tag") changed since it was recorded"
+      [[ $(image_id "$(jget "$MANIFEST" "$kind.$name.tag")") == "$(jget "$MANIFEST" "$kind.$name.id")" ]] && continue
+      # The new images are provisional until stage's checks pass: a stage the close cut off may have rebuilt one
+      # after recording it, and the next stage builds, records and checks them all again (gene #63).
+      if [[ $kind == new ]] && ! has staged; then
+        log "image $(jget "$MANIFEST" "$kind.$name.tag") changed since an unfinished stage recorded it; stage records it again"
+        continue
+      fi
+      die "image $(jget "$MANIFEST" "$kind.$name.tag") changed since it was recorded"
     done
   done
 }

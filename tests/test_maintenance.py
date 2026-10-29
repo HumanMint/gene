@@ -723,6 +723,8 @@ def test_a_claimed_feature_switches_only_inside_the_window(tmp_path, monkeypatch
 
 
 def test_each_deployment_leaves_a_bounded_record_without_member_content(tmp_path, monkeypatch):
+    now = maintenance.clock()  # Stopped, so a midnight during the test can't move the record's day (gene #88).
+    monkeypatch.setattr(maintenance, 'clock', lambda: now)
     worker = deployer(tmp_path)
     job = {'id': 'a1b2c3d4e5f6', 'kind': 'feature', 'lease': 'f'*32, 'body': 'a member said something private',
            'proposal': {'sha': G, 'base_sha': OLD_G}}
@@ -1347,3 +1349,46 @@ def test_stage_refuses_a_pyproject_it_cant_parse_or_compare(tmp_path):
 def test_stage_refuses_a_setting_that_only_changed_type(tmp_path, live, staged):
     out = installs_same(tmp_path, PYPROJECT + '\n' + live, staged=PYPROJECT + '\n' + staged)
     assert out.returncode != 0 and 'pyproject.toml changes what the host venv installs:' in out.stderr
+
+
+STAMP = '[tool.hatch.build.hooks.custom]\nbuilt = {}\n'
+
+
+# gene #124: a timestamp is the setting as written. The same instant at another offset reads differently (a build
+# hook taking `.hour` gets 5, not 12).
+@pytest.mark.parametrize('live, staged', [
+    ('2026-10-28T12:00:00Z', '2026-10-28T05:00:00-07:00'),
+    ('2026-10-28T12:00:00+00:00', '2026-10-28T21:00:00+09:00'),
+    ('2026-10-28T12:00:00Z', '2026-10-28T12:00:00.000001Z'),
+    ('12:00:00', '12:00:00.5'),
+    ('2026-10-28', '2026-10-29'),
+])
+def test_stage_refuses_a_timestamp_written_differently(tmp_path, live, staged):
+    out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(live), staged=PYPROJECT + '\n' + STAMP.format(staged))
+    assert out.returncode != 0 and 'changes what the host venv installs: tool.hatch' in out.stderr
+
+
+@pytest.mark.parametrize('live, staged', [
+    ('2026-10-28T12:00:00Z', '2026-10-28T12:00:00+00:00'),  # Two spellings of UTC, read alike.
+    ('2026-10-28T05:00:00-07:00', '2026-10-28 05:00:00-07:00'),
+    ('2026-10-28T12:00:00', '2026-10-28T12:00:00'),
+    ('12:00:00', '12:00:00'),
+    ('2026-10-28', '2026-10-28'),
+])
+def test_stage_lets_an_unchanged_timestamp_through(tmp_path, live, staged):
+    out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(live), staged=PYPROJECT + '\n' + STAMP.format(staged))
+    assert out.returncode == 0, out.stderr
+
+
+# A float is the setting bit for bit: 0.0 and -0.0 can steer a build hook differently (math.copysign), and an
+# unchanged nan is unchanged, not a reason to stop.
+@pytest.mark.parametrize('live, staged', [('0.0', '-0.0'), ('-0.0', '0.0'), ('nan', '-nan'), ('{a = [0.0]}', '{a = [-0.0]}')])
+def test_stage_refuses_a_float_that_changed_sign(tmp_path, live, staged):
+    out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(live), staged=PYPROJECT + '\n' + STAMP.format(staged))
+    assert out.returncode != 0 and 'changes what the host venv installs: tool.hatch' in out.stderr
+
+
+@pytest.mark.parametrize('value', ['nan', '-nan', 'inf', '0.0', '-0.0', '{a = [nan]}'])
+def test_stage_lets_an_unchanged_float_through(tmp_path, value):
+    out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(value), staged=PYPROJECT + '\n' + STAMP.format(value))
+    assert out.returncode == 0, out.stderr

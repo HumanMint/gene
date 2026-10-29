@@ -137,6 +137,24 @@ built from other members' messages.
   earlier summary keeps its origins, provenance and a later `through`, so a withdrawal of anything the
   old one drew on still finds it: those replies move to the new generation instead of being retired,
   and the routine daily rebuild doesn't erase Fri's side of a DM.
+- **Summary dependencies.** A reply can repeat another reply of Fri's that drew on someone else's
+  summary: an echo of it in the channel's view, or a reply of Fri's the member answered. The optional
+  `summary-dependencies` capability lets that reply depend on the summary too (fri #193).
+  `/chat/messages/sources` adds `summaries` to a reply it reports when that reply drew on one, its
+  speaker's own or one it depended on: each a `user_id` and the `generation` it was saved with. Ordinary
+  replies' answers are unchanged. A Fri that carried such a reply into a request sends those as
+  `summary_dependencies` (up to 200, each `user_id` and `generation`) on `/chat/turn/check` and
+  `/chat/turn`. Each is checked as the turn's own `summary_generation` is: a 409 (no text, naming nobody)
+  once it has moved or the summary has lapsed. A save keeps them in `chat_turns.summary_dependencies`
+  (JSON, or NULL for none) and records each generation as above. Whenever one of those summaries' generation moves (a drop, an expiry, a
+  rebuild that wasn't sent the earlier summary) and when that member's privacy change erases it, the reply is retired to the
+  same breadcrumb in the same transaction, even where its provenance didn't name them. A rebuild that was
+  sent the earlier summary moves the dependency to the new generation instead. A sources lookup
+  checks each summary for a lapse first, under the write lock. A controller start retires any whose
+  generation moved or went, or whose speaker's revision moved, while an older controller ran, and the purge below
+  retires all of them. Chat context never shows the dependencies. An older Fri sends none, which is checked as before; an older
+  controller ignores the field, so Fri sends it only when offered. Mention turns leave both fields out
+  of their fingerprint.
 - **Summary-derived writes.** The optional `summary-generation-writes` capability extends the check to
   a tool's writes (fri #171). `/workspace/save` and `/social/reminders/prepare` take the same optional
   top-level `summary_generation` and refuse with a 409 (no text) once it has moved or the summary has

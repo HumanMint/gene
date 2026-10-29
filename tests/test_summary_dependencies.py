@@ -53,14 +53,24 @@ def depending(generation, user='20'):
     return [{'user_id': user, 'generation': generation}]
 
 
-def repeated(client, generation, *, user='30', message_id='800', provenance=None, age=1, **extra):
-    """Another member's turn in #51 whose reply repeated member 20's summary-derived reply, saved through the API."""
+def repeated(client, generation, *, user='30', message_id='800', provenance=None, age=1, on='20'):
+    """Another member's turn in #51 whose reply repeated a summary-derived reply (member `on`'s), saved through the API."""
     body = turn(source(age=age, user=user, channel='51'), 'what did they plan', user=user, reply=ECHOED,
-                reply_message_id=message_id, verbatim=True, summary_dependencies=depending(generation),
-                provenance=[{'user_id': '20', 'revision': 0}] if provenance is None else provenance, **extra)
+                reply_message_id=message_id, verbatim=True, summary_dependencies=depending(generation, on),
+                provenance=[{'user_id': on, 'revision': 0}] if provenance is None else provenance)
     saved = post_turn(client, body)
     assert saved.status_code == 200, saved.text
     return body
+
+
+def rebuilt(client, store):
+    """Member 20's summary built again after it went: its generation."""
+    readable(store, 'raid again, bring the '+MARKER, 7200)
+    readable(store, 'same build again', 7150)
+    with store.connection() as db:
+        db.execute('DELETE FROM fri_member_summary_calls')
+    built(client.app.state.agent, 'they planned another raid with the '+MARKER)
+    return summary_generation_now(store)
 
 
 def saved_reply(store, message_id='800'):
@@ -80,7 +90,7 @@ def test_a_reply_repeating_a_summary_derived_one_goes_when_that_summary_does(wor
     assert withdraw(client, taken).json()['removed'] == 1
     found = sources(client, '700', '800')
     assert found['700']['verbatim'] is False and found['800']['verbatim'] is False
-    assert found['800']['summaries'] == []
+    assert 'summaries' not in found['800']
     assert retired(saved_reply(store)) and MARKER not in str(store.chat_context('123', 'public:51', '30', True, True))
 
 
@@ -106,7 +116,7 @@ def test_a_dependency_on_a_summary_that_lapsed_since_is_refused_and_retired(worl
     lapsed(store)
     assert sources(client, '800')['800']['verbatim'] is False  # The lookup finds it lapsed, as for its own (gene #120).
     assert summary_generation_now(store) != generation and retired(saved_reply(store))
-    _, generation = summarized(client, store)
+    generation = rebuilt(client, store)
     body = turn(source(age=1, user='30', channel='51'), 'hm', user='30', summary_dependencies=depending(generation),
                 provenance=[{'user_id': '20', 'revision': 0}])
     lapsed(store)
@@ -172,8 +182,7 @@ def test_what_a_summary_going_leaves_alone(world):
     readable(store, 'see you at the raid', 7250, user='40', conversation='public:52')
     built(client.app.state.agent, 'they main a healer')
     theirs = summary_generation_now(store, '40')
-    repeated(client, theirs, message_id='801', age=3, summary_dependencies=depending(theirs, '40'),
-             provenance=[{'user_id': '40', 'revision': 0}])
+    repeated(client, theirs, message_id='801', age=3, on='40')
     plain = turn(source(age=2, user='30', channel='51'), 'hi', user='30', reply='hey', reply_message_id='802',
                  verbatim=True)
     assert post_turn(client, plain).status_code == 200
@@ -182,7 +191,7 @@ def test_what_a_summary_going_leaves_alone(world):
     found = sources(client, '800', '801', '802')
     assert found['800']['verbatim'] is False
     assert found['801']['verbatim'] is True and found['801']['summaries'] == depending(theirs, '40')
-    assert found['802'] == {'verbatim': True, 'summaries': [], 'provenance': [{'user_id': '30', 'revision': 0}]}
+    assert found['802'] == {'verbatim': True, 'provenance': [{'user_id': '30', 'revision': 0}]}  # As before.
     assert 'what did they plan' in str(store.chat_context('123', 'public:51', '30', True, True)['turns'])
 
 
@@ -197,7 +206,7 @@ def test_a_restart_retires_dependents_an_older_controller_left(world):
     assert saved_reply(store) == ECHOED
     Store(store.path)
     assert retired(saved_reply(store)) and retired(saved_reply(store, '801'))
-    _, generation = summarized(client, store)
+    generation = rebuilt(client, store)
     repeated(client, generation, message_id='803', age=1)
     with store.connection() as db:  # As its erasure does: the generation goes outright.
         db.execute("DELETE FROM fri_member_summary_generations WHERE user_id='20'")
@@ -248,7 +257,7 @@ def test_a_save_records_the_generation_it_depends_on(world):
     client, store = world
     repeated(client, 0)
     with store.connection() as db:
-        assert db.execute("SELECT generation FROM fri_member_summary_generations WHERE user_id='20'").fetchone() == (0,)
+        assert tuple(db.execute("SELECT generation FROM fri_member_summary_generations WHERE user_id='20'").fetchone()) == (0,)
 
 
 def test_what_the_reply_model_reads_is_unchanged(world):

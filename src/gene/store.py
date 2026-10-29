@@ -1369,7 +1369,7 @@ class Store:
                    f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
         db.execute(f'DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? '
                    f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
-        Store._withdraw_notes(db, guild_id, user_id, conversation_id, message_id, turns)
+        Store._withdraw_notes(db, guild_id, user_id, conversation_id, message_id)
         if deleted:  # Others' replies that carried it, or Fri's reply to it, which may repeat it.
             if recorded:
                 Store._deleted(db, guild_id, message_id, now, user_id, current)
@@ -1390,31 +1390,14 @@ class Store:
                    'revision=excluded.revision', (guild_id, str(message), now, user, revision))
 
     @staticmethod
-    def _withdraw_notes(db, guild_id, user_id, conversation_id, message_id, turns=()):
-        """The member's notes learned from a withdrawn message go, wherever they show (gene #141). One whose messages
-        are unknown (saved before notes named them, or by an older controller, which may have learned it again since
-        from another message) goes if that message's own words in a withdrawn exchange hold its words, said where it
-        could have been learned: that conversation, or their profile. Not another message of its burst: what it said
-        still stands."""
-        from .fri_member_summary import SKEW
-        from .fri_memory_store import CURRENT, SERVER
+    def _withdraw_notes(db, guild_id, user_id, conversation_id, message_id):
+        """The member's notes learned from a withdrawn message go, wherever they show (gene #141). Only notes whose
+        recorded messages are current name it: one whose messages are unknown (saved before notes named them) or stale
+        (an older controller learned it again since, maybe from another message) can't be traced to this one, so it
+        stays, as on main, rather than risk deleting a note another message still says (gene #145 round 4)."""
+        from .fri_memory_store import CURRENT
         db.execute(f'DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND {CURRENT} AND instr(sources,?)>0',
                    (guild_id, user_id, json.dumps(str(message_id))))
-        # A stale one (an older controller learned it again since) was renewed by a later message if its time is past
-        # this one's: that message said it too, so it stays (gene #145 round 3). Allowing for clock skew.
-        sent = ((int(message_id) >> 22)+1420070400000)/1000
-        said = []
-        for turn in turns:
-            burst = json.loads(turn['burst'] or '[]')
-            said += [row.get('text', '') for row in burst if str(row['source'].get('id')) == str(message_id)]
-            if not burst and turn['source_id'] == str(message_id):
-                said.append(turn['input'])
-        for note in db.execute(f'SELECT id,evidence,at,sources FROM personal_notes WHERE guild_id=? AND user_id=? AND NOT '
-                               f'({CURRENT}) AND channel_id IN (?,?)', (guild_id, user_id, conversation_id, SERVER)).fetchall():
-            if note['sources'] is not None and note['at'] > sent+SKEW:
-                continue
-            if any(note['evidence'] in text for text in said if text):
-                db.execute('DELETE FROM personal_notes WHERE id=?', (note['id'],))
 
     @staticmethod
     def _carrying(db, guild_id, messages):

@@ -38,7 +38,7 @@ def initialize(db):
     if 'sources' not in {row[1] for row in db.execute('PRAGMA table_info(personal_notes)')}:
         # The Discord messages the note was learned from (gene #141), so it goes when one is withdrawn: a JSON list,
         # [] for words the member typed in a memory control. NULL is unknown: saved before this, or by an older
-        # controller, which leaves it alone. Then the withdrawn exchange's words decide (see Store._withdraw_notes).
+        # controller, which leaves it alone. Such a note stays when a message is withdrawn (see Store._withdraw_notes).
         db.execute('ALTER TABLE personal_notes ADD COLUMN sources TEXT')
     if 'sources_at' not in {row[1] for row in db.execute('PRAGMA table_info(personal_notes)')}:
         # The note's time when those sources were recorded (gene #145 round 2). An older controller that learns the

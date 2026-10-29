@@ -338,6 +338,9 @@ FIX = 'not the one, i meant join us for a bite'
     ("wrong song, 'All I Got' by Said The Sky, alex said so", 'All I Got', False),
     ("wrong song, 'All I Got', alex said so", 'All I Got', False),
     ("wrong song, 'Love' by Alex said Taylor", 'Love', False),
+    # Masking it keeps its words: their own words after a two-word artist stay out of reach, as on main.
+    ("wrong song, 'It Wasn't Me' by The Wanted i suggested lol", "It Wasn't Me", True),
+    ("wrong song, 'It Wasn't Me' by The Wanted we mentioned lol", "It Wasn't Me", True),
 ])
 def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argument, expected):
     assert correction(text, argument) is expected

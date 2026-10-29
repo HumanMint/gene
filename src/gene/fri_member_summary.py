@@ -109,12 +109,16 @@ def _retire(db, turns, args=()):
 def settle(db):
     """At start: what an older controller left while it ran (a rollback window), which moved generations without
     retiring the replies that drew on them. Its privacy changes deleted the member's generation outright, and a drop
-    there can write it again from one, so a reply whose generation can't be confirmed goes too (gene #114): one with
-    none on record (a save records it, see keep), or saved under a revision of the member's since moved."""
-    retire(db, 'summary_generation IS NOT (SELECT generation FROM fri_member_summary_generations g '
-               'WHERE g.guild_id=chat_turns.guild_id AND g.user_id=chat_turns.user_id) OR speaker_revision IS NOT '
+    there can write it again from one, so a reply whose generation can't be confirmed goes too (gene #114): one saved
+    under a revision of the member's since moved, as every such change moves it. None on record reads as zero, as
+    `generation` reads it: the controller before gene #118 never recorded a summary that hadn't moved, so a reply on a
+    member's first summary has none, and an upgrade keeps it."""
+    retire(db, 'summary_generation IS NOT coalesce((SELECT generation FROM fri_member_summary_generations g '
+               'WHERE g.guild_id=chat_turns.guild_id AND g.user_id=chat_turns.user_id), 0) OR speaker_revision IS NOT '
                'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turns.user_id), 0)')
-    # So does one depending on another member's summary (fri #193), as the older controller never retired those.
+    # So does one depending on another member's summary (fri #193), as the older controller never retired those. Its
+    # save recorded that generation (see keep), and its own member's revision doesn't move with the other member's, so
+    # there none on record means an older controller erased it.
     retire_dependents(db, "json_extract(d.value,'$.generation') IS NOT (SELECT generation FROM "
                           "fri_member_summary_generations g WHERE g.guild_id=chat_turns.guild_id AND "
                           "g.user_id=json_extract(d.value,'$.user_id')) OR chat_turns.speaker_revision IS NOT "
@@ -123,7 +127,8 @@ def settle(db):
 
 def keep(db, guild, user):
     """A reply that drew on the member's summary, or on another reply of Fri's that did, is being saved: its generation
-    goes on record, zero included, so a start that finds none knows an older controller erased it (see settle)."""
+    goes on record, zero included, so a start that finds none for a reply depending on it knows an older controller
+    erased it (see settle)."""
     db.execute('INSERT INTO fri_member_summary_generations VALUES (?,?,0) ON CONFLICT(guild_id, user_id) DO NOTHING',
                (guild, user))
 

@@ -453,3 +453,67 @@ def test_my_memory_names_where_each_note_came_from_only_when_asked(world):
     assert all('sources' not in row for row in plain['entries'])
     assert [row.pop('sources') for row in asked['entries']] == [[taken]]
     assert asked == plain
+
+
+# Sol round 2 of gene #145.
+
+def renewed_by_an_older_controller(store, evidence, said, user='20', conversation='public:51'):
+    """Gene main's save of a note learned again, word for word: its time moves; its sources it doesn't know."""
+    with store.connection() as db:
+        db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at,origin,provenance) '
+                   'VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category,evidence) '
+                   'DO UPDATE SET at=excluded.at,origin=excluded.origin,provenance=excluded.provenance '
+                   'WHERE excluded.at>personal_notes.at',
+                   ('123', conversation, user, 'hobbies', evidence, time.time(), None, '[]'))
+        db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,source,burst,provenance,'
+                   'speaker_revision,attributed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                   ('123', conversation, user, evidence, 'okay', 'model', 'high', time.time(), json.dumps(said), '[]',
+                    '[]', 0, 1))
+
+
+def test_a_note_an_older_controller_renewed_keeps_no_stale_source(world):
+    """Learned from A here, then word for word from B by an older controller, which renews its time but not its
+    sources. A's withdrawal by ID (its exchange trimmed) leaves it, as main does: B still says it. Judged the legacy
+    way, by the withdrawn message's own words, it goes with B."""
+    client, store = world
+    taken, _ = learn(store, LIKE, age=600)
+    chatter(store, 6, start=500)  # A's exchange trimmed since.
+    again = source(age=5, channel='51')
+    renewed_by_an_older_controller(store, LIKE, again)
+    restarted = Store(store.path)
+    assert withdraw_saved(client, taken).json()['removed'] == 0
+    assert notes(restarted) == [LIKE]
+    assert withdraw(client, again['id']).json()['removed'] == 1
+    assert notes(restarted) == []
+
+
+def test_chat_context_and_my_memory_call_a_stale_source_unknown(world):
+    client, store = world
+    learn(store, LIKE, age=600)
+    renewed_by_an_older_controller(store, LIKE, source(age=5, channel='51'))
+    scope = {'guild_id': '123', 'channel_id': '51', 'conversation_id': 'public:51', 'user_id': '20', 'profiles': True,
+             'sources': True}
+    assert client.post('/chat/context', headers=headers('fri'), json=scope).json()['note_sources'] == [None]
+    listed = client.post('/chat/memory/notes', headers=headers('fri'), json={
+        **scope, 'channel_id': '52', 'conversation_id': 'private:52'}).json()['entries']
+    assert [row['sources'] for row in listed] == [None]
+
+
+def deletions(store):
+    with store.connection() as db:
+        return [row[0] for row in db.execute('SELECT message_id FROM chat_turn_deletions')]
+
+
+def test_forget_me_takes_the_members_deletion_records_too(world):
+    client, store = world
+    scoped, _ = learn(store, LIKE, age=30)
+    by_id, _ = learn(store, 'i play chess on weekends', age=20)
+    other, _ = learn(store, 'i love trance', category='music', user='30', age=10)
+    turn(store, 'what did they mean', user='40', drew_on=[scoped, by_id, other], age=5)
+    withdraw(client, scoped, deleted=True)
+    withdraw_saved(client, by_id, deleted=True)
+    withdraw_saved(client, other, deleted=True)
+    assert sorted(deletions(store)) == sorted([scoped, by_id, other])
+    store.personal_control('20', 'disable')
+    assert deletions(store) == [other]  # Another member's stays.
+    assert deletions(Store(store.path)) == [other]

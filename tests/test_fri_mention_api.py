@@ -331,9 +331,11 @@ def test_a_mention_saves_fingerprint_is_the_one_an_older_controller_kept(h):
     _, scope, _ = invited(h)
     payload = turn(scope)
     assert post(h, '/chat/turn', payload).status_code == 200
-    older = _hash(ChatTurn.model_validate(payload).model_dump_json(exclude={'summary_generation'}))
+    older = _hash(ChatTurn.model_validate(payload).model_dump_json(exclude={'summary_generation', 'summary_dependencies'}))
     with h.store.connection() as db:
         assert db.execute('SELECT turn_hash FROM mention_grants').fetchone()[0] == older
     assert post(h, '/chat/turn', payload).status_code == 200
     for generation in (None, 0, 7):  # Whatever it says, a field a mention never uses doesn't change it.
         assert post(h, '/chat/turn', {**payload, 'summary_generation': generation}).status_code == 200
+    for dependencies in ([], [{'user_id': '30', 'generation': 7}]):  # Nor do these (fri #193).
+        assert post(h, '/chat/turn', {**payload, 'summary_dependencies': dependencies}).status_code == 200

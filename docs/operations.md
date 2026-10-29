@@ -644,7 +644,7 @@ Keep at most 7 days of backups and failed-job diagnostics once the lab has stabi
 ## Lab acceptance checklist
 
 Bootstrap verification on 2026-10-18: GitHub CLI authentication, private repository,
-Hostinger services, invisible Discord connection, and lab-only slash registration
+bot host services, invisible Discord connection, and lab-only slash registration
 are verified. The core suite has 70 passing checks. A real GPT-6 Astra request
 (`152a3c1aea3f`) repaired its failing test, passed 85 candidate checks and lint in the
 isolated container, and published [the first draft proposal](https://github.com/HumanMint/gene/pull/1).
@@ -652,7 +652,7 @@ GitHub Actions also passed. That Discord proposal remains unapproved and has not
 deployed. Subsequent maintainer changes added the separate panel and external audio
 source. The combined suite now has 119 passing checks, including owner review and
 DM failure recovery coverage. The preceding playback/panel suite also passed isolated
-Hostinger tests. A complete 174-second cached Nanobii Rainbow Road decode finished
+tests on the bot host. A complete 174-second cached track decode finished
 with zero buffer underruns, as did the direct-stream comparison; the reported voice
 pauses were not reproduced by these source-level checks. Rollback paths have isolated
 test coverage. Sustained listening in Discord remains a human acceptance step.
@@ -662,7 +662,7 @@ test coverage. Sustained listening in Discord remains a human acceptance step.
 - One real Codex job publishes a tested private branch and records actual usage.
 - Owner approves exact commit; it becomes healthy; a broken release restores prior code.
 - Meme add/remove/dual/self votes, deleted originals, duplicate events, restart recovery.
-- Play/search/queue and at least two sustained tracks in voice; then a Mac-offline test.
+- Play/search/queue and at least two sustained tracks in voice; then a relay-offline test.
 - Controller/worker unavailable while ordinary Red commands remain usable.
 - Historical evidence reviewed before restoring any original-server behavior.
 
@@ -742,7 +742,7 @@ Do not restore those rows into active chat context during rollback. Test scripts
 that previously injected owner conversations are retired; source receipts and the
 isolated evaluator are required for future validation.
 
-Fri now has a persistent Hostinger heartbeat and a Discord adapter. Gene's Red
+Fri now has a persistent heartbeat on the bot host and a Discord adapter. Gene's Red
 extensions and separate audio services are unchanged. Promote Fri and the
 controller's primary guild/workshop together to FF; preserve the prior Lab env
 and command registration for rollback. Set `FRI_PRESENCE=online` in fri.env for

@@ -161,8 +161,9 @@ def memory_intent(text):
     """Handle direct privacy requests locally, without asking a model to authorize them."""
     text = text.lower().strip().replace('’', "'")
     text = re.sub(r'^(?:(?:hey|hi|yo|ok|okay|please)[,\s]+)*fri\b[,\s:]*', '', text)
-    text = re.sub(r'[,\s]+fri[.!?]*$', '', text).strip(' .!?')
-    text = re.sub(r'[,\s]+please$', '', text)
+    # Each suffix starts where its separator run does, so a long run isn't retried from every spot inside it.
+    text = re.sub(r'(?<![,\s])[,\s]+fri[.!?]*$', '', text).strip(' .!?')
+    text = re.sub(r'(?<![,\s])[,\s]+please$', '', text)
     text = re.sub(r'^(?:please |can you |could you )', '', text).strip(' .!?')
     if text in ('what do you remember about me', 'what do you know about me', 'show my memory',
                 'show me my memory', 'show my memories', 'what have you remembered about me'):

@@ -431,6 +431,27 @@ def test_natural_privacy_controls_work_while_busy_without_inference(monkeypatch)
     assert memory_intent('fri says "forget me"') is None
 
 
+@pytest.mark.parametrize('text,expected', [
+    ('Fri, forget me please', 'disable'), ('forget me, fri!', 'disable'), ('forget me ,, fri', 'disable'),
+    ('forget me\n\nfri', 'disable'), ('forget me \u2003 please', 'disable'), ('hey fri, show my memory, please.', 'show'),
+    ('what do you remember about me fri?', 'show'), ('remember me again , fri', 'enable'),
+    ('forget me fri please', None), ('please forget me', 'disable'), ('forget me, frien', None),
+    ('fri, forget me, friday', None), ('forget me lol', None), ('forget me pleasee', None),
+])
+def test_separator_runs_keep_the_same_decisions(text, expected):
+    assert memory_intent(text) == expected
+
+
+@pytest.mark.parametrize('separator', ['\u2003', ' ', ',', ', ', '\n'])
+def test_a_long_separator_run_is_crossed_once(separator):
+    # Discord's 4,000-character cap; each suffix strip used to retry from every spot inside the run (gene #87).
+    text = 'x' + (separator * 4000)[:3998] + 'x'
+    started = time.perf_counter()
+    for _ in range(10):
+        assert memory_intent(text) is None
+    assert time.perf_counter() - started < 0.1
+
+
 def test_public_replies_are_plain_and_scoped(monkeypatch):
     async def scenario():
         fri = configured(monkeypatch)

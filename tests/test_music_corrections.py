@@ -300,14 +300,33 @@ FIX = 'not the one, i meant join us for a bite'
     ('wrong song, Love Story, we said not right now lol', 'Love Story', False),
     ('wrong song, Love Story, i told you not anymore', 'Love Story', False),
     ('wrong song, Love Story, we said no more of that please', 'Love Story', False),
+    ('wrong song, Love Story, i said not rn', 'Love Story', False),
+    ('wrong song, Love Story, we said not for now', 'Love Story', False),
+    ('wrong song, Love Story, i said no more of those songs', 'Love Story', False),
     ('wrong song, Love Story, i said now', 'Love Story', True),
     ('wrong song, Love Story, we said no more Shake It Off', 'Love Story', True),
     ("wrong song, 'We Said No More'", 'We Said No More', True),
+    # So do a closing "not now" or "no more" after a pause or a "no", like a closing "no".
+    ('wrong song, Love Story, not now', 'Love Story', False),
+    ('wrong song, Love Story. no more lol', 'Love Story', False),
+    ('wrong song, Love Story nah not now', 'Love Story', False),
+    ('wrong song, Love Story, no, not right now', 'Love Story', False),
+    ('wrong song, Love Story, i said no, not now', 'Love Story', False),
+    ('wrong song, Love Story, No More Drama', 'Love Story', True),
+    ('wrong song, If Not Now', 'If Not Now', True),
+    ('wrong song, No More', 'No More', True),
+    # A title that is itself a withdrawal, after "i said", fails closed unless quoted, as "i said No" already does.
+    ('not that one, i said Not Today', 'Not Today', False),
+    ("not that one, i said 'Not Today'", 'Not Today', True),
+    ('not that one, i meant Not Today', 'Not Today', True),
     # gene #133 (2): their own denial with someone else alongside ("alex and i") is still theirs.
     ("wrong song, Love Story isn't what alex and i asked for", 'Love Story', False),
     ('wrong song, Love Story is not what you and i wanted', 'Love Story', False),
     ("wrong song, Love Story is what alex and i didn't ask for", 'Love Story', False),
     ("wrong song, Love Story isn't the one alex, sam and i picked", 'Love Story', False),
+    ('wrong song, Love Story is not what alex & i had in mind', 'Love Story', False),
+    ("wrong song, Love Story by Taylor Swift isn't what alex and i asked for", 'Love Story', False),
+    ("wrong song, Love Story isn't what me and alex asked for", 'Love Story', False),
     ('wrong song, Love Story is what alex and i asked for', 'Love Story', True),
     ("wrong song, 'Love Story Isn't What You and I Wanted'", "Love Story Isn't What You and I Wanted", True),
     # gene #133 (3): an artist's name is no one's words, after a quoted title as after a plain one.
@@ -315,8 +334,10 @@ FIX = 'not the one, i meant join us for a bite'
     ('wrong song, "Love" by Said The Sky', 'Love', True),
     ('wrong song, Love by Said The Sky', 'Love', True),
     ('wrong song, All I Got by Said The Sky', 'All I Got', True),
+    ("wrong song, 'Love' by Mentioned Band", 'Love', True),
     ("wrong song, 'All I Got' by Said The Sky, alex said so", 'All I Got', False),
     ("wrong song, 'All I Got', alex said so", 'All I Got', False),
+    ("wrong song, 'Love' by Alex said Taylor", 'Love', False),
 ])
 def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argument, expected):
     assert correction(text, argument) is expected
@@ -332,7 +353,9 @@ SHAPES = ["'"+"a' "*1330, "'"+"rockin' "*498, "''a "*997, "' "*1994, '"'+'a '*19
           "love story"+" isn't what"*363, 'love story, i said no'+' this time'*397+' x', 'love story'+' we just'*568+' said',
           'love story'+', we said no to that'*210, 'love story, i said not to'+' ever again'*361+' x',
           'love story'+', we said no more'*235, 'love story, i said not right now'+' lol'*992+' x',
-          'love story'+" isn't what alex and"*199+' i said', "'all i got'"+' by said the sky'*249]
+          'love story'+" isn't what alex and"*199+' i said', "'all i got'"+' by said the sky'*249,
+          'love story'+', not now'*443+' x', 'love story'+' nah not now'*332+' x', 'love story'+', no more of those songs'*166,
+          'love story'+' is what x, y and'*235+' i never asked']
 
 
 def read(text):

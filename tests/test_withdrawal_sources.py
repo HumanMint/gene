@@ -517,3 +517,50 @@ def test_forget_me_takes_the_members_deletion_records_too(world):
     store.personal_control('20', 'disable')
     assert deletions(store) == [other]  # Another member's stays.
     assert deletions(Store(store.path)) == [other]
+
+
+# Sol round 3 of gene #145.
+
+def test_a_stale_note_renewed_after_the_withdrawn_message_stays(world):
+    """G1: learned here from A (its exchange still kept), then renewed word for word from B by an older controller.
+    Withdrawing A finds the words in A, but the note was renewed after A was sent, so a later message supplied it:
+    it stays, as on main. Withdrawing B, which it wasn't renewed after, takes it."""
+    client, store = world
+    taken, _ = learn(store, LIKE, source=source(age=900, channel='51'))
+    again = source(age=5, channel='51')
+    renewed_by_an_older_controller(store, LIKE, again)
+    assert withdraw(client, taken).json()['removed'] == 1
+    assert notes(store) == [LIKE]
+    withdraw(client, again['id'])
+    assert notes(store) == []
+
+
+def test_a_deletion_whose_author_is_unknown_keeps_no_record(world):
+    """G2a: only another member's reply carried it. That reply retires now; nothing is kept that erasure couldn't
+    find."""
+    client, store = world
+    nearby = source(age=30, channel='51')['id']
+    turn(store, 'what did they mean', drew_on=[nearby], age=20)
+    withdraw_saved(client, nearby, deleted=True)
+    assert replies(store) == [controller.DRAWN] and deletions(store) == []
+
+
+def records(store):
+    with store.connection() as db:
+        return [tuple(row) for row in db.execute('SELECT message_id,user_id,revision FROM chat_turn_deletions')]
+
+
+def test_a_deletion_record_goes_once_its_authors_revision_moved_at_start(world):
+    """G2b: an older controller's "forget me" (or any privacy change) moves the author's revision but leaves this
+    table alone: the next start drops their records, and keeps everyone else's."""
+    client, store = world
+    mine, _ = learn(store, LIKE, age=30)
+    theirs, _ = learn(store, 'i love trance', category='music', user='30', age=20)
+    withdraw(client, mine, deleted=True)
+    withdraw(client, theirs, deleted=True, user_id='30')
+    assert sorted(deletions(Store(store.path))) == sorted([mine, theirs])  # Nothing moved: both kept.
+    with store.connection() as db:  # As an older controller's disable does: revision moved, this table untouched.
+        db.execute('BEGIN IMMEDIATE')
+        store.advance_revision(db, '20')
+    assert deletions(Store(store.path)) == [theirs]
+    assert records(store) == [(theirs, '30', 0)]  # With its author's revision then.

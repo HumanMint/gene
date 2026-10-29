@@ -85,6 +85,18 @@ def save(db, guild, scope, user, note, at, origin=None, provenance=None):
     cutoff = removed(db, guild, scope, user)
     if at < time.time()-TTL or (cutoff is not None and at <= cutoff):
         return False
+    # The same words in other capitals ("I play valorant", "i play valorant"), said where the same note was and
+    # drawing on the same people, are one note: the newer wording renews it instead of taking another slot.
+    # Only literal repeats; a shorter or longer note is another note, and an older wording keeps nothing.
+    rows = db.execute('SELECT id,evidence,at,origin,provenance FROM personal_notes WHERE guild_id=? AND '
+                      'channel_id=? AND user_id=? AND category=?', (guild, scope, user, category)).fetchall()
+    same = [row for row in rows if row['evidence'] != evidence and folded(row['evidence']) == folded(evidence)
+            and row['origin'] == origin and whose(row['provenance']) == whose(provenance)]
+    if any(row['at'] >= at for row in same):
+        return False
+    if not any(row['evidence'] == evidence and row['at'] >= at for row in rows):  # Else the upsert keeps that one.
+        for row in same:
+            db.execute('DELETE FROM personal_notes WHERE id=?', (row['id'],))
     updated = db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at,origin,provenance) '
         'VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category,evidence) '
         'DO UPDATE SET at=excluded.at,origin=excluded.origin,provenance=excluded.provenance '
@@ -100,6 +112,17 @@ def save(db, guild, scope, user, note, at, origin=None, provenance=None):
     return bool(updated.rowcount and db.execute('SELECT 1 FROM personal_notes WHERE guild_id=? AND '
         'channel_id=? AND user_id=? AND category=? AND evidence=?',
         (guild, scope, user, category, evidence)).fetchone())
+
+
+def folded(evidence):
+    return evidence.replace('’', "'").casefold()
+
+
+def whose(provenance):
+    """The members a note drew on, in any order; None (unknown) stays apart from [] (only the member's own)."""
+    if isinstance(provenance, str):
+        provenance = json.loads(provenance)
+    return None if provenance is None else sorted(json.dumps(item, sort_keys=True) for item in provenance)
 
 
 def visible(conversation):
@@ -226,7 +249,8 @@ def cleared(store, db, guild, user, scope, revision):
 
 def moved(db, guild, scope, user, row, place):
     """A move never pushes another note out: the member makes room first."""
-    # Only the same note already there (category and words, as save() matches) takes no new slot.
+    # Only the same note already there (category and exact words) takes no new slot. A repeat in other capitals
+    # may still fold in save(), but only with the same origin and provenance, so it's counted here.
     full = db.execute('SELECT count(*), sum(category=?) FROM personal_notes WHERE guild_id=? AND channel_id=? '
                       'AND user_id=? AND NOT (category=? AND evidence=?)',
                       (row['category'], guild, scope, user, row['category'], row['evidence'])).fetchone()

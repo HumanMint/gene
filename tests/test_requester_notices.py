@@ -87,6 +87,39 @@ def test_an_erased_reporter_leaves_nothing_to_reply_to(store):
         claim(store, job['id'], 'owner')
 
 
+def notice(store, job_id):
+    with store.connection() as db:
+        return dict(db.execute('SELECT * FROM requester_notices WHERE job_id=?', (job_id,)).fetchone())
+
+
+@pytest.mark.parametrize('erased', ['reporter', 'someone_it_drew_on'])
+def test_an_erasure_keeps_only_a_tombstone_of_the_reply(store, erased):
+    """gene #139: the reply's message ID ties the erased report to a message in Discord. Only the fact that the
+    reporter was told stays, so a restored or re-shipped report is never told twice."""
+    job = shipped(store)
+    if erased == 'someone_it_drew_on':
+        with store.connection() as db:
+            db.execute('UPDATE jobs SET provenance=? WHERE id=?', ('[{"user_id": "30", "revision": 0}]', job['id']))
+    lease = claim(store, job['id'], 'owner')['lease']
+    finish(store, job['id'], lease, 'sent', '555')
+    store.erase_user('20' if erased == 'reporter' else '30')
+    assert store.get(job['id'])['source_url'] == ''
+    row = notice(store, job['id'])
+    assert row['state'] == 'sent' and row['message_id'] == ''
+    assert '555' not in repr(row)
+    with pytest.raises(Conflict):
+        claim(store, job['id'], 'owner')
+
+
+def test_an_erasure_leaves_a_reply_on_its_way_to_be_recorded(store):
+    """A claim out when the reporter erases keeps its lease, so recording the reply still catches the erasure."""
+    job = shipped(store)
+    lease = claim(store, job['id'], 'owner')['lease']
+    store.erase_user('20')
+    assert finish(store, job['id'], lease, 'sent', '555')['state'] == 'invalidated'
+    assert notice(store, job['id'])['message_id'] == ''
+
+
 def test_a_later_rollback_stops_the_reply(store):
     job = shipped(store)
     rollback = store.rollback('123', 'owner')

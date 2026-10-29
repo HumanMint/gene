@@ -726,7 +726,7 @@ installs_same() {  # live staged: two pyproject.toml files that differ in nothin
   # The venv is an editable install of the source tree, so only metadata may change (gene #116). It relies on
   # python3's tomllib (Python 3.11 or later): without it, or with a file it can't parse, nothing passes.
   python3 - "$1" "$2" <<'PY'
-import sys
+import datetime, sys
 try:
     import tomllib
 except ImportError:
@@ -758,6 +758,8 @@ def same(a, b):  # equal and of the same types all the way down: true, 1 and 1.0
         return a.keys() == b.keys() and all(same(a[key], b[key]) for key in a)
     if isinstance(a, list):
         return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+    if isinstance(a, (datetime.date, datetime.time)):  # as written: the same instant at another offset isn't (gene #124)
+        return a.isoformat() == b.isoformat()
     return a == b
 def changed(old, new):  # dotted names of the top-level keys and table entries that differ
     names = []

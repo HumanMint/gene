@@ -1,5 +1,6 @@
 import pytest
 
+from gene import requester_notices as notices
 from gene.fri_protocol import compatible, contract
 from gene.repair_policy import ACTOR
 from gene.requester_notices import claim, finish
@@ -371,3 +372,212 @@ def test_fri_hears_when_a_sent_reply_was_not_recorded_as_sent(tmp_path):
     assert 'requester-notice-recheck' in advertised['capabilities']
     assert compatible({**advertised, 'capabilities': [c for c in advertised['capabilities']
                                                       if c != 'requester-notice-recheck']})
+
+
+def notice_row(store, job_id):
+    with store.connection() as db:
+        return dict(db.execute('SELECT * FROM requester_notices WHERE job_id=?', (job_id,)).fetchone())
+
+
+def aged(store, job_id, seconds):
+    with store.connection() as db:
+        db.execute('UPDATE requester_notices SET at=at-? WHERE job_id=?', (seconds, job_id))
+
+
+def test_a_prepared_claim_is_sent_only_once_authorized(store):
+    """fri #214: a Fri that asks for the send right before it claims only to prepare, so the claim's checks run
+    again after its last Discord read, with nothing awaited between them and the send."""
+    job = shipped(store)
+    first = notices.claim(store, job['id'], 'owner', prepare=True)
+    assert notice_row(store, job['id'])['state'] == 'preparing' and 'reconcile' not in first
+    with pytest.raises(Conflict, match='Another tap'):
+        notices.claim(store, job['id'], 'owner', prepare=True)  # A second tap never races the first.
+    with pytest.raises(Conflict, match='no longer holds'):
+        notices.authorize(store, job['id'], 'f'*32)
+    notices.authorize(store, job['id'], first['lease'])
+    assert notice_row(store, job['id'])['state'] == 'authorized'
+    with pytest.raises(Conflict, match='no longer holds'):
+        notices.authorize(store, job['id'], first['lease'])  # Once: the send it cleared may have posted.
+    with pytest.raises(Conflict, match='may already'):
+        notices.claim(store, job['id'], 'owner', prepare=True)
+    assert finish(store, job['id'], first['lease'], 'sent', '555') == {'state': 'sent', 'reason': None}
+    with pytest.raises(Conflict, match='already told'):
+        notices.claim(store, job['id'], 'owner', prepare=True)
+
+
+@pytest.mark.parametrize('change,reason', [
+    (erased, 'Only a shipped repair'), (rolled_back, 'rollback ran'), (newer_release, 'newer release'),
+    (going_out, 'going out'), (rollback_waiting, 'rollback is waiting'), (runtime_unknown, 'runtime is unknown')])
+def test_a_change_before_the_send_refuses_it(store, change, reason):
+    """The reporter's erasure, or a release that landed, while Fri read Discord: nothing posts, and the claim
+    is recorded as refused, so once the fix holds again a later tap may try."""
+    job = shipped(store)
+    lease = notices.claim(store, job['id'], 'owner', prepare=True)['lease']
+    change(store)
+    with pytest.raises(Conflict, match=reason):
+        notices.authorize(store, job['id'], lease)
+    assert notice_row(store, job['id'])['state'] == 'preparing'
+    assert finish(store, job['id'], lease, 'failed') == {'state': 'failed', 'reason': None}
+
+
+def test_a_claim_whose_fri_stopped_before_the_send_is_taken_over(store):
+    """gene #139: preparing never posts, so a claim left by a Fri that stopped is tried again once it's old,
+    and the stopped one can never send."""
+    job = shipped(store)
+    stopped = notices.claim(store, job['id'], 'owner', prepare=True)['lease']
+    aged(store, job['id'], notices.PREPARE_SECONDS+1)
+    lease = notices.claim(store, job['id'], 'owner', prepare=True)['lease']
+    with pytest.raises(Conflict, match='no longer holds'):
+        notices.authorize(store, job['id'], stopped)
+    with pytest.raises(Conflict, match='already been recorded'):
+        finish(store, job['id'], stopped, 'failed')
+    notices.authorize(store, job['id'], lease)
+    assert finish(store, job['id'], lease, 'sent', '555')['state'] == 'sent'
+
+
+def test_an_older_fri_can_take_over_a_stopped_preparation_but_never_a_send(store):
+    job = shipped(store)
+    notices.claim(store, job['id'], 'owner', prepare=True)
+    with pytest.raises(Conflict, match='Another tap'):
+        claim(store, job['id'], 'owner')
+    aged(store, job['id'], notices.PREPARE_SECONDS+1)
+    lease = claim(store, job['id'], 'owner')['lease']  # An older Fri: its claim clears the send, as before.
+    assert notice_row(store, job['id'])['state'] == 'sending'
+    aged(store, job['id'], notices.SETTLE_SECONDS+1)
+    with pytest.raises(Conflict, match='may already'):
+        claim(store, job['id'], 'owner')  # It can't look in Discord for what may have posted.
+    assert finish(store, job['id'], lease, 'uncertain')['state'] == 'uncertain'
+
+
+@pytest.mark.parametrize('prepared', [True, False])
+def test_a_send_never_recorded_is_looked_for_before_it_is_tried_again(store, prepared):
+    """gene #139: an authorized send whose Fri stopped may have posted. Once it has had time to settle, the next
+    tap has Fri look for it in Discord first; until then, and for an older Fri, it's never tried again."""
+    job = shipped(store)
+    stopped = notices.claim(store, job['id'], 'owner', prepare=prepared)['lease']
+    if prepared:
+        notices.authorize(store, job['id'], stopped)
+    sent_at = notice_row(store, job['id'])['at']
+    with pytest.raises(Conflict, match='may already'):
+        notices.claim(store, job['id'], 'owner', prepare=True)  # Fri may still be sending it.
+    aged(store, job['id'], notices.SETTLE_SECONDS+1)
+    with pytest.raises(Conflict, match='may already'):
+        claim(store, job['id'], 'owner')
+    looking = notices.claim(store, job['id'], 'owner', prepare=True)
+    assert looking['reconcile'] == {'since': sent_at-notices.SETTLE_SECONDS-1}
+    assert notice_row(store, job['id'])['state'] == 'reconciling'
+    with pytest.raises(Conflict, match='already been recorded'):
+        finish(store, job['id'], stopped, 'sent', '444')  # The stopped Fri's claim is over.
+    again = notices.claim(store, job['id'], 'owner', prepare=True)  # A tap that stopped while looking: look again.
+    assert again['reconcile'] == looking['reconcile']
+    with pytest.raises(Conflict, match='no longer holds'):
+        notices.authorize(store, job['id'], looking['lease'])
+    notices.authorize(store, job['id'], again['lease'])  # Nothing found: this one may send.
+    assert notice_row(store, job['id'])['state'] == 'authorized' and notice_row(store, job['id'])['at'] > sent_at
+    assert finish(store, job['id'], again['lease'], 'sent', '555')['state'] == 'sent'
+
+
+def test_a_send_found_in_discord_is_recorded_with_the_usual_checks(store):
+    job = shipped(store)
+    stopped = notices.claim(store, job['id'], 'owner', prepare=True)['lease']
+    notices.authorize(store, job['id'], stopped)
+    aged(store, job['id'], notices.SETTLE_SECONDS+1)
+    lease = notices.claim(store, job['id'], 'owner', prepare=True)['lease']
+    rolled_back(store)
+    result = finish(store, job['id'], lease, 'sent', '444')  # Fri found the stopped tap's reply.
+    assert result['state'] == 'invalidated' and 'rollback ran' in result['reason']
+    assert notice_row(store, job['id'])['message_id'] == ''
+
+
+@pytest.mark.parametrize('outcome', ['sent', 'failed', 'uncertain'])
+def test_recording_again_after_a_lost_answer_hears_what_was_recorded(store, outcome):
+    """fri #214: Fri retries a finish whose answer it lost, and an invalidated reply it never heard about
+    still gets taken back. The record doesn't change, and another claim's lease still hears nothing."""
+    job = shipped(store)
+    lease = notices.claim(store, job['id'], 'owner', prepare=True)['lease']
+    notices.authorize(store, job['id'], lease)
+    erased(store)
+    first = finish(store, job['id'], lease, outcome, '555' if outcome == 'sent' else '')
+    assert first['state'] == ('invalidated' if outcome == 'sent' else outcome)
+    before = notice_row(store, job['id'])
+    assert finish(store, job['id'], lease, outcome, '555' if outcome == 'sent' else '') == first
+    assert notice_row(store, job['id']) == before
+    with pytest.raises(Conflict, match='already been recorded'):
+        finish(store, job['id'], 'f'*32, outcome)
+
+
+def test_a_finished_claim_keeps_its_place_for_an_older_controller(tmp_path):
+    """Rows this controller writes open on an older one: it reads a finished lease as nothing, and refuses a
+    claim while any send is on its way. Checked by hand against Gene main too (see the PR)."""
+    from gene.store import Store
+    store = Store(tmp_path/'gene.sqlite3')
+    store.bootstrap('a'*40)
+    store.set_paused(False, 'owner')
+    store.update_models([{'id': 'gpt-6-astra', 'name': 'GPT-6 Astra', 'efforts': ['high'], 'default_effort': 'high'}])
+    store.select_model('gpt-6-astra', 'high', 'owner')
+    job = shipped(store)
+    lease = notices.claim(store, job['id'], 'owner', prepare=True)['lease']
+    with store.connection() as db:
+        assert db.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
+        columns = [row['name'] for row in db.execute('PRAGMA table_info(requester_notices)')]
+    assert columns == ['job_id', 'lease', 'state', 'message_id', 'at']  # No schema change.
+    notices.authorize(store, job['id'], lease)
+    assert finish(store, job['id'], lease, 'sent', '555')['state'] == 'sent'
+
+
+def served(tmp_path):
+    from pathlib import Path
+
+    from fastapi.testclient import TestClient
+
+    from gene.api import create_app
+    from gene.config import Settings
+    from gene.store import Store
+    settings = Settings(Path(tmp_path/'api.sqlite3'), '123', 'owner', 'runtime-'+'x'*32, 'worker-'+'x'*32,
+                        'deploy-'+'x'*32, workshop_channel_id='1', fri_token='fri-'+'x'*32)
+    client = TestClient(create_app(settings))
+    store = Store(settings.db)
+    store.bootstrap('a'*40)
+    store.set_paused(False, 'owner')
+    store.update_models([{'id': 'gpt-6-astra', 'name': 'GPT-6 Astra', 'efforts': ['high'], 'default_effort': 'high'}])
+    store.select_model('gpt-6-astra', 'high', 'owner')
+    return client, store
+
+
+def test_a_tap_after_fri_stopped_before_sending_is_tried_again(tmp_path):
+    """gene #139: Fri claimed, then stopped before it sent. Every later tap was refused for good."""
+    client, store = served(tmp_path)
+    job = shipped(store)
+    route = f"/requests/{job['id']}/requester-notice"
+    owner = {'guild_id': '123', 'user_id': 'owner'}
+    assert client.post(route, headers=headers('fri'), json={**owner, 'prepare': True}).status_code == 200
+    aged(store, job['id'], 3600)
+    retried = client.post(route, headers=headers('fri'), json={**owner, 'prepare': True})
+    assert retried.status_code == 200, retried.json()
+
+
+def test_fri_can_ask_for_the_send_on_the_owners_behalf_only(tmp_path):
+    client, store = served(tmp_path)
+    job = shipped(store)
+    route = f"/requests/{job['id']}/requester-notice"
+    owner = {'guild_id': '123', 'user_id': 'owner'}
+    claimed = client.post(route, headers=headers('fri'), json={**owner, 'prepare': True})
+    assert claimed.status_code == 200 and 'reconcile' not in claimed.json()
+    lease = claimed.json()['lease']
+    assert notice_row(store, job['id'])['state'] == 'preparing'
+    for scope in ({'guild_id': '999', 'user_id': 'owner'}, {'guild_id': '123', 'user_id': '20'}, {'lease': lease}):
+        refused = client.post(route+'/authorize', headers=headers('fri'), json={**scope, 'lease': lease})
+        assert refused.status_code in (403, 422)
+    assert client.post(route+'/authorize', headers=headers('runtime'), json={**owner, 'lease': lease}).status_code == 401
+    assert client.post(route+'/authorize', headers=headers('fri'), json={**owner, 'lease': 'x'}).status_code == 409
+    assert client.post(route+'/authorize', headers=headers('fri'), json={**owner, 'lease': lease}).json() == {'ok': True}
+    sent = client.post(route+'/finish', headers=headers('fri'), json={**owner, 'lease': lease, 'state': 'sent',
+                                                                      'message_id': '42'})
+    assert sent.json() == {'ok': True, 'state': 'sent', 'reason': None}
+    again = client.post(route+'/finish', headers=headers('fri'), json={**owner, 'lease': lease, 'state': 'sent',
+                                                                       'message_id': '42'})
+    assert again.json() == sent.json()
+    advertised = contract()
+    assert 'requester-notice-authorize' in advertised['capabilities']
+    assert compatible({**advertised, 'capabilities': [c for c in advertised['capabilities']
+                                                      if c != 'requester-notice-authorize']})

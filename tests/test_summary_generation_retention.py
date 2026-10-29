@@ -456,6 +456,29 @@ def test_an_upgrade_keeps_a_reply_on_a_first_summary_an_older_controller_saved(w
     assert replies(store)[-1] == QUOTING and referenced(store, '707')['verbatim'] is True
 
 
+@pytest.mark.parametrize('left', ['purged', 'expired', 'rebuilt'])
+def test_an_upgrade_retires_a_reply_on_a_summary_that_is_no_longer_current(world, left):
+    """No generation on record counts as a first summary only while that summary is still the member's: not once an
+    older controller's purge took it without retiring anything (or moving a revision), once it expired, or when it
+    was built after the reply, which drew on an earlier one an older controller lost (review of gene #146)."""
+    from gene.fri_member_summary import TTL
+    client, store = world
+    _, generation = summarized(client, store)
+    quoted(store, generation, message_id='708')
+    with store.connection() as db:  # Generation zero was never written, as before gene #118.
+        db.execute('DELETE FROM fri_member_summary_generations')
+        if left == 'purged':
+            db.execute('DELETE FROM fri_member_summaries')
+        elif left == 'expired':
+            db.execute('UPDATE fri_member_summaries SET refreshed=?', (time.time()-TTL-60,))
+        else:
+            db.execute('UPDATE fri_member_summaries SET refreshed=?', (time.time()+60,))
+    Store(store.path)
+    with store.connection() as db:  # As the start left it, before a read that finds a summary lapsed retires it.
+        row = db.execute("SELECT reply,verbatim FROM chat_turns WHERE reply_message_id='708'").fetchone()
+    assert retired(row['reply']) and not row['verbatim']
+
+
 def test_a_plain_restart_keeps_current_summary_derived_replies(world):
     """No rollback in between: a generation-zero reply, and one a rebuild sent the old summary carried forward."""
     from gene.fri_member_summary import finish

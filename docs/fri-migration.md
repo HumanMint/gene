@@ -122,7 +122,10 @@ built from other members' messages.
   - **Notes learned from it.** Each personal note records the Discord message it was learned from
     (`personal_notes.sources`, a JSON list: the message whose words hold the note's, so in a burst only
     the one that says it, or a learning batch's message; `[]` for words typed in My memory; NULL, unknown,
-    for a note saved before this or by an older controller). A note naming the withdrawn message goes
+    for a note saved before this or by an older controller), stamped with the note's time then
+    (`personal_notes.sources_at`). An older controller that learns the same note again moves its time and
+    leaves both, so a note whose time moved since counts as one of unknown source, never judged by those
+    stale messages. A note naming the withdrawn message goes
     wherever it shows, profile included, whether the message was edited or deleted. One of unknown source
     goes if the withdrawn message's own words in that exchange hold its words and it was said there or in
     the profile. Share and Keep carry the sources; the same note learned again comes from the newer
@@ -137,8 +140,9 @@ built from other members' messages.
     it, or carried Fri's reply to it, or a reply of Fri's that did, keeps only a breadcrumb, as one drawn on
     a withdrawn summary does: not verbatim, so a reference fails closed, and any question it left goes.
     The member's own words stay. An edit leaves those replies, as before (gene #150). A deletion is kept a
-    week by message ID alone (`chat_turn_deletions`: no author, no words, apart from the fences, which an
-    older controller writes positionally); a check whose `drew_on` holds one refuses with the 409 above,
+    week by message ID and its author where known (`chat_turn_deletions`: never words; apart from the
+    fences, which an older controller writes positionally), and the author's "forget me" takes it with
+    their fences; a check whose `drew_on` holds one refuses with the 409 above,
     and such a save keeps nothing. By ID, a deletion that only such a reply holds retires that reply and
     writes no fence (its author is unknown there).
   - **Nothing about a member after a privacy change.** `/chat/turn/withdraw` also takes `revision`, the

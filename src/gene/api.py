@@ -124,6 +124,13 @@ class ChatScope(Actor):
     summaries: bool = False
 
 
+class SummaryDependency(BaseModel):
+    """A member summary another reply of Fri's drew on, which this one may repeat, at the generation Fri was told."""
+    model_config = ConfigDict(extra='forbid')
+    user_id: str = Field(pattern=r'^[0-9]{1,25}$')
+    generation: int = Field(ge=0)
+
+
 class ChatTurn(ChatScope):
     source: ChatSource
     web_receipt: ResearchReceipt | None = None
@@ -150,6 +157,10 @@ class ChatTurn(ChatScope):
     # The member summary's generation from /chat/context, sent by a Fri that gave its model that summary. A withdrawal
     # that drops the summary moves it, and the turn is refused (gene #91). An older Fri omits it: checked as before.
     summary_generation: int | None = Field(default=None, ge=0)
+    # Other members' summaries the turn may repeat through Fri's earlier replies it carried (an echo in the channel's
+    # view, a reply of Fri's it answers), as /chat/messages/sources reported them. Checked and kept like the above, so
+    # the reply goes when any of them does (fri #193). An older Fri sends none: checked as before.
+    summary_dependencies: Annotated[list[SummaryDependency], Field(max_length=200)] = []
 
     @model_validator(mode='after')
     def private_stays_private(self):
@@ -172,6 +183,13 @@ class TurnWithdrawal(Actor):
     channel_id: str
     conversation_id: str = Field(pattern=r'^(private|public):[0-9]{1,25}$')
     message_id: str = Field(pattern=r'^[0-9]{1,25}$')
+
+
+class SavedWithdrawal(BaseModel):
+    """Members' messages edited or deleted that Fri didn't know it saved an exchange with (fri #174)."""
+    model_config = ConfigDict(extra='forbid')
+    guild_id: str = Field(pattern=r'^[0-9]{1,25}$')
+    message_ids: list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]] = Field(min_length=1, max_length=10)
 
 
 class ResearchStart(ChatScope):
@@ -464,7 +482,8 @@ def create_app(settings: Settings | None = None):
                               burst=[row.model_dump() for row in body.burst],
                               provenance=None if body.provenance is None else [row.model_dump() for row in body.provenance],
                               reply_message_id=body.reply_message_id, verbatim=body.verbatim, audience=body.audience,
-                              summary_generation=body.summary_generation)
+                              summary_generation=body.summary_generation,
+                              summary_dependencies=[row.model_dump() for row in body.summary_dependencies])
 
     @app.post('/chat/turn/check', dependencies=[auth('fri')])
     def chat_turn_check(body: ChatTurn):
@@ -474,12 +493,19 @@ def create_app(settings: Settings | None = None):
         chat_scope(body)
         return store.check_chat(body.user_id, body.revision, [row.model_dump() for row in body.provenance or []],
                                 guild_id=body.guild_id, messages=[body.source.id, *(row.source.id for row in body.burst)],
-                                summary_generation=body.summary_generation)
+                                summary_generation=body.summary_generation,
+                                summary_dependencies=[row.model_dump() for row in body.summary_dependencies])
 
     @app.post('/chat/turn/withdraw', dependencies=[auth('fri')])
     def chat_turn_withdraw(body: TurnWithdrawal):
         chat_scope(body)
         return store.withdraw_turn(body.guild_id, body.conversation_id, body.user_id, body.message_id)
+
+    @app.post('/chat/turn/withdraw/saved', dependencies=[auth('fri')])
+    def chat_turn_withdraw_saved(body: SavedWithdrawal):
+        if body.guild_id != settings.guild_id and not (settings.test_guild_id and body.guild_id == settings.test_guild_id):
+            raise HTTPException(403, 'Use Fri in a configured server')
+        return store.withdraw_saved(body.guild_id, body.message_ids)
 
     @app.post('/chat/messages/sources', dependencies=[auth('fri')])
     def chat_message_sources(body: MessageSources):

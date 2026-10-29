@@ -39,6 +39,9 @@ UNSAFE = re.compile(r'<[@#&:/]|://|```|\d{15,}')  # Mentions, links, code and id
 CLAIM, NEXT = 'member_summary_claim', 'next_member_summary'
 # What a saved reply that drew on a summary since gone keeps instead of its words (fri #172).
 RETIRED = 'Earlier answer drawing on an older summary of them. Nothing from it is retained here.'
+# A saved reply that depends on that member's summary through another reply of Fri's (fri #193); `?`: their ID.
+DEPENDS = ("summary_dependencies IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(chat_turns.summary_dependencies) d "
+           "WHERE json_extract(d.value,'$.user_id')=?)")
 # The same exchanges a member's other conversations may see (Store._elsewhere).
 READABLE = ("guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND attributed=1 "
             "AND response_kind='reply'")
@@ -69,8 +72,14 @@ def advance(db, guild, user, covered=False):
         db.execute('UPDATE chat_turns SET summary_generation=(SELECT generation FROM fri_member_summary_generations '
                    'WHERE guild_id=? AND user_id=?) WHERE guild_id=? AND user_id=? AND summary_generation IS NOT NULL',
                    (guild, user, guild, user))
+        # And other members' replies that depended on it (fri #193).
+        db.execute("UPDATE chat_turns SET summary_dependencies=(SELECT json_group_array(CASE WHEN "
+                   "json_extract(d.value,'$.user_id')=? THEN json_object('user_id',?,'generation',?) ELSE json(d.value) "
+                   f"END) FROM json_each(chat_turns.summary_dependencies) d) WHERE guild_id=? AND {DEPENDS}",
+                   (user, user, generation(db, guild, user), guild, user))
     else:
         retire(db, 'guild_id=? AND user_id=?', (guild, user))
+        retire_dependents(db, "chat_turns.guild_id=? AND json_extract(d.value,'$.user_id')=?", (guild, user))
 
 
 def retire(db, where, args=()):
@@ -78,10 +87,23 @@ def retire(db, where, args=()):
     history (fri #172). Not verbatim, so a reference to Fri's message fails closed, and reply checks pass over it.
     A question such a turn left open goes too, as its words were the model's. The member's own words stay. A turn
     that drew on no summary, or came from an older Fri, says so and stays."""
-    turns = f'({where}) AND summary_generation IS NOT NULL'
+    _retire(db, f'({where}) AND summary_generation IS NOT NULL', args)
+
+
+def retire_dependents(db, where, args=()):
+    """Saved replies that may repeat another reply of Fri's that drew on a summary now gone (one in the channel's view or
+    one a member answered, which their turn carried) keep a breadcrumb too, or a reference or echo of them brings the
+    words back to someone else's request (fri #193). where: about `d`, each of a reply's dependencies."""
+    _retire(db, f'summary_dependencies IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(chat_turns.summary_dependencies) '
+                f'd WHERE {where})', args)
+
+
+def _retire(db, turns, args=()):
+    dependencies = 'summary_dependencies' in {row[1] for row in db.execute('PRAGMA table_info(chat_turns)')}
     db.execute("DELETE FROM chat_pending WHERE (guild_id,user_id,source_id) IN (SELECT guild_id,user_id,"
                f"json_extract(NULLIF(source,''),'$.id') FROM chat_turns WHERE {turns})", args)
-    db.execute(f'UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL WHERE {turns}', (RETIRED, *args))
+    db.execute(f'UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL'
+               f'{",summary_dependencies=NULL" if dependencies else ""} WHERE {turns}', (RETIRED, *args))
 
 
 def settle(db):
@@ -92,11 +114,16 @@ def settle(db):
     retire(db, 'summary_generation IS NOT (SELECT generation FROM fri_member_summary_generations g '
                'WHERE g.guild_id=chat_turns.guild_id AND g.user_id=chat_turns.user_id) OR speaker_revision IS NOT '
                'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turns.user_id), 0)')
+    # So does one depending on another member's summary (fri #193), as the older controller never retired those.
+    retire_dependents(db, "json_extract(d.value,'$.generation') IS NOT (SELECT generation FROM "
+                          "fri_member_summary_generations g WHERE g.guild_id=chat_turns.guild_id AND "
+                          "g.user_id=json_extract(d.value,'$.user_id')) OR chat_turns.speaker_revision IS NOT "
+                          "coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turns.user_id), 0)")
 
 
 def keep(db, guild, user):
-    """A reply that drew on the member's summary is being saved: its generation goes on record, zero included, so a
-    start that finds none knows an older controller erased it (see settle)."""
+    """A reply that drew on the member's summary, or on another reply of Fri's that did, is being saved: its generation
+    goes on record, zero included, so a start that finds none knows an older controller erased it (see settle)."""
     db.execute('INSERT INTO fri_member_summary_generations VALUES (?,?,0) ON CONFLICT(guild_id, user_id) DO NOTHING',
                (guild, user))
 
@@ -124,6 +151,8 @@ def erase(db, user_id):
     db.execute('DELETE FROM fri_member_summaries WHERE user_id=?', (user_id,))
     db.execute('DELETE FROM fri_member_summary_generations WHERE user_id=?', (user_id,))
     retire(db, 'user_id=?', (user_id,))  # Their saved chats a change leaves in place, say a note edited elsewhere.
+    # And other members' replies depending on it, even one whose provenance didn't name them (fri #193).
+    retire_dependents(db, "json_extract(d.value,'$.user_id')=?", (user_id,))
 
 
 def generation(db, guild, user):
@@ -342,7 +371,10 @@ def purge(path):
     try:
         with db:
             # An older controller can't tell which saved replies drew on a summary, so none keeps its words.
-            if 'summary_generation' in {row[1] for row in db.execute('PRAGMA table_info(chat_turns)')}:
+            columns = {row[1] for row in db.execute('PRAGMA table_info(chat_turns)')}
+            if 'summary_dependencies' in columns:  # Nor which depended on another member's (fri #193).
+                retire_dependents(db, '1')
+            if 'summary_generation' in columns:
                 retire(db, '1')
             db.execute('DROP TABLE IF EXISTS fri_member_summaries')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_calls')

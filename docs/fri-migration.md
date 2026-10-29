@@ -105,6 +105,18 @@ built from other members' messages.
   save Fri timed out on can't bring the words back (gene #90). `/chat/turn/check` refuses such a turn
   with a 409 that holds no text, and `/chat/research/start` refuses its research. Memory off and
   "forget me" drop the member's fences; their revision moves, so a late save fails on that instead.
+- **Withdrawn messages Fri can't place.** Fri knows only the turns it saved since it started, so a
+  member's edit or delete of a message saved before a restart would leave that exchange's old words
+  until it expires (fri #174). The optional `saved-turn-withdrawal` capability adds
+  `/chat/turn/withdraw/saved` (Fri credential): `guild_id`, the configured server or the test server,
+  and up to 10 Discord `message_ids`. Each saved turn in that server whose source, or a message of
+  whose burst, is one of them goes exactly as `/chat/turn/withdraw` takes it, under the member and
+  conversation it was saved with: its fence, its pending clarification and research permit, and the
+  member's summary if it could have read the message. A message no saved turn holds changes nothing:
+  no fence is written and no summary goes, so the many edits and deletes Fri can't place cost nobody
+  their summary. That lookup reads only; one that finds a turn takes the write lock and reads again.
+  It answers `{"ok": true, "removed": n}`. An older controller lacks it and Fri asks only about the
+  messages it saved since it started, as before.
 - **Summary generations.** The optional `summary-generations` capability closes the gap for a reply
   that already drew on the member summary when a withdrawal dropped it (gene #91). With `summaries`,
   `/chat/context` returns `member_summary.generation`, an integer that moves each time a withdrawal
@@ -137,6 +149,24 @@ built from other members' messages.
   earlier summary keeps its origins, provenance and a later `through`, so a withdrawal of anything the
   old one drew on still finds it: those replies move to the new generation instead of being retired,
   and the routine daily rebuild doesn't erase Fri's side of a DM.
+- **Summary dependencies.** A reply can repeat another reply of Fri's that drew on someone else's
+  summary: an echo of it in the channel's view, or a reply of Fri's the member answered. The optional
+  `summary-dependencies` capability lets that reply depend on the summary too (fri #193).
+  `/chat/messages/sources` adds `summaries` to a reply it reports when that reply drew on one, its
+  speaker's own or one it depended on: each a `user_id` and the `generation` it was saved with. Ordinary
+  replies' answers are unchanged. A Fri that carried such a reply into a request sends those as
+  `summary_dependencies` (up to 200, each `user_id` and `generation`) on `/chat/turn/check` and
+  `/chat/turn`. Each is checked as the turn's own `summary_generation` is: a 409 (no text, naming nobody)
+  once it has moved or the summary has lapsed. A save keeps them in `chat_turns.summary_dependencies`
+  (JSON, or NULL for none) and records each generation as above. Whenever one of those summaries' generation moves (a drop, an expiry, a
+  rebuild that wasn't sent the earlier summary) and when that member's privacy change erases it, the reply is retired to the
+  same breadcrumb in the same transaction, even where its provenance didn't name them. A rebuild that was
+  sent the earlier summary moves the dependency to the new generation instead. A sources lookup
+  checks each summary for a lapse first, under the write lock. A controller start retires any whose
+  generation moved or went, or whose speaker's revision moved, while an older controller ran, and the purge below
+  retires all of them. Chat context never shows the dependencies. An older Fri sends none, which is checked as before; an older
+  controller ignores the field, so Fri sends it only when offered. Mention turns leave both fields out
+  of their fingerprint.
 - **Summary-derived writes.** The optional `summary-generation-writes` capability extends the check to
   a tool's writes (fri #171). `/workspace/save` and `/social/reminders/prepare` take the same optional
   top-level `summary_generation` and refuse with a 409 (no text) once it has moved or the summary has

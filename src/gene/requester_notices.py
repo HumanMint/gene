@@ -25,8 +25,10 @@ def initialize(db):
                "lease TEXT, state TEXT NOT NULL, message_id TEXT NOT NULL DEFAULT '', at REAL NOT NULL)")
 
 
-def unqualified(store, db, job):
-    """Why a reply to this repair's reporter wouldn't hold now, or None when it would."""
+def unqualified(store, db, job, claiming=True):
+    """Why a reply to this repair's reporter wouldn't hold now, or None when it would.
+
+    claiming=False words it for a reply already on its way, which is never tried again."""
     from .runtime_state import current as runtime_unknown
     if runtime_unknown(db):  # A restore that never proved healthy: active_sha may not be what's running.
         return "Gene's runtime is unknown after a failed restore, so the fix may not be live"
@@ -35,7 +37,8 @@ def unqualified(store, db, job):
                          'WHERE d.job_id=? AND d.state="deployed"', (job['id'],)).fetchone()
     if (job['state'] != 'deployed' or not shipped or not job['source_id'].startswith('repair:') or
             not job['source_url'] or not job['approved_sha']):
-        return 'Only a shipped repair whose report is still on record can reply to its reporter'
+        return ('Only a shipped repair whose report is still on record can reply to its reporter' if claiming
+                else 'The report is no longer on record')  # It was on record at the claim: an erasure since.
     # Deployment times, not jobs.updated: an erasure touches a job's updated time long after it ran.
     if db.execute('SELECT 1 FROM deployments d JOIN jobs j ON j.id=d.job_id WHERE j.kind="rollback" '
                   'AND d.state="deployed" AND d.at>?', (shipped['at'],)).fetchone():
@@ -44,7 +47,8 @@ def unqualified(store, db, job):
         return 'A newer release is live now, so this repair is not what the reporter is running'
     # active_sha moves only once a deployment is recorded; the runtime may switch well before that.
     if db.execute('SELECT 1 FROM jobs WHERE state="deploying"').fetchone():
-        return 'Another release is going out right now, so tap again once it lands'
+        return ('Another release is going out right now, so tap again once it lands' if claiming
+                else 'Another release started going out, so the fix may not stay live')
     # An approved rollback of this release goes out on the deployer's next pass: the reply would race it.
     # The deployer fails one approved against an older release instead, so that one doesn't count.
     for row in db.execute('SELECT proposal FROM jobs WHERE kind="rollback" AND state="approved"'):
@@ -83,7 +87,8 @@ def finish(store, job_id, lease, state, message_id=''):
             raise Conflict('This reply has already been recorded')
         reason = None
         if state == 'sent':  # A rollback, a newer release or the reporter's erasure that landed since the claim.
-            reason = unqualified(store, db, store._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone()))
+            job = store._job(db.execute('SELECT * FROM jobs WHERE id=?', (job_id,)).fetchone())
+            reason = unqualified(store, db, job, claiming=False)
         if reason:
             state = INVALIDATED
             store._audit(db, 'controller', 'requester_notice_invalidated', job_id, reason)

@@ -305,8 +305,8 @@ def runtime_unknown(store):  # A rollback that failed, and putting the fix back 
 
 
 @pytest.mark.parametrize('change,reason', [
-    (erased, 'Only a shipped repair'), (rolled_back, 'rollback ran'), (newer_release, 'newer release'),
-    (going_out, 'going out'), (rollback_waiting, 'rollback is waiting'), (runtime_unknown, 'runtime is unknown')])
+    (erased, 'no longer on record'), (rolled_back, 'rollback ran'), (newer_release, 'newer release'),
+    (going_out, 'started going out'), (rollback_waiting, 'rollback is waiting'), (runtime_unknown, 'runtime is unknown')])
 def test_a_reply_sent_after_its_claim_stopped_holding_is_not_recorded_as_sent(store, change, reason):
     """gene #47: the claim's checks run again when the reply is recorded, so one that landed while the claim was
     on its way to Fri, or while Fri sent, is caught. The reply may be up, so it is never tried again."""
@@ -314,7 +314,7 @@ def test_a_reply_sent_after_its_claim_stopped_holding_is_not_recorded_as_sent(st
     lease = claim(store, job['id'], 'owner')['lease']
     change(store)
     result = finish(store, job['id'], lease, 'sent', '555')
-    assert result['state'] == 'invalidated' and reason in result['reason']
+    assert result['state'] == 'invalidated' and reason in result['reason'] and 'tap again' not in result['reason']
     with store.connection() as db:
         row = db.execute('SELECT * FROM requester_notices WHERE job_id=?', (job['id'],)).fetchone()
         assert (row['state'], row['message_id'], row['lease']) == ('invalidated', '', None)  # No link to the reply kept.

@@ -105,6 +105,18 @@ built from other members' messages.
   save Fri timed out on can't bring the words back (gene #90). `/chat/turn/check` refuses such a turn
   with a 409 that holds no text, and `/chat/research/start` refuses its research. Memory off and
   "forget me" drop the member's fences; their revision moves, so a late save fails on that instead.
+- **Withdrawn messages Fri can't place.** Fri knows only the turns it saved since it started, so a
+  member's edit or delete of a message saved before a restart would leave that exchange's old words
+  until it expires (fri #174). The optional `saved-turn-withdrawal` capability adds
+  `/chat/turn/withdraw/saved` (Fri credential): `guild_id`, the configured server or the test server,
+  and up to 10 Discord `message_ids`. Each saved turn in that server whose source, or a message of
+  whose burst, is one of them goes exactly as `/chat/turn/withdraw` takes it, under the member and
+  conversation it was saved with: its fence, its pending clarification and research permit, and the
+  member's summary if it could have read the message. A message no saved turn holds changes nothing:
+  no fence is written and no summary goes, so the many edits and deletes Fri can't place cost nobody
+  their summary. That lookup reads only; one that finds a turn takes the write lock and reads again.
+  It answers `{"ok": true, "removed": n}`. An older controller lacks it and Fri asks only about the
+  messages it saved since it started, as before.
 - **Summary generations.** The optional `summary-generations` capability closes the gap for a reply
   that already drew on the member summary when a withdrawal dropped it (gene #91). With `summaries`,
   `/chat/context` returns `member_summary.generation`, an integer that moves each time a withdrawal

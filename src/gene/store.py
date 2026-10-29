@@ -1266,27 +1266,52 @@ class Store:
         A fence holding only the message's id keeps a save still on its way from bringing it back (gene #90)."""
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            now = time.time()
-            db.execute('DELETE FROM chat_turn_withdrawals WHERE at<?', (now-WITHDRAWN_SECONDS,))
-            db.execute('INSERT INTO chat_turn_withdrawals VALUES (?,?,?,?) ON CONFLICT(guild_id,user_id,message_id) '
-                       'DO UPDATE SET at=excluded.at', (guild_id, user_id, message_id, now))
-            turns = db.execute(
-                "SELECT id,json_extract(NULLIF(source,''),'$.id') AS source_id,at FROM chat_turns WHERE guild_id=? "
-                "AND channel_id=? AND user_id=? AND (json_extract(NULLIF(source,''),'$.id')=? OR EXISTS (SELECT 1 "
-                "FROM json_each(chat_turns.burst) b WHERE json_extract(b.value,'$.source.id')=?))",
-                (guild_id, conversation_id, user_id, message_id, message_id)).fetchall()
-            db.executemany('DELETE FROM chat_turns WHERE id=?', [(turn['id'],) for turn in turns])
-            # A question it left open, and the research it permitted, go with it. A burst's are its final message's
-            # (gene #84).
-            sources = sorted({message_id, *(turn['source_id'] for turn in turns if turn['source_id'])})
-            marks = ','.join('?'*len(sources))
-            db.execute(f'DELETE FROM chat_pending WHERE guild_id=? AND conversation_id=? AND user_id=? '
-                       f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
-            db.execute(f'DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? '
-                       f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
-            from .fri_member_summary import withdrawn
-            withdrawn(db, guild_id, user_id, conversation_id, message_id, [turn['at'] for turn in turns])
-            return {'ok': True, 'removed': len(turns)}
+            return {'ok': True, 'removed': self._withdraw_turn(db, guild_id, conversation_id, user_id, message_id)}
+
+    @staticmethod
+    def _withdraw_turn(db, guild_id, conversation_id, user_id, message_id):
+        now = time.time()
+        db.execute('DELETE FROM chat_turn_withdrawals WHERE at<?', (now-WITHDRAWN_SECONDS,))
+        db.execute('INSERT INTO chat_turn_withdrawals VALUES (?,?,?,?) ON CONFLICT(guild_id,user_id,message_id) '
+                   'DO UPDATE SET at=excluded.at', (guild_id, user_id, message_id, now))
+        turns = db.execute(
+            "SELECT id,json_extract(NULLIF(source,''),'$.id') AS source_id,at FROM chat_turns WHERE guild_id=? "
+            "AND channel_id=? AND user_id=? AND (json_extract(NULLIF(source,''),'$.id')=? OR EXISTS (SELECT 1 "
+            "FROM json_each(chat_turns.burst) b WHERE json_extract(b.value,'$.source.id')=?))",
+            (guild_id, conversation_id, user_id, message_id, message_id)).fetchall()
+        db.executemany('DELETE FROM chat_turns WHERE id=?', [(turn['id'],) for turn in turns])
+        # A question it left open, and the research it permitted, go with it. A burst's are its final message's
+        # (gene #84).
+        sources = sorted({message_id, *(turn['source_id'] for turn in turns if turn['source_id'])})
+        marks = ','.join('?'*len(sources))
+        db.execute(f'DELETE FROM chat_pending WHERE guild_id=? AND conversation_id=? AND user_id=? '
+                   f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
+        db.execute(f'DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? '
+                   f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
+        from .fri_member_summary import withdrawn
+        withdrawn(db, guild_id, user_id, conversation_id, message_id, [turn['at'] for turn in turns])
+        return len(turns)
+
+    def withdraw_saved(self, guild_id, message_ids):
+        """Messages edited or deleted that Fri can't place: it knows only the exchanges it saved since it started, so
+        one saved before a restart, say, would keep its old words until it expires (fri #174). Each saved exchange
+        holding one goes as withdraw_turn takes it, under the member and conversation it was saved with. One nothing
+        holds changes nothing, not even a fence or the member's summary: Fri asks about every edit and delete it can't
+        place, and an unrelated one shouldn't cost a member their summary. Only one that finds an exchange takes the
+        write lock; the rest read."""
+        ids = json.dumps(sorted(set(message_ids)))
+        def held(db):
+            return db.execute(
+                "SELECT DISTINCT t.channel_id,t.user_id,m.value FROM chat_turns t, json_each(?) m WHERE t.guild_id=? "
+                "AND (json_extract(NULLIF(t.source,''),'$.id')=m.value OR EXISTS (SELECT 1 FROM json_each(t.burst) b "
+                "WHERE json_extract(b.value,'$.source.id')=m.value)) ORDER BY m.value", (ids, guild_id)).fetchall()
+        with self.connection() as db:
+            if not held(db):
+                return {'ok': True, 'removed': 0}
+            db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
+            removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message)
+                          for conversation, user, message in held(db))
+            return {'ok': True, 'removed': removed}
 
     def chat_models(self):
         with self.connection() as db:

@@ -185,6 +185,13 @@ class TurnWithdrawal(Actor):
     message_id: str = Field(pattern=r'^[0-9]{1,25}$')
 
 
+class SavedWithdrawal(BaseModel):
+    """Members' messages edited or deleted that Fri didn't know it saved an exchange with (fri #174)."""
+    model_config = ConfigDict(extra='forbid')
+    guild_id: str = Field(pattern=r'^[0-9]{1,25}$')
+    message_ids: list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]] = Field(min_length=1, max_length=10)
+
+
 class ResearchStart(ChatScope):
     source: ChatSource
     revision: int = Field(ge=0)
@@ -493,6 +500,12 @@ def create_app(settings: Settings | None = None):
     def chat_turn_withdraw(body: TurnWithdrawal):
         chat_scope(body)
         return store.withdraw_turn(body.guild_id, body.conversation_id, body.user_id, body.message_id)
+
+    @app.post('/chat/turn/withdraw/saved', dependencies=[auth('fri')])
+    def chat_turn_withdraw_saved(body: SavedWithdrawal):
+        if body.guild_id != settings.guild_id and not (settings.test_guild_id and body.guild_id == settings.test_guild_id):
+            raise HTTPException(403, 'Use Fri in a configured server')
+        return store.withdraw_saved(body.guild_id, body.message_ids)
 
     @app.post('/chat/messages/sources', dependencies=[auth('fri')])
     def chat_message_sources(body: MessageSources):

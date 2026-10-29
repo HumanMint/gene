@@ -1346,8 +1346,13 @@ owner finished after the automatic checks handed them over. Those now get the sa
 (approved, deploying, deployed) as other requests, since they carry no intake approval. An erased report, a rollback
 deployed after the repair, any newer release now live, another release still going out, or an approved rollback
 of this release still waiting for the deployer refuses the reply: "fixed now" has to describe what's running. Fri claims the mark only after its Discord reads, right before the send,
-so the claim is the send-time check. Claiming and recording the outcome both carry the owner and
+so the claim is the send-time check. Recording the outcome runs the same checks again, since one can land
+while the claim is on its way to Fri or while Fri sends (gene #47): a sent reply whose checks no longer hold
+is recorded as `invalidated`, with no message ID, and never tried again, since it may still be up. The
+answer names the recorded state and why (`requester-notice-recheck`), so Fri can act on it; an older Fri
+ignores it. A refused or unconfirmed reply is recorded as Fri saw it. Claiming and recording the outcome both carry the owner and
 this server, and the controller refuses either one for anyone else. A Fri older than that (a
 Fri-only rollback) sends only the lease on the outcome, which is still recorded.
 Older controllers lack the table and the `requester-notices` capability, and Fri then shows no
-button. A downgrade leaves the table in place, unread.
+button. A downgrade leaves the table in place, unread. An older controller that finds an `invalidated` mark
+refuses another claim for that job, as it does for an unconfirmed one.

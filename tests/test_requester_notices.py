@@ -126,7 +126,7 @@ def test_routes_are_owner_only_and_the_capability_is_optional(tmp_path):
     assert client.post(route+'/finish', headers=headers('fri'),
                        json={**owner, 'lease': lease, 'state': 'posted'}).status_code == 422
     assert client.post(route+'/finish', headers=headers('fri'),
-                       json={**owner, 'lease': lease, 'state': 'sent', 'message_id': '42'}).json() == {'ok': True}
+                       json={**owner, 'lease': lease, 'state': 'sent', 'message_id': '42'}).json() == {'ok': True, 'state': 'sent', 'reason': None}
     again = client.post(route, headers=headers('fri'), json={'guild_id': '123', 'user_id': 'owner'})
     assert again.status_code == 409 and 'already told' in again.json()['detail']
     advertised = contract()
@@ -219,14 +219,14 @@ def test_recording_the_reply_is_the_owners_on_this_server(tmp_path):
     again = client.post(route, headers=headers('fri'), json=owner)
     assert again.status_code == 409 and 'may already' in again.json()['detail']  # Still the first claim's.
     assert client.post(route+'/finish', headers=headers('fri'),
-                       json={**owner, 'lease': lease, 'state': 'failed'}).json() == {'ok': True}
+                       json={**owner, 'lease': lease, 'state': 'failed'}).json() == {'ok': True, 'state': 'failed', 'reason': None}
     # A Fri from before the owner-scoped finish (a Fri-only rollback) sends just the lease, and its
     # outcome still counts: a refusal it saw can be tried again.
     lease = client.post(route, headers=headers('fri'), json=owner).json()['lease']
-    assert client.post(route+'/finish', headers=headers('fri'), json={'lease': lease, 'state': 'failed'}).json() == {'ok': True}
+    assert client.post(route+'/finish', headers=headers('fri'), json={'lease': lease, 'state': 'failed'}).json() == {'ok': True, 'state': 'failed', 'reason': None}
     lease = client.post(route, headers=headers('fri'), json=owner).json()['lease']
     assert client.post(route+'/finish', headers=headers('fri'),
-                       json={'lease': lease, 'state': 'sent', 'message_id': '42'}).json() == {'ok': True}
+                       json={'lease': lease, 'state': 'sent', 'message_id': '42'}).json() == {'ok': True, 'state': 'sent', 'reason': None}
     told = client.post(route, headers=headers('fri'), json=owner)
     assert told.status_code == 409 and 'already told' in told.json()['detail']
 

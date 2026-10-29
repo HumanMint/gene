@@ -723,6 +723,8 @@ def test_a_claimed_feature_switches_only_inside_the_window(tmp_path, monkeypatch
 
 
 def test_each_deployment_leaves_a_bounded_record_without_member_content(tmp_path, monkeypatch):
+    now = maintenance.clock()  # Stopped, so a midnight during the test can't move the record's day (gene #88).
+    monkeypatch.setattr(maintenance, 'clock', lambda: now)
     worker = deployer(tmp_path)
     job = {'id': 'a1b2c3d4e5f6', 'kind': 'feature', 'lease': 'f'*32, 'body': 'a member said something private',
            'proposal': {'sha': G, 'base_sha': OLD_G}}

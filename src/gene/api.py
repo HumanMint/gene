@@ -161,6 +161,11 @@ class ChatTurn(ChatScope):
     # view, a reply of Fri's it answers), as /chat/messages/sources reported them. Checked and kept like the above, so
     # the reply goes when any of them does (fri #193). An older Fri sends none: checked as before.
     summary_dependencies: Annotated[list[SummaryDependency], Field(max_length=200)] = []
+    # The Discord messages the turn's model requests carried besides its own (the channel's view, what it answers or
+    # quotes, what a read showed, saved history), from a Fri offering withdrawal-sources. One withdrawn since refuses
+    # the check and keeps nothing at the save; withdrawn later, the saved reply keeps only a breadcrumb (gene #141). An
+    # older Fri sends none: checked and kept as before.
+    drew_on: Annotated[list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]], Field(max_length=500)] = []
 
     @model_validator(mode='after')
     def private_stays_private(self):
@@ -169,6 +174,12 @@ class ChatTurn(ChatScope):
         if self.audience == 'server' and self.provenance is None:
             raise ValueError('A turn that reaches the member profile needs to say whose words it drew on')
         return self
+
+
+class ContextRequest(ChatScope):
+    # Sent by a Fri that keeps what a withdrawn message taught out of its requests until the withdrawal lands (fri
+    # #215): each note and exchange elsewhere then names the messages it came from. An older Fri never gets them.
+    sources: bool = False
 
 
 class MessageSources(BaseModel):
@@ -443,13 +454,14 @@ def create_app(settings: Settings | None = None):
         return store.claim()
 
     @app.post('/chat/context', dependencies=[auth('fri')])
-    def chat_context(body: ChatScope):
+    def chat_context(body: ContextRequest):
         if body.mention_grant:
             actor(body)
             from .fri_mentions import context
             return context(store, body)
         chat_scope(body)
-        return store.chat_context(body.guild_id, body.conversation_id, body.user_id, body.profiles, body.summaries)
+        return store.chat_context(body.guild_id, body.conversation_id, body.user_id, body.profiles, body.summaries,
+                                  body.sources)
 
     @app.post('/chat/pending', dependencies=[auth('fri')])
     def chat_pending(body: ChatScope):
@@ -483,7 +495,8 @@ def create_app(settings: Settings | None = None):
                               provenance=None if body.provenance is None else [row.model_dump() for row in body.provenance],
                               reply_message_id=body.reply_message_id, verbatim=body.verbatim, audience=body.audience,
                               summary_generation=body.summary_generation,
-                              summary_dependencies=[row.model_dump() for row in body.summary_dependencies])
+                              summary_dependencies=[row.model_dump() for row in body.summary_dependencies],
+                              drew_on=body.drew_on)
 
     @app.post('/chat/turn/check', dependencies=[auth('fri')])
     def chat_turn_check(body: ChatTurn):
@@ -494,7 +507,8 @@ def create_app(settings: Settings | None = None):
         return store.check_chat(body.user_id, body.revision, [row.model_dump() for row in body.provenance or []],
                                 guild_id=body.guild_id, messages=[body.source.id, *(row.source.id for row in body.burst)],
                                 summary_generation=body.summary_generation,
-                                summary_dependencies=[row.model_dump() for row in body.summary_dependencies])
+                                summary_dependencies=[row.model_dump() for row in body.summary_dependencies],
+                                drew_on=body.drew_on)
 
     @app.post('/chat/turn/withdraw', dependencies=[auth('fri')])
     def chat_turn_withdraw(body: TurnWithdrawal):

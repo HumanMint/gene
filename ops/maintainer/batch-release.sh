@@ -1563,7 +1563,7 @@ resume_old() {
     verify old any-work
   fi
   resume_services "$OLD_G"
-  has resumed_old || mark resumed_old
+  mark resumed_old  # Every time: a later rollback's fence reads the latest resume (see fenced_by_rollback).
 }
 
 fri_pair_check() {  # rollback-fri only reconciles a live Fri built from the recorded old and new releases.

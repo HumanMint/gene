@@ -343,19 +343,25 @@ def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argu
     assert correction(text, argument) is expected
 
 
-# Worst cases for each check, cut to the length of a message.
-SHAPES = ["'"+"a' "*1330, "'"+"rockin' "*498, "''a "*997, "' "*1994, '"'+'a '*1993, 'love story nah'+' lol'*990+' x',
-          'love story'+', no lol'*497+' x', 'love story'+' ,'*1990+'x', 'love story'+', a b said'*398, 'love '+'by '*1328,
-          'love'+' from x'*568, 'love story'+' i just'*664+' said', "love story "+"don't "*664, 'i meant '+'to '*1328,
-          'love story'+' is not what'*331, 'love '+'by the '*664, 'love story'+' i said no'*398, 'love story'+', say'*797,
-          'love story '+'x '*1990+'is not what i meant', 'love story'+' is absolutely'*363,
-          'love story'+', i said no to that'*222, 'love story'+' not to ever'*363, 'i like '+'you say '*499,
-          "love story"+" isn't what"*363, 'love story, i said no'+' this time'*397+' x', 'love story'+' we just'*568+' said',
-          'love story'+', we said no to that'*210, 'love story, i said not to'+' ever again'*361+' x',
-          'love story'+', we said no more'*235, 'love story, i said not right now'+' lol'*992+' x',
-          'love story'+" isn't what alex and"*199+' i said', "'all i got'"+' by said the sky'*249,
-          'love story'+', not now'*443+' x', 'love story'+' nah not now'*332+' x', 'love story'+', no more of those songs'*166,
-          'love story'+' is what x, y and'*235+' i never asked']
+# Worst cases for each check: a head, a unit repeated to the length wanted, and a tail.
+SHAPES = [("'", "a' ", ''), ("'", "rockin' ", ''), ('', "''a ", ''), ('', "' ", ''), ('"', 'a ', ''),
+          ('love story nah', ' lol', ' x'), ('love story', ', no lol', ' x'), ('love story', ' ,', 'x'),
+          ('love story', ', a b said', ''), ('love ', 'by ', ''), ('love', ' from x', ''), ('love story', ' i just', ' said'),
+          ('love story ', "don't ", ''), ('i meant ', 'to ', ''), ('love story', ' is not what', ''), ('love ', 'by the ', ''),
+          ('love story', ' i said no', ''), ('love story', ', say', ''), ('love story ', 'x ', 'is not what i meant'),
+          ('love story', ' is absolutely', ''), ('love story', ', i said no to that', ''), ('love story', ' not to ever', ''),
+          ('i like ', 'you say ', ''), ('love story', " isn't what", ''), ('love story, i said no', ' this time', ' x'),
+          ('love story', ' we just', ' said'), ('love story', ', we said no to that', ''),
+          ('love story, i said not to', ' ever again', ' x'), ('love story', ', we said no more', ''),
+          ('love story, i said not right now', ' lol', ' x'), ('love story', " isn't what alex and", ' i said'),
+          ("'all i got'", ' by said the sky', ''), ('love story', ', not now', ' x'), ('love story', ' nah not now', ' x'),
+          ('love story', ', no more of those songs', ''), ('love story', ' is what x, y and', ' i never asked')]
+
+
+def message(shape, length=4000):
+    """The shape as a correction of about `length` characters, its head and tail whole."""
+    head, unit, tail = shape
+    return 'wrong song, '+head+unit*((length-12-len(head)-len(tail))//len(unit))+tail
 
 
 def read(text):
@@ -366,12 +372,12 @@ def read(text):
 
 def test_a_long_message_is_read_without_backtracking():
     """Each check runs in about linear time, so a 4000-character worst case takes milliseconds, not minutes."""
-    correction('wrong song, '+SHAPES[0], 'love story')  # Warmed up first: a slow CI runner's first call isn't backtracking.
+    read(message(SHAPES[0]))  # Warmed up first: a slow CI runner's first call isn't backtracking.
     for shape in SHAPES:
         began = time.perf_counter()
-        read(('wrong song, '+shape)[:4000])
+        read(message(shape))
         # Milliseconds here; backtracking would take seconds to minutes, so the bound has room for a busy runner.
-        assert time.perf_counter()-began < 2, shape[:20]
+        assert time.perf_counter()-began < 2, shape
 
 
 def fastest_reads(texts, runs=5):
@@ -394,13 +400,13 @@ def test_reading_time_grows_with_the_length_not_its_square():
     gc.disable()  # A collection during a read is noise, not reading time.
     try:
         for shape in SHAPES:
-            texts = [('wrong song, '+shape)[:size] for size in (1000, 4000)]
+            texts = [message(shape, length) for length in (1000, 4000)]
             fastest_reads(texts, runs=1)  # Warmed up first.
             ratios = []
             while len(ratios) < 3 and (not ratios or ratios[-1] >= 8):  # Backtracking is slow on every try; noise, rarely.
                 small, large = fastest_reads(texts)
                 ratios.append(large/small)
-            assert ratios[-1] < 8, (shape[:20], ratios)
+            assert ratios[-1] < 8, (shape, ratios)
     finally:
         gc.enable()
 

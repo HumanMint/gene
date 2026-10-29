@@ -128,7 +128,9 @@ built from other members' messages.
     stale messages. A note naming the withdrawn message goes
     wherever it shows, profile included, whether the message was edited or deleted. One of unknown source
     goes if the withdrawn message's own words in that exchange hold its words and it was said there or in
-    the profile. Share and Keep carry the sources; the same note learned again comes from the newer
+    the profile; one with stale sources only if it wasn't renewed after that message was sent (its time is
+    no later than the message's, from its ID, plus five minutes for clock skew), since a renewal after it
+    means a later message said it too. Share and Keep carry the sources; the same note learned again comes from the newer
     message, so withdrawing the older one leaves it. By ID, a note whose exchange was trimmed goes too
     (a note outlasts six exchanges), with a fence for the member and message, so a learning batch already
     reading the message keeps nothing from it, as a late save already did (gene #90).
@@ -139,12 +141,14 @@ built from other members' messages.
     `deleted` (default false: an edit). Once a message is deleted, any member's saved reply that carried
     it, or carried Fri's reply to it, or a reply of Fri's that did, keeps only a breadcrumb, as one drawn on
     a withdrawn summary does: not verbatim, so a reference fails closed, and any question it left goes.
-    The member's own words stay. An edit leaves those replies, as before (gene #150). A deletion is kept a
-    week by message ID and its author where known (`chat_turn_deletions`: never words; apart from the
-    fences, which an older controller writes positionally), and the author's "forget me" takes it with
-    their fences; a check whose `drew_on` holds one refuses with the 409 above,
-    and such a save keeps nothing. By ID, a deletion that only such a reply holds retires that reply and
-    writes no fence (its author is unknown there).
+    The member's own words stay. An edit leaves those replies, as before (gene #150). A deletion of a
+    message whose author is known (one their exchange or note held) is kept a week by message ID, author
+    and the author's privacy revision then (`chat_turn_deletions`: never words; apart from the fences,
+    which an older controller writes positionally). Their "forget me" takes it with their fences, and a
+    start drops one whose author's revision has moved since (an older controller's erasure leaves this
+    table alone). A check whose `drew_on` holds one refuses with the 409 above, and such a save keeps
+    nothing. By ID, a deletion that only such a reply holds retires that reply there and then and keeps
+    no record and no fence: its author is unknown there.
   - **Nothing about a member after a privacy change.** `/chat/turn/withdraw` also takes `revision`, the
     member's privacy revision when the exchange was saved. One that arrives after the member's revision
     moved ("forget me", say), or with their memory off, still takes anything that holds the message but

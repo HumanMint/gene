@@ -144,11 +144,12 @@ class Store:
                     guild_id TEXT NOT NULL, user_id TEXT NOT NULL, message_id TEXT NOT NULL, at REAL NOT NULL,
                     PRIMARY KEY(guild_id, user_id, message_id)
                 );
-                -- A message deleted, not edited (gene #141): its id, and its author where known, so their "forget me"
-                -- takes it; never its words. Kept as long as a fence, apart from the fences, which an older controller
-                -- writes positionally. It ignores this table.
+                -- A message deleted, not edited (gene #141): its id, its author and their privacy revision then, so
+                -- their "forget me" takes it, and a start drops it once their revision moved (an older controller's
+                -- erasure leaves this table alone); never its words. Only one whose author is known is kept. As long
+                -- as a fence, apart from the fences, which an older controller writes positionally.
                 CREATE TABLE IF NOT EXISTS chat_turn_deletions (
-                    guild_id TEXT NOT NULL, message_id TEXT NOT NULL, at REAL NOT NULL, user_id TEXT,
+                    guild_id TEXT NOT NULL, message_id TEXT NOT NULL, at REAL NOT NULL, user_id TEXT, revision INTEGER,
                     PRIMARY KEY(guild_id, message_id)
                 );
             ''')
@@ -215,8 +216,10 @@ class Store:
                 # none or an older Fri. One withdrawn retires the reply (see _retire_drawn). An older controller
                 # leaves it alone.
                 db.execute('ALTER TABLE chat_turns ADD COLUMN drew_on TEXT')
-            if 'user_id' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turn_deletions)')}:
-                db.execute('ALTER TABLE chat_turn_deletions ADD COLUMN user_id TEXT')  # A deletion's author (see _deleted).
+            columns = {r['name'] for r in db.execute('PRAGMA table_info(chat_turn_deletions)')}
+            for column, kind in (('user_id', 'TEXT'), ('revision', 'INTEGER')):  # A deletion's author (see _deleted).
+                if column not in columns:
+                    db.execute(f'ALTER TABLE chat_turn_deletions ADD COLUMN {column} {kind}')
             from .fri_member_summary import settle as settle_summaries
             settle_summaries(db)
             self._settle_withdrawals(db)
@@ -1369,21 +1372,22 @@ class Store:
         Store._withdraw_notes(db, guild_id, user_id, conversation_id, message_id, turns)
         if deleted:  # Others' replies that carried it, or Fri's reply to it, which may repeat it.
             if recorded:
-                Store._deleted(db, guild_id, [message_id], now, user_id)
+                Store._deleted(db, guild_id, message_id, now, user_id, current)
             Store._retire_drawn(db, guild_id, [message_id, *(turn['reply_message_id'] for turn in turns)])
         from .fri_member_summary import withdrawn
         withdrawn(db, guild_id, user_id, conversation_id, message_id, [turn['at'] for turn in turns])
         return len(turns)
 
     @staticmethod
-    def _deleted(db, guild_id, messages, now, user=None):
-        """A deletion, by message ID and its author where known (never words): a save landing later of a reply that
-        carried it keeps nothing (see deleted_anywhere), as one of the message's own exchange does after its fence. The
-        author's "forget me" takes it (see personal_control)."""
-        db.executemany('INSERT INTO chat_turn_deletions(guild_id,message_id,at,user_id) VALUES (?,?,?,?) '
-                       'ON CONFLICT(guild_id,message_id) DO UPDATE SET at=excluded.at,'
-                       'user_id=coalesce(excluded.user_id,chat_turn_deletions.user_id)',
-                       [(guild_id, str(message), now, user) for message in messages])
+    def _deleted(db, guild_id, message, now, user, revision):
+        """A deletion of the member's message, by its ID, their ID and their privacy revision now (never words): a save
+        landing later of a reply that carried it keeps nothing (see deleted_anywhere), as one of the message's own
+        exchange does after its fence. Their "forget me" takes it (see personal_control), and a start drops it once
+        their revision moved (see _settle_withdrawals). A deletion whose author isn't known keeps no record: the replies
+        that carried it retire there and then (see _retire_drawn)."""
+        db.execute('INSERT INTO chat_turn_deletions(guild_id,message_id,at,user_id,revision) VALUES (?,?,?,?,?) '
+                   'ON CONFLICT(guild_id,message_id) DO UPDATE SET at=excluded.at,user_id=excluded.user_id,'
+                   'revision=excluded.revision', (guild_id, str(message), now, user, revision))
 
     @staticmethod
     def _withdraw_notes(db, guild_id, user_id, conversation_id, message_id, turns=()):
@@ -1392,17 +1396,23 @@ class Store:
         from another message) goes if that message's own words in a withdrawn exchange hold its words, said where it
         could have been learned: that conversation, or their profile. Not another message of its burst: what it said
         still stands."""
+        from .fri_member_summary import SKEW
         from .fri_memory_store import CURRENT, SERVER
         db.execute(f'DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND {CURRENT} AND instr(sources,?)>0',
                    (guild_id, user_id, json.dumps(str(message_id))))
+        # A stale one (an older controller learned it again since) was renewed by a later message if its time is past
+        # this one's: that message said it too, so it stays (gene #145 round 3). Allowing for clock skew.
+        sent = ((int(message_id) >> 22)+1420070400000)/1000
         said = []
         for turn in turns:
             burst = json.loads(turn['burst'] or '[]')
             said += [row.get('text', '') for row in burst if str(row['source'].get('id')) == str(message_id)]
             if not burst and turn['source_id'] == str(message_id):
                 said.append(turn['input'])
-        for note in db.execute(f'SELECT id,evidence FROM personal_notes WHERE guild_id=? AND user_id=? AND NOT ({CURRENT}) '
-                               'AND channel_id IN (?,?)', (guild_id, user_id, conversation_id, SERVER)).fetchall():
+        for note in db.execute(f'SELECT id,evidence,at,sources FROM personal_notes WHERE guild_id=? AND user_id=? AND NOT '
+                               f'({CURRENT}) AND channel_id IN (?,?)', (guild_id, user_id, conversation_id, SERVER)).fetchall():
+            if note['sources'] is not None and note['at'] > sent+SKEW:
+                continue
             if any(note['evidence'] in text for text in said if text):
                 db.execute('DELETE FROM personal_notes WHERE id=?', (note['id'],))
 
@@ -1445,6 +1455,10 @@ class Store:
         their messages, but kept the notes learned from them: those go now. It doesn't say which were deleted, so the
         replies that carried them stay, as they would have on main (gene #150). One query per fence, each only over
         that member's notes, so the start stays quick however many turns there are."""
+        # Deletion records outlive no privacy change of their author's: an older controller's "forget me" moves their
+        # revision but leaves this table, so a record under an older revision, or one naming nobody, goes now.
+        db.execute('DELETE FROM chat_turn_deletions WHERE user_id IS NULL OR revision IS NULL OR revision IS NOT '
+                   'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turn_deletions.user_id), 0)')
         from .fri_memory_store import CURRENT
         for guild, user, message in db.execute('SELECT guild_id,user_id,message_id FROM chat_turn_withdrawals').fetchall():
             db.execute(f'DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND {CURRENT} AND instr(sources,?)>0',
@@ -1481,9 +1495,7 @@ class Store:
                 db.execute('INSERT INTO chat_turn_withdrawals VALUES (?,?,?,?) ON CONFLICT(guild_id,user_id,message_id) '
                            'DO UPDATE SET at=excluded.at', (guild_id, user, message, now))
                 self._withdraw_notes(db, guild_id, user, '', message)
-            if deleted:
-                carried = [message for message in json.loads(ids) if self._carrying(db, guild_id, [message])]
-                self._deleted(db, guild_id, carried, now)
+            if deleted:  # Whose a message only replies carried is isn't known here: they retire, and nothing is kept.
                 self._retire_drawn(db, guild_id, json.loads(ids))
             return {'ok': True, 'removed': removed}
 

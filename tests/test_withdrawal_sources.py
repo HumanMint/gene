@@ -125,8 +125,10 @@ def test_another_members_note_stays(world):
     assert notes(store) == [] and notes(store, '30') == [LIKE]
 
 
-def test_a_note_of_unknown_source_goes_when_the_withdrawn_exchange_holds_its_words(world):
-    """Saved before notes named their messages, or by an older controller during a rollback."""
+def test_a_note_of_unknown_source_stays_as_on_main(world):
+    """Saved before notes named their messages, or by an older controller during a rollback: which message supplied it
+    can't be told (an older controller may have learned it again from another), so it stays, as on main, rather than
+    risk deleting one another message still says (gene #145 round 4). It expires as before."""
     client, store = world
     taken, _ = learn(store, 'yo '+LIKE+' a lot', evidence=LIKE, age=30)
     learn(store, 'i play chess on weekends', age=20)
@@ -134,7 +136,7 @@ def test_a_note_of_unknown_source_goes_when_the_withdrawn_exchange_holds_its_wor
     with store.connection() as db:
         db.execute('UPDATE personal_notes SET sources=NULL')
     withdraw(client, taken)
-    assert sorted(notes(store)) == ['i love trance', 'i play chess on weekends']
+    assert sorted(notes(store)) == sorted(['i love trance', 'i play chess on weekends', LIKE])
 
 
 def test_a_shared_note_still_names_its_message(world):
@@ -484,7 +486,7 @@ def test_a_note_an_older_controller_renewed_keeps_no_stale_source(world):
     assert withdraw_saved(client, taken).json()['removed'] == 0
     assert notes(restarted) == [LIKE]
     assert withdraw(client, again['id']).json()['removed'] == 1
-    assert notes(restarted) == []
+    assert notes(restarted) == [LIKE]  # Its sources are stale, so which message supplied it can't be told: as on main.
 
 
 def test_chat_context_and_my_memory_call_a_stale_source_unknown(world):
@@ -532,7 +534,18 @@ def test_a_stale_note_renewed_after_the_withdrawn_message_stays(world):
     assert withdraw(client, taken).json()['removed'] == 1
     assert notes(store) == [LIKE]
     withdraw(client, again['id'])
-    assert notes(store) == []
+    assert notes(store) == [LIKE]  # Stale sources: as on main (round 4).
+
+
+@pytest.mark.parametrize('after', [30, 299, 300])
+def test_a_stale_note_renewed_soon_after_the_withdrawn_message_stays(world, after):
+    """Sol r4 G1: renewed word for word from B by an older controller within the clock-skew allowance of A. Time can't
+    tell that renewal from A's own save, so the note's stale sources decide nothing: it stays, as on main."""
+    client, store = world
+    taken, _ = learn(store, LIKE, source=source(age=after, channel='51'))  # Sent `after` seconds before the renewal.
+    renewed_by_an_older_controller(store, LIKE, source(age=0, channel='51'))
+    withdraw(client, taken)
+    assert notes(store) == [LIKE]
 
 
 def test_a_deletion_whose_author_is_unknown_keeps_no_record(world):

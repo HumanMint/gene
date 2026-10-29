@@ -143,10 +143,11 @@ built from other members' messages.
   yet goes in the lookup's own transaction, so a reply that drew on it is reported as not verbatim
   (gene #120). Only a lookup that finds such a reply takes the write lock.
   A controller start retires any an older controller left behind during a rollback window: with a
-  moved generation, or saved under a revision of the member's that has moved since (gene #114), as
-  every privacy change that deletes a generation moves it. None on record reads as zero: a controller
-  before gene #118 never recorded a summary that hadn't moved, so an upgrade keeps a reply on a member's
-  first summary. A reply depending on another member's summary needs that generation on record. The
+  moved generation, with none on record (its privacy changes delete the generation, so a save records
+  generation zero too), or saved under a revision of the member's that has moved since (gene #114). A
+  controller before gene #118 never recorded a summary that hadn't moved, so a start first records
+  generation zero for a member whose summary is still current with none on record, keeping their replies
+  saved since it was built; one saved before it, or on a summary no longer current, goes. The
   purge below retires all of them first. A non-empty rebuild that was sent the
   earlier summary keeps its origins, provenance and a later `through`, so a withdrawal of anything the
   old one drew on still finds it: those replies move to the new generation instead of being retired,

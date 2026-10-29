@@ -116,7 +116,34 @@ built from other members' messages.
   Fri keeps working, with the gap. An older controller returns no generation, so Fri has nothing to
   send (and an extra field would be ignored). Privacy changes delete the member's generation with
   their summary; their revision moves at the same time, so an older turn still fails. The purge below
-  drops the generations too.
+  drops the generations too. A summary that expired since the turn read it, with nothing pruning it
+  yet, goes in the check's or save's own transaction before the integer is compared, so its generation
+  has moved and the turn is refused (gene #113).
+- **What a summary-derived turn keeps.** A saved turn keeps the `summary_generation` it was sent (fri
+  #172). Whenever the member's generation moves (a withdrawal, an expiry, another member's privacy
+  change, or a rebuild that wasn't sent the earlier summary or came out empty), and when their own
+  privacy change erases the summary, every saved reply of theirs that drew on a summary is replaced in
+  the same transaction by a breadcrumb ("Earlier answer drawing
+  on an older summary of them. Nothing from it is retained here.") and marked not verbatim, and a
+  question it left pending goes. History, a reference to Fri's message and reply checks then carry
+  none of its words; the member's own words stay. A turn saved without a generation (an older Fri, or no summary in its request) is untouched.
+  `/chat/messages/sources` checks the summary first as well: one that lapsed with nothing pruning it
+  yet goes in the lookup's own transaction, so a reply that drew on it is reported as not verbatim
+  (gene #120). Only a lookup that finds such a reply takes the write lock.
+  A controller start retires any an older controller left behind during a rollback window: with a
+  moved generation, with none on record (its privacy changes delete the generation, so a save records
+  generation zero too), or saved under a revision of the member's that has moved since (gene #114). The
+  purge below retires all of them first. A non-empty rebuild that was sent the
+  earlier summary keeps its origins, provenance and a later `through`, so a withdrawal of anything the
+  old one drew on still finds it: those replies move to the new generation instead of being retired,
+  and the routine daily rebuild doesn't erase Fri's side of a DM.
+- **Summary-derived writes.** The optional `summary-generation-writes` capability extends the check to
+  a tool's writes (fri #171). `/workspace/save` and `/social/reminders/prepare` take the same optional
+  top-level `summary_generation` and refuse with a 409 (no text) once it has moved or the summary has
+  lapsed, in the write's own transaction, so saved work or a reminder can't keep the summary's words after their source went. It
+  stays out of their idempotency digests, so a retry with or without it answers as the first did. A
+  controller without the capability rejects the unknown field, so Fri sends it only when offered.
+  Work and reminders saved while the summary was current stay: the member asked for them.
 
 Provenance also reaches what follow-ups inherit:
 
@@ -259,7 +286,8 @@ as a recorded downgrade):
 python -m gene.fri_member_summary purge "$GENE_DB"
 ```
 
-It drops the summaries, their daily call stamps and their generations; exchanges and notes stay. Rolling back Fri alone
+It drops the summaries, their daily call stamps and their generations, and leaves each saved reply that drew on a
+summary only its breadcrumb; exchanges and notes stay. Rolling back Fri alone
 needs no cleanup: an older Fri doesn't send `summaries`, so the controller never gives it one and no
 builder runs. Summaries already stored stay unseen until a newer Fri returns, they expire (30 days),
 or the member's "forget me", memory off or Forget my chats removes them; run the purge as well if they

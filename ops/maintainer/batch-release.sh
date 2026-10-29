@@ -376,7 +376,10 @@ with sqlite3.connect('file:/data/gene.sqlite3?mode=ro', uri=True, timeout=30) as
     settings = dict(conn.execute("SELECT key,value FROM settings WHERE key IN "
                                  "('active_sha','previous_sha','paused','fri_active_sha')"))
     busy = conn.execute("SELECT count(*) FROM jobs WHERE state IN ('building','deploying')").fetchone()[0]
-print(json.dumps({'settings': settings, 'busy_jobs': busy}))
+    # The latest deployment the controller claimed, so pair_check can tell one that moved Gene from any other change.
+    latest = conn.execute('SELECT sha,previous_sha,state FROM deployments ORDER BY at DESC, rowid DESC LIMIT 1').fetchone()
+print(json.dumps({'settings': settings, 'busy_jobs': busy,
+                  'deployment': dict(zip(('sha', 'previous_sha', 'state'), latest)) if latest else None}))
 PY
   )
   python3 - "$db" "$GENE_HEALTH" "$FRI_HEALTH" "$ROOT/release.env" "$FRI_ROOT/release.env" "$FRI_ROOT/release.json" \
@@ -492,8 +495,32 @@ checks = {
     'source': (s['source'], os.path.isdir(B+'/installed-source')) in ((baseline['source'], False), (G, True), ('missing', True)),
 }
 bad = [k for k, v in checks.items() if not v]
+def fields(data):
+    return dict(line.split('=', 1) for line in data.decode(errors='replace').splitlines() if '=' in line)
+def deployed():  # The SHA a deployment moved Gene to from either recorded release, if one explains every change.
+    if 'release.env' not in bad or set(bad) - {'release.env', 'release settings'}:
+        return None
+    live = read(root+'/release.env') or b''
+    sha = fields(live).get('GENE_RELEASE_SHA', '')
+    for side, before in (('old', saved['release.env']), ('new', new_release)):
+        was = fields(before)
+        # Deployer.activate's exact file: the new SHA, while the runtime image and root are inherited.
+        written = f"GENE_RELEASE_SHA={sha}\nGENE_ROOT={was.get('GENE_ROOT')}\nGENE_RUNTIME_IMAGE={was.get('GENE_RUNTIME_IMAGE')}\n"
+        if (re.fullmatch('[0-9a-f]{40}', sha) and sha != was.get('GENE_RELEASE_SHA') and live == written.encode()
+                and active == (sha, was.get('GENE_RELEASE_SHA'))  # Store.finish_deploy's record of it
+                and s.get('deployment') == {'sha': sha, 'previous_sha': was.get('GENE_RELEASE_SHA'), 'state': 'deployed'}
+                and os.path.isfile(f'{root}/releases/{sha}/cogs/gene/__init__.py')  # the cogs it installed
+                and s['controller']['image'] == s['red']['image'] == manifest[side]['runtime']['id']):
+            return sha
+    return None
 if bad:
-    sys.exit('live state is outside the recorded old/new pair ('+', '.join(bad)+'); reconcile by hand, nothing was changed')
+    moved = deployed()
+    said = 'live state is outside the recorded old/new pair ('+', '.join(bad)+')'
+    if moved:  # 3: a deployment moved Gene, and nothing else changed
+        print(said+': a deployment moved Gene to '+moved[:7]+'; nothing was changed', file=sys.stderr)
+        sys.exit(3)
+    print(said+'; reconcile by hand, nothing was changed', file=sys.stderr)
+    sys.exit(1)
 print('live state is built from the recorded old and new releases')
 PY
 }
@@ -647,6 +674,12 @@ du_bytes() {  # path: its size in bytes
   [[ $size =~ ^[0-9]+$ ]] || die "could not measure $1"
   echo "$size"
 }
+measure() {  # var path: the path's size in bytes, into var. Measured in an assignment of its own, so a failure
+  # stops this shell (mid-switch, by rolling back) instead of dropping out of an arithmetic sum (gene #100).
+  local bytes
+  bytes=$(du_bytes "$2") || die "could not measure $2"
+  printf -v "$1" '%s' "$bytes"
+}
 
 rename_tree() {  # src dst: a single rename(2) that fails rather than copying; dst must not exist
   python3 - "$1" "$2" <<'PY'
@@ -686,6 +719,59 @@ try:
 finally:
     os.rmdir(here)
 print('switch moves are plain renames')
+PY
+}
+
+installs_same() {  # live staged: two pyproject.toml files that differ in nothing the host venv installs from
+  # The venv is an editable install of the source tree, so only metadata may change (gene #116). It relies on
+  # python3's tomllib (Python 3.11 or later): without it, or with a file it can't parse, nothing passes.
+  python3 - "$1" "$2" <<'PY'
+import sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit("the host's python3 has no tomllib (Python 3.11 or later), so pyproject.toml can't be compared")
+# Metadata only: nothing here decides what the editable install installs or how. Everything else must match,
+# build-system, [project] dependencies, optional dependencies, requires-python, scripts, version and [tool.uv]
+# among it.
+METADATA = {'project': {'description', 'readme', 'license', 'license-files', 'authors', 'maintainers', 'keywords',
+                        'classifiers', 'urls'},
+            'tool': {'ruff', 'pytest'}}  # settings only those tools read
+def parts(path):  # (installed, metadata): the file's tables split into what may change and what may not
+    try:
+        with open(path, 'rb') as handle:
+            data = tomllib.load(handle)
+    except (OSError, ValueError) as error:  # TOMLDecodeError is a ValueError
+        sys.exit(f'could not parse {path}: {error}')
+    metadata = {}
+    for table, keys in METADATA.items():
+        values = data.get(table, {})
+        if not isinstance(values, dict):
+            sys.exit(f'could not parse {path}: [{table}] is not a table')
+        metadata[table] = {key: value for key, value in values.items() if key in keys}
+        data[table] = {key: value for key, value in values.items() if key not in keys}
+    return data, metadata
+def same(a, b):  # equal and of the same types all the way down: true, 1 and 1.0 aren't the same setting
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(same(a[key], b[key]) for key in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(same(x, y) for x, y in zip(a, b))
+    return a == b
+def changed(old, new):  # dotted names of the top-level keys and table entries that differ
+    names = []
+    for key in sorted(set(old) | set(new)):
+        a, b = old.get(key), new.get(key)
+        if isinstance(a, dict) and isinstance(b, dict):
+            names += [f'{key}.{sub}' for sub in sorted(set(a) | set(b)) if not same(a.get(sub), b.get(sub))]
+        elif not same(a, b):
+            names.append(key)
+    return names
+(live, live_meta), (staged, staged_meta) = parts(sys.argv[1]), parts(sys.argv[2])
+if changed(live, staged):
+    sys.exit('pyproject.toml changes what the host venv installs: '+', '.join(changed(live, staged)))
+print('pyproject.toml differs only in metadata:', ', '.join(changed(live_meta, staged_meta)) or 'formatting')
 PY
 }
 
@@ -777,23 +863,37 @@ stage() {
     mset "archives.$name" "$(cut -d' ' -f1 "$STAGE/$name.tar.sha256")"
   done
   if gene_changes; then [[ ! -e $ROOT/releases/$G ]] || die "$ROOT/releases/$G already exists; inspect it before staging"; fi
-  local images=0
+  # Every size is read in an assignment of its own and checked, so a failed read stops the phase rather than
+  # dropping out of a sum (gene #100).
+  local images=0 size db_size red_size source_size fri_size tars=0 gene_tar docker_root disk
   for kind in runtime worker fri; do
-    if changes "$kind"; then images=$(( images + $(docker image inspect -f '{{.Size}}' "$(jget "$MANIFEST" "old.$kind.tag")") )); fi
+    changes "$kind" || continue
+    size=$(docker image inspect -f '{{.Size}}' "$(jget "$MANIFEST" "old.$kind.tag")") || die "could not read the size of the old $kind image"
+    [[ $size =~ ^[0-9]+$ ]] || die "could not read the size of the old $kind image: $size"
+    images=$(( images + size ))
   done
-  local db_size tars=0 gene_tar disk
-  db_size=$(du_bytes "$ROOT/data/controller")
-  for name in "${names[@]}"; do tars=$(( tars + $(stat -c %s "$STAGE/$name.tar") )); done
-  disk=("docker=$(docker info -f '{{.DockerRootDir}}'):$images" "staging=$STAGE:$(( 2*tars + 2*db_size ))")
+  measure db_size "$ROOT/data/controller"
+  for name in "${names[@]}"; do
+    size=$(stat -c %s "$STAGE/$name.tar") || die "could not read the size of $name.tar"
+    [[ $size =~ ^[0-9]+$ ]] || die "could not read the size of $name.tar: $size"
+    tars=$(( tars + size ))
+  done
+  docker_root=$(docker info -f '{{.DockerRootDir}}') || die 'could not read the Docker root dir'
+  disk=("docker=$docker_root:$images" "staging=$STAGE:$(( 2*tars + 2*db_size ))")
   mkdir -p "$ROOT/backups" "$FRI_ROOT/backups"
   if gene_changes; then
     mkdir -p "$ROOT/releases"
     rename_preflight "$ROOT/backups"
     gene_tar=$(stat -c %s "$STAGE/gene.tar")
-    disk+=("gene_backup=$ROOT/backups:$(( db_size + $(du_bytes "$ROOT/data/red") + $(du_bytes "$ROOT/source") ))"
+    measure red_size "$ROOT/data/red"
+    measure source_size "$ROOT/source"
+    disk+=("gene_backup=$ROOT/backups:$(( db_size + red_size + source_size ))"
            "releases=$ROOT/releases:$gene_tar" "source=$ROOT:$gene_tar")
   fi
-  if fri_changes; then disk+=("fri_backup=$FRI_ROOT/backups:$(( $(du_bytes "$ROOT/data/fri") + db_size ))"); fi
+  if fri_changes; then
+    measure fri_size "$ROOT/data/fri"
+    disk+=("fri_backup=$FRI_ROOT/backups:$(( fri_size + db_size ))")
+  fi
   disk_admission "${disk[@]}"
   for name in "${names[@]}"; do
     clear_interrupted "$STAGE/$name-src"
@@ -803,9 +903,12 @@ stage() {
   done
   if gene_changes; then
     echo "$G" > "$STAGE/gene-src/.release-sha"
-    for file in pyproject.toml uv.lock; do
-      cmp -s "$ROOT/source/$file" "$STAGE/gene-src/$file" || die "$file changed: the host venv needs its own plan"
-    done
+    # The host venv is an editable install of the source tree: the lock must match byte for byte, and
+    # pyproject.toml in everything but metadata.
+    cmp -s "$ROOT/source/uv.lock" "$STAGE/gene-src/uv.lock" || die 'uv.lock changed: the host venv needs its own plan'
+    if ! cmp -s "$ROOT/source/pyproject.toml" "$STAGE/gene-src/pyproject.toml"; then
+      installs_same "$ROOT/source/pyproject.toml" "$STAGE/gene-src/pyproject.toml" || die 'the host venv needs its own plan'
+    fi
     for file in ops/compose.yml ops/fri-compose.yml ops/gene-worker.service ops/gene-deployer.service; do
       if ! cmp -s "$ROOT/source/$file" "$STAGE/gene-src/$file"; then
         diff -u "$ROOT/source/$file" "$STAGE/gene-src/$file" || true
@@ -981,7 +1084,13 @@ fence() {  # Pause new work, let current work finish, then stop the worker and d
     (( waited < WAIT_WINDOW )) || die 'work is still building or deploying after 30 minutes; development stays paused'
     log 'waiting for current work to finish'; sleep 30; waited=$(( waited + 30 ))
   done
-  systemctl stop gene-worker gene-deployer
+  if ! touched; then
+    # Someone else paused development before this batch touched it, so that pause stays theirs (skipped:pause).
+    # The stop is journaled before it happens all the same: if the fence dies after it, resume-old starts the
+    # worker and deployer again and reports the pause it leaves (gene #94).
+    mark intent:pause; mark skipped:pause
+  fi
+  systemctl stop gene-worker gene-deployer || die 'the worker and deployer did not stop'
   if systemctl is-active -q gene-worker || systemctl is-active -q gene-deployer; then die 'worker or deployer still active'; fi
   busy=$(state_value busy_jobs)
   [[ $busy == 0 ]] || die 'a job started while stopping the units'
@@ -1022,8 +1131,14 @@ on_gene_error() {
 }
 
 gene_disk() {  # What the switch itself writes: the backups, the cogs and the source move.
-  disk_admission "gene_backup=$ROOT/backups:$(( $(du_bytes "$ROOT/data/controller") + $(du_bytes "$ROOT/data/red") + $(du_bytes "$ROOT/source") ))" \
-    "releases=$ROOT/releases:$(du_bytes "$STAGE/cogs-ready")" "source=$ROOT:$(du_bytes "$STAGE/gene-src")"
+  local db_size red_size source_size cogs_size tree_size
+  measure db_size "$ROOT/data/controller"
+  measure red_size "$ROOT/data/red"
+  measure source_size "$ROOT/source"
+  measure cogs_size "$STAGE/cogs-ready"
+  measure tree_size "$STAGE/gene-src"
+  disk_admission "gene_backup=$ROOT/backups:$(( db_size + red_size + source_size ))" \
+    "releases=$ROOT/releases:$cogs_size" "source=$ROOT:$tree_size"
 }
 
 backup_db() {  # dir: an online copy at dir/db/controller.sqlite3, made as the DB owner, then root-only
@@ -1172,22 +1287,41 @@ rollback_gene() {
   # Reconciles from actual state, so it is safe to repeat. errexit stays on: any failure stops here.
   trap - ERR
   SWITCHING=0
-  local B prev old_id owner
+  aborting && die 'nothing was changed: an earlier rollback-gene stopped before it restored development, so run resume-old first'
+  local B prev old_id owner checked=0
   B=$(backup_dir)
   prev=$(jget "$BASELINE" settings.previous_sha)
   old_id=$(jget "$MANIFEST" old.runtime.id)
   owner=$(db_owner)
   repair_sidecars
   log 'rollback: check that live state is built from the recorded releases'
-  pair_check
-  # From here the forward phases refuse: a half-done rollback is finished by repeating rollback-gene.
-  has intent:rollback || mark intent:rollback
+  pair_check || checked=$?
+  if (( checked == 3 )) && fenced_by_rollback; then
+    # A deployment moved Gene, and an earlier run of this rollback only fenced: its fence timed out while the
+    # deployment ran, or found another change beside it that has been put back since. Either way this rollback
+    # changed nothing but its fence, so development goes back as it is, as below.
+    resume_as_is
+    die "Gene moved after an earlier rollback-gene fenced development; nothing was rolled back and $(resumed_as)"
+  fi
+  (( checked == 0 )) || exit 1
+  # From here the forward phases refuse: a half-done rollback is finished by repeating rollback-gene. Every run
+  # journals its start, so resume-old can tell a rollback ran after an earlier stop (as_is).
+  mark intent:rollback
   log 'rollback: fence development'
   fence
   lock_fri
   # The fence can wait for work that finishes a deployment, so check again with nothing left running.
   log 'rollback: check again with development fenced and Fri releases locked out'
-  pair_check
+  pair_check || checked=$?
+  if (( checked == 3 )); then
+    # A deployment the fence waited out moved Gene, and it explains every change (pair_check): this rollback
+    # changed nothing but its fence, so development goes back as it is (gene #93). The stop is journaled first,
+    # as the drain's is: if restoring stops, resume-old replays it. Any other change keeps the fence (exit 1).
+    resume_as_is
+    die "Gene moved during the fence; nothing was rolled back and $(resumed_as)"
+  fi
+  (( checked == 0 )) || exit 1
+  mark intent:restore  # From here it restores: a later stop is no longer one after only a fence (fenced_by_rollback).
   log 'rollback: Fri first'
   restore_old_fri
   if has intent:start_new && ! has done:downgrade; then
@@ -1382,6 +1516,20 @@ resume_as_is() {  # After a fence that Gene may have moved under (a deployment l
 aborting() {  # A stop after a fence whose restore hasn't finished
   [[ -f $JOURNAL && $({ grep -x -e intent:abort -e resumed_old "$JOURNAL" || true; } | tail -n 1) == intent:abort ]]
 }
+as_is() {  # The batch's latest stop came after a fence, and no rollback has run since: it stays as it is. Every
+  # rollback run journals intent:rollback, but the script before gene #121 did so once per batch, so a later run of
+  # it shows only in its restore steps: any of them after the stop counts as a rollback too.
+  [[ -f $JOURNAL && $({ grep -x -e intent:abort -e intent:rollback -e intent:restore -e intent:fri_restore -e fri_restored \
+    -e done:downgrade -e gene_rolled_back -e fri_rolled_back "$JOURNAL" || true; } | tail -n 1) == intent:abort ]]
+}
+fenced_by_rollback() {  # Since development last resumed, rollback-gene has started (intent:rollback) and restored
+  # nothing, by the same lines: at most it fenced. A batch that never resumed is mid-switch, and never counts.
+  [[ -f $JOURNAL ]] && awk '
+    $0 == "resumed" || $0 == "resumed_old" {resumed = 1; started = 0; restored = 0}
+    $0 == "intent:rollback" {started = 1}
+    $0 ~ /^(intent:restore|intent:fri_restore|fri_restored|done:downgrade|gene_rolled_back|fri_rolled_back)$/ {restored = 1}
+    END {exit !(resumed && started && !restored)}' "$JOURNAL"
+}
 gene_moved() {  # The live Gene isn't the old release: before a batch drains, only a deployment moves it
   local live
   live=$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)
@@ -1452,11 +1600,18 @@ resume() {
 
 resume_old() {
   check_manifest
-  if has gene_attempted && ! has gene_rolled_back; then die 'a Gene switch was attempted; run rollback-gene first'; fi
   touched || die "phase needs 'drained' first"  # A drain that timed out after pausing still resumes here.
   # A stop after a fence whose restore didn't finish, or a batch that never drained and whose Gene a deployment
-  # has moved since: the old pair is gone, and the batch changed nothing but its fence.
-  if aborting || { ! has drained && gene_moved; }; then resume_as_is; return; fi
+  # has moved since: the old pair is gone, and the batch changed nothing but its fence. That includes
+  # rollback-gene's stop, so this comes before its own check.
+  if aborting; then resume_as_is; return; fi
+  if as_is; then  # A repeat once that stop is restored: still as it is, at the live Gene (gene #95).
+    log 'this batch already resumed development as it is; starting it again at the live Gene'
+    resume_services "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)"
+    return
+  fi
+  if ! has drained && gene_moved; then resume_as_is; return; fi
+  if has gene_attempted && ! has gene_rolled_back; then die 'a Gene switch was attempted; run rollback-gene first'; fi
   if ! has intent:services_old; then
     verify old
     mark intent:services_old
@@ -1464,7 +1619,7 @@ resume_old() {
     verify old any-work
   fi
   resume_services "$OLD_G"
-  has resumed_old || mark resumed_old
+  mark resumed_old  # Every time: a later rollback's fence reads the latest resume (see fenced_by_rollback).
 }
 
 fri_pair_check() {  # rollback-fri only reconciles a live Fri built from the recorded old and new releases.
@@ -1534,7 +1689,7 @@ rollback_fri() {
     resume_as_is
     die "Gene moved during the fence; Fri was not changed and $(resumed_as)"
   fi
-  has intent:rollback || mark intent:rollback  # From here on, only a repeat of rollback-fri finishes it.
+  mark intent:rollback  # From here on, only a repeat of rollback-fri finishes it. Every run journals it (as_is).
   restore_old_fri
   probe_fri "$OLD_F" "$(jget "$MANIFEST" old.fri.id)"
   verify old

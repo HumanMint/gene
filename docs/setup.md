@@ -1,4 +1,9 @@
-# Setup
+# Host installation (operators)
+
+This installs Gene on a Linux host (for example a VPS) the way production runs it:
+Docker images pinned to a reviewed commit, systemd units and service credentials under
+`/srv/gene`. To try Gene or develop on your own machine, use the
+[quickstart](quickstart.md) instead. [Architecture](architecture.md) explains the parts.
 
 ## Prerequisites
 
@@ -24,9 +29,10 @@ uv run --no-sync python scripts/configure.py
 ```
 
 The interactive configuration validates the bot identity and channel IDs and writes
-an ignored `.env.local`. Keep its tokens private. If using a fork, set
-`GENE_REPOSITORY` in the worker/deployer environment to that fork before enabling
-coding; the current installer defaults to this project's private repository.
+an ignored `.env.local` with new service tokens; it asks before replacing an existing
+one. Keep its tokens private. If using a fork, set `GENE_REPOSITORY` in the
+worker/deployer environment to that fork before enabling coding; the current installer
+defaults to this project's repository.
 
 ## Install Gene's runtime/controller
 
@@ -67,8 +73,13 @@ relay. Install and pin its audio services separately; Gene consumes the exact Py
 adapter revision recorded in [audio-adapter.json](audio-adapter.json).
 
 Follow [Gene audio integration](audio-adapter.md) and the adapter's portable setup guide.
-Keep Gene's external audio host/port/password and prepare token private. Test actual
-audible playback; a loaded title or queued track alone is insufficient.
+Keep Gene's external audio host/port/password and prepare token private. The audio
+services and the optional download relay are optional infrastructure, not a guarantee
+that every source works from every host.
+
+An optional download relay only downloads and transfers files. The bot host plays them
+and owns the bounded cache. No personal YouTube cookies are required by this setup.
+Verify actual audible playback; a loaded title or queued track alone is insufficient.
 
 ## Optional Fri and coding workflow
 
@@ -77,7 +88,7 @@ guide. It requires this controller's `gene-fri/1` contract. Do not launch the le
 Fri Compose profile for a new installation. Add only Fri's own bot/service credential
 and existing subscription directory to that runtime.
 
-For coding jobs, follow [initial worker setup](operations.md#initial-installation):
+For coding jobs, follow the worker setup in the [operator runbook](operations.md):
 create the dedicated account/tools/login, repository-specific Git access and host
 Python environment; build the worker image; then enable worker/deployer units.
 Do not copy personal credentials into candidate/test containers. New jobs start paused.

@@ -44,6 +44,90 @@ def test_preferences_keep_several_per_category_dedupe_bound_and_survive_restart(
     assert not entries(store, '123', 'public:1', '30')['entries']
 
 
+def kept(db, scope='public:1', category='games'):
+    return [row[0] for row in db.execute('SELECT evidence FROM personal_notes WHERE guild_id=? AND channel_id=? '
+                                         'AND user_id=? AND category=? ORDER BY at DESC,id DESC',
+                                         ('123', scope, '20', category))]
+
+
+def test_the_same_words_in_other_capitals_renew_one_note_instead_of_crowding_out_another(store):
+    now = time.time()
+    with store.connection() as db:
+        for at, evidence in enumerate(('I play league', 'I play valorant', 'i play valorant', 'I play valorant most nights')):
+            assert save(db, '123', 'public:1', '20', ('games', evidence), now-100+at)
+        assert kept(db) == ['I play valorant most nights', 'i play valorant', 'I play league']
+        # Curly and straight apostrophes are the same words too.
+        assert save(db, '123', 'public:1', '20', ('projects', 'I’m building a mod'), now-50)
+        assert save(db, '123', 'public:1', '20', ('projects', "i'm building a mod"), now-40)
+        assert kept(db, category='projects') == ["i'm building a mod"]
+
+
+def test_folding_needs_the_same_words_not_a_shorter_or_longer_note(store):
+    now = time.time()
+    with store.connection() as db:
+        for at, evidence in enumerate(('I play chess only on weekends', 'I play chess', 'I like coffee cake',
+                                       'I like coffee')):
+            assert save(db, '123', 'public:1', '20', ('hobbies', evidence), now-100+at)
+        assert kept(db, category='hobbies') == ['I like coffee', 'I like coffee cake', 'I play chess']
+        # Another category is another note.
+        assert save(db, '123', 'public:1', '20', ('music', 'i like coffee'), now-10)
+        assert kept(db, category='music') == ['i like coffee']
+        assert 'I like coffee' in kept(db, category='hobbies')
+
+
+def test_folding_never_crosses_origin_or_whose_words_a_note_drew_on(store):
+    now = time.time()
+    with store.connection() as db:
+        assert save(db, '123', 'server', '20', ('games', 'I like chess'), now-30, 'public:1', [])
+        assert save(db, '123', 'server', '20', ('games', 'i like chess'), now-20, 'public:2', [])
+        assert save(db, '123', 'server', '20', ('games', 'I LIKE CHESS'), now-10, 'public:2',
+                    [{'user_id': '30', 'revision': 0}])
+        assert kept(db, 'server') == ['I LIKE CHESS', 'i like chess', 'I like chess']
+        # Unknown provenance (None) isn't the same as known to be their own words ([]).
+        assert save(db, '123', 'public:1', '20', ('games', 'I like go'), now-30)
+        assert save(db, '123', 'public:1', '20', ('games', 'i like go'), now-20, None, [])
+        assert kept(db) == ['i like go', 'I like go']
+        # The same people in another order are the same provenance.
+        two = [{'user_id': '30', 'revision': 1}, {'user_id': '40', 'revision': 2}]
+        assert save(db, '123', 'public:1', '20', ('music', 'I like jazz'), now-30, None, two)
+        assert save(db, '123', 'public:1', '20', ('music', 'i like jazz'), now-20, None, two[::-1])
+        assert kept(db, category='music') == ['i like jazz']
+
+
+def test_an_older_wording_never_replaces_a_newer_one(store):
+    now = time.time()
+    with store.connection() as db:
+        assert save(db, '123', 'public:1', '20', ('games', 'i play valorant'), now)
+        # A background pass replays an archive message from before it.
+        assert not save(db, '123', 'public:1', '20', ('games', 'I play valorant'), now-3600)
+        assert not save(db, '123', 'public:1', '20', ('games', 'I PLAY VALORANT'), now)
+        row = db.execute('SELECT evidence,at FROM personal_notes').fetchall()
+        assert [(r['evidence'], r['at']) for r in row] == [('i play valorant', now)]
+        # Two wordings from before this change: a replay older than the exact one changes neither.
+        db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at) VALUES (?,?,?,?,?,?)',
+                   ('123', 'public:1', '20', 'games', 'I play valorant', now-60))
+        assert not save(db, '123', 'public:1', '20', ('games', 'i play valorant'), now-30)
+        assert kept(db) == ['i play valorant', 'I play valorant']
+        assert save(db, '123', 'public:1', '20', ('games', 'i play valorant'), now+1)  # Newer: one note again.
+        assert kept(db) == ['i play valorant']
+
+
+def test_folding_is_a_renewal_not_a_removal(store):
+    remember(store, 'I like Minecraft')
+    with store.connection() as db:
+        revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', ('20',)).fetchone()
+        assert save(db, '123', 'public:1', '20', ('games', 'i like minecraft'), time.time()+1)
+        assert db.execute('SELECT count(*) FROM personal_note_removals').fetchone()[0] == 0
+        assert db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', ('20',)).fetchone() == revision
+    assert store.chat_context('123', 'public:1', '20')['turns']  # Nothing derived is cleared.
+    # After a deliberate removal, other capitals of the removed words are still fenced.
+    note = entries(store, '123', 'public:1', '20')['entries'][0]
+    edit(store, '123', 'public:1', '20', note['id'], 0, source(), 'remove')
+    with store.connection() as db:
+        assert not save(db, '123', 'public:1', '20', ('games', 'I LIKE MINECRAFT'), time.time()-1)
+        assert not kept(db)
+
+
 def test_legacy_note_migration_preserves_identity_evidence_and_time(tmp_path):
     path = tmp_path/'legacy.sqlite3'
     with sqlite3.connect(path) as db:

@@ -70,7 +70,7 @@ def window_settings():
 
 def functions(*names):
     """The named shell functions from batch-release.sh, to run on their own."""
-    out, keep = [], False
+    out, keep, heredoc = [], False, None
     for line in SCRIPT.read_text().splitlines():
         starts = any(line.startswith(name+'() {') for name in names)
         if starts and line.split('  #')[0].rstrip().endswith('}'):
@@ -79,7 +79,12 @@ def functions(*names):
         keep = keep or starts
         if keep:
             out.append(line)
-            keep = line != '}'
+            if heredoc:  # A heredoc's own lines, a Python dict's closing brace included, never end the function.
+                heredoc = None if line == heredoc else heredoc
+            elif match := re.search(r"<<'(\w+)'", line):
+                heredoc = match.group(1)
+            else:
+                keep = line != '}'
     return '\n'.join(out)
 
 
@@ -161,6 +166,9 @@ def test_the_release_script_refuses_a_clock_it_cannot_trust(tmp_path):
 FAKE_STAT = '''#!/usr/bin/env bash
 for file; do :; done  # stat -c %u:%g FILE; owners come from $CTL/<name>.owner
 if [[ $file == "$(cat "$CTL/vanish-at-stat" 2>/dev/null)" ]]; then rm -f "$file"; fi
+if [[ $file == "$(cat "$CTL/stat-eio-hidden" 2>/dev/null)" ]]; then  # An I/O error the shell's -e fails on too.
+  echo "stat: cannot statx '$file': Input/output error" >&2; exit 1
+fi
 [[ -e $file ]] || { echo "stat: cannot statx '$file': No such file or directory" >&2; exit 1; }
 if [[ $file == "$(cat "$CTL/stat-eio" 2>/dev/null)" ]]; then echo "stat: cannot statx '$file': Input/output error" >&2; exit 1; fi
 if [[ $file == "$(cat "$CTL/reappear-at-stat" 2>/dev/null)" ]]; then  # Gone at stat, a new one there after.
@@ -177,14 +185,17 @@ echo "$1" > "$CTL/${2##*/}.owner"
 '''
 
 
-def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False, eio=False, reappear=False):
+def sidecar_shell(tmp_path, wal_owner, vanish=None, denied=False, eio=False, reappear=False, eio_hidden=False):
     """repair_sidecars on a root-owned or owner-owned WAL that SQLite removes at the chosen moment."""
     ctl, data, bin_dir = tmp_path/'ctl', tmp_path/'data', tmp_path/'bin'
     for path in ctl, data, bin_dir:
         path.mkdir()
     db = data/'gene.sqlite3'
     db.touch()
-    (data/'gene.sqlite3-wal').touch()
+    if eio_hidden:  # The file is there, but every lookup fails with an I/O error: -e and -L see nothing either.
+        (ctl/'stat-eio-hidden').write_text(f'{db}-wal')
+    else:
+        (data/'gene.sqlite3-wal').touch()
     (ctl/'gene.sqlite3-wal.owner').write_text(wal_owner+'\n')
     if vanish:
         (ctl/f'vanish-at-{vanish}').write_text(f'{db}-wal')
@@ -235,6 +246,14 @@ def test_a_journal_file_that_cant_be_read_but_is_there_stops_the_script(tmp_path
     assert chowned == [] and wal.exists()
 
 
+def test_an_io_error_that_hides_a_journal_file_from_the_shell_too_stops_the_script(tmp_path):
+    """gene #101: a persistent I/O error fails stat and the shell's -e and -L checks alike. Only stat's own
+    'no such file' counts as gone, so the file isn't skipped as if it had vanished."""
+    out, chowned, _ = sidecar_shell(tmp_path, '0:0', eio_hidden=True)
+    assert out.returncode != 0 and 'repaired' not in out.stdout
+    assert 'FAIL: could not read the owner of gene.sqlite3-wal' in out.stderr and chowned == []
+
+
 def test_a_journal_file_gone_at_stat_and_back_after_needs_nothing(tmp_path):
     """2026-10-28, second release: SQLite removed -shm at stat and made a new one before a recheck. Gone at
     stat is gone: the new one is the controller's own, so the repair skips it and the switch goes on."""
@@ -283,6 +302,175 @@ def test_sizing_a_tree_counts_a_file_that_vanishes_as_gone(tmp_path, printed, st
         assert out.returncode != 0 and 'size=' not in out.stdout
     else:
         assert out.returncode == 0 and out.stdout.split() == ['size=4096'], out.stderr
+
+
+@needs_bash4
+@pytest.mark.parametrize('switching', ['0', '1'])
+@pytest.mark.parametrize('failing', ['data/controller', 'data/red', 'source'])  # first, middle and last in the sum
+def test_a_size_that_cant_be_measured_stops_the_switchs_disk_check(tmp_path, switching, failing):
+    """gene #100: a measurement that fails inside an arithmetic sum used to drop out of it (or, mid-switch, stop only
+    its own subshell), so disk admission went on without it. It stops the switch, and mid-switch rolls back."""
+    bin_dir, root = tmp_path/'bin', tmp_path/'srv'
+    bin_dir.mkdir()
+    (bin_dir/'du').write_text('#!/usr/bin/env bash\nfor path; do :; done\n'
+                              f'if [[ $path == {root}/{failing} ]]; then printf "4096\\t%s\\n" "$path"\n'
+                              '  echo "du: cannot read directory \'$path/x\': Input/output error" >&2; exit 1; fi\n'
+                              'printf "1000\\t%s\\n" "$path"\n')
+    (bin_dir/'du').chmod(0o755)
+    shell = (f'set -Eeuo pipefail\nROOT={root} STAGE={root}/staging SWITCHING={switching}\n'
+             + functions('log', 'die', 'du_bytes', 'measure', 'gene_disk', 'on_gene_error')
+             + '\nrollback_gene() { if [[ $BASHPID == "$$" ]]; then echo rolled-back; fi; }\n'
+             'disk_admission() { echo "admitted $*"; }\n'
+             + ('trap on_gene_error ERR\n' if switching == '1' else '') + 'gene_disk\necho switching-on\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'})
+    assert out.returncode != 0 and 'admitted' not in out.stdout and 'switching-on' not in out.stdout, out.stdout
+    assert f'FAIL: could not measure {root}/{failing}' in out.stderr
+    assert ('rolled-back' in out.stdout.split()) is (switching == '1')  # the main shell's rollback, not a subshell's
+
+
+def test_sizing_a_tree_stops_on_an_io_error_for_a_path_du_cant_reach(tmp_path):
+    """gene #101: an I/O error on a path is never read as that path being gone, whatever the shell sees there."""
+    bin_dir = tmp_path/'bin'
+    bin_dir.mkdir()
+    (bin_dir/'du').write_text('#!/usr/bin/env bash\nprintf "%s\\t%s\\n" 4096 "$2"\n'
+                              'echo "du: cannot access \'$2/gene.sqlite3-wal\': Input/output error" >&2\nexit 1\n')
+    (bin_dir/'du').chmod(0o755)
+    shell = ('set -Eeuo pipefail\nSWITCHING=0\n' + functions('log', 'die', 'du_bytes')
+             + f'\nsize=$(du_bytes {tmp_path})\necho "size=$size"\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30,
+                         env={**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'})
+    assert out.returncode != 0 and 'size=' not in out.stdout
+    assert 'FAIL: could not measure' in out.stderr and 'Input/output error' in out.stderr
+
+
+@pytest.mark.parametrize('journal,mode', [
+    (['baseline', 'drained'], 'checked'),
+    (['baseline', 'intent:pause', 'intent:abort'], 'replays'),  # the drain's stop, its restore unfinished
+    (['baseline', 'intent:pause', 'intent:abort', 'resumed_old'], 'as-is'),  # gene #95: and once restored
+    # gene #93: rollback-gene's stop after its fence, restored, and then not
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:abort', 'resumed_old'], 'as-is'),
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:abort'], 'replays'),
+    # A rollback that ran after such a stop: what it restored is checked again.
+    (['baseline', 'drained', 'intent:abort', 'resumed_old', 'intent:rollback', 'fri_rolled_back'], 'checked'),
+    # A rollback's restore steps before its stop are older than the stop, and stay as it is.
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:restore', 'intent:fri_restore', 'fri_restored',
+      'intent:rollback', 'intent:pause', 'intent:abort', 'resumed_old'], 'as-is'),
+    # A later rollback that only fenced, killed before it restored anything: still as it is.
+    (['baseline', 'drained', 'intent:abort', 'resumed_old', 'intent:pause', 'paused:7'], 'as-is'),
+    # gene #121 round 1: journals from the script before it, which journaled intent:rollback once per batch. A
+    # rollback-fri after the stop was killed once it stopped Fri: its restore steps, not a new intent:rollback,
+    # say a rollback ran, so the old pair is checked again rather than resumed as it is with Fri stopped.
+    (['baseline', 'drained', 'fri_backup', 'gene_recorded', 'intent:fri', 'fri_switched', 'resumed', 'intent:pause',
+      'intent:rollback', 'intent:fri_restore', 'fri_restored', 'fri_rolled_back', 'intent:services_old', 'done:unpause',
+      'resumed_old', 'intent:pause', 'intent:abort', 'done:unpause', 'resumed_old', 'intent:pause',
+      'intent:fri_restore'], 'checked'),
+    (['baseline', 'drained', 'intent:rollback', 'intent:abort', 'resumed_old', 'intent:fri_restore', 'fri_restored'],
+     'checked'),
+    (['baseline', 'drained', 'intent:rollback', 'intent:abort', 'resumed_old', 'done:downgrade'], 'checked'),
+    (['baseline', 'drained', 'intent:rollback', 'intent:abort', 'resumed_old', 'gene_rolled_back'], 'checked'),
+])
+def test_resume_old_stays_as_it_is_after_a_stop_until_a_rollback_runs(tmp_path, journal, mode):
+    (tmp_path/'journal').write_text(''.join(line+'\n' for line in journal))
+    shell = (f'set -Eeuo pipefail\nJOURNAL={tmp_path}/journal\n' + functions('has', 'aborting', 'as_is')
+             + '\nif aborting; then echo replays; elif as_is; then echo as-is; else echo checked; fi\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0 and out.stdout.split() == [mode], out.stderr
+
+
+@pytest.mark.parametrize('journal,fenced', [
+    (['baseline', 'drained', 'resumed'], False),  # no rollback has started since development resumed
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:pause', 'paused:7'], True),  # its fence held
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:pause', 'paused:7', 'intent:restore'], False),
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:fri_restore'], False),
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:abort', 'resumed_old'], False),  # resumed as it is
+    (['baseline', 'drained', 'gene_attempted', 'intent:rollback', 'intent:pause'], False),  # never resumed: mid-switch
+    # A second rollback after the first one finished and development resumed at the old release.
+    (['baseline', 'drained', 'resumed', 'intent:rollback', 'intent:restore', 'gene_rolled_back', 'resumed_old',
+      'intent:rollback', 'intent:pause', 'paused:9'], True),
+])
+def test_a_rollback_that_only_fenced_is_known_from_the_journal(tmp_path, journal, fenced):
+    (tmp_path/'journal').write_text(''.join(line+'\n' for line in journal))
+    shell = (f'set -Eeuo pipefail\nJOURNAL={tmp_path}/journal\n' + functions('fenced_by_rollback')
+             + '\nif fenced_by_rollback; then echo fenced; else echo not; fi\n')
+    out = subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30)
+    assert out.returncode == 0 and out.stdout.split() == ['fenced' if fenced else 'not'], out.stderr
+
+
+H = 'e' * 40
+
+
+def pair_shell(tmp_path, changes):
+    """pair_check on a batch that switched to G and resumed, after the changes a rollback's fence waited out."""
+    root, fri_root, backup = tmp_path/'srv', tmp_path/'fri', tmp_path/'backup'
+    for path in root/'secrets', fri_root, backup/'db', backup/'installed-source':
+        path.mkdir(parents=True)
+    (backup/'db/controller.sqlite3').touch()
+    (backup/'release.env').write_text(f'GENE_RELEASE_SHA={OLD_G}\nGENE_ROOT=/srv/gene\nGENE_RUNTIME_IMAGE=gene-runtime:{OLD_G}\n')
+    (backup/'worker.env').write_text(f'GENE_WORKER_IMAGE=gene-worker:{OLD_G}\n')
+    (backup/'fri-release.env').write_text(f'FRI_RELEASE_SHA={OLD_F}\nFRI_RUNTIME_IMAGE=fri-runtime:{OLD_F}\n')
+    (backup/'fri-release.json').write_text(json.dumps({'sha': OLD_F}))
+    release = f'GENE_RELEASE_SHA={G}\nGENE_ROOT={root}\nGENE_RUNTIME_IMAGE=gene-runtime:{G}\n'
+    settings = {'active_sha': G, 'previous_sha': OLD_G, 'fri_active_sha': F}
+    record, runtime, deployment = {'sha': F, 'previous': OLD_F}, 'new-runtime', None
+    if 'deployed' in changes:  # As the deployer and the controller leave a feature deployment of H from G.
+        release = release.replace(G, H, 1)
+        settings |= {'active_sha': H, 'previous_sha': G}
+        (root/f'releases/{H}/cogs/gene').mkdir(parents=True)
+        (root/f'releases/{H}/cogs/gene/__init__.py').touch()
+        deployment = {'sha': H, 'previous_sha': G, 'state': 'deployed'}
+    if 'runtime image' in changes:
+        release = release.replace(f'gene-runtime:{G}', f'gene-runtime:{OLD_G}')
+    if 'extra line' in changes:
+        release += 'GENE_EXTRA=1\n'
+    if 'settings unchanged' in changes:
+        settings |= {'active_sha': G, 'previous_sha': OLD_G}
+    if 'no cogs' in changes:
+        (root/f'releases/{H}/cogs/gene/__init__.py').unlink()
+    if 'deployment failed' in changes:
+        deployment |= {'state': 'failed'}
+    if 'no deployment' in changes:
+        deployment = None
+    if 'red on the old image' in changes:
+        runtime = 'old-runtime'
+    if 'fri record' in changes:
+        record = {'sha': 'f' * 40, 'previous': F}
+    (root/'release.env').write_text(release)
+    (root/'secrets/worker.env').write_text(f'GENE_WORKER_IMAGE=gene-worker:{G}\n')
+    (fri_root/'release.env').write_text(f'FRI_RELEASE_SHA={F}\nFRI_RUNTIME_IMAGE=fri-runtime:{F}\n')
+    (fri_root/'release.json').write_text(json.dumps(record))
+    (tmp_path/'state.json').write_text(json.dumps({
+        'settings': settings, 'busy_jobs': 0, 'source': G, 'deployment': deployment,
+        'controller': {'health': 'healthy', 'http': '200', 'image': 'new-runtime'},
+        'red': {'image': runtime, 'running': True}, 'fri_container': {'image': 'new-fri', 'running': True}}))
+    (tmp_path/'manifest.json').write_text(json.dumps({
+        'old': {'runtime': {'tag': f'gene-runtime:{OLD_G}', 'id': 'old-runtime'}, 'fri': {'id': 'old-fri'}},
+        'new': {'runtime': {'tag': f'gene-runtime:{G}', 'id': 'new-runtime'}, 'fri': {'id': 'new-fri'}}}))
+    (tmp_path/'baseline.json').write_text(json.dumps({'settings': {'previous_sha': '1' * 40}, 'source': 'unmarked'}))
+    shell = (functions('pair_check') + f'\nstate() {{ cat {tmp_path}/state.json; }}\nbackup_dir() {{ echo {backup}; }}\n'
+             f'MANIFEST={tmp_path}/manifest.json BASELINE={tmp_path}/baseline.json ROOT={root} FRI_ROOT={fri_root}\n'
+             f'G={G} F={F} OLD_G={OLD_G} OLD_F={OLD_F}\npair_check\n')
+    return subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30)
+
+
+@pytest.mark.parametrize('changes,rc', [
+    ((), 0),
+    (('deployed',), 3),  # a deployment the fence waited out moved Gene: the rollback may resume as it is
+    # gene #121 round 1: any change no deployment explains keeps the fence (exit 1), release.env included.
+    (('runtime image',), 1),  # the same Gene under another runtime image
+    (('deployed', 'fri record'), 1),  # a deployment, and a Fri record from outside the pair
+    (('deployed', 'runtime image'), 1),  # a deployment inherits the runtime image; it never picks one
+    (('deployed', 'extra line'), 1),
+    (('deployed', 'settings unchanged'), 1),  # release.env moved, but the controller recorded no deployment
+    (('deployed', 'no cogs'), 1),  # nothing installed the release's cogs
+    (('deployed', 'deployment failed'), 1),
+    (('deployed', 'no deployment'), 1),
+    (('deployed', 'red on the old image'), 1),
+])
+def test_only_a_deployment_explains_gene_moving_during_the_fence(tmp_path, changes, rc):
+    out = pair_shell(tmp_path, changes)
+    assert out.returncode == rc, out.stderr
+    assert ('outside the recorded old/new pair' in out.stderr) is (rc != 0), out.stderr
 
 
 def test_claims_wait_for_the_window_and_an_owner_rollback_does_not(store, monkeypatch):
@@ -1072,3 +1260,90 @@ def test_accepting_needs_the_last_evals_run_finished(tmp_path):
     journal = ('baseline', 'drained', 'evals_started', 'evals_ran', 'evals_started')
     out, _, _ = script(tmp_path, 'accept-evals', '2026-10-28T07:50:00-07:00', journal, {'EVALS_ACCEPTED': 'why'})
     assert out.returncode == 4
+
+
+PYPROJECT = (Path(__file__).parents[1]/'pyproject.toml').read_text()
+# gene #116: changes to the live pyproject.toml, as (old, new) or text to append. Metadata may differ...
+METADATA_CHANGES = {
+    'license': ('description = ', 'license = "GPL-3.0-only"\ndescription = '),
+    'description': ('description = "', 'description = "an older line. '),
+    'authors': ('description = ', 'authors = [{name = "someone"}]\ndescription = '),
+    'urls': '\n[project.urls]\nSource = "https://example.invalid/gene"\n',
+    'ruff': ('line-length = 100', 'line-length = 110'),
+    'pytest': ('testpaths = ["tests"]', 'testpaths = ["tests", "more"]'),
+}
+# ...but nothing the editable install installs from, or how.
+INSTALL_CHANGES = {
+    'project.dependencies': ('"httpx>=0.28,<1",', '"httpx>=0.28,<1",\n    "anyio>=4,<5",'),
+    'project.optional-dependencies': ('"pillow>=13,<14",', '"pillow>=12,<14",'),
+    'project.requires-python': ('">=3.11,<3.12"', '">=3.11,<3.13"'),
+    'project.version': ('version = "0.1.0"', 'version = "0.1.1"'),
+    'project.scripts': ('gene-deployer = "gene.deploy:main"', 'gene-deployer = "gene.deploy:run"'),
+    'build-system.requires': ('hatchling==1.27.0', 'hatchling==1.26.3'),
+    'dependency-groups.dev': ('"pytest>=8,<9"', '"pytest>=8,<10"'),
+    'tool.hatch': ('packages = ["src/gene"]', 'packages = ["src/gene", "src/other"]'),
+    'tool.uv': '\n[tool.uv]\nindex-url = "https://example.invalid/simple"\n',
+}
+
+
+def edited(change):
+    if isinstance(change, str):
+        return PYPROJECT + change
+    old, new = change
+    assert PYPROJECT.count(old) == 1, old
+    return PYPROJECT.replace(old, new)
+
+
+def installs_same(tmp_path, live, tomllib=True, staged=None):
+    """batch-release.sh's stage check of the live pyproject.toml against the candidate's (this checkout's, or
+    `staged`)."""
+    bin_dir = tmp_path/'bin'
+    bin_dir.mkdir(parents=True)
+    (bin_dir/'python3').write_text(f'#!/usr/bin/env bash\nexec "{sys.executable}" "$@"\n')
+    (bin_dir/'python3').chmod(0o755)
+    (tmp_path/'live.toml').write_text(live)
+    candidate = SCRIPT.parents[2]/'pyproject.toml'
+    if staged is not None:
+        candidate = tmp_path/'staged.toml'
+        candidate.write_text(staged)
+    env = {**os.environ, 'PATH': f'{bin_dir}:{os.environ["PATH"]}'}
+    if not tomllib:  # A python3 older than 3.11: the import fails.
+        (tmp_path/'shadow').mkdir()
+        (tmp_path/'shadow/tomllib.py').write_text('raise ImportError("no tomllib here")\n')
+        env['PYTHONPATH'] = str(tmp_path/'shadow')
+    shell = ('set -Eeuo pipefail\n' + functions('installs_same')
+             + f'\ninstalls_same {tmp_path}/live.toml {candidate}\n')
+    return subprocess.run(['bash', '-c', shell], capture_output=True, text=True, timeout=30, env=env)
+
+
+@pytest.mark.parametrize('name', sorted(METADATA_CHANGES))
+def test_stage_lets_a_metadata_only_pyproject_change_through(tmp_path, name):
+    out = installs_same(tmp_path, edited(METADATA_CHANGES[name]))
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.startswith('pyproject.toml differs only in metadata:') and name in out.stdout
+
+
+@pytest.mark.parametrize('name', sorted(INSTALL_CHANGES))
+def test_stage_refuses_a_pyproject_change_in_what_the_venv_installs(tmp_path, name):
+    out = installs_same(tmp_path, edited(INSTALL_CHANGES[name]))
+    assert out.returncode != 0
+    assert 'pyproject.toml changes what the host venv installs:' in out.stderr and name in out.stderr
+
+
+def test_stage_refuses_a_pyproject_it_cant_parse_or_compare(tmp_path):
+    out = installs_same(tmp_path/'broken', PYPROJECT + 'broken = [\n')
+    assert out.returncode != 0 and 'could not parse' in out.stderr
+    out = installs_same(tmp_path/'not-a-table', 'project = "gene"\n')
+    assert out.returncode != 0 and '[project] is not a table' in out.stderr
+    out = installs_same(tmp_path/'no-tomllib', edited(METADATA_CHANGES['license']), tomllib=False)
+    assert out.returncode != 0 and 'no tomllib' in out.stderr and 'differs only' not in out.stdout
+
+
+@pytest.mark.parametrize('live, staged', [
+    ('[tool.uv]\npackage = 1\n', '[tool.uv]\npackage = true\n'),
+    ('[tool.uv]\nconstraint-dependencies = [1]\n', '[tool.uv]\nconstraint-dependencies = [1.0]\n'),
+    ('[tool.hatch.build]\nreproducible = 1\n', '[tool.hatch.build]\nreproducible = true\n'),
+])
+def test_stage_refuses_a_setting_that_only_changed_type(tmp_path, live, staged):
+    out = installs_same(tmp_path, PYPROJECT + '\n' + live, staged=PYPROJECT + '\n' + staged)
+    assert out.returncode != 0 and 'pyproject.toml changes what the host venv installs:' in out.stderr

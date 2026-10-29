@@ -2,7 +2,8 @@
 # A Fri-only release, then a member request deploys Gene H: settings and release.env move, while the images,
 # worker pin and source stay at G, as a feature deployment leaves them. rollback-fri refuses with Fri
 # untouched, whether H landed before it started or during its fence, and development keeps running, even
-# when the worker and deployer first fail to start (gene #70).
+# when the worker and deployer first fail to start (gene #70). A repeated resume-old after either stays at H
+# rather than checking for the old pair H replaced (gene #95).
 export MOCK_OLD_G=G
 . "$(dirname "$0")/common.sh"
 DB=$BATCH_ROOT/data/controller/gene.sqlite3
@@ -55,6 +56,9 @@ run 1 rollback-fri 2
 [[ -e $MOCK/on-sleep.ran ]] || fail 'the deployment never finished during the fence'
 output_has 'Gene moved during the fence'
 running
+run 0 resume-old 2  # gene #95: the stop already resumed development as it is, so a repeat stays at H.
+output_has 'already resumed development as it is'
+running
 # gene #70: the same, but the worker and deployer then fail to start, so development stays fenced. A
 # repeated rollback-fri changes nothing and points to resume-old, which, outside the window, restores
 # development at H, where the deployment left Gene, rather than refusing the moved release.
@@ -71,6 +75,10 @@ output_has 'run resume-old'
 units down
 run 0 resume-old 2
 output_has "at Gene ${H:0:7}"
+grep -qx "GENE_RELEASE_SHA=$H" "$BATCH_ROOT/release.env" || fail 'release.env no longer names H'
+running
+run 0 resume-old 2  # gene #95: a repeat stays at H too.
+output_has 'already resumed development as it is'
 grep -qx "GENE_RELEASE_SHA=$H" "$BATCH_ROOT/release.env" || fail 'release.env no longer names H'
 running
 finish

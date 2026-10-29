@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Tests can arm $MOCK/start-fails: the next start fails and starts nothing.
+# And $MOCK/stop-fails: the next stop stops the units, then fails, as a stop that timed out and was killed does.
 f=$MOCK/units; touch "$f"
 case $1 in
-  stop) shift; for u; do sed -i "/^$u$/d" "$f"; done ;;
+  stop)
+    shift; for u; do sed -i "/^$u$/d" "$f"; done
+    if [[ -e $MOCK/stop-fails ]]; then rm -f "$MOCK/stop-fails"; echo "mock systemctl: $* timed out stopping" >&2; exit 1; fi ;;
   start)
     shift
     if [[ -e $MOCK/start-fails ]]; then rm -f "$MOCK/start-fails"; echo "mock systemctl: $* failed to start" >&2; exit 1; fi

@@ -40,8 +40,17 @@ def initialize(db):
         # [] for words the member typed in a memory control. NULL is unknown: saved before this, or by an older
         # controller, which leaves it alone. Then the withdrawn exchange's words decide (see Store._withdraw_notes).
         db.execute('ALTER TABLE personal_notes ADD COLUMN sources TEXT')
+    if 'sources_at' not in {row[1] for row in db.execute('PRAGMA table_info(personal_notes)')}:
+        # The note's time when those sources were recorded (gene #145 round 2). An older controller that learns the
+        # same note again moves its time and leaves both, so a note whose time moved since has stale sources: it's
+        # judged as one of unknown source (see CURRENT), never by messages that may not be all that say it now.
+        db.execute('ALTER TABLE personal_notes ADD COLUMN sources_at REAL')
     db.execute('CREATE TABLE IF NOT EXISTS personal_note_removals (guild_id TEXT,channel_id TEXT,'
                'user_id TEXT,digest TEXT,at REAL,PRIMARY KEY(guild_id,channel_id,user_id,digest))')
+
+
+# A note's sources as recorded with its current time: anything else (none, or a time moved since) is unknown.
+CURRENT = 'sources IS NOT NULL AND sources_at IS at'
 
 
 def digest(category, evidence):
@@ -105,11 +114,12 @@ def save(db, guild, scope, user, note, at, origin=None, provenance=None, sources
         for row in same:
             db.execute('DELETE FROM personal_notes WHERE id=?', (row['id'],))
     updated = db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at,origin,provenance,'
-        'sources) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category,evidence) '
-        'DO UPDATE SET at=excluded.at,origin=excluded.origin,provenance=excluded.provenance,sources=excluded.sources '
-        'WHERE excluded.at>personal_notes.at',
+        'sources,sources_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category,evidence) '
+        'DO UPDATE SET at=excluded.at,origin=excluded.origin,provenance=excluded.provenance,sources=excluded.sources,'
+        'sources_at=excluded.sources_at WHERE excluded.at>personal_notes.at',
         (guild, scope, user, category, evidence, at, origin, None if provenance is None else json.dumps(list(provenance)),
-         None if sources is None else json.dumps(sorted({str(item) for item in sources}))))
+         None if sources is None else json.dumps(sorted({str(item) for item in sources})),
+         None if sources is None else at))
     db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? AND category=? '
         'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
         'AND category=? ORDER BY at DESC,id DESC LIMIT ?)',
@@ -123,8 +133,11 @@ def save(db, guild, scope, user, note, at, origin=None, provenance=None, sources
 
 
 def learned(row):
-    """The messages a saved note was learned from, which a move keeps: the same words, from the same message."""
-    return None if row['sources'] is None else json.loads(row['sources'])
+    """The messages a saved note was learned from, which a move keeps: the same words, from the same message. None if
+    unknown, stale ones included (see CURRENT)."""
+    if row['sources'] is None or row['sources_at'] is None or row['sources_at'] != row['at']:
+        return None
+    return json.loads(row['sources'])
 
 
 def folded(evidence):
@@ -166,7 +179,7 @@ def entries(store, guild, conversation, user, profiles=True, summaries=False, so
             if manageable(conversation, scope, profiles):
                 notes += [{**{key: r[key] for key in ('id', 'category', 'evidence', 'at', 'origin')}, 'scope': scope,
                            **({'sources': learned(r)} if sources else {})} for r in db.execute(
-                    'SELECT id,category,evidence,at,origin,sources FROM personal_notes WHERE guild_id=? AND channel_id=? '
+                    'SELECT id,category,evidence,at,origin,sources,sources_at FROM personal_notes WHERE guild_id=? AND channel_id=? '
                     'AND user_id=? ORDER BY at DESC,id DESC LIMIT ?', (guild, scope, user, limit(scope)))]
         # The profile first, then this conversation, then anywhere else; newest first within each.
         order = {SERVER: 0, conversation: 1}

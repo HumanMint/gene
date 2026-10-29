@@ -1,12 +1,14 @@
-"""The production maintenance window and the production-action log (owner policy, 2026-10-27).
+"""The production maintenance window and the production-action log (owner policy, 2026-10-27; widened 2026-10-28).
 
-Production changes start only in [04:00, 05:00) America/Los_Angeles, following daylight saving.
+Production changes start only in [03:30, 07:30) America/Los_Angeles (WINDOW), following daylight saving.
 Rollback and restoring healthy service run at any hour. An unknown clock or zone counts as closed.
 One production batch runs per local day across both routes (owner policy, 2026-10-27): the maintainer
 batch, which counts once it drains, or one approved automatic feature or repair deployment, which counts
 once claimed, whichever comes first. A critical fix (P0: a crash, data loss, a privacy leak, a broken
 rollback) is exempt from that cap, never from the window. An unknown clock, zone or history counts as used.
-ops/maintainer/batch-release.sh carries its own copy of the window and the cap, since it runs without this package.
+ops/maintainer/batch-release.sh carries its own copy of the window and the cap, and
+scripts/gene_image_retention.py its own copy of the window, since they run without this package;
+tests/test_maintenance.py keeps every copy equal to OPENS and CLOSES.
 """
 
 import argparse
@@ -22,7 +24,8 @@ from contextlib import closing
 from pathlib import Path
 
 ZONE = 'America/Los_Angeles'
-OPENS, CLOSES = dt.time(4), dt.time(5)
+OPENS, CLOSES = dt.time(3, 30), dt.time(7, 30)
+WINDOW = f'[{OPENS:%H:%M}, {CLOSES:%H:%M}) {ZONE}'
 # Automatic deployments are claimed only this long before the close, so a switch never starts after it.
 CLAIM_MARGIN = dt.timedelta(minutes=10)
 EARLIEST = 1793059200  # 2026-10-27T00:00Z: a clock before the policy existed is not trusted
@@ -43,13 +46,17 @@ def local(now=None):
         return None
 
 
+def closes(margin=dt.timedelta(0)):
+    """The local time the window closes, margin early."""
+    return (dt.datetime.combine(dt.date(2000, 1, 1), CLOSES) - margin).time()
+
+
 def is_open(now=None, margin=dt.timedelta(0)):
     """True only inside the window, ending margin before the close."""
     moment = local(now)
     if moment is None:
         return False
-    closes = (dt.datetime.combine(dt.date(2000, 1, 1), CLOSES) - margin).time()
-    return OPENS <= moment.time() < closes
+    return OPENS <= moment.time() < closes(margin)
 
 
 def day_start(now=None):

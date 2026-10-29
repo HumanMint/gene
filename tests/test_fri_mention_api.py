@@ -321,3 +321,19 @@ def test_grant_cannot_outlive_controller_main_guild_configuration(h):
                        ('/chat/research/start', {**scope, 'revision': 0, 'input': 'weather in Seoul',
                                                 'query': 'weather in Seoul'})]:
         assert post(h, path, body).status_code == 403, path
+
+
+def test_a_mention_saves_fingerprint_is_the_one_an_older_controller_kept(h):
+    """gene #97 review: the summary generation, which a mention turn never carries, isn't in its fingerprint, so a
+    retry across an upgrade or a rollback answers as the first save did."""
+    from gene.api import ChatTurn
+    from gene.fri_mentions import _hash
+    _, scope, _ = invited(h)
+    payload = turn(scope)
+    assert post(h, '/chat/turn', payload).status_code == 200
+    older = _hash(ChatTurn.model_validate(payload).model_dump_json(exclude={'summary_generation'}))
+    with h.store.connection() as db:
+        assert db.execute('SELECT turn_hash FROM mention_grants').fetchone()[0] == older
+    assert post(h, '/chat/turn', payload).status_code == 200
+    for generation in (None, 0, 7):  # Whatever it says, a field a mention never uses doesn't change it.
+        assert post(h, '/chat/turn', {**payload, 'summary_generation': generation}).status_code == 200

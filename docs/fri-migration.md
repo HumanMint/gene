@@ -90,11 +90,53 @@ built from other members' messages.
   (Fri credential, the scope of `/chat/turn` without a mention grant): `guild_id`, `channel_id`,
   `conversation_id`, `user_id` and a Discord `message_id`. It deletes that member's saved turns in
   that conversation whose source, or a message of whose burst, is that message, with any pending
-  clarification or research permit it left. It answers `{"ok": true, "removed": n}`, so a repeat is
-  harmless, and moves no revision. Fri calls it when a member's message it saved a turn for is
-  edited or deleted while withdrawn, so the old words stop coming back as history (fri #129).
-  Other members' turns that drew on the message are untouched. An older controller lacks it and Fri
-  doesn't ask.
+  clarification or research permit the message or those turns left (a burst's name its final
+  message, gene #84). The member's summary, and a build of it in flight, go too if they could have
+  read the message: it was said in a conversation the summary or build drew on, before the newest
+  exchange it read (with five minutes' allowance for clock skew), even if its turn has been trimmed
+  since (gene #83). It answers `{"ok": true, "removed": n}`, so a repeat is harmless, and moves no
+  revision. Fri calls it when a member's message it saved a turn for is edited or deleted while
+  withdrawn, so the old words stop coming back as history (fri #129). Other members' turns and
+  summaries that drew on the message are untouched, as is a summary the member wrote in My memory.
+  An older controller lacks it and Fri doesn't ask. The same transaction records a fence: the guild,
+  member and message ID, never its words, kept a week (as long as a saved exchange). A save that lands
+  afterwards for a turn whose source or burst holds that message keeps nothing and answers
+  `{"ok": true, "first_memory": false, "kept": false}`, as a turn sent before a note removal does, so a
+  save Fri timed out on can't bring the words back (gene #90). `/chat/turn/check` refuses such a turn
+  with a 409 that holds no text, and `/chat/research/start` refuses its research. Memory off and
+  "forget me" drop the member's fences; their revision moves, so a late save fails on that instead.
+- **Summary generations.** The optional `summary-generations` capability closes the gap for a reply
+  that already drew on the member summary when a withdrawal dropped it (gene #91). With `summaries`,
+  `/chat/context` returns `member_summary.generation`, an integer that moves each time a withdrawal
+  drops that member's summary (a repeat drops nothing and moves nothing). A Fri that gives its model the
+  summary sends that same integer back as a top-level `summary_generation` on every `/chat/turn/check`
+  and `/chat/turn` for that turn, and on any other check whose text drew on it. Both refuse with a 409
+  (no text) once the generation has moved, so Fri withholds the reply as for other withdrawn evidence.
+  Fri omits it when no summary reached the model; a turn without it is checked as before, so an older
+  Fri keeps working, with the gap. An older controller returns no generation, so Fri has nothing to
+  send (and an extra field would be ignored). Privacy changes delete the member's generation with
+  their summary; their revision moves at the same time, so an older turn still fails. The purge below
+  drops the generations too.
+- **What a summary-derived turn keeps.** A saved turn keeps the `summary_generation` it was sent (fri
+  #172). Whenever the member's generation moves (a withdrawal, an expiry, another member's privacy
+  change, or a rebuild that wasn't sent the earlier summary or came out empty), and when their own
+  privacy change erases the summary, every saved reply of theirs that drew on a summary is replaced in
+  the same transaction by a breadcrumb ("Earlier answer drawing
+  on an older summary of them. Nothing from it is retained here.") and marked not verbatim, and a
+  question it left pending goes. History, a reference to Fri's message and reply checks then carry
+  none of its words; the member's own words stay. A turn saved without a generation (an older Fri, or no summary in its request) is untouched.
+  A controller start retires any an older controller left behind with a moved generation during a
+  rollback window, and the purge below retires all of them first. A non-empty rebuild that was sent the
+  earlier summary keeps its origins, provenance and a later `through`, so a withdrawal of anything the
+  old one drew on still finds it: those replies move to the new generation instead of being retired,
+  and the routine daily rebuild doesn't erase Fri's side of a DM.
+- **Summary-derived writes.** The optional `summary-generation-writes` capability extends the check to
+  a tool's writes (fri #171). `/workspace/save` and `/social/reminders/prepare` take the same optional
+  top-level `summary_generation` and refuse with a 409 (no text) once it has moved, in the write's own
+  transaction, so saved work or a reminder can't keep the summary's words after their source went. It
+  stays out of their idempotency digests, so a retry with or without it answers as the first did. A
+  controller without the capability rejects the unknown field, so Fri sends it only when offered.
+  Work and reminders saved while the summary was current stay: the member asked for them.
 
 Provenance also reaches what follow-ups inherit:
 
@@ -237,7 +279,8 @@ as a recorded downgrade):
 python -m gene.fri_member_summary purge "$GENE_DB"
 ```
 
-It drops the summaries and their daily call stamps; exchanges and notes stay. Rolling back Fri alone
+It drops the summaries, their daily call stamps and their generations, and leaves each saved reply that drew on a
+summary only its breadcrumb; exchanges and notes stay. Rolling back Fri alone
 needs no cleanup: an older Fri doesn't send `summaries`, so the controller never gives it one and no
 builder runs. Summaries already stored stay unseen until a newer Fri returns, they expire (30 days),
 or the member's "forget me", memory off or Forget my chats removes them; run the purge as well if they

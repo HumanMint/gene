@@ -161,10 +161,253 @@ in the audio image for decoding, seeking, and timed sender checks without a comp
 
 ## Releases and recovery
 
+### Gene Docker image retention
+
+`scripts/gene_image_retention.py` is a standalone, root-owned host maintenance tool.
+It does not rebuild or restart Gene, change controller approvals, delete backup/source/data
+directories, or touch another application's images, containers, volumes or build cache.
+The only removable tags are `gene-runtime:<full-sha>` and `gene-worker:<full-sha>`.
+Inactivity, age and an empty tag list are never retirement evidence.
+
+**Release history.** Releases are recorded two ways, and the tool reads both:
+
+- `batch-release.sh` (the daily release): `staging/batch-<G>-<F>[-N]/manifest.json` plus its
+  `journal` (`staging/batch-<G>/` before `1ad1493`, whose manifest names no old pair). A batch is
+  in service when its journal has `gene_recorded`, `fri_switched` and `resumed`, and neither
+  `intent:rollback` nor `resumed_old`. A batch that changed Gene is one rollback level; a Fri-only
+  batch moves no Gene. These releases write no controller `deployments` row.
+- Older installs: the controller's successful `deployments` rows, with `backups/maintainer-<sha>`
+  or, for cog-only feature/repair/rollback jobs, `backups/<job>`.
+
+From the controller's `active_sha`, each step back is the latest earlier release of that SHA in
+either record; two at the same time refuse as ambiguous. The tool keeps two complete rollback
+levels behind the live release. Cog-only steps are traversed without counting. A batch level counts
+only when everything its `rollback-gene` and `resume-old` read is present and consistent:
+
+- the manifest's `old_gene`, `old_fri` and `downgrades` (a `batch-<G>` manifest has no old pair, so
+  only the older script that made it could roll it back, and it never counts);
+- the journal's `gene_attempted`, `drained`, `gene_recorded`, `fri_switched` and `resumed`;
+- every manifest tag (old and new runtime, worker and Fri) still naming its recorded image ID;
+- `baseline.json` for the old release: its `active_sha`, a `previous_sha` that is the next level's old
+  Gene, a `source` of the old release or `unmarked`, and Gene's and Fri's guild and presence;
+- the switch backup under `backups/`: `release.env`, `worker.env` and `fri-release.env` naming the
+  manifest's old pair, `fri-release.json` for the old Fri, `db/controller.sqlite3`, and
+  `installed-source/` marked as `baseline.json`'s source, with `ops/compose.yml` and
+  `ops/fri-compose.yml`;
+- `releases/<old Gene>/cogs`;
+- on the first level, the controller's `previous_sha` naming its old Gene and the live runtime and
+  worker pins naming its new images.
+
+A Fri-only batch on top of a Gene level must be undone by `rollback-fri` before that level's
+`rollback-gene` can start, since `pair_check` accepts only the level's own Fri. So every Fri-only batch
+in service above a level, newest first, must also be complete before the level counts:
+
+- the manifest's old pair, only its Fri changed, and every tag still naming its recorded image;
+- the journal's `fri_backup`, `drained`, `gene_recorded`, `fri_switched` and `resumed`;
+- `baseline.json` for its Gene, whose `previous_sha` and source are the Gene release it sits on's;
+- its backup's `fri-release.env` and `fri-release.json` naming its old Fri;
+- its Gene images being the ones that Gene release put in service.
+
+The pair must continue down the chain: each Fri-only batch's Fri is the Fri rolled back to so far, and
+each step's new images are the ones the release after it replaced. The live Fri pins must be the Fri
+of the latest batch in service. The plan lists Fri-only steps in `lineage` with `fri_only`; they don't
+count as levels.
+
+Last, each recovery must pass the checks `batch-release.sh` makes before it changes anything, on the state
+the recoveries above it leave. The tool starts from the live host (`release.env`, `secrets/worker.env`,
+Fri's `release.env` and `release.json` as bytes, the controller's `active_sha`, `previous_sha` and
+`fri_active_sha`, the source marker and the three service containers' images). It then evaluates
+`pair_check` for each `rollback-gene` and `fri_pair_check` with `gene_unmoved` for each `rollback-fri`:
+the same fields, the same byte comparisons, and the same exception that a restored record may be its
+own saved bytes. After each check passes, it applies what that rollback restores: the backup's exact
+bytes, the old images, settings and source. A saved Fri record whose `previous` doesn't match, for
+example, refuses the level whose rollback reads it next. An owner's rollback of a cog-only release
+through the deployer is followed the same way (`store.rollback`, `deploy.activate`). A feature deploy
+above a batch therefore refuses: undoing it leaves `previous_sha` at the feature, which `pair_check`
+rejects, and the batch tooling needs that reconciled by hand anyway (`baseline` refuses it too). A
+legacy install's rollback has no script to mirror, so nothing below it is simulated. Bytes are only
+compared, never printed or stored.
+
+Every rollback is simulated through to its end, reading files the way the script does:
+
+- **Source.** `rollback-gene`'s source step moves a source marked with G aside, renames `installed-source`
+  into place, and stops unless `source_state` then equals `baseline.json`'s source. The tool simulates
+  that step too.
+  - Markers are read as `$(source_state)` yields them: `[[ -f ]]` and `cat` follow symlinks, and command
+    substitution drops NUL bytes and trailing newlines and nothing else. So a CRLF or space-padded marker
+    reads as the script reads it.
+  - `rename(2)` moves entries as they are, so a symlink at `installed-source`, its `.release-sha`, `ops/`
+    or the compose files refuses. Those would point elsewhere once moved.
+- **`verify old`.** It ends `rollback-gene`, `rollback-fri` and `resume-old`, and checks the restored
+  pins, Fri record, settings, source and images as `state()` reads them: env lines split once with
+  nothing stripped, and `grep -Fx` for the worker pin. Health is the live release's own and isn't
+  simulated.
+- **Journals.** Phases ask `has`, which is `grep -x` on whole lines, so `resumed\r` is not `resumed`. Only
+  `cleanup`'s keep rule splits on whitespace, and the tool mirrors each where it applies.
+- **Downgrades.** Only modules `downgrade_step` knows count. The manifest's backup path is used as written,
+  so it must already be canonical.
+- **Types.** Persisted fields must have the JSON types the script writes. In the manifest, SHAs, tags, image
+  IDs, the backup path and downgrades are strings. In `baseline.json`, the settings are the controller's
+  text, guild IDs are `str(guild_id)`, and presence is the health files' `str(status)`. A number that only
+  prints the same doesn't count: `jget` prints it, `settings_transition` stores the text, and `verify old`
+  then compares text with a number. The simulation restores settings the same way.
+
+The tests run `batch-release.sh`'s own shell functions on every state the tool simulates: `state`,
+`pair_check`, `fri_pair_check`, `gene_unmoved`, `rollback-gene`'s source lines, the settings writers
+(`old_fri_pinned`, `set_fri_active`, `settings_transition`, on a scratch DB), and `verify`. Only Docker,
+curl and the controller DB read are stubbed. If either side changes how it reads these files, the
+tests catch the drift. A legacy maintainer level is complete with
+`installed-source/`, `controller.sqlite3`, `red.tar.gz`, `fri.tar.gz`, pins naming the previous
+release, and its cogs. An incomplete level inside the two protected levels refuses and names what
+is missing; levels beyond them are not consulted.
+
+A malformed, unreadable or symlinked record, an unrecognized `staging/batch-*` directory, a missing
+or retagged image, an incomplete backup, disagreeing pointers or pins, a live release whose batch
+rolled back or never recorded its switch, and ambiguous history all refuse (exit 1). A batch in
+flight (drained or paused without resuming, or mid-rollback), a running batch command, a Gene build
+or deployment, a Docker build, a pending deployment receipt or another retention run skip the run
+instead (exit 4): nothing changes and the next window tries again.
+
+**The batch lock.** A run, plan or apply, takes `batch-release.sh`'s own lock, `/srv/gene/batch-release.lock`
+(`flock` exclusive, non-blocking), and holds it from discovery through the last removal. If a batch
+command holds it, the run skips. While retention holds it, a batch command that starts, recovery
+included, stops at its lock check (`another batch-release command ... still is running`, exit 1,
+logged `failed: exit 1`) before it reads or changes anything; `fuser -v` shows the holder, and the
+command is repeated once retention finishes. So nothing a batch stages can name an image mid-removal.
+To keep that wait short, a run gives the lock back within 10 minutes of taking it, measured on a
+monotonic clock. Every command it starts, discovery and planning included, times out at the time left;
+when that runs out it stops without saving a plan and skips (exit 4). A removal starts only with two
+minutes left, so the rest wait for the next window (`deferred`). The service's 20-minute timeout bounds
+anything else.
+
+**What it keeps and what it removes.** It removes a release tag only with supersession evidence
+past a 24-hour grace period: a successful deployment's backup, a batch in service (its old Gene
+images retired when it resumed, dated by its journal), a configured version the tool saw replaced,
+or an explicit `retired_images` entry. A batch is evidence only when its record checks out: its old
+pair is that release's own `gene-runtime:<old>` and `gene-worker:<old>` tags, still naming the recorded
+image IDs, and its switch backup's pins name the same pair. Otherwise it supersedes nothing. It always keeps container references (including stopped
+containers), the current pins and running services' images, every image of both rollback levels,
+pending proposal/approval versions, holds, configured references, audio and other repositories.
+It also keeps every image in the manifests of the three most recently resumed batches and of any
+unfinished batch, which is `batch-release.sh cleanup`'s own keep rule (`KEEP_RELEASES`, default 3),
+so the two tools never disagree about a rollback. Reactivation renews the grace period.
+
+Ownership between the two cleanups (owner request, gene #76):
+
+- `fri-runtime:<sha>` release tags belong to `batch-release.sh cleanup`. This tool never removes
+  them; its plan lists them as kept, with that reason.
+- `cleanup` removes release tags with a plain `docker image rm`, so Docker also prunes that image's
+  unnamed parents. This tool removes with `--no-prune`, then only the exact unnamed ancestors it
+  recorded from a retired Gene image before untagging it. Tagged ancestors stay. If Docker keeps a
+  retired runtime object after its last managed tag for worker children, that recorded ID stays
+  eligible for a later plan. Exact-ID removal intent is synced before invoking Docker.
+- Untagged objects neither tool recorded (dangling rebuilds, intermediates of kept images) are never
+  removed automatically. The plan names each one either the parent of a kept image or unclassified,
+  for a maintainer to review separately rather than widening the deletion rule.
+- There is no `docker system prune`, no forced removal, and no implicit parent prune. Docker's normal
+  dependency checks keep any parent with remaining children or containers.
+
+**The plan.** Every run writes `image-retention-plan.json` (version 2) before it removes anything:
+`delete` (exact image IDs, their tags, evidence and retirement time), `delete_parents` (exact
+unnamed ancestor IDs), `keep` (every image object `docker image ls -a` lists, with the reasons it
+stays), `keep_summary` (counts by first reason), `lineage` (each rollback level and its record),
+`live`, `deletion` (`enabled`, `disabled in the policy` or `plan only`) and `bytes`. A planned image
+a kept image is built on carries `docker_keeps`. `bytes` counts the layer bytes the removals free
+without counting a shared layer twice: images share a layer only at the same place in their chain,
+an image's size fixes the cumulative size where its chain ends, and the removals free the chain
+prefixes no kept image uses. Where no image ends at a prefix (BuildKit leaves no intermediates)
+its size is bounded by the images around it, so the plan gives `lower_bytes` and `upper_bytes`,
+equal (`exact`) once every prefix is known. They assume every removal succeeds, and they are
+Docker's uncompressed sizes: with the containerd image store, compressed blobs are freed too.
+Measure `df` before and after. Docker's own reclaimable figure is not used.
+
+**Schedule and the window.** The timer starts the service daily at 07:10 America/Los_Angeles, late in
+the window so the day's batch has usually resumed, with up to five minutes' delay and no catch-up
+(`Persistent=false`), so its hold on `batch-release.lock`, ten minutes at most, ends by the close.
+Planning and removal both run only inside the maintenance window, [03:30, 07:30): a plan run takes
+the tool's lock and writes the plan and status files, so it is a production action too. Outside the window a run takes no lock, writes
+nothing but its log line and exits 4; `MAINTENANCE_EXCEPTION='<who, when, why>'`, on the owner's
+explicit words, lets it run and is logged. The window is checked again right before each Docker removal, after
+that image's inspection and recorded intent; at the close the rest wait for the next window (`deferred`). Removal needs both `--apply` (the service
+passes it) and `"apply_enabled": true` in the policy. Without the policy flag every run only plans,
+so a newly installed or repaired tool removes nothing until a maintainer has reviewed its plan.
+
+**Health.** Each run inside the window updates `image-retention-status.json`: the last run (mode,
+outcome `ok`, `skipped` or `failed`, detail), the last success with its exact plan and removals, and
+the failures since. `gene_image_retention.py --status` is read-only (no lock, no writes, no
+container), so it can run at any hour. It combines that record with the timer's and service's
+systemd state and reports `status`: `ok`, `failing` (the last service run failed, or a run failed since the last success: a skip clears nothing),
+`disabled` (the timer is not enabled and active), `never-run`, `stale` (no success for 50 hours, two
+missed windows) or `unknown`, with `healthy`, `reasons` and `last_success_at`. It exits 0 only when
+healthy. An enabled timer whose service keeps failing reads as failing, not healthy.
+
+**Production-action log.** Every run, refused, skipped, failed or successful, appends one line to
+`/srv/gene/production-actions.jsonl` beside `batch-release.sh`'s and the deployer's: local time and
+zone, actor, trigger, `image-retention plan|apply`, reason, live Gene/Fri SHAs (unchanged by this
+tool), duration, outcome, exception, the maintenance release, and the exact planned and removed
+tags and IDs. It holds no secrets or member content. It only appends; the release tools trim it.
+
+The maintenance policy and state live privately under `/srv/gene/maintenance/`:
+
+- `image-retention-policy.json`: version 1, `keep_images` (explicit planned/on-demand image
+  references or IDs), `retired_images` (exact image IDs with `tags`, `retired_at`, and
+  `evidence`) and `apply_enabled` (default false).
+- `image-retention-state.json`: previously configured versions, retirement evidence, removal intents
+  and recorded ancestors. Only a removal run updates it.
+- `image-retention-plan.json`, `image-retention-result.json` and `image-retention-status.json`: the
+  latest plan, removals and health record. They contain image metadata, never environment
+  credentials or conversation data.
+- `image-retention.lock`: held across discovery and cleanup.
+
+The hardened service allows controller-directory access for SQLite's WAL shared-memory and
+locking files, and appends to the action log. Controller queries use `mode=ro` and `query_only`;
+retention does not modify requests, approvals, usage, conversations or release records. Do not use
+SQLite `immutable=1` or copy an active database without its WAL to work around reader access, since
+that could hide current release references. Env files are read only for `*_IMAGE` and release SHA
+lines, never printed.
+
+The tool holds `batch-release.lock` for its whole run (above), skips while a batch is in flight, and
+rechecks every reference, the staging journals included, before each removal. Before planning to reuse an old version, add its tag or exact image
+ID to `keep_images`, and keep that hold until the function is retired. Never authorize image deletion
+from Discord text, imported history, or a feature job.
+
+**Install or update, in the window only.** Install the reviewed script in an immutable directory
+`/srv/gene/maintenance/releases/<maintenance-sha>/gene_image_retention.py` and point `current` to it;
+record the maintenance SHA separately from the running bot SHA. Install the two unit files, then
+check them: `systemd-analyze verify` and `systemd-analyze calendar '*-*-* 07:10 America/Los_Angeles'`
+(a zone in `OnCalendar` needs systemd 235 or later), then `systemctl daemon-reload`. Run a plan:
+
+```sh
+sudo python3 /srv/gene/maintenance/current/gene_image_retention.py
+```
+
+It takes `maintenance/image-retention.lock` and `batch-release.lock` for its run, writes `image-retention-plan.json` and
+`image-retention-status.json`, and appends one action-log line. It reads Docker metadata, the
+controller DB read-only and the staging records; it starts no container and removes nothing.
+Review the plan; only then set `"apply_enabled": true` in the policy, in a window, and log it.
+To disable retention, stop/disable only `gene-image-retention.timer` and wait for any current
+oneshot service to finish. Preserve its policy and audit files. The bot's services and the
+retained rollback bundles do not depend on this maintenance tool.
+
+Bot releases never install or update this tool or its systemd units. Updating retention needs a
+separate maintenance installation. Stop the old timer and wait for any active oneshot before
+switching the script and matching units together; preserve the old selector, units, policy and
+state for recovery. Keep `apply_enabled` false until the new installation's exact plan is reviewed.
+Enabling it authorizes future daily deletion of proven retired images under the same protections;
+it is not approval for a broader prune. Check `--status` alongside bot health after releases.
+
+**Build storage.** The runtime Dockerfiles install frozen third-party dependencies before copying
+source, so source-only releases reuse those layers. Build-time uv downloads use a temporary cache
+instead of retaining a second copy in each image. Gene's runtime and worker targets and Fri's
+runtime keep their existing names and UID 10001. CI checks the installed runtime and offline worker
+and compares actual image layers after a source-only rebuild. A dependency or base-image change
+can still add a large layer set: check filesystem headroom before staging, then check retention
+health after cleanup. These cache changes do not authorize deletion of existing unclassified images.
+
 ### Maintainer work requested in Codex
 
 The owner's direct request in this Codex chat authorizes implementation and deployment
-without a second approval, inside the production maintenance window: [04:00, 05:00)
+without a second approval, inside the production maintenance window: [03:30, 07:30)
 America/Los_Angeles, one production batch a day across the maintainer batch and automatic
 deployments, unless it's a critical fix (`ops/maintainer/batch-release.md`). Test the change, commit and push it, record the complete
 release SHA, and retain the GitHub diff for review. Do not automatically merge to `main`.

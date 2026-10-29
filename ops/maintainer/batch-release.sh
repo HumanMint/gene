@@ -8,7 +8,9 @@
 # Prints no secrets: env files are passed to Docker, copied or compared, never read into output.
 # Every controller DB access runs as the DB owner in a throwaway container of the old runtime
 # image, so no root SQLite client leaves journal files the controller cannot open, and none
-# of it needs a working controller.
+# of it needs a working controller. The one exception is the daily cap's read-only check
+# (drained_today), which runs before anything else: a read-only connection creates no journal,
+# and SQLite gives a shared-memory file it creates as root to the DB owner.
 set -Eeuo pipefail
 umask 077
 
@@ -72,8 +74,15 @@ downgrade_step() {  # module db docker-run-words...: remove the module's data fo
     *) die "no downgrade step for $module" ;;
   esac
 }
-owns_pause() {  # This release paused development and has not unpaused it since.
-  [[ -f $JOURNAL && $({ grep -x -e intent:pause -e done:unpause "$JOURNAL" || true; } | tail -n 1) == intent:pause ]]
+pause_mark() {  # The journal's latest pause line, empty when this release never paused. skipped:pause: its
+  # fence found development already paused, by someone else, so that pause was never its own.
+  [[ -f $JOURNAL ]] || return 0
+  { grep -x -e intent:pause -e done:unpause -e skipped:pause "$JOURNAL" || true; } | tail -n 1
+}
+owns_pause() { [[ $(pause_mark) == intent:pause ]]; }  # This release paused development and has not unpaused it since.
+pause_id() {  # The audit id of this release's latest pause; empty when it was killed before journaling it
+  [[ -f $JOURNAL ]] || return 0
+  awk '$0 == "intent:pause" {id = ""} /^paused:[0-9]+$/ {id = substr($0, 8)} END {print id}' "$JOURNAL"
 }
 jget() {  # file dotted.key
   python3 -c 'import json, sys
@@ -122,17 +131,33 @@ db_owner() {  # uid:gid of the controller DB; its directory must agree, since SQ
   echo "$owner"
 }
 
+sidecar_owner() {  # file: its uid:gid, or nothing when it is gone; fails on any other read error
+  # A running controller's SQLite removes and recreates the DB's journal files at any moment, so each is
+  # read once. stat's own "no such file" means it was gone then, even if a new one has appeared since:
+  # the controller made that one, as the DB owner (2026-10-28: an -shm gone at stat was back at a recheck).
+  # Any other failure (an I/O error, say) is the caller's to stop on: it returns non-zero rather than
+  # dying in a subshell.
+  local out
+  if out=$(LC_ALL=C stat -c %u:%g "$1" 2>&1); then echo "$out"; return 0; fi
+  [[ $out == *'No such file or directory'* ]]
+}
+
 repair_sidecars() {
   # gene.fri_release opens the DB as root. SQLite normally hands new journal files to the DB owner,
   # but a build without that would leave root-owned ones the owner-run helpers can't open, so every
   # DB access first gives them back. The read-only phases leave them alone and fail visibly instead.
   [[ $PHASE == baseline || $PHASE == status ]] && return 0
-  local owner file
+  local owner file current
   owner=$(db_owner)
   for file in "$DB-wal" "$DB-shm" "$DB-journal"; do
-    if [[ -e $file && $(stat -c %u:%g "$file") != "$owner" ]]; then
-      log "giving ${file##*/} back to the database owner" >&2
-      chown "$owner" "$file"
+    current=$(sidecar_owner "$file") || die "could not read the owner of ${file##*/}"
+    [[ -n $current && $current != "$owner" ]] || continue
+    log "giving ${file##*/} back to the database owner" >&2
+    if ! chown "$owner" "$file"; then
+      # Removed meanwhile, or already replaced by the owner's own: nothing is left to repair.
+      current=$(sidecar_owner "$file") || die "could not read the owner of ${file##*/}"
+      [[ -z $current || $current == "$owner" ]] || die "could not give ${file##*/} back to the database owner"
+      log "${file##*/} was removed or replaced meanwhile; nothing to repair" >&2
     fi
   done
 }
@@ -197,18 +222,105 @@ print('release settings recorded', dict(db.execute(keys)))
 PY
 }
 
-set_paused() {  # true|false: the writes Store.set_paused makes, without needing the controller
-  db_py "$1" <<'PY'
+pause_development() {  # The writes Store.set_paused makes, without needing the controller, only if development
+  # is still unpaused: checked and changed in one transaction, so an owner's /pause since the fence read the
+  # setting stays theirs. The audit row names this batch, and its id goes in the journal: unpause_if_ours
+  # lifts only that pause.
+  local id rc=0
+  id=$(db_py "${STAGE##*/}" <<'PY'
 import sqlite3, sys, time
-paused = sys.argv[1] == 'true'
 db = sqlite3.connect('/data/gene.sqlite3', timeout=30, isolation_level=None)
 db.execute('BEGIN IMMEDIATE')
-if db.execute("UPDATE settings SET value=? WHERE key='paused'", ('true' if paused else 'false',)).rowcount != 1:
-    raise SystemExit('the controller has no paused setting')
-db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
-           (time.time(), 'maintainer:claude', 'pause' if paused else 'resume', '', ''))
-db.execute('COMMIT')
-print('development paused =', sys.argv[1])
+try:
+    row = db.execute("SELECT value FROM settings WHERE key='paused'").fetchone()
+    if row is None or row[0] not in ('true', 'false'):
+        raise SystemExit('unexpected paused setting: '+repr(row))
+    if row[0] == 'true':  # Paused since the fence looked: that pause is not this batch's.
+        db.execute('ROLLBACK')
+        sys.exit(3)
+    db.execute("UPDATE settings SET value='true' WHERE key='paused'")
+    audit = db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
+                       (time.time(), 'maintainer:claude', 'pause', sys.argv[1], '')).lastrowid
+    db.execute('COMMIT')
+except BaseException:
+    if db.in_transaction:
+        db.execute('ROLLBACK')
+    raise
+print(audit)
+PY
+  ) || rc=$?
+  if (( rc == 3 )); then
+    mark skipped:pause
+    log 'development was paused meanwhile by someone else; that pause stays theirs'
+    return 0
+  fi
+  if (( rc != 0 )) || [[ ! $id =~ ^[0-9]+$ ]]; then die "could not pause development: ${id:-no answer from the controller DB}"; fi
+  mark "paused:$id"
+  log "development paused (audit $id)"
+}
+
+unpause_if_ours() {  # Unpause only while this batch's pause is still the latest pause or resume, checked and
+  # changed in one transaction, so a pause the owner made since (/pause) stays. Exit 3: left as it is, and why.
+  # The baseline's time bounds a pause from the script before audit ids (8deef14), whose row names no batch.
+  db_py "$(pause_id)" "${STAGE##*/}" "$(stat -c %Y "$BASELINE" 2>/dev/null || true)" <<'PY'
+import sqlite3, sys, time
+mine, stage, baseline = sys.argv[1:4]
+db = sqlite3.connect('/data/gene.sqlite3', timeout=30, isolation_level=None)
+db.execute('BEGIN IMMEDIATE')
+try:
+    latest = db.execute("SELECT id,action,actor,target,at FROM audit WHERE action IN ('pause','resume') "
+                        'ORDER BY id DESC LIMIT 1').fetchone()
+    # A repeat of a resume killed before its journal line: the latest resume is this batch's own.
+    if latest is not None and latest[1:4] == ('resume', 'maintainer:claude', stage):
+        db.execute('ROLLBACK')
+        print(f'development already resumed by this batch (audit {latest[0]})')
+        sys.exit(0)
+    if latest is None or latest[1] != 'pause':
+        ours = False
+    elif mine:
+        ours = latest[0] == int(mine)
+    else:  # No id journaled: a pause killed before its id reached the journal is known by the batch its row
+        # names. One from the script before audit ids names none: it counts if made since this batch's baseline.
+        ours = latest[2] == 'maintainer:claude' and (latest[3] == stage or (
+            latest[3] == '' and baseline.isdigit() and latest[4] >= int(baseline)))
+    if not ours:
+        db.execute('ROLLBACK')
+        if latest is None:
+            print('no pause or resume is recorded, so development is left as it is')
+        elif latest[1] == 'pause':
+            print(f"development stays paused: the latest pause (audit {latest[0]}) is not this batch's")
+        else:
+            print(f'development was resumed (audit {latest[0]}) after this batch paused it, and is left as it is')
+        sys.exit(3)
+    if db.execute("UPDATE settings SET value='false' WHERE key='paused'").rowcount != 1:
+        raise SystemExit('the controller has no paused setting')
+    db.execute('INSERT INTO audit(at,actor,action,target,detail) VALUES (?,?,?,?,?)',
+               (time.time(), 'maintainer:claude', 'resume', stage, f'lifts the pause in audit {latest[0]}'))
+    db.execute('COMMIT')
+except BaseException:
+    if db.in_transaction:
+        db.execute('ROLLBACK')
+    raise
+print(f"development resumed: this batch's pause (audit {latest[0]}) was still the latest")
+PY
+}
+
+pause_kept() {  # Why development is still paused when this batch doesn't own the pause; nothing when it isn't
+  # paused. Reporting only: the pause stays, whoever made it.
+  db_py "$(pause_mark)" <<'PY'
+import sqlite3, sys
+from contextlib import closing
+with closing(sqlite3.connect('file:/data/gene.sqlite3?mode=ro', uri=True, timeout=30)) as db:
+    paused = db.execute("SELECT value FROM settings WHERE key='paused'").fetchone()
+    latest = db.execute("SELECT id FROM audit WHERE action='pause' ORDER BY id DESC LIMIT 1").fetchone()
+if paused is None or paused[0] != 'true':
+    sys.exit(0)
+if latest is None:
+    print('development stays paused: no pause is in the audit, and this batch never paused it')
+elif sys.argv[1] == 'skipped:pause':
+    print(f'development stays paused: someone else paused it first (audit {latest[0]}), so this batch never took a pause of its own')
+else:
+    print(f"development stays paused: the latest pause (audit {latest[0]}) is not this batch's")
 PY
 }
 
@@ -520,7 +632,21 @@ for dev, (path, size, labels) in need.items():
         sys.exit('not enough disk on '+path)
 PY
 }
-du_bytes() { du -sb "$1" | cut -f1; }
+du_bytes() {  # path: its size in bytes
+  # A file removed while du walks the tree, such as a running controller's SQLite journal, makes du
+  # fail after it prints the total; that file just isn't counted, even if a new one appears since. Any
+  # other error (a permission or I/O error, which would undercount) stops the script.
+  local size errors line re="^du: cannot access '.*': No such file or directory$"
+  errors=$(mktemp)
+  size=$(LC_ALL=C du -sb "$1" 2>"$errors" | cut -f1) || true
+  while IFS= read -r line; do
+    [[ $line =~ $re ]] && continue
+    rm -f "$errors"; die "could not measure $1: $line"
+  done < "$errors"
+  rm -f "$errors"
+  [[ $size =~ ^[0-9]+$ ]] || die "could not measure $1"
+  echo "$size"
+}
 
 rename_tree() {  # src dst: a single rename(2) that fails rather than copying; dst must not exist
   python3 - "$1" "$2" <<'PY'
@@ -582,10 +708,11 @@ baseline() {
   for tool in docker flock python3 sha256sum tar cmp; do command -v "$tool" > /dev/null || die "$tool is missing"; done
   [[ $OLD_G =~ ^[0-9a-f]{40}$ && $OLD_F =~ ^[0-9a-f]{40}$ ]] || die 'the release.env files do not name the live Gene and Fri'
   gene_changes || fri_changes || die "Gene ${G:0:7} and Fri ${F:0:7} are already live; nothing to release"
-  local owner file
+  local owner file current
   owner=$(db_owner)
   for file in "$DB-wal" "$DB-shm" "$DB-journal"; do
-    [[ ! -e $file || $(stat -c %u:%g "$file") == "$owner" ]] || die "${file##*/} is not owned by the database owner"
+    current=$(sidecar_owner "$file") || die "could not read the owner of ${file##*/}"
+    [[ -z $current || $current == "$owner" ]] || die "${file##*/} is not owned by the database owner"
   done
   mkdir -p "$STAGE"; chmod 700 "$ROOT/staging" "$STAGE"
   local snapshot runtime_tag fri_tag
@@ -838,13 +965,15 @@ state_value() {  # dotted.key of a fresh state read; use it in an assignment, so
 
 fence() {  # Pause new work, let current work finish, then stop the worker and deployer.
   # Checked against the live setting every time, so a fence after resume pauses again. The intent
-  # line is the ownership record: resume unpauses only while the latest pause in the journal is ours.
+  # line and the pause's audit id are the ownership record: resume unpauses only while the latest pause
+  # in the journal is ours and the controller has recorded no pause or resume after it. The pause itself
+  # rechecks the setting, so one made between this read and it is never taken for ours.
   local paused busy waited=0
   paused=$(state_value settings.paused)
   [[ $paused == true || $paused == false ]] || die "unexpected paused setting: $paused"
   if [[ $paused == false ]]; then
     mark intent:pause
-    set_paused true
+    pause_development
   fi
   while true; do
     busy=$(state_value busy_jobs)
@@ -869,9 +998,9 @@ drain() {
     # batch changed nothing but the fence, and the deployment may have moved Gene, so development
     # resumes as it is, without the old-pair check resume-old makes. The batch never goes forward.
     if [[ -z $EXCEPTION && -z $CRITICAL ]] && used=$(drained_today); then
-      resume_services "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)"
-      mark resumed_old
-      die "today's batch was used during the drain ($used); development resumed as it was, and this pair waits for a later day"
+      log "today's batch was used during the drain ($used)"
+      resume_as_is
+      die "today's batch was used during the drain ($used); $(resumed_as), and this pair waits for a later day"
     fi
     audit "$DRAINED" "${STAGE##*/}"  # Before the journal line, so a drained batch always holds the controller's claims.
     mark drained
@@ -1221,14 +1350,45 @@ PY
 }
 
 resume_services() {  # gene_sha
-  systemctl start gene-worker gene-deployer
+  systemctl start gene-worker gene-deployer || die 'the worker and deployer did not start'
   systemctl is-active -q gene-worker || die 'gene-worker did not start'
   systemctl is-active -q gene-deployer || die 'gene-deployer did not start'
+  local said rc=0
   if owns_pause; then
-    set_paused false
-    mark done:unpause
+    said=$(unpause_if_ours) || rc=$?
+    case $rc in
+      0) mark done:unpause; log "$said" ;;
+      3) NOTE=$said; log "$said" ;;  # The log line and the exit message carry it too.
+      *) die "could not resume development: ${said:-no answer from the controller DB}" ;;
+    esac
+  elif said=$(pause_kept); then  # Someone else's pause stays, and is said the same way.
+    if [[ -n $said ]]; then NOTE=$said; log "$said"; fi
+  else
+    NOTE='development was left as it was, and whether it is still paused could not be read'
+    log "WARN: $NOTE"
   fi
   audit maintainer_services_resumed "$1"
+}
+resume_as_is() {  # After a fence that Gene may have moved under (a deployment landing during its wait): this
+  # batch changed nothing but the fence, so development goes back as it is, without the old-pair check. The
+  # stop is journaled before anything is restored: if restoring stops, resume-old replays it, at any hour.
+  local live
+  aborting || mark intent:abort
+  live=$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)
+  log "resuming development as it is, at Gene ${live:0:7}"
+  resume_services "$live"
+  mark resumed_old
+}
+aborting() {  # A stop after a fence whose restore hasn't finished
+  [[ -f $JOURNAL && $({ grep -x -e intent:abort -e resumed_old "$JOURNAL" || true; } | tail -n 1) == intent:abort ]]
+}
+gene_moved() {  # The live Gene isn't the old release: before a batch drains, only a deployment moves it
+  local live
+  live=$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)
+  [[ $live =~ ^[0-9a-f]{40}$ && $live != "$OLD_G" ]]
+}
+resumed_as() {  # How development came back, for an exit message
+  if [[ -n $NOTE ]]; then echo "the worker and deployer are running again, but $NOTE"; else echo 'development resumed as it was'; fi
 }
 
 write_result() {  # The deployer's receipt for this release; a repeat accepts the same receipt.
@@ -1294,6 +1454,9 @@ resume_old() {
   check_manifest
   if has gene_attempted && ! has gene_rolled_back; then die 'a Gene switch was attempted; run rollback-gene first'; fi
   touched || die "phase needs 'drained' first"  # A drain that timed out after pausing still resumes here.
+  # A stop after a fence whose restore didn't finish, or a batch that never drained and whose Gene a deployment
+  # has moved since: the old pair is gone, and the batch changed nothing but its fence.
+  if aborting || { ! has drained && gene_moved; }; then resume_as_is; return; fi
   if ! has intent:services_old; then
     verify old
     mark intent:services_old
@@ -1361,14 +1524,15 @@ rollback_fri() {
   # actual state through the backup the fri phase took, so it is safe to repeat.
   gene_changes && die 'this release changes Gene; rollback-gene puts the old Fri back first'
   need fri_backup; check_manifest
+  aborting && die 'nothing was changed: an earlier rollback-fri stopped before it restored development, so run resume-old first'
   fri_pair_check
   gene_unmoved || die 'nothing was changed'
   fence
   lock_fri
   fri_pair_check  # The fence can wait for a deployment that lands a third Fri,
   if ! gene_unmoved; then  # or a Gene release: development goes back as it was, with Fri untouched.
-    resume_services "$G"
-    die 'Gene moved during the fence; Fri was not changed and the worker and deployer are running again'
+    resume_as_is
+    die "Gene moved during the fence; Fri was not changed and $(resumed_as)"
   fi
   has intent:rollback || mark intent:rollback  # From here on, only a repeat of rollback-fri finishes it.
   restore_old_fri
@@ -1436,30 +1600,34 @@ cleanup() {
   done
 }
 
-# Production maintenance window (owner policy, 2026-10-27). Forward phases start only in [04:00, 05:00)
-# America/Los_Angeles, following daylight saving, and one production batch runs per local day across
+# Production maintenance window (owner policy, 2026-10-27; widened 2026-10-28). Forward phases start
+# only in WINDOW, following daylight saving, and one production batch runs per local day across
 # both routes: a batch that drains here, or an automatic feature or repair deployment. A wait that
 # crosses the close takes the batch's safe path instead of switching. Recovery runs at any hour, and
 # an unknown clock or zone counts as closed. MAINTENANCE_EXCEPTION carries the owner's explicit
 # exception; CRITICAL_FIX, a P0 fix's reason, lifts only the daily cap. The log records both.
-# src/gene/maintenance.py holds the same window and cap for the deployer.
+# src/gene/maintenance.py holds the same window and cap for the deployer; tests/test_maintenance.py
+# keeps WINDOW_OPENS and WINDOW_CLOSES equal to its OPENS and CLOSES.
+WINDOW_OPENS=03:30
+WINDOW_CLOSES=07:30
+WINDOW="[$WINDOW_OPENS, $WINDOW_CLOSES) America/Los_Angeles"
 ACTIONS=$ROOT/production-actions.jsonl
 EXCEPTION=${MAINTENANCE_EXCEPTION:-}
 CRITICAL=${CRITICAL_FIX:-}
 [[ $CRITICAL =~ [^[:space:]] ]] || CRITICAL=''  # A blank reason is no reason.
 DRAINED=batch_drained  # The controller's audit action for a drained batch: maintenance.DRAINED holds claims for the day.
 STARTED_AT=$(date +%s 2>/dev/null || true)  # Instrumentation only: an unreadable clock never blocks recovery.
-RESTART_S='' REFUSED=''
+RESTART_S='' REFUSED='' NOTE=''  # NOTE: why resume_services left development as it was
 now_epoch() { TZ=UTC date +%s; }  # The window's clock; the offline tests shift only this call.
 window() {  # epoch: "open|closed <local date> <local time>"; fails on an unknown zone or clock
-  python3 - "$1" <<'PY'
+  python3 - "$1" "$WINDOW_OPENS" "$WINDOW_CLOSES" <<'PY'
 import datetime as dt, sys
 from zoneinfo import ZoneInfo
-stamp = int(sys.argv[1])
+stamp, opens, closes = int(sys.argv[1]), dt.time.fromisoformat(sys.argv[2]), dt.time.fromisoformat(sys.argv[3])
 if stamp < 1793059200:  # 2026-10-27T00:00Z: a clock that reads earlier than the policy is wrong
     sys.exit('the clock reads before 2026-10-27')
 local = dt.datetime.fromtimestamp(stamp, ZoneInfo('America/Los_Angeles'))
-print('open' if dt.time(4) <= local.time() < dt.time(5) else 'closed', local.date().isoformat(), local.isoformat())
+print('open' if opens <= local.time() < closes else 'closed', local.date().isoformat(), local.isoformat())
 PY
 }
 window_open() {
@@ -1486,14 +1654,18 @@ closed_during() {  # what: true, with a note, when the window closed during this
   log "the maintenance window closed during $1: no switch starts now; taking this batch's safe path"
 }
 drained_today() {  # True, naming why, when today's batch is used: another batch drained, or an automatic
-  # feature or repair deployment ran, on today's local date. Anything unknown counts as used.
+  # feature or repair deployment ran, on today's local date. Anything unknown counts as used. The
+  # controller's own deployment record decides for automatic deployments, as /deploy/claim's cap does
+  # (maintenance.batch_used); the action log only adds the lines a deployer wrote.
   local now rc=0
   now=$(now_epoch) && [[ $now =~ ^[0-9]+$ ]] || { echo 'the clock is unknown'; return 0; }
-  python3 - "$now" "$ROOT/staging" "$STAGE" "$ACTIONS" <<'PY' || rc=$?
-import datetime as dt, glob, json, os, re, sys
+  python3 - "$now" "$ROOT/staging" "$STAGE" "$ACTIONS" "$DB" <<'PY' || rc=$?
+import datetime as dt, glob, json, os, re, sqlite3, sys
+from contextlib import closing
+from pathlib import Path
 from zoneinfo import ZoneInfo
 zone = ZoneInfo('America/Los_Angeles')
-now, staging, stage, actions = int(sys.argv[1]), *sys.argv[2:5]
+now, staging, stage, actions, database = int(sys.argv[1]), *sys.argv[2:6]
 today = dt.datetime.fromtimestamp(now, zone).date()
 deployment = re.compile(r'deploy (\S+) job \S+$')  # gene.deploy's line, whatever its outcome
 def day(stamp):  # A deployment's local date from its time with offset; an undated one counts as today.
@@ -1528,6 +1700,19 @@ for journal in glob.glob(staging+'/batch-*/journal'):
     if today.isoformat() in dates:
         print('a batch already drained today:', os.path.basename(path))
         sys.exit(0)
+# Every deployment claimed since local midnight but a rollback, whatever its outcome, also one whose job is
+# gone or one dated later (the clock went back). Read-only (mode=ro): a missing DB is an error, never created.
+since = dt.datetime.combine(today, dt.time(0), tzinfo=zone).timestamp()
+try:
+    with closing(sqlite3.connect(Path(database).absolute().as_uri()+'?mode=ro', uri=True, timeout=30)) as db:
+        claimed = db.execute("SELECT d.job_id, j.kind FROM deployments d LEFT JOIN jobs j ON j.id=d.job_id "
+                             "WHERE d.at>=? AND j.kind IS NOT 'rollback' ORDER BY d.at LIMIT 1", (since,)).fetchone()
+except sqlite3.Error as exc:
+    print(f"the controller's deployment history could not be read ({exc}), so today's batch counts as used")
+    sys.exit(0)
+if claimed:
+    print('the controller claimed an automatic deployment today:', claimed[1] or 'unrecorded', 'job', claimed[0])
+    sys.exit(0)
 sys.exit(3)
 PY
   case $rc in
@@ -1536,9 +1721,10 @@ PY
     *) echo "today's batches could not be read"; return 0 ;;
   esac
 }
-touched() { has drained || has intent:pause; }  # This batch has paused development, or begun to.
+touched() { has drained || has intent:pause || has intent:abort; }  # This batch has fenced development, or begun to.
 safe_path() {  # What this batch may do outside the window, from its journal.
   if ! touched; then echo 'Production is untouched; start again in the next window.'
+  elif aborting; then echo 'Run resume-old: it resumes development as it is, without the old-pair check.'
   elif has resumed || has resumed_old; then echo 'This batch has resumed; cleanup waits for the next window.'
   elif latest evaluated; then echo 'Its evals passed: verify-off, then resume, run at any hour (or roll back).'
   elif latest evals_ran; then echo 'Its evals ran with failures: under the eval rule, accept-evals (EVALS_ACCEPTED=<why>), verify-off and resume, or roll back.'
@@ -1560,8 +1746,11 @@ gate() {
   if has resumed_old && [[ $PHASE =~ ^(drain|gene|fri|evals|resume)$ ]]; then
     refuse 'this batch already resumed the old release; a retry is a new batch (BATCH_ATTEMPT) in a later window'
   fi
+  if aborting && [[ $PHASE =~ ^(drain|gene|fri|evals|resume)$ ]]; then
+    refuse 'this batch stopped after its fence and has not restored development yet; a retry is a new batch (BATCH_ATTEMPT) in a later window'
+  fi
   if [[ -n $EXCEPTION ]]; then log "maintenance exception: $EXCEPTION"; return 0; fi
-  window_open || refuse 'outside the maintenance window [04:00, 05:00) America/Los_Angeles, or the clock or zone is unknown'
+  window_open || refuse "outside the maintenance window $WINDOW, or the clock or zone is unknown"
   local used
   if [[ $PHASE =~ ^(baseline|stage|rehearse|drain)$ ]] && ! has drained && used=$(drained_today); then
     [[ -n $CRITICAL ]] || refuse "$used; one production batch per local day. Only a P0 fix goes ahead, with CRITICAL_FIX='<reason>'"
@@ -1584,10 +1773,10 @@ log_action() {  # rc: this command's line in the production-action log; it never
   python3 - "$ACTIONS" "$(now_epoch)" "$PHASE" "$(basename "$STAGE")" "$BEFORE_G" "$BEFORE_F" \
     "$(live_sha "$ROOT/release.env" GENE_RELEASE_SHA)" "$(live_sha "$FRI_ROOT/release.env" FRI_RELEASE_SHA)" \
     "$(elapsed)" "$RESTART_S" "$outcome" "$EXCEPTION${CRITICAL:+${EXCEPTION:+; }critical fix: $CRITICAL}" "${SUDO_USER:-$(id -un)}" \
-    "${BATCH_TRIGGER:-maintainer}" "$G" "$F" <<'PY' || echo 'WARN: the production-action log was not written' >&2
+    "${BATCH_TRIGGER:-maintainer}" "$G" "$F" "$NOTE" <<'PY' || echo 'WARN: the production-action log was not written' >&2
 import datetime as dt, fcntl, json, os, sys
 (path, now, phase, stage, before_g, before_f, after_g, after_f, duration, restart, outcome, exception, actor,
- trigger, g, f) = sys.argv[1:17]
+ trigger, g, f, note) = sys.argv[1:18]
 try:
     from zoneinfo import ZoneInfo
     local, tz = dt.datetime.fromtimestamp(int(now), ZoneInfo('America/Los_Angeles')), 'America/Los_Angeles'
@@ -1597,7 +1786,7 @@ row = {'at': local.isoformat(), 'local_date': local.date().isoformat(), 'tz': tz
        'action': 'batch-release '+phase, 'reason': 'maintainer batch release Gene '+g+' Fri '+f, 'stage': stage,
        'before': {'gene': before_g or None, 'fri': before_f or None}, 'after': {'gene': after_g or None, 'fri': after_f or None},
        'duration_s': int(duration) if duration else None, 'restart_s': int(restart) if restart else None, 'outcome': outcome,
-       'exception': exception or None}
+       'exception': exception or None, 'note': note or None}
 line, limit = json.dumps(row, sort_keys=True)+'\n', 1 << 20  # Past 1 MiB the log keeps its newest half.
 while True:
     with open(path, 'a') as log:
@@ -1658,3 +1847,4 @@ case $PHASE in
   resume-old) resume_old ;;
   *) die "unknown phase $PHASE" ;;
 esac
+if [[ -n $NOTE ]]; then log "$NOTE"; fi  # Development left as the owner set it: the last thing said.

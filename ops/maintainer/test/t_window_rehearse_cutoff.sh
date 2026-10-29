@@ -3,11 +3,11 @@
 # member-data copies are gone, and the next window's rehearse runs from the start.
 . "$(dirname "$0")/common.sh"
 run 0 baseline 0; upload; run 0 stage 0
-at 2026-10-28T04:59:00-07:00
+at 2026-10-28T07:29:00-07:00
 cat > "$MOCK/on-docker" <<X
 #!/usr/bin/env bash
 [[ \$1 == run && \$* == *find_spec* ]] || exit 1
-echo "\$(/bin/date -d 2026-10-28T05:00:05-07:00 +%s) \$(/bin/date +%s)" > "$MOCK/clock"
+echo "\$(/bin/date -d 2026-10-28T07:30:05-07:00 +%s) \$(/bin/date +%s)" > "$MOCK/clock"
 X
 chmod +x "$MOCK/on-docker"
 run 1 rehearse 2

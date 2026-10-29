@@ -34,11 +34,11 @@ def test_a_shipped_member_repair_replies_once(store):
     finish(store, job['id'], first['lease'], 'sent', '555')
     with pytest.raises(Conflict, match='already told'):
         claim(store, job['id'], 'owner')
-    with pytest.raises(Conflict):
-        finish(store, job['id'], first['lease'], 'sent', '555')
+    # Its answer lost, the same finish hears what was recorded (see test_recording_again_after_a_lost_answer...).
+    assert finish(store, job['id'], first['lease'], 'failed') == {'state': 'sent', 'reason': None}
     with store.connection() as db:
         row = db.execute('SELECT * FROM requester_notices WHERE job_id=?', (job['id'],)).fetchone()
-        assert (row['state'], row['message_id'], row['lease']) == ('sent', '555', None)
+        assert (row['state'], row['message_id'], row['lease']) == ('sent', '555', first['lease'])
         assert db.execute('SELECT count(*) FROM audit WHERE action="requester_notice" AND actor="owner"').fetchone()[0] == 1
 
 
@@ -318,14 +318,13 @@ def test_a_reply_sent_after_its_claim_stopped_holding_is_not_recorded_as_sent(st
     assert result['state'] == 'invalidated' and reason in result['reason'] and 'tap again' not in result['reason']
     with store.connection() as db:
         row = db.execute('SELECT * FROM requester_notices WHERE job_id=?', (job['id'],)).fetchone()
-        assert (row['state'], row['message_id'], row['lease']) == ('invalidated', '', None)  # No link to the reply kept.
+        assert (row['state'], row['message_id'], row['lease']) == ('invalidated', '', lease)  # No link to the reply kept.
         audit = db.execute('SELECT actor,detail FROM audit WHERE action="requester_notice_invalidated" AND target=?',
                            (job['id'],)).fetchone()
         assert audit['actor'] == 'controller' and reason in audit['detail']
     with pytest.raises(Conflict):
         claim(store, job['id'], 'owner')
-    with pytest.raises(Conflict, match='already been recorded'):
-        finish(store, job['id'], lease, 'sent', '555')
+    assert finish(store, job['id'], lease, 'sent', '555') == result  # Heard again, changing nothing.
 
 
 def test_a_reply_whose_claim_still_holds_is_recorded_as_sent(store):

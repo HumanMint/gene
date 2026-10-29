@@ -66,6 +66,15 @@ class ReviewDelivery(Lease):
     message_id: str = Field(default='', pattern=r'^[0-9]*$')
 
 
+class RequesterNoticeClaim(Actor):
+    prepare: bool = False  # A Fri that asks for the send right before it (requester-notice-authorize).
+
+
+class RequesterNoticeSend(Lease):
+    guild_id: str
+    user_id: str
+
+
 class RequesterNoticeResult(Lease):
     guild_id: str | None = None  # Both omitted only by a Fri from before the owner-scoped finish.
     user_id: str | None = None
@@ -355,11 +364,19 @@ def create_app(settings: Settings | None = None):
             raise HTTPException(403, 'Request belongs to a different server')
 
     @app.post('/requests/{job_id}/requester-notice', dependencies=[auth('fri')])
-    def requester_notice(job_id: str, body: Actor):
+    def requester_notice(job_id: str, body: RequesterNoticeClaim):
         """The owner's tap on a shipped repair's DM: one reply to the member who reported it."""
         requester_notice_scope(job_id, body)
         from .requester_notices import claim
-        return claim(store, job_id, body.user_id)
+        return claim(store, job_id, body.user_id, body.prepare)
+
+    @app.post('/requests/{job_id}/requester-notice/authorize', dependencies=[auth('fri')])
+    def requester_notice_authorize(job_id: str, body: RequesterNoticeSend):
+        """A prepared claim's send, asked for right before it: refused, nothing posts."""
+        requester_notice_scope(job_id, body)
+        from .requester_notices import authorize
+        authorize(store, job_id, body.lease)
+        return {'ok': True}
 
     @app.post('/requests/{job_id}/requester-notice/finish', dependencies=[auth('fri')])
     def requester_notice_finish(job_id: str, body: RequesterNoticeResult):

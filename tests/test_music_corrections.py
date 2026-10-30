@@ -384,6 +384,7 @@ FIX = 'not the one, i meant join us for a bite'
     ('wrong song, \'Tear You Apart\' by "She Wants Revenge", not now', 'Tear You Apart', False),
     ('wrong song, Love Story by Taylor wants', 'Love Story', False),
     ('wrong song, Love Story by Taylor wants it', 'Love Story', False),
+    ('wrong song, Love Story by Taylor wants they chose', 'Love Story', False),
     ("wrong song, 'Love' by Alex asked for", 'Love', False),
     ('wrong song, Love Story by Taylor alex wants Despacito', 'Love Story', False),
     ('wrong song, Love Story by Alex said Taylor', 'Love Story', False),

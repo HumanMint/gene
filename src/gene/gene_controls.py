@@ -179,9 +179,10 @@ NOT_ARTISTS = {'me', 'you', 'u', 'him', 'her', 'us', 'them', 'it', 'my', 'your',
 ARTIST = re.compile(r"\b((?:by|from|featuring|ft\.?|feat\.?)\s+)(?P<first>[\w']+|(?=[\"“‘]))"
                     r"(?:(?<=\bthe)\s+(?!(?:examples?|quot\w*|hypothetical\w*|hear[sd]?)\b)[\w']+)?")
 # A hand-off or denial is read past an artist's whole name: what they quoted, or its words up to a clause break, another
-# artist, their own "i" or "we", or the end, at most four and none a pronoun ("by She Wants Revenge"). In it, a verb
-# handing the song to someone is the name's only as its second word, with a name after it ("by Taylor wants" and "by
-# Alex asked for" aren't), and never one introducing someone's words, which stay theirs ("by Alex said Taylor").
+# artist, their own "i" or "we", or the end, at most four and none after the first a pronoun ("by She Wants Revenge",
+# not "by Taylor wants they chose"). In it, a verb handing the song to someone is the name's only as its second word,
+# with a name after it ("by Taylor wants" and "by Alex asked for" aren't), and never one introducing someone's words,
+# which stay theirs ("by Alex said Taylor").
 OBJECTLESS = {'to', 'for', 'of', 'about'}
 SPEAKER = re.compile(r"(?:i|we)(?:'\w+)?")  # Their own subject: "i", "we", "i'm", "we've".
 CORRECTION_SECONDS = 600  # How long after Gene played a song for someone they can put it right.
@@ -270,7 +271,7 @@ def artist_spans(text, artist):
         said = word[0].strip("'")
         if not said or said in CONNECTORS or SPEAKER.fullmatch(said) or BREAK.search(text, end, word.end()):
             break
-        if said in NOT_ARTISTS or len(name) == 4:
+        if said in NOT_ARTISTS or said in ('he', 'she', 'they') or len(name) == 4:
             return first, (at, artist.end()), None
         name.append(said)
         end = word.end()

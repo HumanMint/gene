@@ -238,6 +238,71 @@ def test_a_restart_retires_dependent_writes_an_older_controller_left(world):
     assert not holds(store)
 
 
+@pytest.fixture
+def older(monkeypatch):
+    """A controller before gene #154, run in a rollback window: it knows nothing of the writes' dependencies, so its
+    privacy changes leave them where they are."""
+    from contextlib import contextmanager
+
+    import gene.fri_member_summary as summaries
+
+    @contextmanager
+    def running():
+        with monkeypatch.context() as patched:
+            patched.setattr(summaries, 'retire_writes', lambda *args, **kwargs: None)
+            yield
+    return running
+
+
+def dependencies(store):
+    with store.connection() as db:
+        return [tuple(row) for table in ('fri_work_dependencies', 'fri_reminder_dependencies')
+                for row in db.execute(f'SELECT * FROM {table}')]
+
+
+def built_again(client, store):
+    """Member 20, back with memory on: two readable exchanges, a summary built from them, and a reply that drew on it,
+    which records its generation (zero, as nothing moved it since the erasure deleted it)."""
+    import time
+
+    from tests.test_turn_withdrawal import built
+    with store.connection() as db:
+        revision = store._privacy_state(db, '20')[0]
+    for text, age in (('raid again, bring the '+MARKER, 7200), ('same build again', 7150)):
+        store.save_chat('123', 'public:51', '20', revision, text, 'okay', 'model', 'high',
+                        source=source(age=age, channel='51'), provenance=[], audience='server')
+        with store.connection() as db:
+            db.execute('UPDATE chat_turns SET at=? WHERE id=(SELECT max(id) FROM chat_turns)', (time.time()-age+1,))
+    with store.connection() as db:
+        db.execute('DELETE FROM fri_member_summary_calls')
+    built(client.app.state.agent, 'they planned another raid with the '+MARKER)
+    store.save_chat('123', 'public:51', '20', revision, 'what did i plan', 'your raid', 'model', 'high',
+                    source=source(age=1, channel='51'), provenance=[], reply_message_id='705', verbatim=True,
+                    summary_generation=summary_generation_now(store))
+
+
+@pytest.mark.parametrize('enabled', [True, False], ids=['enabled-again', 'still-off'])
+def test_a_restart_retires_writes_whose_dependency_an_older_controller_erased(world, older, enabled):
+    """Round 1 of gene #154: A turns memory off on an older controller, which leaves B's writes and their link to A. A
+    turns it back on, a summary is built again and a reply records generation zero again, the number the writes kept.
+    A start here still retires them: A's privacy revision moved since they were written."""
+    client, store = world
+    _, generation = summarized(client, store)
+    assert generation == 0
+    written(client, '/workspace/save', work(dm(1), depending(generation)))
+    written(client, '/social/reminders/prepare', reminder(dm(2), depending(generation)))
+    with older():
+        store.personal_control('20', 'disable')
+        if enabled:
+            store.personal_control('20', 'enable')
+            built_again(client, store)
+            assert summary_generation_now(store) == 0
+    assert holds(store) and dependencies(store)  # As the older controller leaves them.
+    Store(store.path)
+    assert not holds(store) and dependencies(store) == []
+    assert len(rows(store, 'fri_work')) == 1 and len(rows(store, 'fri_reminders')) == 1  # B's items stay, emptied.
+
+
 def test_a_plain_restart_keeps_current_dependent_writes(world):
     client, store = world
     _, generation = summarized(client, store)

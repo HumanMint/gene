@@ -164,6 +164,7 @@ class Store:
                     guild_id TEXT NOT NULL, message_id TEXT NOT NULL, at REAL NOT NULL, deleted INTEGER NOT NULL DEFAULT 0,
                     user_id TEXT, revision INTEGER, PRIMARY KEY(guild_id, message_id)
                 );
+                CREATE INDEX IF NOT EXISTS chat_message_fences_by_time ON chat_message_fences(at);
             ''')
             from .repair_store import initialize as initialize_repairs
             initialize_repairs(db)

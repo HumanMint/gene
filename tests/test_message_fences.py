@@ -16,7 +16,6 @@ from contextlib import closing
 import pytest
 from fastapi.testclient import TestClient
 
-from gene import fence_downgrade
 from gene import store as controller
 from gene.api import create_app
 from gene.config import Settings
@@ -348,23 +347,26 @@ def test_a_start_cut_off_while_replacing_the_privacy_triggers_keeps_the_earlier_
         with pytest.raises(sqlite3.OperationalError), raw:
             erasure_triggers(Interrupted(raw))
     with closing(sqlite3.connect(store.path)) as raw:
-        assert dict(raw.execute("SELECT name,sql LIKE '%SELECT 1;%' FROM sqlite_master WHERE type='trigger'")) == {
+        assert dict(raw.execute("SELECT name,sql LIKE '%SELECT 1;%' FROM sqlite_master WHERE type='trigger' AND "
+                                "name LIKE 'privacy_%'")) == {
             'privacy_revision_inserted': 1, 'privacy_revision_moved': 1}
 
 
-def test_a_rollback_clears_the_fences_and_keeps_their_table(world, tmp_path):
-    """Review of gene #159 (round 2): an older controller neither reads nor expires fences, so a rollback's downgrade
-    step (`python -m gene.fence_downgrade`) removes them, names included. The table the privacy triggers name stays,
-    so an older controller's privacy change still runs."""
+OLDER_HEARTBEAT = "INSERT OR REPLACE INTO gene_runtime_health VALUES (1,?,'{}')"
+
+
+def test_an_older_controller_expires_fences_with_gene_s_heartbeat(world):
+    """Review of gene #159 (round 2): an older controller neither reads nor expires fences, but it records Gene's
+    runtime heartbeat every few seconds, as this one does; a trigger on that drops fences past their week, names
+    included, whichever controller runs. Fresh ones stay."""
     client, store = world
-    mine, nobodys = source(age=30, channel='51')['id'], source(age=20, channel='51')['id']
-    permit(store, mine)
-    withdraw_saved(client, mine, nobodys, deleted=True)
-    fence_downgrade.main([str(store.path)])
-    assert fences(store) == []
+    mine, nobodys, fresh = (source(age=age, channel='51')['id'] for age in (30, 20, 10))
+    withdraw_saved(client, fresh, deleted=True)  # First: writing a fence here expires old ones itself.
     with store.connection() as db:
-        db.execute(OLDER_PRIVACY_CHANGE)
-    missing = tmp_path/'missing.sqlite3'
-    with pytest.raises(SystemExit):
-        fence_downgrade.main([str(missing)])
-    assert not missing.exists()
+        for message, user, revision in ((mine, '20', 0), (nobodys, None, None)):
+            db.execute('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted,user_id,revision) '
+                       'VALUES (?,?,?,1,?,?)', ('123', message, time.time()-controller.WITHDRAWN_SECONDS-60, user,
+                                                revision))
+    with closing(sqlite3.connect(store.path)) as raw, raw:  # The older controller's own statement, as it runs.
+        raw.execute(OLDER_HEARTBEAT, (time.time(),))
+    assert [row[0] for row in fences(store)] == [fresh]

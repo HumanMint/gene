@@ -37,7 +37,7 @@ WAIT_WINDOW=${WAIT_WINDOW:-1800}
 # Controller data a Gene feature adds that a release without the feature can't handle, in the order a
 # rollback removes it (downgrade_step has each command). Only a feature the old release lacks is removed:
 # the old release reads its own features' data correctly, and removing that would lose it.
-DOWNGRADE_MODULES=(gene.fri_reply_checks gene.profile_downgrade gene.fri_member_summary gene.fence_downgrade)
+DOWNGRADE_MODULES=(gene.fri_reply_checks gene.profile_downgrade gene.fri_member_summary)
 SWITCHING=0
 
 log() { echo "== $*"; }
@@ -71,7 +71,6 @@ downgrade_step() {  # module db docker-run-words...: remove the module's data fo
     gene.fri_reply_checks) "$@" python -m gene.fri_reply_checks purge "$db" ;;
     gene.profile_downgrade) "$@" python -m gene.profile_downgrade "$db" ;;
     gene.fri_member_summary) "$@" python -m gene.fri_member_summary purge "$db" ;;
-    gene.fence_downgrade) "$@" python -m gene.fence_downgrade "$db" ;;
     *) die "no downgrade step for $module" ;;
   esac
 }

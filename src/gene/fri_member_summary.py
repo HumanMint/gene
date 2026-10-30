@@ -181,15 +181,22 @@ def erasure_triggers(db):
             (SELECT reminder_id FROM fri_reminder_dependencies d WHERE {moved});
         DELETE FROM chat_turn_deletions WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;
         DELETE FROM chat_message_fences WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;"""
-    # Replaced, not kept if they exist, so a body changed since an earlier controller made them takes effect; both in
-    # one transaction, so a start cut off between them, or an older controller starting meanwhile, never finds either
+    from .store import WITHDRAWN_SECONDS
+    # Gene #149's week for message fences, kept by any controller: an older one neither reads nor expires them, but
+    # records Gene's runtime heartbeat every few seconds (INSERT OR REPLACE, which runs an INSERT trigger).
+    expire = (f"DELETE FROM chat_message_fences WHERE at<(julianday('now')-2440587.5)*86400.0-{WITHDRAWN_SECONDS};")
+    triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),
+                ('privacy_revision_moved', 'AFTER UPDATE OF revision ON chat_revisions', body),
+                ('message_fences_expire', 'AFTER INSERT ON gene_runtime_health', expire))
+    # Replaced, not kept if they exist, so a body changed since an earlier controller made them takes effect; all in
+    # one transaction, so a start cut off between them, or an older controller starting meanwhile, never finds one
     # missing.
     began = not db.in_transaction
     if began:
         db.execute('BEGIN IMMEDIATE')
-    for name, event in (('privacy_revision_inserted', 'INSERT'), ('privacy_revision_moved', 'UPDATE OF revision')):
+    for name, event, statements in triggers:
         db.execute(f'DROP TRIGGER IF EXISTS {name}')
-        db.execute(f'CREATE TRIGGER {name} AFTER {event} ON chat_revisions BEGIN {body} END')
+        db.execute(f'CREATE TRIGGER {name} {event} BEGIN {statements} END')
     if began:
         db.commit()
 

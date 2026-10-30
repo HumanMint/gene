@@ -18,14 +18,19 @@ SINGLE = re.compile(r"(?<!\w)(['‘])(?=\S)(?!(?i:cause|cuz|coz|bout|til|till|em
 # A sentence ending in "she said:", so the next one is her words.
 PRIOR = re.compile(r"(?i)(?:\b(?:said|says|wrote|writes|texted|asked|goes|told me|tells me)\b\W*|:\s*)$")
 # Common fillers that only look like a denial or a report, on their own or after "i": "not gonna lie, i like
-# chess", "i have to say i like chess". After anyone else, "they have to say …" stays a report, and so does
-# "they honestly have to say …": "also", "honestly" and "tbh" start a filler only where a clause does. After
+# chess", "i have to say i like chess". An aside ("not gonna lie", "if you ask me") reports no one else's words, so
+# it may follow an interjection anywhere; "also", "honestly" and "tbh" start one only where a clause does. After
 # punctuation only spaces may follow, so a run of commas is crossed once, not once from each comma.
 STARTER = r"lol|lmao|haha|ok|okay|yeah|yea|ya|so|and|but|fri|bro|dude|hey|yo|oh|well|btw"
+ME = r"\b(?:i|i'd|i'll|i'm|im|i am|i've|ive)\s+(?:(?:really|just|honestly)\s+)?"
+# "have to say" drops a report verb, so it's a filler only when the member says it: after "i", or with nothing but
+# interjections before it back to the sentence's start or a "but" or "and". "they lol have to say …" and "they,
+# honestly, have to say …" stay reports. "but" and "and" only start the run, so each word is crossed once.
+SAID = r"lol|lmao|haha|ok|okay|yeah|yea|ya|so|fri|bro|dude|hey|yo|oh|well|btw|also|honestly|tbh"
 FILLER = re.compile(rf"(?i)(^\W*|\b(?:{STARTER})\W+|(?:^\W*|[^\w\s']\s*|\b(?:{STARTER})\W*)\b(?:also|honestly|tbh)\W+|"
-                    r"\b(?:i|i'd|i'll|i'm|im|i am|i've|ive)\s+(?:(?:really|just|honestly)\s+)?)"
-                    r"(?:not (?:gonna|going to) lie|not to brag|no (?:cap|lie|offen[cs]e)|"
-                    r"(?:gotta|got to|have to|must|needless to) say|if (?:i'm|im|i am) honest|if you ask me)\b")
+                    rf"{ME})(?:not (?:gonna|going to) lie|not to brag|no (?:cap|lie|offen[cs]e)|"
+                    rf"if (?:i'm|im|i am) honest|if you ask me)\b|"
+                    rf"((?:^\W*|\b(?:but|and)\W+)(?:(?:{SAID})\W+)*|{ME})(?:gotta|got to|have to|must|needless to) say\b")
 # Someone else's words, a supposition or a quotation: nothing after it in the sentence is the member's claim.
 FRAMED = re.compile(
     r"(?i)\b(?:say|says|said|saying|tells?|told|telling|ask(?:s|ed)?|wr(?:ite|ites|ote)|text(?:s|ed)|goes|"
@@ -134,7 +139,7 @@ class Source:
                 or seen['`'] % 2 or seen['"'] % 2 or seen['“'] > seen['”'] or (quote and self.opens[quote - 1])
                 or after[:1] in ('"', '”') or re.match(r"'(?!\w)", after)):
             return False  # Quoted, code or a blockquote.
-        lead = FILLER.sub(r'\1 ', t[self.starts[k]:at])
+        lead = FILLER.sub(r'\1\2 ', t[self.starts[k]:at])
         rest = t[end:self.ends[k]]  # Empty when the evidence takes in the terminator.
         before = bisect.bisect_left(self.filled, k)
         if ((before and self.reported[before - 1]) or FRAMED.search(lead) or NEGATED.search(lead)

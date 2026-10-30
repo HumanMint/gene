@@ -9,7 +9,9 @@ answers it as it reads now (fri #126), and Fri withdraws an old save that lands 
 author when the controller knows who that is, from a ping's grant or a research permit, so their "forget me" removes it.
 """
 import json
+import sqlite3
 import time
+from contextlib import closing
 
 import pytest
 from fastapi.testclient import TestClient
@@ -18,7 +20,13 @@ from gene import store as controller
 from gene.api import create_app
 from gene.config import Settings
 from gene.fri_agent_store import AgentStore
+from gene.fri_member_summary import erasure_triggers
 from gene.store import Conflict, Store
+
+try:
+    from gene import fence_downgrade
+except ImportError:  # Until it exists, so the rest of this file still runs.
+    fence_downgrade = None
 from tests.test_fri_endings import source
 from tests.test_saved_withdrawal import withdraw_saved
 from tests.test_turn_withdrawal import MARKER
@@ -316,3 +324,51 @@ def test_a_start_replaces_an_earlier_definition_of_the_privacy_triggers(world):
     with store.connection() as db:
         db.execute(OLDER_PRIVACY_CHANGE)
     assert fences(store) == []
+
+
+class Interrupted:
+    """A connection whose start is cut off once the first trigger is in place and the second dropped."""
+    def __init__(self, db):
+        self.db = db
+
+    def __getattr__(self, name):
+        return getattr(self.db, name)
+
+    def execute(self, sql, *args):
+        if sql.startswith('CREATE TRIGGER privacy_revision_moved'):
+            raise sqlite3.OperationalError('cut off')
+        return self.db.execute(sql, *args)
+
+
+def test_a_start_cut_off_while_replacing_the_privacy_triggers_keeps_the_earlier_ones(world):
+    """Review of gene #159 (round 2): both triggers are replaced in one transaction, so a start that stops between
+    them, or an older controller starting meanwhile, never finds either missing."""
+    _, store = world
+    with store.connection() as db:
+        for name, event in (('privacy_revision_inserted', 'INSERT'), ('privacy_revision_moved', 'UPDATE OF revision')):
+            db.execute(f'DROP TRIGGER {name}')
+            db.execute(f'CREATE TRIGGER {name} AFTER {event} ON chat_revisions BEGIN SELECT 1; END')
+    with closing(sqlite3.connect(store.path)) as raw:
+        with pytest.raises(sqlite3.OperationalError), raw:
+            erasure_triggers(Interrupted(raw))
+    with closing(sqlite3.connect(store.path)) as raw:
+        assert dict(raw.execute("SELECT name,sql LIKE '%SELECT 1;%' FROM sqlite_master WHERE type='trigger'")) == {
+            'privacy_revision_inserted': 1, 'privacy_revision_moved': 1}
+
+
+def test_a_rollback_clears_the_fences_and_keeps_their_table(world, tmp_path):
+    """Review of gene #159 (round 2): an older controller neither reads nor expires fences, so a rollback's downgrade
+    step (`python -m gene.fence_downgrade`) removes them, names included. The table the privacy triggers name stays,
+    so an older controller's privacy change still runs."""
+    client, store = world
+    mine, nobodys = source(age=30, channel='51')['id'], source(age=20, channel='51')['id']
+    permit(store, mine)
+    withdraw_saved(client, mine, nobodys, deleted=True)
+    fence_downgrade.main([str(store.path)])
+    assert fences(store) == []
+    with store.connection() as db:
+        db.execute(OLDER_PRIVACY_CHANGE)
+    missing = tmp_path/'missing.sqlite3'
+    with pytest.raises(SystemExit):
+        fence_downgrade.main([str(missing)])
+    assert not missing.exists()

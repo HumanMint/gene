@@ -39,6 +39,9 @@ def summaries(row):
     return [{'user_id': user, 'generation': generation} for user, generation in sorted({*own, *others})]
 
 
+summaries_of = summaries  # Where an argument of that name hides it (see Store.chat_context).
+
+
 def messages_of(turn):
     """The Discord messages a saved exchange holds: its own and its burst's."""
     source = json.loads(turn['source']) if turn['source'] else {}
@@ -702,7 +705,8 @@ class Store:
             db.execute('UPDATE jobs SET approved_by="deleted" WHERE approved_by=?', (user_id,))
             db.execute('UPDATE jobs SET intake_approved_by="deleted" WHERE intake_approved_by=?', (user_id,))
 
-    def chat_context(self, guild_id, channel_id, user_id, profiles=True, summaries=False, sources=False):
+    def chat_context(self, guild_id, channel_id, user_id, profiles=True, summaries=False, sources=False,
+                     dependencies=False):
         """profiles=False is an older Fri: only this conversation's notes, as before profiles existed.
 
         summaries: a Fri that knows the member summary, which it alone may pass to its model and recheck.
@@ -710,6 +714,9 @@ class Store:
         sources: a Fri that keeps what a withdrawn message taught out of its requests until its withdrawal lands (fri
         #215). Each note's messages come beside the notes, never in them (an older Fri passes the notes to its model
         whole), and each exchange elsewhere names its own. Everything else is as it was.
+        dependencies: a Fri whose turn depends on what its saved history drew on (fri #216). Each saved exchange whose
+        reply drew on a member's summary, the member's own or another's through Fri's earlier replies, names those
+        summaries with their generations (`summaries`), as the sources lookup does. Fri's model reads none of it.
         """
         with self.connection() as db:
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
@@ -726,13 +733,26 @@ class Store:
             # Before the turns: a summary that lapses as it's read retires the replies that drew on it (fri #172).
             summary = self._member_summary(db, guild_id, user_id) if summaries and profile['enabled'] else None
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
+            if dependencies:  # A summary those turns drew on that lapsed goes first, and the replies with it (gene #120).
+                from .fri_member_summary import lapsed
+                drew = {item['user_id'] for row in db.execute(
+                    'SELECT user_id,summary_generation,summary_dependencies FROM chat_turns WHERE guild_id=? AND '
+                    'channel_id=? AND user_id=? ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))
+                    for item in summaries_of(row)}
+                for user in sorted(drew):
+                    lapsed(db, guild_id, user)
             turns = [dict(row) for row in db.execute(
-                'SELECT id,input,reply,source,at,response_kind,reaction,allow_closing,burst,provenance,attributed '
-                'FROM chat_turns '
+                'SELECT id,input,reply,source,at,response_kind,reaction,allow_closing,burst,provenance,attributed,'
+                'user_id,summary_generation,summary_dependencies FROM chat_turns '
                 'WHERE guild_id=? AND channel_id=? AND user_id=? '
                 'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
             turns = self._current_turns(db, turns)
             for turn in turns:
+                drew = summaries_of(turn)
+                for key in ('user_id', 'summary_generation', 'summary_dependencies'):
+                    turn.pop(key)
+                if dependencies and drew:
+                    turn['summaries'] = drew
                 turn['burst'] = json.loads(turn['burst'])
                 turn['attributed'] = bool(turn['attributed'])
                 source = turn.pop('source')

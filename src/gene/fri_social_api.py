@@ -1,10 +1,11 @@
 """Service-authenticated social capabilities with controller-side event fences."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from .api import SummaryDependency
 from .fri_context import ChatSource
 from .fri_social_store import Social
 from .fri_workspace_api import Scope
@@ -19,8 +20,10 @@ class Reminder(Event):
     body: str = Field(min_length=1, max_length=1000)
     local_time: str = Field(min_length=16, max_length=19)
     timezone: str = Field(min_length=1, max_length=80)
-    # As for saved work: refused once the member summary the turn drew on has moved (fri #171).
+    # As for saved work: refused once the member summary the turn drew on has moved (fri #171), or one it may repeat
+    # (fri #216), which the reminder also keeps.
     summary_generation: int | None = Field(default=None, ge=0)
+    summary_dependencies: Annotated[list[SummaryDependency], Field(max_length=200)] = []
 
 
 class Plan(Event):
@@ -61,7 +64,8 @@ def register(app, store, settings, auth, chat_scope):
     @app.post('/social/reminders/prepare', dependencies=[auth('fri')])
     def reminder_prepare(body: Reminder):
         return social.reminder_prepare(scope(body, 'reminder'), body.source, body.revision, body.body, body.local_time,
-                                       body.timezone, summary_generation=body.summary_generation)
+                                       body.timezone, summary_generation=body.summary_generation,
+                                       summary_dependencies=[row.model_dump() for row in body.summary_dependencies])
 
     @app.post('/social/reminders/list', dependencies=[auth('fri')])
     def reminder_list(body: Scope):

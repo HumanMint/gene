@@ -278,3 +278,41 @@ def test_an_expired_fence_goes_at_the_next_health_check_or_chat_read(world, read
                                                 revision))
     store.status() if read == 'status' else store.chat_context('123', 'public:51', '30')
     assert fences(store) == []
+
+
+OLDER_PRIVACY_CHANGE = "INSERT INTO chat_revisions VALUES ('20',1) ON CONFLICT(user_id) DO UPDATE SET revision=revision+1"
+
+
+@pytest.mark.parametrize('change', ['clear chats', 'older controller'])
+def test_a_named_fence_goes_the_moment_its_authors_revision_moves(world, change):
+    """Review of gene #159 (round 1): clearing their chats here, or an older controller's privacy change in a rollback
+    window, moves the author's revision; the database's own triggers (gene #160) take their fences at once, not at the
+    next start. Fences naming nobody, or someone else, stay."""
+    client, store = world
+    mine, theirs, nobodys = (source(age=age, channel='51')['id'] for age in (30, 20, 10))
+    permit(store, mine)
+    permit(store, theirs, user='40')
+    withdraw_saved(client, mine, theirs, nobodys, deleted=True)
+    if change == 'clear chats':
+        store.clear_chats('20')
+    else:
+        with store.connection() as db:
+            db.execute(OLDER_PRIVACY_CHANGE)
+    assert [row[0] for row in fences(store)] == sorted([theirs, nobodys])
+
+
+def test_a_start_replaces_an_earlier_definition_of_the_privacy_triggers(world):
+    """A trigger body this code changes replaces the one an earlier controller created, which `IF NOT EXISTS` alone
+    would keep."""
+    client, store = world
+    mine = source(age=30, channel='51')['id']
+    with store.connection() as db:
+        for name, event in (('privacy_revision_inserted', 'INSERT'), ('privacy_revision_moved', 'UPDATE OF revision')):
+            db.execute(f'DROP TRIGGER {name}')
+            db.execute(f'CREATE TRIGGER {name} AFTER {event} ON chat_revisions BEGIN SELECT 1; END')
+    store = Store(store.path)
+    permit(store, mine)
+    withdraw_saved(client, mine, deleted=True)
+    with store.connection() as db:
+        db.execute(OLDER_PRIVACY_CHANGE)
+    assert fences(store) == []

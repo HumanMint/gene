@@ -91,6 +91,7 @@ A rollback never restores a DB snapshot: the old release runs on the migrated DB
 - a failed Fri release that recovers itself, then rollback
 - an interrupted Fri release, reconciled by rollback
 - a rollback after resume, after a member removed a profile note, whose removal the downgrade keeps in the configured channel
+- a rollback to a release with member summaries but not summary dependencies (`34dbbb3`), which runs no downgrade: the old controller withdraws a member's message, and the database's triggers retire another member's reply, pending question, draft and reminder depending on that member's summary there and then
 - a controller env without the configured channels, which the rehearsal refuses
 - `stage` refusing a `pyproject.toml` change in what the venv installs, a changed `uv.lock` and a `pyproject.toml` it can't parse, each before building; a difference in metadata alone goes through to a full release. The mock's live source tree holds OLD_G's own `pyproject.toml` and `uv.lock`
 - a downgrade probe that fails to run, which stops the rehearsal rather than skipping a downgrade; the rollback then runs the recorded list without probing

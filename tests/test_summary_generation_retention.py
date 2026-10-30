@@ -417,7 +417,8 @@ def test_a_restart_retires_a_reply_whose_generation_an_older_controller_erased(w
         note_edited_elsewhere(store)
     with store.connection() as db:
         assert db.execute('SELECT count(*) FROM fri_member_summary_generations').fetchone()[0] == 0
-    assert replies(store)[-2] == QUOTING  # As the older controller left it.
+    # The database's trigger retired it as the older controller took the summary (gene #147), and a start agrees.
+    assert retired(replies(store)[-2]) and replies(store)[-1] == 'an older fri said '+MARKER
     Store(store.path)
     assert retired(replies(store)[-2]) and replies(store)[-1] == 'an older fri said '+MARKER
     assert referenced(store) is None  # Its revision moved too, so a reference fails closed as before.
@@ -437,7 +438,7 @@ def test_a_restart_retires_a_reply_whose_generation_came_back_under_a_newer_revi
         note_edited_elsewhere(store)
         with store.connection() as db:  # Another build there, dropped: its generation starts again at one.
             drop(db, '123', '20')
-    assert summary_generation_now(store) == 1 and replies(store)[-1] == QUOTING
+    assert summary_generation_now(store) == 1 and retired(replies(store)[-1])  # By the trigger, as above.
     Store(store.path)
     assert retired(replies(store)[-1])
 

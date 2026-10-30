@@ -81,6 +81,8 @@ A rollback never restores a DB snapshot: the old release runs on the migrated DB
 
 `7d6e36a` has the first two features, so a rollback to it runs only the member-summary purge. Don't run `gene.provenance_downgrade` either: every release since `f667001` has turn provenance, and it would discard member continuity they support.
 
+Data an older release would keep serving after its own change to what the data depends on needs no downgrade step when the database can act for it: triggers it runs itself. gene #160's retire what names a member when their privacy revision moves, and gene #147's retire replies, drafts and reminders depending on a member summary the moment it goes, so a rollback to a release that has member summaries but not their dependencies (`34dbbb3`, say) runs none.
+
 ## Offline tests
 `FRI_REPO=<fri checkout> ops/maintainer/test/run.sh [t_name ...]` runs the script against mock hosts: stub docker, systemctl and curl, and a controller DB created by the old code as uid 10001. Each `docker run` executes the real command with the image's code: an export of OLD_G, this checkout for G, and FRI_REPO for F. The live release defaults to `f667001`; tests set `MOCK_OLD_G` / `MOCK_OLD_F` for others. It runs as the requested user and refuses anything it does not model. Every phase's exit code and the resulting state are asserted. Scenarios:
 - the full release, with a failing eval suite, then repeats of resume and cleanup

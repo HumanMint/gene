@@ -184,25 +184,80 @@ def erasure_triggers(db):
         db.execute(f'CREATE TRIGGER IF NOT EXISTS {name} AFTER {event} ON chat_revisions BEGIN {body} END')
 
 
+def summary_triggers(db):
+    """A member's summary goes (a withdrawal, an expiry, a privacy change, another member's through its provenance) or
+    is replaced by a rebuild that wasn't sent it, and an older controller in a rollback window does that without knowing
+    what depends on it elsewhere (fri #193, fri #216). These triggers, which it runs too, retire at once what this
+    controller retires then (see advance and erase): the member's own saved replies that drew on it, other members'
+    replies depending on it with any question they left open, and saved work and reminders depending on it with all
+    their links (gene #147, #161, #162). A rebuild sent the summary it replaces keeps its words, revision, origins,
+    provenance and a later `through`, so a withdrawal of anything the old one drew on still finds it: what depends on
+    it stays, as a covered advance carries it on. A purge drops them with the table; their bodies name only tables
+    nothing drops."""
+    quoted = {name: text.replace("'", "''") for name, text in
+              (('retired', RETIRED), ('title', WORK_TITLE), ('work', WORK_RETIRED))}
+    turns = ("guild_id=OLD.guild_id AND ((user_id=OLD.user_id AND summary_generation IS NOT NULL) OR "
+             "(summary_dependencies IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(chat_turns.summary_dependencies) d "
+             "WHERE json_extract(d.value,'$.user_id')=OLD.user_id)))")
+    work, reminders = (f'SELECT {key} FROM {table} d WHERE d.guild_id=OLD.guild_id AND d.user_id=OLD.user_id'
+                       for table, key in WRITES)
+    body = f"""
+        DELETE FROM chat_pending WHERE (guild_id,user_id,source_id) IN
+            (SELECT guild_id,user_id,json_extract(NULLIF(source,''),'$.id') FROM chat_turns WHERE {turns});
+        UPDATE chat_turns SET reply='{quoted['retired']}',verbatim=0,summary_generation=NULL,summary_dependencies=NULL
+            WHERE {turns};
+        UPDATE fri_work SET title='{quoted['title']}',body='{quoted['work']}',version=version+1 WHERE id IN ({work});
+        UPDATE fri_posts SET state=CASE WHEN state IN ('pending','authorized','claimed') THEN 'cancelled' ELSE state END,
+            body=CASE WHEN state='sending' THEN body ELSE '' END WHERE work_id IN ({work});
+        DELETE FROM fri_work_dependencies WHERE work_id IN ({work});
+        UPDATE fri_reminders SET state=CASE WHEN state IN ('pending','scheduled','claimed') THEN 'cancelled'
+            ELSE state END,body='' WHERE id IN ({reminders});
+        DELETE FROM fri_reminder_dependencies WHERE reminder_id IN ({reminders});"""
+    covered = ("NEW.body<>'' AND NEW.revision=OLD.revision AND NEW.through>=OLD.through AND json_valid(OLD.origins) "
+               "AND json_valid(NEW.origins) AND json_valid(OLD.provenance) AND json_valid(NEW.provenance) AND NOT EXISTS "
+               "(SELECT 1 FROM json_each(OLD.origins) o WHERE o.value NOT IN (SELECT value FROM json_each(NEW.origins))) "
+               "AND NOT EXISTS (SELECT 1 FROM json_each(OLD.provenance) p WHERE NOT EXISTS (SELECT 1 FROM "
+               "json_each(NEW.provenance) q WHERE json_extract(q.value,'$.user_id') IS json_extract(p.value,'$.user_id') "
+               "AND json_extract(q.value,'$.revision') IS json_extract(p.value,'$.revision')))")
+    for name, event in (('member_summary_gone', 'DELETE'), ('member_summary_replaced', 'UPDATE')):
+        when = f' WHEN NOT ({covered})' if event == 'UPDATE' else ''
+        # Replaced, so a body changed since an earlier controller made it takes effect.
+        db.execute(f'DROP TRIGGER IF EXISTS {name}')
+        db.execute(f'CREATE TRIGGER {name} AFTER {event} ON fri_member_summaries FOR EACH ROW{when} BEGIN {body} END')
+
+
+def _standing(guild, user):
+    """SQL: the member has a summary, built under their privacy revision now. A dependency on it counts only while so: a
+    controller from before generations takes a summary and leaves its generation, which could then still match (gene
+    #148). Every way this controller takes one moves or deletes the generation and retires what drew on it."""
+    return (f'EXISTS (SELECT 1 FROM fri_member_summaries s WHERE s.guild_id={guild} AND s.user_id={user} AND '
+            's.revision=coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=s.user_id), 0))')
+
+
 def settle(db):
     """At start: what an older controller left while it ran (a rollback window), which moved generations without
     retiring the replies that drew on them. Its privacy changes deleted the member's generation outright, and a drop
     there can write it again from one, so a reply whose generation can't be confirmed goes too (gene #114): one with
-    none on record (a save records it, see keep), or saved under a revision of the member's since moved."""
+    none on record (a save records it, see keep), or saved under a revision of the member's since moved. One before
+    generations took a summary and left its generation, so one drawn on a summary no longer standing goes too (gene
+    #148); what drew on a summary still standing, old rows included, stays."""
     retire(db, 'summary_generation IS NOT (SELECT generation FROM fri_member_summary_generations g '
                'WHERE g.guild_id=chat_turns.guild_id AND g.user_id=chat_turns.user_id) OR speaker_revision IS NOT '
-               'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turns.user_id), 0)')
+               'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turns.user_id), 0) OR NOT '
+               + _standing('chat_turns.guild_id', 'chat_turns.user_id'))
     # So does one depending on another member's summary (fri #193), as the older controller never retired those.
     retire_dependents(db, "json_extract(d.value,'$.generation') IS NOT (SELECT generation FROM "
                           "fri_member_summary_generations g WHERE g.guild_id=chat_turns.guild_id AND "
                           "g.user_id=json_extract(d.value,'$.user_id')) OR chat_turns.speaker_revision IS NOT "
-                          "coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turns.user_id), 0)")
+                          "coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turns.user_id), 0) OR NOT "
+                          + _standing('chat_turns.guild_id', "json_extract(d.value,'$.user_id')"))
     # And saved work and reminders that may repeat one (fri #216). An older controller's erasure of the writer took
     # theirs outright. Its privacy change of the member they depend on left the link, and a summary built again since
     # can bring the same generation back, so a moved revision of theirs retires it too (gene #154).
     retire_writes(db, 'd.generation IS NOT (SELECT generation FROM fri_member_summary_generations g '
                       'WHERE g.guild_id=d.guild_id AND g.user_id=d.user_id) OR d.revision IS NOT '
-                      'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=d.user_id), 0)')
+                      'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=d.user_id), 0) OR NOT '
+                      + _standing('d.guild_id', 'd.user_id'))
 
 
 def keep(db, guild, user):

@@ -191,7 +191,9 @@ built from other members' messages.
   (gene #120). Only a lookup that finds such a reply takes the write lock.
   A controller start retires any an older controller left behind during a rollback window: with a
   moved generation, with none on record (its privacy changes delete the generation, so a save records
-  generation zero too), or saved under a revision of the member's that has moved since (gene #114). The
+  generation zero too), or saved under a revision of the member's that has moved since (gene #114), or
+  drawn on a summary no longer there under the member's current revision (a controller from before
+  summary generations takes a summary and leaves its generation, gene #148). The
   purge below retires all of them first. A non-empty rebuild that was sent the
   earlier summary keeps its origins, provenance and a later `through`, so a withdrawal of anything the
   old one drew on still finds it: those replies move to the new generation instead of being retired,
@@ -210,7 +212,8 @@ built from other members' messages.
   same breadcrumb in the same transaction, even where its provenance didn't name them. A rebuild that was
   sent the earlier summary moves the dependency to the new generation instead. A sources lookup
   checks each summary for a lapse first, under the write lock. A controller start retires any whose
-  generation moved or went, or whose speaker's revision moved, while an older controller ran, and the purge below
+  generation moved or went, or whose speaker's revision moved, while an older controller ran, or whose summary is no
+  longer there under its member's current revision (gene #148), and the purge below
   retires all of them. Chat context never shows the dependencies. An older Fri sends none, which is checked as before; an older
   controller ignores the field, so Fri sends it only when offered. Mention turns leave both fields out
   of their fingerprint.
@@ -236,13 +239,26 @@ built from other members' messages.
     cancelled) and the reminder loses its text, cancelled unless it is already going out. A covered
     rebuild moves them on instead, and the purge below retires them all. Each row also keeps that
     member's privacy revision when it was written. A controller start retires the item and drops the row
-    when the generation moved or went, or when that member's revision moved since. The writer's own
+    when the generation moved or went, when that member's revision moved since, or when their summary is
+    no longer there under their current revision (gene #148). The writer's own
     summary is still checked but not kept, as above.
   - Rollback: the tables are new, so an older controller's positional inserts into `fri_work` still fit,
-    and its deletes of work and reminders cascade to them. It ignores them otherwise: its erasure of the
-    member they depend on leaves the rows and the words until the next start of this code, which retires
-    them by the moved revision, even once a summary built again has brought the same generation back (as
-    `chat_turn_deletions` are dropped at start).
+    and its deletes of work and reminders cascade to them. It ignores them otherwise, but the database's
+    triggers act for it: its privacy change of the member they depend on retires them at once (gene #160),
+    and so does that member's summary going any other way (below). A start of this code still retires what
+    was left, by the moved revision, even once a summary built again has brought the same generation back
+    (as `chat_turn_deletions` are dropped at start).
+- **In a rollback window (gene #147, #161, #162).** An older controller knows nothing of what depends on a
+  member's summary, so two triggers on `fri_member_summaries`, which it runs too, retire at once what this
+  controller retires when that summary goes. One fires when a row is deleted: a withdrawal, an expiry, a
+  privacy change, or another member's privacy change through the summary's provenance. The other fires when
+  a rebuild replaces a row without keeping its lineage: its words emptied, its revision changed, or its
+  origins, provenance or `through` not kept. Either way the member's own replies that drew on it, other
+  members' replies depending on it with any question they left pending, and saved work and reminders
+  depending on it with all their links go, as above. A rebuild sent the earlier summary keeps its lineage,
+  so nothing goes. Each start of this code replaces the triggers, and the purge drops them with the table.
+  There is no schema change and no release-script downgrade step: the older controller's own summary
+  changes run them, and what still depends on a current summary stays.
 
 Provenance also reaches what follow-ups inherit:
 

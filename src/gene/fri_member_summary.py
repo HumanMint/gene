@@ -184,8 +184,10 @@ def erasure_triggers(db):
     from .store import WITHDRAWN_SECONDS
     # Gene #149's week for message fences, kept by any controller: an older one neither reads nor expires them, but
     # records Gene's runtime heartbeat every few seconds (INSERT OR REPLACE, which runs an INSERT trigger), and, as it
-    # serves Fri, saves turns, pending questions, a ping's grant and Fri's own state. Its health checks write nothing,
-    # so a controller that does none of those keeps them until one does, or this code starts; nothing reads them then.
+    # serves Fri, saves turns, pending questions, a ping's grant and Fri's own state, and a member's chat session and
+    # each model call's usage, which a reply that saves nothing (learning off, the member's memory off) still writes
+    # (gene #168). Its health checks write nothing, so a controller that does none of those (no heartbeat and no
+    # member talking to Fri) keeps them until one does, or this code starts; nothing reads them then.
     expire = (f"DELETE FROM chat_message_fences WHERE at<(julianday('now')-2440587.5)*86400.0-{WITHDRAWN_SECONDS};")
     triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),
                 ('privacy_revision_moved', 'AFTER UPDATE OF revision ON chat_revisions', body),
@@ -194,7 +196,10 @@ def erasure_triggers(db):
                 ('message_fences_expire_pending', 'AFTER INSERT ON chat_pending', expire),
                 ('message_fences_expire_grants', 'AFTER INSERT ON mention_grants', expire),
                 ('message_fences_expire_state', 'AFTER INSERT ON agent_state', expire),
-                ('message_fences_expire_state_moved', 'AFTER UPDATE ON agent_state', expire))
+                ('message_fences_expire_state_moved', 'AFTER UPDATE ON agent_state', expire),
+                ('message_fences_expire_sessions', 'AFTER INSERT ON agent_sessions', expire),
+                ('message_fences_expire_sessions_moved', 'AFTER UPDATE ON agent_sessions', expire),
+                ('message_fences_expire_usage', 'AFTER INSERT ON chat_usage', expire))
     # Replaced, not kept if they exist, so a body changed since an earlier controller made them takes effect; all in
     # one transaction, so a start cut off between them, or an older controller starting meanwhile, never finds one
     # missing.

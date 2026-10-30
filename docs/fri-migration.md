@@ -161,7 +161,11 @@ built from other members' messages.
     that carried them (gene #150). Where the controller knows the message's author (a ping's grant or a
     research permit names them), the fence names them with their privacy revision then. Their "forget
     me" takes it, and a start drops it once that revision moved. A member with memory off gets none.
-    Otherwise it names nobody and holds only the ID. An older controller ignores the table.
+    Otherwise it names nobody and holds only the ID. An older controller ignores the table, but the
+    database's triggers keep the week for it: they expire old fences whenever any controller records
+    Gene's runtime heartbeat, saves a turn, a pending question, a ping's grant or Fri's state, or writes a
+    member's chat session or a model call's usage (gene #168). One that does none of those keeps them
+    until it does, or until this code starts; nothing reads them meanwhile.
   - **Nothing about a member after a privacy change.** `/chat/turn/withdraw` also takes `revision`, the
     member's privacy revision when the exchange was saved. One that arrives after the member's revision
     moved ("forget me", say), or with their memory off, still takes anything that holds the message but

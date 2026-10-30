@@ -355,11 +355,19 @@ def test_a_start_cut_off_while_replacing_the_privacy_triggers_keeps_the_earlier_
 OLDER_HEARTBEAT = "INSERT OR REPLACE INTO gene_runtime_health VALUES (1,?,'{}')"
 
 
-def test_an_older_controller_expires_fences_with_gene_s_heartbeat(world):
-    """Review of gene #159 (round 2): an older controller neither reads nor expires fences, but it records Gene's
-    runtime heartbeat every few seconds, as this one does; a trigger on that drops fences past their week, names
-    included, whichever controller runs. Fresh ones stay."""
+AGENT_STATE = "INSERT INTO agent_state VALUES ('probe','1') ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+
+
+@pytest.mark.parametrize('write', ['heartbeat', 'saved turn', 'agent state', 'agent state again'])
+def test_an_older_controller_expires_fences_with_gene_s_heartbeat_or_as_it_serves_fri(world, write):
+    """Review of gene #159 (rounds 2 and 3): an older controller neither reads nor expires fences, but it records
+    Gene's runtime heartbeat every few seconds, as this one does, and, with Gene's runtime down, still saves turns and
+    Fri's state as it serves Fri. A trigger on each drops fences past their week, names included, whichever
+    controller runs. Fresh ones stay."""
     client, store = world
+    if write == 'agent state again':
+        with store.connection() as db:
+            db.execute(AGENT_STATE)
     mine, nobodys, fresh = (source(age=age, channel='51')['id'] for age in (30, 20, 10))
     withdraw_saved(client, fresh, deleted=True)  # First: writing a fence here expires old ones itself.
     with store.connection() as db:
@@ -367,6 +375,9 @@ def test_an_older_controller_expires_fences_with_gene_s_heartbeat(world):
             db.execute('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted,user_id,revision) '
                        'VALUES (?,?,?,1,?,?)', ('123', message, time.time()-controller.WITHDRAWN_SECONDS-60, user,
                                                 revision))
-    with closing(sqlite3.connect(store.path)) as raw, raw:  # The older controller's own statement, as it runs.
-        raw.execute(OLDER_HEARTBEAT, (time.time(),))
+    if write == 'saved turn':
+        reply(store)
+    else:
+        with closing(sqlite3.connect(store.path)) as raw, raw:  # The older controller's own statement, as it runs.
+            raw.execute(OLDER_HEARTBEAT, (time.time(),)) if write == 'heartbeat' else raw.execute(AGENT_STATE)
     assert [row[0] for row in fences(store)] == [fresh]

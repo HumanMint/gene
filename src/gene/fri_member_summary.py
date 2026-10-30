@@ -158,6 +158,32 @@ def retire_writes(db, where, args=()):
         db.execute(f'DELETE FROM {table} WHERE {key} IN {items}', args)
 
 
+def erasure_triggers(db):
+    """A member's privacy revision moves (an erasure, memory off, chats cleared), and an older controller in a rollback
+    window does that without knowing what newer ones keep about them. These triggers, which it runs too, do what a start
+    here does for such a move (see settle and Store._settle_withdrawals) at once: saved work and reminders depending on
+    that member's summary keep nothing of it and lose all their links, as retire_writes does, and the deletion records
+    naming them go, so nothing identifying
+    them outlives the change (delta review of the 2026-10-30 release). Nothing may drop the tables they name while
+    they exist."""
+    moved = 'd.user_id=NEW.user_id AND d.revision IS NOT NEW.revision'
+    title, retired = (text.replace("'", "''") for text in (WORK_TITLE, WORK_RETIRED))
+    body = f"""
+        UPDATE fri_work SET title='{title}',body='{retired}',version=version+1
+            WHERE id IN (SELECT work_id FROM fri_work_dependencies d WHERE {moved});
+        UPDATE fri_posts SET state=CASE WHEN state IN ('pending','authorized','claimed') THEN 'cancelled' ELSE state END,
+            body=CASE WHEN state='sending' THEN body ELSE '' END
+            WHERE work_id IN (SELECT work_id FROM fri_work_dependencies d WHERE {moved});
+        DELETE FROM fri_work_dependencies WHERE work_id IN (SELECT work_id FROM fri_work_dependencies d WHERE {moved});
+        UPDATE fri_reminders SET state=CASE WHEN state IN ('pending','scheduled','claimed') THEN 'cancelled'
+            ELSE state END,body='' WHERE id IN (SELECT reminder_id FROM fri_reminder_dependencies d WHERE {moved});
+        DELETE FROM fri_reminder_dependencies WHERE reminder_id IN
+            (SELECT reminder_id FROM fri_reminder_dependencies d WHERE {moved});
+        DELETE FROM chat_turn_deletions WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;"""
+    for name, event in (('privacy_revision_inserted', 'INSERT'), ('privacy_revision_moved', 'UPDATE OF revision')):
+        db.execute(f'CREATE TRIGGER IF NOT EXISTS {name} AFTER {event} ON chat_revisions BEGIN {body} END')
+
+
 def settle(db):
     """At start: what an older controller left while it ran (a rollback window), which moved generations without
     retiring the replies that drew on them. Its privacy changes deleted the member's generation outright, and a drop

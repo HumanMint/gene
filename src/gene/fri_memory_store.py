@@ -45,6 +45,9 @@ def initialize(db):
         # same note again moves its time and leaves both, so a note whose time moved since has stale sources: it's
         # judged as one of unknown source (see CURRENT), never by messages that may not be all that say it now.
         db.execute('ALTER TABLE personal_notes ADD COLUMN sources_at REAL')
+    # A member's notes across their conversations: a withdrawal's settling at start asks for them once per fence (gene
+    # #145), and the unique key leads with the channel. An older controller keeps it up to date and never reads it.
+    db.execute('CREATE INDEX IF NOT EXISTS personal_notes_by_member ON personal_notes(guild_id,user_id)')
     db.execute('CREATE TABLE IF NOT EXISTS personal_note_removals (guild_id TEXT,channel_id TEXT,'
                'user_id TEXT,digest TEXT,at REAL,PRIMARY KEY(guild_id,channel_id,user_id,digest))')
 

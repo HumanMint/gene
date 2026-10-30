@@ -279,6 +279,7 @@ class Store:
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
             db.execute('DELETE FROM web_requests WHERE created<?', (time.time()-600,))
             db.execute('DELETE FROM mention_grants WHERE expires<?', (time.time()-600,))
+            db.execute('DELETE FROM chat_message_fences WHERE at<?', (time.time()-WITHDRAWN_SECONDS,))  # Gene #149.
             from .fri_reply_checks import prune as prune_reply_checks
             prune_reply_checks(db)
             from .fri_member_summary import prune as prune_summaries
@@ -724,6 +725,7 @@ class Store:
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
             db.execute('DELETE FROM chat_turn_withdrawals WHERE at<?', (time.time() - WITHDRAWN_SECONDS,))
             db.execute('DELETE FROM chat_turn_deletions WHERE at<?', (time.time() - WITHDRAWN_SECONDS,))
+            db.execute('DELETE FROM chat_message_fences WHERE at<?', (time.time() - WITHDRAWN_SECONDS,))
             profile = self._personal_context(db, guild_id, channel_id, user_id, profiles, origins=profiles,
                                              sources=sources)
             # Where each profile note was said, beside the notes rather than in them: an older Fri passes the
@@ -1544,8 +1546,9 @@ class Store:
         """Messages withdrawn by ID that nothing stored held (gene #149): a save still on its way, or a learning batch
         reading them, keeps nothing from them. Kept as long as a fence, at most MESSAGE_FENCES, by ID, kind and time
         only, never words. Where the controller knows a message's author (see _author), it names them, with their
-        privacy revision, so their "forget me" takes it and a start drops it once that moves; a member with memory off
-        gets none, as nothing new is written about them (gene #145). Otherwise it names nobody.
+        privacy revision, so their "forget me" takes it and a start drops it once that moves; a member with memory off, or
+        who erased since that turn (its grant or permit holds the revision then), gets none, as nothing new is written
+        about them (gene #145). Otherwise it names nobody.
         A deletion stops a save or check of a turn that carried the message, or answers it (see deleted_anywhere). An
         edit stops only a learning batch already reading it (see withdrawn_during), so it's kept only while one is:
         a save of the member's own edited message is Fri answering it again as it reads now, under the same ID, and
@@ -1554,10 +1557,10 @@ class Store:
         for message in messages:
             user = revision = None
             if (author := Store._author(db, guild_id, message)) is not None:
-                revision, enabled = Store._privacy_state(db, author)
-                if not enabled:
+                revision, enabled = Store._privacy_state(db, author[0])
+                if not enabled or author[1] != revision:  # Erased since the turn: nothing about them again.
                     continue
-                user = author
+                user = author[0]
             db.execute('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted,user_id,revision) '
                        'VALUES (?,?,?,?,?,?) ON CONFLICT(guild_id,message_id) DO UPDATE SET at=excluded.at,'
                        'deleted=max(chat_message_fences.deleted,excluded.deleted),'
@@ -1569,12 +1572,13 @@ class Store:
 
     @staticmethod
     def _author(db, guild_id, message):
-        """Who wrote a message nothing saved holds, if a turn answering it left their ID here: a ping's grant or a
-        research permit, each made for that message's author. None if neither did."""
-        row = db.execute('SELECT user_id FROM mention_grants WHERE guild_id=? AND source_id=? UNION ALL '
-                         'SELECT user_id FROM web_requests WHERE guild_id=? AND source_id=? LIMIT 1',
+        """Who wrote a message nothing saved holds, and their privacy revision when it was answered, if a turn
+        answering it left them here: a ping's grant or a research permit, each made for that message's author at that
+        revision. None if neither did."""
+        row = db.execute('SELECT user_id,revision FROM mention_grants WHERE guild_id=? AND source_id=? UNION ALL '
+                         'SELECT user_id,revision FROM web_requests WHERE guild_id=? AND source_id=? LIMIT 1',
                          (guild_id, str(message), guild_id, str(message))).fetchone()
-        return row[0] if row else None
+        return (row[0], row[1]) if row else None
 
     @staticmethod
     def _learning(db):

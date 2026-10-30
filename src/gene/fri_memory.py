@@ -18,14 +18,21 @@ SINGLE = re.compile(r"(?<!\w)(['‘])(?=\S)(?!(?i:cause|cuz|coz|bout|til|till|em
 # A sentence ending in "she said:", so the next one is her words.
 PRIOR = re.compile(r"(?i)(?:\b(?:said|says|wrote|writes|texted|asked|goes|told me|tells me)\b\W*|:\s*)$")
 # Common fillers that only look like a denial or a report, on their own or after "i": "not gonna lie, i like
-# chess", "i have to say i like chess". After anyone else, "they have to say …" stays a report, and so does
-# "they honestly have to say …": "also", "honestly" and "tbh" start a filler only where a clause does. After
+# chess", "i have to say i like chess". An aside ("not gonna lie", "if you ask me") reports no one else's words, so
+# it may follow an interjection anywhere; "also", "honestly" and "tbh" start one only where a clause does. After
 # punctuation only spaces may follow, so a run of commas is crossed once, not once from each comma.
 STARTER = r"lol|lmao|haha|ok|okay|yeah|yea|ya|so|and|but|fri|bro|dude|hey|yo|oh|well|btw"
+ME = r"\b(?:i|i'd|i'll|i'm|im|i am|i've|ive)\s+(?:(?:really|just|honestly)\s+)?"
+# "have to say" drops a report verb, so it's a filler only when the member says it: after "i", after nothing but
+# interjections from the sentence's start, or after a "but" or "and" with at most one interjection, as before (a
+# subject there may still be someone else's: "my friends agree and also honestly have to say …"). "they lol have to
+# say …" and "they, honestly, have to say …" stay reports. Each word is crossed once.
+SAID = r"lol|lmao|haha|ok|okay|yeah|yea|ya|so|fri|bro|dude|hey|yo|oh|well|btw|also|honestly|tbh"
 FILLER = re.compile(rf"(?i)(^\W*|\b(?:{STARTER})\W+|(?:^\W*|[^\w\s']\s*|\b(?:{STARTER})\W*)\b(?:also|honestly|tbh)\W+|"
-                    r"\b(?:i|i'd|i'll|i'm|im|i am|i've|ive)\s+(?:(?:really|just|honestly)\s+)?)"
-                    r"(?:not (?:gonna|going to) lie|not to brag|no (?:cap|lie|offen[cs]e)|"
-                    r"(?:gotta|got to|have to|must|needless to) say|if (?:i'm|im|i am) honest|if you ask me)\b")
+                    rf"{ME})(?:not (?:gonna|going to) lie|not to brag|no (?:cap|lie|offen[cs]e)|"
+                    rf"if (?:i'm|im|i am) honest|if you ask me)\b|"
+                    rf"(^\W*(?:(?:{SAID})\W+)*|\b(?:but|and)\W+(?:(?:{SAID})\W+)?|{ME})"
+                    rf"(?:gotta|got to|have to|must|needless to) say\b")
 # Someone else's words, a supposition or a quotation: nothing after it in the sentence is the member's claim.
 FRAMED = re.compile(
     r"(?i)\b(?:say|says|said|saying|tells?|told|telling|ask(?:s|ed)?|wr(?:ite|ites|ote)|text(?:s|ed)|goes|"
@@ -46,6 +53,27 @@ ASKING = re.compile(r"(?i)(?:^|\b(?:please|pls|plz|just|so|and|also|now|actually
 POLITE = re.compile(r"(?i)\W*(?:(?:lol|lmao|haha|ok|okay|hey|hi|yo|fri|so|also|and|bro|dude|btw)\W+)*"
                     r"(?:can|could|would|will) (?:you|u)(?: (?:please|pls|plz|just))*\W*")
 RETRACTED = re.compile(r"(?i)\b(?:jk|j/k|kidding|anymore|not really)\b|(?:^|\s)/s\b")
+# A report anywhere after the claim starts, inside the evidence or after it, in any form FRAMED knows before one:
+# "i like chess, my friend said", "… my friend keeps saying", "… or so she believes", "… people say". A bare verb
+# ("say", "think") counts after someone else's plural; after "i" it's their own hedge.
+REPORT = re.compile(
+    r"(?i)\b(?:says|said|saying|tells|told|telling|asks|asked|asking|writes|wrote|writing|texts|texted|texting|"
+    r"thinks|thought|thinking|believes|believed|believing|assumes|assumed|assuming|claims|claimed|claiming|"
+    r"insists|insisted|insisting|reckons|reckoned|swears|swore|sworn|quotes|quoted|quoting|according to|"
+    r"apparently|supposedly|allegedly)\b|"
+    r"\b(?:they|people|everyone|everybody|folks|friends|ppl|others|y'all)\s+(?:(?:all|always|still|keep|often|"
+    r"usually|just|really|also)\s+)?(?:say|tell|think|believe|assume|claim|insist|reckon|swear)\b")
+# "a bot that tells jokes", "… which sometimes says it", "… that's always telling jokes", "… that keeps saying gm"
+# only describe something.
+DESCRIBED = re.compile(r"(?i)\b(?:that|which)(?:'s|\s+(?:is|are|was|were))?\s+(?:(?:always|sometimes|often|usually|"
+                       r"never|just|also|really|actually|literally|basically|still|only|even|kinda|lowkey|keeps?)\s+)?$")
+# A nickname only on a condition isn't one: "call me dan if i win", wherever the evidence stops. A whole courtesy
+# clause that ends the claim only asks nicely ("if you want", "whenever you want", "if that's ok", "if that makes
+# sense"); "if you like chess" and "if you want to win" are conditions.
+CONDITION = re.compile(r"(?i)\b(?:unless|when|whenever|once|until|till|as long as|provided|if)\b")
+COURTESY = re.compile(r"(?i)\b(?:(?:if|whenever|when) (?:you|u) (?:want(?: to)?|wanna|like|prefer|'?d like|would like|"
+                      r"feel like it|don'?t mind)|if (?:that'?s|it'?s) (?:ok|okay|cool|fine|alright)|if (?:that|it) makes sense)"
+                      r"\W*(?:(?:lol|lmao|haha|tho|though|bro|dude|fri|please|pls|plz|ok|okay)\W*)*$")
 # The next sentence, on its own, takes it back: "i like chess. jk", "i like chess\nlol no".
 TAKEN_BACK = re.compile(r"(?i)\W*(?:(?:lol|lmao|lmfao|haha)\W+)*(?:jk|j/k|/s|just kidding|kidding|not really|"
                         r"not anymore|no|nah|nope)(?:\W+(?:lol|lmao|lmfao|haha))*\W*")
@@ -134,7 +162,7 @@ class Source:
                 or seen['`'] % 2 or seen['"'] % 2 or seen['“'] > seen['”'] or (quote and self.opens[quote - 1])
                 or after[:1] in ('"', '”') or re.match(r"'(?!\w)", after)):
             return False  # Quoted, code or a blockquote.
-        lead = FILLER.sub(r'\1 ', t[self.starts[k]:at])
+        lead = FILLER.sub(r'\1\2 ', t[self.starts[k]:at])
         rest = t[end:self.ends[k]]  # Empty when the evidence takes in the terminator.
         before = bisect.bisect_left(self.filled, k)
         if ((before and self.reported[before - 1]) or FRAMED.search(lead) or NEGATED.search(lead)
@@ -148,9 +176,14 @@ class Source:
         claim, later = t[at:end] + rest, bisect.bisect_right(self.filled, k)
         following = (t[self.starts[self.filled[later]]:self.ends[self.filled[later]]]
                      if later < len(self.filled) else '')
-        if (RETRACTED.search(claim) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest)
-                or TAKEN_BACK.fullmatch(following)):
-            return False  # "… jk", "… said no one ever", "… . jk".
+        # A report anywhere in the claim, and right after the evidence any verb a word away, even "that says".
+        spaced = re.sub(r'\s+', ' ', claim)
+        if (RETRACTED.search(claim) or any(not DESCRIBED.search(spaced[max(m.start() - 48, 0):m.start()]) for m in REPORT.finditer(spaced))
+                or TAKEN_BACK.fullmatch(following) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest)):
+            return False  # "… jk", "… said no one ever", "… my friend said", "… . jk".
+        if (CONDITION.search(COURTESY.sub('', spaced, count=1))
+                and evidence.lower().startswith(('call me', 'my nickname'))):
+            return False  # "call me dan if i win", "my nickname is dan when i stream".
         if call:
             return bool(ASKING.search(lead)) and not IDIOM.match(claim)
         words = re.findall(r"[\w']+", lead.lower())

@@ -233,9 +233,10 @@ class Store:
             for column, kind in (('user_id', 'TEXT'), ('revision', 'INTEGER')):  # A deletion's author (see _deleted).
                 if column not in columns:
                     db.execute(f'ALTER TABLE chat_turn_deletions ADD COLUMN {column} {kind}')
-            from .fri_member_summary import erasure_triggers
+            from .fri_member_summary import erasure_triggers, summary_triggers
             from .fri_member_summary import settle as settle_summaries
             erasure_triggers(db)  # They act on later revision moves, an older controller's too; settling moves none.
+            summary_triggers(db)  # And on later summaries going (gene #147); settling takes none.
             settle_summaries(db)
             self._settle_withdrawals(db)
             # Existing queued requests have never received intake approval. Fail closed

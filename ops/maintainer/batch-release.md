@@ -81,6 +81,8 @@ A rollback never restores a DB snapshot: the old release runs on the migrated DB
 
 `7d6e36a` has the first two features, so a rollback to it runs only the member-summary purge. Don't run `gene.provenance_downgrade` either: every release since `f667001` has turn provenance, and it would discard member continuity they support.
 
+Data an older release would keep serving after its own change to what the data depends on needs no downgrade step when the database can act for it: triggers it runs itself. gene #160's retire what names a member when their privacy revision moves, and gene #147's retire replies, drafts and reminders depending on a member summary the moment it goes, so a rollback to a release that has member summaries but not their dependencies (`34dbbb3`, say) runs none.
+
 ## Offline tests
 `FRI_REPO=<fri checkout> ops/maintainer/test/run.sh [t_name ...]` runs the script against mock hosts: stub docker, systemctl and curl, and a controller DB created by the old code as uid 10001. Each `docker run` executes the real command with the image's code: an export of OLD_G, this checkout for G, and FRI_REPO for F. The live release defaults to `f667001`; tests set `MOCK_OLD_G` / `MOCK_OLD_F` for others. It runs as the requested user and refuses anything it does not model. Every phase's exit code and the resulting state are asserted. Scenarios:
 - the full release, with a failing eval suite, then repeats of resume and cleanup
@@ -91,6 +93,7 @@ A rollback never restores a DB snapshot: the old release runs on the migrated DB
 - a failed Fri release that recovers itself, then rollback
 - an interrupted Fri release, reconciled by rollback
 - a rollback after resume, after a member removed a profile note, whose removal the downgrade keeps in the configured channel
+- a rollback to a release with member summaries but not summary dependencies (`34dbbb3`), which runs no downgrade: the old controller withdraws a member's message, and the database's triggers retire another member's reply, pending question, draft and reminder depending on that member's summary there and then
 - a controller env without the configured channels, which the rehearsal refuses
 - `stage` refusing a `pyproject.toml` change in what the venv installs, a changed `uv.lock` and a `pyproject.toml` it can't parse, each before building; a difference in metadata alone goes through to a full release. The mock's live source tree holds OLD_G's own `pyproject.toml` and `uv.lock`
 - a downgrade probe that fails to run, which stops the rehearsal rather than skipping a downgrade; the rollback then runs the recorded list without probing

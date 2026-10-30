@@ -7,7 +7,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 BASE=$(mktemp -d); chmod 755 "$BASE"
 export OLD_SRC_ROOT=$BASE/old-src
 tests=("$@"); (( ${#tests[@]} )) || mapfile -t tests < <(cd "$HERE" && find . -maxdepth 1 -name 't_*.sh' | sed 's|^\./||; s/\.sh$//' | sort)
-for old in '' 7d6e36a0e4621bbce75dd9c404b4864b90699b19 G; do  # Exports each old release's code once for every test.
+for old in '' 7d6e36a0e4621bbce75dd9c404b4864b90699b19 34dbbb3799715328772b0ae68ab2fb1d81a68fdb G; do  # Each old release's code, once.
   (MOCK_OLD_G=$old MOCK=$BASE/prime . "$HERE/env.sh")
 done
 for t in "${tests[@]}"; do bash "$HERE/$t.sh" "$BASE/$t" > "$BASE/$t.log" 2>&1 & done

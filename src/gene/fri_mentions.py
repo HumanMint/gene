@@ -132,9 +132,10 @@ def save_turn(store, body):
         raise HTTPException(403, 'An explicit mention invitation needs a text reply')
     if body.notes or body.burst or body.clarification or body.allow_closing:
         raise HTTPException(403, 'Mention invitations cannot save notes, bursts, or pending actions')
-    # Without the summary generation and dependencies, which a mention turn never uses: its fingerprint stays what an
-    # older controller kept, so a retry across an upgrade or a rollback answers as the first save did.
-    fingerprint = _hash(body.model_dump_json(exclude={'summary_generation', 'summary_dependencies'}))
+    # Without the summary generation and dependencies, or the messages it drew on (gene #141), which a mention turn
+    # never uses: its fingerprint stays what an older controller kept, so a retry across an upgrade or a rollback
+    # answers as the first save did.
+    fingerprint = _hash(body.model_dump_json(exclude={'summary_generation', 'summary_dependencies', 'drew_on'}))
     with store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
         row = check(db, body, text=body.input)

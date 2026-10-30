@@ -322,10 +322,12 @@ class AgentStore:
                     continue
                 revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (r['user_id'],)).fetchone()
                 profile = self.store._personal_context(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
-                # Words from before a removal teach nothing again: no note, observation or summary.
+                # Words from before a removal teach nothing again: no note, observation or summary. Nor does a
+                # message withdrawn while this batch read it (gene #141).
                 cutoff = removed(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
                 if (profile['enabled'] and r.get('revision') == (revision[0] if revision else 0)
-                        and (cutoff is None or r['at'] > cutoff)):
+                        and (cutoff is None or r['at'] > cutoff)
+                        and not self.store.taken_back(db, self.settings.guild_id, r['user_id'], [r['id']])):
                     accepted[r['id']] = r
             kept = []
             for candidate in (result.get('notes', [])[:5] if mode != 'explore' else []):
@@ -335,7 +337,8 @@ class AgentStore:
                 note = personal_note(candidate, r['text']) if r else None
                 if note:
                     from .fri_memory_store import save
-                    if save(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'], note, r['at']):
+                    if save(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'], note, r['at'],
+                            sources=[r['id']]):  # So it goes if that message is withdrawn (gene #141).
                         kept.append(f"{r['user_id']} / {note[0]}: {note[1]}")
             summary = clean(result.get('summary', ''), 600)
             if not accepted or len(accepted) != len(records):

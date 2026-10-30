@@ -260,10 +260,10 @@ def artist_spans(text, artist):
         close = quoted_title(text, at)
         if not (close and close > 0):
             return first, (at, artist.end()), None
-        words = [[m.start(), m.end()] for m in WORD.finditer(text, at+1, close-1)]
-        if words:
-            words[0][0] = at
-        return words, (at, close-1), close
+        spans = [[m.start(), m.end()] for m in WORD.finditer(text, at+1, close-1)]
+        if spans:
+            spans[0][0] = at
+        return spans, (at, close-1), close
     name, end = song_words(artist[0])[1:], artist.end()
     if name[0] in NOT_ARTISTS or SPEAKER.fullmatch(name[0]):  # No artist's name ("Stand By Me").
         return first, (at, end), None
@@ -339,9 +339,9 @@ def replacement(text, song, start, named):
     # song, or its own title before that, grounded as the named song is ("the Not Now" may be "Not Now").
     stopped = STOPPED.search(plain, song_end) or SAID_STOPPED.search(plain, title)
     if stopped:
-        words = [word for word, at, _ in said if at < min(own, stopped.start())]
+        title_words = [word for word, at, _ in said if at < min(own, stopped.start())]
         later = song_words(stopped['later'])
-        stopped = later != named and grounded_song(words, later, quoted and len(words)) < len(words)
+        stopped = later != named and grounded_song(title_words, later, quoted and len(title_words)) < len(title_words)
     return not (REFUSED.search(text) or ATTRIBUTED.search(plain) or WITHDRAWN.search(plain[song:]) or stopped
                 or any(DISOWNED.match(nameless, at) for at in denials) or handed_off(nameless, clause, song_end))
 

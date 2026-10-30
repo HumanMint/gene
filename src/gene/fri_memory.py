@@ -51,6 +51,14 @@ ASKING = re.compile(r"(?i)(?:^|\b(?:please|pls|plz|just|so|and|also|now|actually
 POLITE = re.compile(r"(?i)\W*(?:(?:lol|lmao|haha|ok|okay|hey|hi|yo|fri|so|also|and|bro|dude|btw)\W+)*"
                     r"(?:can|could|would|will) (?:you|u)(?: (?:please|pls|plz|just))*\W*")
 RETRACTED = re.compile(r"(?i)\b(?:jk|j/k|kidding|anymore|not really)\b|(?:^|\s)/s\b")
+# A report anywhere after the claim starts, inside the evidence or after it: "i like chess, my friend said". "a bot
+# that tells jokes" only describes something.
+REPORT = re.compile(r"(?i)(?<!\bthat )(?<!\bwhich )\b(?:said|says|asked|asks|wrote|writes|texted|texts|told|tells|"
+                    r"claims|claimed|thinks)\b")
+# A nickname only on a condition isn't one: "call me dan if i win", wherever the evidence stops. "if you want" and
+# "if that's ok" only ask nicely.
+CONDITION = re.compile(r"(?i)\b(?:unless|when|whenever|once|until|till|as long as|provided|if(?! (?:you|u) (?:want|wanna|"
+                       r"like|don'?t mind)\b| (?:that'?s|it'?s) (?:ok|okay|cool|fine|alright)\b))\b")
 # The next sentence, on its own, takes it back: "i like chess. jk", "i like chess\nlol no".
 TAKEN_BACK = re.compile(r"(?i)\W*(?:(?:lol|lmao|lmfao|haha)\W+)*(?:jk|j/k|/s|just kidding|kidding|not really|"
                         r"not anymore|no|nah|nope)(?:\W+(?:lol|lmao|lmfao|haha))*\W*")
@@ -153,11 +161,12 @@ class Source:
         claim, later = t[at:end] + rest, bisect.bisect_right(self.filled, k)
         following = (t[self.starts[self.filled[later]]:self.ends[self.filled[later]]]
                      if later < len(self.filled) else '')
-        if (RETRACTED.search(claim) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest)
-                or TAKEN_BACK.fullmatch(following)):
-            return False  # "… jk", "… said no one ever", "… . jk".
+        # A report anywhere in the claim, and right after the evidence any verb a word away, even "that says".
+        if (RETRACTED.search(claim) or REPORT.search(claim) or TAKEN_BACK.fullmatch(following)
+                or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest)):
+            return False  # "… jk", "… said no one ever", "… my friend said", "… . jk".
         if call:
-            return bool(ASKING.search(lead)) and not IDIOM.match(claim)
+            return bool(ASKING.search(lead)) and not IDIOM.match(claim) and not CONDITION.search(claim)
         words = re.findall(r"[\w']+", lead.lower())
         return not words or words[-1] not in ASKED
 

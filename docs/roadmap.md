@@ -2,7 +2,7 @@
 
 Gene is the serious, structured functional bot. Fri is the separate playful, lightly
 sarcastic chat companion and request interface. Both use one controller and release
-coordinator. Chat uses official ChatGPT plan sign-in for the personal Hostinger VM;
+coordinator. Chat uses official ChatGPT plan sign-in on the bot host;
 the isolated coding worker retains its separate Codex subscription login.
 
 The first milestone is a reliable invisible lab: native Red commands/music, meme

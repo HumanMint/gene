@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -364,6 +365,36 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
 
 
+def fastest_reads(read, texts, runs=5):
+    """Each text's fastest read in CPU time, taking turns so a slow spell on the runner hits them alike."""
+    best = [float('inf')] * len(texts)
+    for _ in range(runs):
+        for i, text in enumerate(texts):
+            began = time.thread_time()  # Not the runner's other work.
+            read(text)
+            best[i] = min(best[i], time.thread_time() - began)
+    return best
+
+
+def assert_linear(read, message):
+    """Four times the characters takes about four times as long when `read` is linear, and about sixteen when it
+    backtracks quadratically, however fast the runner is, so the 4000-character read over the 1000 must stay under 8
+    (gene #155; correction() is checked the same way since gene #140). A fixed ceiling failed on a slow runner."""
+    texts = [message(1000), message(4000)]
+    gc.collect()
+    gc.disable()  # A collection during a read is noise, not reading time.
+    try:
+        fastest_reads(read, texts, runs=1)  # Warmed up first: a slow runner's first call isn't backtracking.
+        ratios = []
+        while len(ratios) < 3 and (not ratios or ratios[-1] >= 8):  # Backtracking is slow on every try; noise, rarely.
+            small, large = fastest_reads(read, texts)
+            ratios.append(large / small)
+    finally:
+        gc.enable()
+    assert ratios[-1] < 8, ratios
+    assert large < 1, large  # Backstop: milliseconds here, so a second has room for any runner.
+
+
 def test_a_long_repetitive_message_is_read_once_not_per_occurrence():
     text = ('i play ' * 572)[:4000]
     long = ('blah ' * 90 + 'i like chess ') * 8  # One 3,700-character sentence, at the cap.
@@ -376,12 +407,12 @@ def test_a_long_repetitive_message_is_read_once_not_per_occurrence():
 
 def test_a_punctuation_heavy_message_is_read_in_one_pass():
     body = 'i like chess i love go i play league ' * 8
-    for pad in (',', ', ', ',!.,'):  # Before every occurrence, a run of separators for the filler check to cross.
-        text = (pad * 4000)[:4000-len(body)] + body
-        started = time.perf_counter()
+
+    def read(text):
         for evidence in ('i like chess', 'i love go', 'i play league'):
             personal_note({'category': 'games', 'evidence': evidence}, text)
-        assert time.perf_counter() - started < 0.25, pad
+    for pad in (',', ', ', ',!.,'):  # Before every occurrence, a run of separators for the filler check to cross.
+        assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
 
 
 def test_the_same_words_too_many_times_keep_nothing():

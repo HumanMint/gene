@@ -365,6 +365,100 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
 
 
+@pytest.mark.parametrize('category,evidence,text', [
+    # "have to say" is a report unless the member says it: an interjection or a comma after someone else
+    # doesn't make it a filler (gene #81 item 1).
+    ('games', 'i like chess', 'they lol have to say i like chess'),
+    ('games', 'i like chess', 'they so gotta say i like chess'),
+    ('games', 'i like chess', 'she yeah must say i like chess'),
+    ('games', 'i like chess', 'they lol honestly have to say i like chess'),
+    ('games', 'i like chess', 'they, honestly, have to say i like chess'),
+    ('games', 'i like chess', 'my mom, tbh, must say i like chess'),
+    ('games', 'i like chess', 'the boys, also, gotta say i like chess'),
+    ('games', 'i like chess', 'bob btw needless to say i like chess'),
+    ('projects', 'im building a mod', 'they lol have to say im building a mod'),
+    # A report or a nickname's condition counts wherever it sits after the claim starts, inside the evidence
+    # or after it (gene #81 item 2).
+    ('games', 'i like chess she said', 'i like chess she said'),
+    ('games', 'i like chess, my friend said', 'i like chess, my friend said'),
+    ('games', 'i like chess', 'i like chess, my friend said'),
+    ('games', 'i like chess', 'i like chess, she told me'),
+    ('games', 'i like chess', 'i like chess or so she claims'),
+    ('nickname', 'call me dan, bob said', 'call me dan, bob said'),
+    ('nickname', 'call me dan if i win', 'can you call me dan if i win?'),
+    ('nickname', 'call me dan if i win', 'call me dan if i win'),
+    ('nickname', 'call me dan', 'call me dan if i win'),
+    ('nickname', 'call me dan', 'call me dan when we play'),
+    ('nickname', 'call me dan unless i lose', 'pls call me dan unless i lose'),
+    ('nickname', 'call me dan', 'you can call me dan once i win'),
+    ('nickname', 'my nickname is dan', 'my nickname is dan when i stream'),
+    ('nickname', 'my nickname is dan if i win', 'my nickname is dan if i win'),
+    # Round 1 of #167's review. After "but" or "and" the subject may still be someone else's, so at most one
+    # interjection may sit before "have to say" there, as main had it; longer runs only start a sentence.
+    ('games', 'i like chess', 'my friends agree and also honestly have to say i like chess'),
+    ('games', 'i like chess', 'they disagree but also honestly gotta say i like chess'),
+    ('games', 'i like chess', 'they lost and lol honestly gotta say i like chess'),
+    # Every form of a report verb after the claim, as before it.
+    ('games', 'i like chess', 'i like chess, my friend keeps saying'),
+    ('games', 'i like chess', 'i like chess, or so my friend believes'),
+    ('games', 'i like chess, my friend keeps saying', 'i like chess, my friend keeps saying'),
+    ('games', 'i like chess', 'i like chess according to my brother'),
+    ('games', 'i like chess', 'i like chess, people say'),
+    ('games', 'i like chess', 'i like chess, apparently'),
+    ('music', 'i love jazz', 'i love jazz, she insists'),
+    # A courtesy is one only as a whole clause that ends the claim: "if you like chess" is a condition.
+    ('nickname', 'call me dan', 'call me dan if you like chess'),
+    ('nickname', 'my nickname is dan', 'my nickname is dan if you want to win'),
+    ('nickname', 'call me dan', 'call me dan whenever you want to beat me'),
+])
+def test_the_evidence_boundary_hides_no_report(category, evidence, text):
+    assert personal_note({'category': category, 'evidence': evidence}, text) is None
+
+
+@pytest.mark.parametrize('category,evidence,text', [
+    # With nothing but interjections before it, or "i", "have to say" is still the member's own.
+    ('games', 'i like chess', 'lol honestly have to say i like chess'),
+    ('games', 'i like chess', 'ok so gotta say i like chess'),
+    ('games', 'i like chess', 'yeah, also, must say i like chess'),
+    ('games', 'i like chess', 'the server is dead but honestly gotta say i like chess'),
+    ('games', 'i like chess', 'lost again and lol gotta say i like chess'),
+    ('games', 'i like chess', 'i honestly have to say i like chess'),
+    ('games', 'i like chess', 'the server is dead, honestly not gonna lie, i like chess'),
+    # "i am" is a filler's subject like "i'm" (gene #81 item 3).
+    ('games', 'I like chess', 'I am not gonna lie, I like chess'),
+    ('games', 'i like chess', 'i am honestly not gonna lie, i like chess'),
+    ('games', 'i like chess', 'i am just not gonna lie, i like chess'),
+    ('games', 'i like chess', 'if i am honest, i like chess'),
+    # A condition only holds back a nickname; a taste with one is still the member's.
+    ('nickname', 'call me dan', 'call me dan from now on'),
+    ('nickname', 'call me dan, but not danny', 'call me dan, but not danny'),
+    ('nickname', 'call me dan but only here', 'call me dan but only here'),
+    ('nickname', 'call me dan', 'you can call me dan if you want'),
+    ('nickname', 'my nickname is dan', 'my nickname is dan if you want'),
+    ('nickname', "call me dan if that's ok", "call me dan if that's ok"),
+    ('games', "i like chess if it's blitz", "i like chess if it's blitz"),
+    # "that" or "which" before the verb describes a thing; it's no one's report.
+    ('projects', 'im building a bot that tells jokes', 'im building a bot that tells jokes'),
+    ('projects', 'im building a bot', 'im building a bot that tells jokes'),
+    ('games', 'i play a game which says it in the title', 'i play a game which says it in the title'),
+    # Round 1 of #167's review: a description may carry an everyday adverb or odd spacing, and a whole courtesy
+    # clause ending the claim only asks nicely.
+    ('projects', 'im building a bot', 'im building a bot that always tells jokes'),
+    ('projects', 'im building a bot', 'im building a bot which sometimes tells jokes'),
+    ('projects', 'im building a bot', 'im building a bot that\ttells jokes'),
+    ('projects', 'im building a bot', "im building a bot that's always telling jokes"),
+    ('nickname', 'call me dan', 'call me dan whenever you want'),
+    ('nickname', 'call me dan', 'call me dan if you feel like it'),
+    ('nickname', 'call me dan', 'call me dan if you want to'),
+    ('nickname', 'call me dan', 'call me dan if you want lol'),
+    ('nickname', 'call me dan', 'call me dan if that makes sense'),
+    ('projects', 'im building a bot', 'im building a bot that keeps saying gm'),
+    ('games', 'i like chess', 'they disagree but gotta say i like chess'),
+])
+def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
+    assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
+
+
 def fastest_reads(read, texts, runs=5):
     """Each text's fastest read in CPU time, taking turns so a slow spell on the runner hits them alike."""
     best = [float('inf')] * len(texts)
@@ -412,6 +506,26 @@ def test_a_punctuation_heavy_message_is_read_in_one_pass():
         for evidence in ('i like chess', 'i love go', 'i play league'):
             personal_note({'category': 'games', 'evidence': evidence}, text)
     for pad in (',', ', ', ',!.,'):  # Before every occurrence, a run of separators for the filler check to cross.
+        assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
+
+
+def test_a_long_tail_after_the_claim_is_read_in_one_pass():
+    def read(text):
+        for category, evidence in (('games', 'i like chess'), ('nickname', 'call me dan')):
+            personal_note({'category': category, 'evidence': evidence}, text)
+    # Each report word looks back a bounded way for a description; a courtesy is matched once, at the end.
+    for pad in ('that said ', 'which sometimes tells ', 'if you want lol ', "that's always telling "):
+        assert_linear(read, lambda length: 'i like chess call me dan ' + (pad * length)[:length])
+
+
+def test_a_long_run_of_interjections_is_read_in_one_pass():
+    body = 'i like chess i love go call me dan ' * 4
+
+    def read(text):
+        for category, evidence in (('games', 'i like chess'), ('music', 'i love go'), ('nickname', 'call me dan')):
+            personal_note({'category': category, 'evidence': evidence}, text)
+    # Each "but" or "and" starts a run of interjections that "have to say" may end; none is crossed twice.
+    for pad in ('but lol ', 'and and ', 'so so honestly ', 'they, honestly, ', 'but lol have to '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
 
 

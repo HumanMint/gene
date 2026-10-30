@@ -163,7 +163,7 @@ def erasure_triggers(db):
     window does that without knowing what newer ones keep about them. These triggers, which it runs too, do what a start
     here does for such a move (see settle and Store._settle_withdrawals) at once: saved work and reminders depending on
     that member's summary keep nothing of it and lose all their links, as retire_writes does, and the deletion records
-    naming them go, so nothing identifying
+    and message fences (gene #149) naming them go, so nothing identifying
     them outlives the change (delta review of the 2026-10-30 release). Nothing may drop the tables they name while
     they exist."""
     moved = 'd.user_id=NEW.user_id AND d.revision IS NOT NEW.revision'
@@ -179,9 +179,33 @@ def erasure_triggers(db):
             ELSE state END,body='' WHERE id IN (SELECT reminder_id FROM fri_reminder_dependencies d WHERE {moved});
         DELETE FROM fri_reminder_dependencies WHERE reminder_id IN
             (SELECT reminder_id FROM fri_reminder_dependencies d WHERE {moved});
-        DELETE FROM chat_turn_deletions WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;"""
-    for name, event in (('privacy_revision_inserted', 'INSERT'), ('privacy_revision_moved', 'UPDATE OF revision')):
-        db.execute(f'CREATE TRIGGER IF NOT EXISTS {name} AFTER {event} ON chat_revisions BEGIN {body} END')
+        DELETE FROM chat_turn_deletions WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;
+        DELETE FROM chat_message_fences WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;"""
+    from .store import WITHDRAWN_SECONDS
+    # Gene #149's week for message fences, kept by any controller: an older one neither reads nor expires them, but
+    # records Gene's runtime heartbeat every few seconds (INSERT OR REPLACE, which runs an INSERT trigger), and, as it
+    # serves Fri, saves turns, pending questions, a ping's grant and Fri's own state. Its health checks write nothing,
+    # so a controller that does none of those keeps them until one does, or this code starts; nothing reads them then.
+    expire = (f"DELETE FROM chat_message_fences WHERE at<(julianday('now')-2440587.5)*86400.0-{WITHDRAWN_SECONDS};")
+    triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),
+                ('privacy_revision_moved', 'AFTER UPDATE OF revision ON chat_revisions', body),
+                ('message_fences_expire', 'AFTER INSERT ON gene_runtime_health', expire),
+                ('message_fences_expire_turns', 'AFTER INSERT ON chat_turns', expire),
+                ('message_fences_expire_pending', 'AFTER INSERT ON chat_pending', expire),
+                ('message_fences_expire_grants', 'AFTER INSERT ON mention_grants', expire),
+                ('message_fences_expire_state', 'AFTER INSERT ON agent_state', expire),
+                ('message_fences_expire_state_moved', 'AFTER UPDATE ON agent_state', expire))
+    # Replaced, not kept if they exist, so a body changed since an earlier controller made them takes effect; all in
+    # one transaction, so a start cut off between them, or an older controller starting meanwhile, never finds one
+    # missing.
+    began = not db.in_transaction
+    if began:
+        db.execute('BEGIN IMMEDIATE')
+    for name, event, statements in triggers:
+        db.execute(f'DROP TRIGGER IF EXISTS {name}')
+        db.execute(f'CREATE TRIGGER {name} {event} BEGIN {statements} END')
+    if began:
+        db.commit()
 
 
 def settle(db):

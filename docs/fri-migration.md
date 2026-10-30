@@ -275,14 +275,20 @@ built from other members' messages.
     was left, by the moved revision, even once a summary built again has brought the same generation back
     (as `chat_turn_deletions` are dropped at start).
 - **In a rollback window (gene #147, #161, #162).** An older controller knows nothing of what depends on a
-  member's summary, so two triggers on `fri_member_summaries`, which it runs too, retire at once what this
+  member's summary, so triggers on `fri_member_summaries`, which it runs too, retire at once what this
   controller retires when that summary goes. One fires when a row is deleted: a withdrawal, an expiry, a
   privacy change, or another member's privacy change through the summary's provenance. The other fires when
   a rebuild replaces a row without keeping its lineage: its words emptied, its revision changed, or its
   origins, provenance or `through` not kept. Either way the member's own replies that drew on it, other
   members' replies depending on it with any question they left pending, and saved work and reminders
   depending on it with all their links go, as above. A rebuild sent the earlier summary keeps its lineage,
-  so nothing goes. Each start of this code replaces the triggers, and the purge drops them with the table.
+  and so can one that wasn't, when its origins and provenance cover the old one's anyway: the row can't
+  tell them apart. So a third trigger, on an update that keeps the lineage, retires only what still
+  depends on the member at another generation than theirs now, which is what the controller didn't carry
+  on to the new one, as a start here would (gene #170). This controller and Gene main carry it on for a
+  rebuild sent the earlier summary and retire it otherwise, before the update, so nothing more goes. The
+  live release carries on only the member's own replies, so the rest goes then rather than at the next
+  start here. Each start of this code replaces the triggers, and the purge drops them with the table.
   There is no schema change and no release-script downgrade step: the older controller's own summary
   changes run them, and what still depends on a current summary stays.
 

@@ -232,10 +232,10 @@ def test_an_older_controllers_rebuild_not_sent_the_old_summary_retires_what_depe
     assert not holds(store) and dependencies(store) == []
 
 
-def test_a_rebuild_sent_the_old_summary_keeps_what_depends_on_it_through_a_rollback_window(world):
-    """The guard for the triggers' rebuild case: one sent the old summary keeps its lineage, so nothing depending on it
-    goes, whichever controller builds it. The live release moves the generation without carrying dependents on, so
-    the next start here retires them, as it did before."""
+def test_a_rebuild_sent_the_old_summary_keeps_what_depends_on_it_where_it_was_carried_on(world):
+    """The guard for the triggers' rebuild case: one sent the old summary keeps its lineage, so nothing this controller
+    (or Gene main) carried on to the new generation goes. The live release moves the generation without carrying
+    dependents on, so they go then, as the next start here would retire them (gene #170)."""
     from gene.fri_member_summary import finish
     client, store = world
     _, generation = summarized(client, store)
@@ -248,7 +248,7 @@ def test_a_rebuild_sent_the_old_summary_keeps_what_depends_on_it_through_a_rollb
         db.execute("UPDATE fri_member_summary_generations SET generation=generation+1 WHERE user_id='20'")
         db.execute("UPDATE fri_member_summaries SET body='they made more plans',origins=json_insert(origins,'$[#]',"
                    "'public:999'),through=through+1,refreshed=? WHERE user_id='20'", (time.time(),))
-    assert saved_reply(store) == ECHOED and holds(store)
+    assert retired(saved_reply(store)) and not holds(store) and dependencies(store) == []
     Store(store.path)
     assert retired(saved_reply(store)) and not holds(store)
 
@@ -462,7 +462,7 @@ def test_an_upgrade_keeps_what_depends_on_a_current_summary(world):
     Store(store.path)
     assert saved_reply(store) == ECHOED and saved_reply(store, '700') == QUOTING
     assert holds(store) and len(dependencies(store)) == 2
-    assert {'member_summary_gone', 'member_summary_replaced'} <= set(triggers(store))
+    assert {'member_summary_gone', 'member_summary_replaced', 'member_summary_carried'} <= set(triggers(store))
 
 
 def test_a_purge_before_a_rollback_takes_the_triggers_with_the_summaries(world):
@@ -472,7 +472,7 @@ def test_a_purge_before_a_rollback_takes_the_triggers_with_the_summaries(world):
     _, generation = summarized(client, store)
     repeated(client, generation)
     purge(store.path)
-    assert not {'member_summary_gone', 'member_summary_replaced'} & set(triggers(store))
+    assert not {'member_summary_gone', 'member_summary_replaced', 'member_summary_carried'} & set(triggers(store))
     assert retired(saved_reply(store))
     with store.connection() as db:  # The older controller's own privacy change still runs.
         db.execute("DELETE FROM chat_turns WHERE user_id='30'")
@@ -480,14 +480,16 @@ def test_a_purge_before_a_rollback_takes_the_triggers_with_the_summaries(world):
 
 
 def test_a_start_replaces_a_trigger_an_earlier_controller_made(world):
-    """A body changed since takes effect at the next start, both triggers replaced in one transaction."""
+    """A body changed since takes effect at the next start, every trigger replaced in one transaction, and one an
+    earlier controller never made (gene #170's) is made."""
     client, store = world
     with store.connection() as db:
         db.execute('DROP TRIGGER member_summary_gone')
         db.execute("CREATE TRIGGER member_summary_gone AFTER DELETE ON fri_member_summaries BEGIN SELECT 1; END")
         db.execute('DROP TRIGGER member_summary_replaced')
+        db.execute('DROP TRIGGER member_summary_carried')
     Store(store.path)
     with store.connection() as db:
         bodies = dict(db.execute("SELECT name, sql FROM sqlite_master WHERE name LIKE 'member_summary_%'").fetchall())
-    assert set(bodies) == {'member_summary_gone', 'member_summary_replaced'}
+    assert set(bodies) == {'member_summary_gone', 'member_summary_replaced', 'member_summary_carried'}
     assert 'chat_turns' in bodies['member_summary_gone'] and 'SELECT 1;' not in bodies['member_summary_gone']

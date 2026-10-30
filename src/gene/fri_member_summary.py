@@ -234,22 +234,35 @@ def summary_triggers(db):
     what depends on it elsewhere (fri #193, fri #216). These triggers, which it runs too, retire at once what this
     controller retires then (see advance and erase): the member's own saved replies that drew on it, other members'
     replies depending on it with any question they left open, and saved work and reminders depending on it with all
-    their links (gene #147, #161, #162). A rebuild sent the summary it replaces keeps its words, revision, origins,
-    provenance and a later `through`, so a withdrawal of anything the old one drew on still finds it: what depends on
-    it stays, as a covered advance carries it on. A purge drops them with the table; their bodies name only tables
-    nothing drops."""
+    their links (gene #147, #161, #162).
+
+    A rebuild sent the summary it replaces keeps its words, revision, origins, provenance and a later `through`, so a
+    withdrawal of anything the old one drew on still finds it. The row can't tell that from one that wasn't sent it but
+    covers the old one's origins and provenance by structure (gene #170), so a covering update retires only what still
+    depends on the member at another generation than theirs now: what the controller didn't carry on to it, as a start
+    here would (see settle). This one carries it on for a rebuild sent the old summary and retires it otherwise, before
+    the update; the live release carries on only the member's own replies, so the rest goes then. A purge drops them
+    with the table, before the generations they read; their bodies name only tables nothing else drops."""
     quoted = {name: text.replace("'", "''") for name, text in
               (('retired', RETIRED), ('title', WORK_TITLE), ('work', WORK_RETIRED))}
-    turns = ("chat_turns.guild_id=OLD.guild_id AND ((chat_turns.user_id=OLD.user_id AND chat_turns.summary_generation IS "
-             "NOT NULL) OR (chat_turns.summary_dependencies IS NOT NULL AND EXISTS (SELECT 1 FROM "
-             "json_each(chat_turns.summary_dependencies) d WHERE json_extract(d.value,'$.user_id')=OLD.user_id)))")
+    now = ('(SELECT generation FROM fri_member_summary_generations g WHERE g.guild_id=OLD.guild_id AND '
+           'g.user_id=OLD.user_id)')
 
-    def depending(table, key, item):  # One of their items depends on the summary.
-        return (f'EXISTS (SELECT 1 FROM {table} d WHERE d.{key}={item} AND d.guild_id=OLD.guild_id AND '
-                'd.user_id=OLD.user_id)')
-    work, reminders = WRITES
-    # Correlated EXISTS throughout: SQLite 3.53 skipped a row-value IN in this body under the rebuild trigger's WHEN.
-    body = f"""
+    def body(stale):
+        """What depends on the summary goes; stale: only at another generation than the member's now."""
+        mine = f' AND chat_turns.summary_generation IS NOT {now}' if stale else ''
+        theirs = f" AND json_extract(d.value,'$.generation') IS NOT {now}" if stale else ''
+        turns = ("chat_turns.guild_id=OLD.guild_id AND ((chat_turns.user_id=OLD.user_id AND chat_turns.summary_generation "
+                 f"IS NOT NULL{mine}) OR (chat_turns.summary_dependencies IS NOT NULL AND EXISTS (SELECT 1 FROM "
+                 f"json_each(chat_turns.summary_dependencies) d WHERE json_extract(d.value,'$.user_id')=OLD.user_id"
+                 f"{theirs})))")
+
+        def depending(table, key, item):  # One of their items depends on the summary.
+            return (f'EXISTS (SELECT 1 FROM {table} d WHERE d.{key}={item} AND d.guild_id=OLD.guild_id AND '
+                    f'd.user_id=OLD.user_id{f" AND d.generation IS NOT {now}" if stale else ""})')
+        work, reminders = WRITES
+        # Correlated EXISTS throughout: SQLite 3.53 skipped a row-value IN in this body under the rebuild trigger's WHEN.
+        return f"""
         DELETE FROM chat_pending WHERE EXISTS (SELECT 1 FROM chat_turns WHERE chat_turns.guild_id=chat_pending.guild_id
             AND chat_turns.user_id=chat_pending.user_id
             AND json_extract(NULLIF(chat_turns.source,''),'$.id')=chat_pending.source_id AND {turns});
@@ -269,16 +282,19 @@ def summary_triggers(db):
                "WHERE n.value IS o.value)) AND NOT EXISTS (SELECT 1 FROM json_each(OLD.provenance) p WHERE NOT EXISTS "
                "(SELECT 1 FROM json_each(NEW.provenance) q WHERE json_extract(q.value,'$.user_id') IS "
                "json_extract(p.value,'$.user_id') AND json_extract(q.value,'$.revision') IS json_extract(p.value,'$.revision')))")
-    triggers = (('member_summary_gone', 'AFTER DELETE ON fri_member_summaries FOR EACH ROW'),
-                ('member_summary_replaced', f'AFTER UPDATE ON fri_member_summaries FOR EACH ROW WHEN NOT ({covered})'))
+    triggers = (('member_summary_gone', 'AFTER DELETE ON fri_member_summaries FOR EACH ROW', body(False)),
+                ('member_summary_replaced', f'AFTER UPDATE ON fri_member_summaries FOR EACH ROW WHEN NOT ({covered})',
+                 body(False)),
+                ('member_summary_carried', f'AFTER UPDATE ON fri_member_summaries FOR EACH ROW WHEN {covered}',
+                 body(True)))
     # Replaced, so a body changed since an earlier controller made them takes effect, in one transaction, so a start cut
     # off between them, or an older controller starting meanwhile, never finds one missing (as erasure_triggers does).
     began = not db.in_transaction
     if began:
         db.execute('BEGIN IMMEDIATE')
-    for name, event in triggers:
+    for name, event, statements in triggers:
         db.execute(f'DROP TRIGGER IF EXISTS {name}')
-        db.execute(f'CREATE TRIGGER {name} {event} BEGIN {body} END')
+        db.execute(f'CREATE TRIGGER {name} {event} BEGIN {statements} END')
     if began:
         db.commit()
 

@@ -42,6 +42,12 @@ RETIRED = 'Earlier answer drawing on an older summary of them. Nothing from it i
 # A saved reply that depends on that member's summary through another reply of Fri's (fri #193); `?`: their ID.
 DEPENDS = ("summary_dependencies IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(chat_turns.summary_dependencies) d "
            "WHERE json_extract(d.value,'$.user_id')=?)")
+# Saved work and reminders the model wrote that may repeat another member's summary (fri #216): their dependencies'
+# tables, and the column naming the item.
+WRITES = (('fri_work_dependencies', 'work_id'), ('fri_reminder_dependencies', 'reminder_id'))
+# What such a draft keeps once one of those summaries goes, instead of its title and words.
+WORK_TITLE = 'Withdrawn draft'
+WORK_RETIRED = 'A draft drawing on what Fri remembered about someone, since withdrawn. Nothing from it is retained here.'
 # The same exchanges a member's other conversations may see (Store._elsewhere).
 READABLE = ("guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND attributed=1 "
             "AND response_kind='reply'")
@@ -77,9 +83,13 @@ def advance(db, guild, user, covered=False):
                    "json_extract(d.value,'$.user_id')=? THEN json_object('user_id',?,'generation',?) ELSE json(d.value) "
                    f"END) FROM json_each(chat_turns.summary_dependencies) d) WHERE guild_id=? AND {DEPENDS}",
                    (user, user, generation(db, guild, user), guild, user))
+        for table, _ in writes(db):  # And saved work and reminders that did (fri #216).
+            db.execute(f'UPDATE {table} SET generation=? WHERE guild_id=? AND user_id=?',
+                       (generation(db, guild, user), guild, user))
     else:
         retire(db, 'guild_id=? AND user_id=?', (guild, user))
         retire_dependents(db, "chat_turns.guild_id=? AND json_extract(d.value,'$.user_id')=?", (guild, user))
+        retire_writes(db, 'd.guild_id=? AND d.user_id=?', (guild, user))
 
 
 def retire(db, where, args=()):
@@ -106,6 +116,46 @@ def _retire(db, turns, args=()):
                f'{",summary_dependencies=NULL" if dependencies else ""} WHERE {turns}', (RETIRED, *args))
 
 
+def writes(db):
+    """Those of WRITES this database has: a purge before a rollback can run on one an older controller made."""
+    present = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    return [(table, key) for table, key in WRITES if table in present]
+
+
+def depend_write(db, table, item, scope, dependencies):
+    """A tool's write of the model's words keeps the summaries its turn may repeat through Fri's earlier replies, with
+    their generations, so it's retired once one goes (see retire_writes), as a saved reply is (fri #216). Each goes on
+    record (see keep). Not the writer's own: work and reminders drawn on that stay, as they asked for them (gene #112).
+    A draft edited again keeps what it had, as the edit may still hold those words."""
+    key = dict(WRITES)[table]
+    for user, number in sorted({(row['user_id'], row['generation']) for row in dependencies}):
+        if user == scope['user_id']:
+            continue
+        keep(db, scope['guild_id'], user)
+        db.execute(f'INSERT INTO {table}({key},guild_id,user_id,generation) VALUES (?,?,?,?) '
+                   f'ON CONFLICT({key},user_id) DO UPDATE SET generation=excluded.generation',
+                   (item, scope['guild_id'], user, number))
+
+
+def retire_writes(db, where, args=()):
+    """Saved work and reminders that may repeat a summary now gone keep nothing of it (fri #216). A draft keeps a
+    breadcrumb for its title and words, a version on, so an edit of the old one fails; its posts not yet sending are
+    cancelled, and keep no words unless one is going out now. A reminder not yet sending is cancelled, and none keeps
+    its text: delivery already holds what it sends. where: about `d`, each of their dependencies."""
+    for table, key in writes(db):
+        items = f'(SELECT {key} FROM {table} d WHERE {where})'
+        if table == 'fri_work_dependencies':
+            db.execute(f'UPDATE fri_work SET title=?,body=?,version=version+1 WHERE id IN {items}',
+                       (WORK_TITLE, WORK_RETIRED, *args))
+            db.execute("UPDATE fri_posts SET state=CASE WHEN state IN ('pending','authorized','claimed') THEN 'cancelled' "
+                       f"ELSE state END,body=CASE WHEN state='sending' THEN body ELSE '' END WHERE work_id IN {items}",
+                       args)
+        else:
+            db.execute("UPDATE fri_reminders SET state=CASE WHEN state IN ('pending','scheduled','claimed') THEN "
+                       f"'cancelled' ELSE state END,body='' WHERE id IN {items}", args)
+        db.execute(f'DELETE FROM {table} WHERE {key} IN {items}', args)
+
+
 def settle(db):
     """At start: what an older controller left while it ran (a rollback window), which moved generations without
     retiring the replies that drew on them. Its privacy changes deleted the member's generation outright, and a drop
@@ -119,6 +169,10 @@ def settle(db):
                           "fri_member_summary_generations g WHERE g.guild_id=chat_turns.guild_id AND "
                           "g.user_id=json_extract(d.value,'$.user_id')) OR chat_turns.speaker_revision IS NOT "
                           "coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turns.user_id), 0)")
+    # And saved work and reminders that may repeat one (fri #216). An older controller's erasure of the writer took
+    # theirs outright.
+    retire_writes(db, 'd.generation IS NOT (SELECT generation FROM fri_member_summary_generations g '
+                      'WHERE g.guild_id=d.guild_id AND g.user_id=d.user_id)')
 
 
 def keep(db, guild, user):
@@ -153,6 +207,7 @@ def erase(db, user_id):
     retire(db, 'user_id=?', (user_id,))  # Their saved chats a change leaves in place, say a note edited elsewhere.
     # And other members' replies depending on it, even one whose provenance didn't name them (fri #193).
     retire_dependents(db, "json_extract(d.value,'$.user_id')=?", (user_id,))
+    retire_writes(db, 'd.user_id=?', (user_id,))  # And their work and reminders that did (fri #216).
 
 
 def generation(db, guild, user):
@@ -374,6 +429,7 @@ def purge(path):
             columns = {row[1] for row in db.execute('PRAGMA table_info(chat_turns)')}
             if 'summary_dependencies' in columns:  # Nor which depended on another member's (fri #193).
                 retire_dependents(db, '1')
+            retire_writes(db, '1')  # Nor which work and reminders did (fri #216).
             if 'summary_generation' in columns:
                 retire(db, '1')
             db.execute('DROP TABLE IF EXISTS fri_member_summaries')

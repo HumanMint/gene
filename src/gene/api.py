@@ -190,6 +190,9 @@ class ContextRequest(ChatScope):
     # withdrawal lands (fri #215): each note (and exchange elsewhere) then names the messages it came from. An older
     # Fri never gets them.
     sources: bool = False
+    # Sent by a Fri that carries the summaries its turn's saved history drew on (fri #216): each saved exchange then
+    # names them, beside what the model reads. An older Fri never gets them.
+    dependencies: bool = False
 
 
 class MessageSources(BaseModel):
@@ -485,7 +488,7 @@ def create_app(settings: Settings | None = None):
             return context(store, body)
         chat_scope(body)
         return store.chat_context(body.guild_id, body.conversation_id, body.user_id, body.profiles, body.summaries,
-                                  body.sources)
+                                  body.sources, body.dependencies)
 
     @app.post('/chat/pending', dependencies=[auth('fri')])
     def chat_pending(body: ChatScope):

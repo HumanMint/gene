@@ -33,6 +33,13 @@ def initialize(db):
             lease TEXT NOT NULL DEFAULT '', message_id TEXT NOT NULL DEFAULT '',
             detail TEXT NOT NULL DEFAULT ''
         );
+        -- Other members' summaries the model may have repeated into a draft, through Fri's earlier replies its turn
+        -- carried, at the generation it was told (fri #216): the draft is retired once one goes. Its own table, so an
+        -- older controller's positional inserts into fri_work still fit; its deletes cascade here.
+        CREATE TABLE IF NOT EXISTS fri_work_dependencies (
+            work_id TEXT NOT NULL REFERENCES fri_work(id) ON DELETE CASCADE, guild_id TEXT NOT NULL,
+            user_id TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(work_id, user_id)
+        );
     ''')
 
 
@@ -82,9 +89,12 @@ class Workspace:
                 (scope['guild_id'], scope['user_id'], scope['conversation_id']))]}
 
     def save(self, scope, source, revision, work_id, version, title, body, state, request_text='',
-             summary_generation=None):
+             summary_generation=None, summary_dependencies=()):
         """summary_generation: the member summary's the turn drew on, if it did. The save is refused once a withdrawal
-        or rebuild has moved it, so its words can't be kept after their source went (fri #171)."""
+        or rebuild has moved it, so its words can't be kept after their source went (fri #171). summary_dependencies:
+        other summaries the turn may repeat through Fri's earlier replies, refused the same way and, for a draft the
+        model wrote, kept with it (fri #216)."""
+        from .fri_member_summary import depend_write
         from .store import Conflict, Store
         source.check(scope['guild_id'], scope['conversation_id'], scope['user_id'])
         if source.kind != 'discord_message' or abs(time.time()-source.timestamp().timestamp()) > 900:
@@ -100,6 +110,7 @@ class Workspace:
             self.prune(db)
             self.revision(db, scope['user_id'], revision)
             Store._summary_unchanged(db, scope['guild_id'], scope['user_id'], summary_generation)
+            Store._dependencies_unchanged(db, scope['guild_id'], summary_dependencies)
             if scope['conversation_id'].startswith('public:'):
                 old = self.get(db, work_id, scope) if work_id else None
                 if body not in request_text and (not old or body != old['body']):
@@ -129,6 +140,8 @@ class Workspace:
                 db.execute('INSERT INTO fri_work VALUES (?,?,?,?,?,?,1,?,?,?,?,?)',
                     (work_id, scope['guild_id'], scope['user_id'], scope['conversation_id'], title, body,
                      state, revision, now, now, now+30*86400))
+            if scope['conversation_id'].startswith('private:'):  # In a channel it's the member's own words, as above.
+                depend_write(db, 'fri_work_dependencies', work_id, scope, summary_dependencies)
             db.execute('INSERT INTO fri_work_events VALUES (?,?,?)', (source.id, work_id, payload))
             return self.get(db, work_id, scope)
 

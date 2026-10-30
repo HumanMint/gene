@@ -61,6 +61,11 @@ def initialize(db):
             event_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, user_id TEXT NOT NULL,
             payload TEXT NOT NULL, created REAL NOT NULL
         );
+        -- As for saved work: other members' summaries a reminder's text may repeat (fri #216).
+        CREATE TABLE IF NOT EXISTS fri_reminder_dependencies (
+            reminder_id TEXT NOT NULL REFERENCES fri_reminders(id) ON DELETE CASCADE, guild_id TEXT NOT NULL,
+            user_id TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(reminder_id, user_id)
+        );
     ''')
 
 
@@ -119,8 +124,11 @@ class Social:
             raise KeyError('Reminder unavailable in this DM')
         return dict(row)
 
-    def reminder_prepare(self, scope, source, revision, body, local_time, timezone, *, summary_generation=None):
-        """summary_generation: as for saved work, refused once it moved (fri #171), and kept out of the digest."""
+    def reminder_prepare(self, scope, source, revision, body, local_time, timezone, *, summary_generation=None,
+                         summary_dependencies=()):
+        """summary_generation: as for saved work, refused once it moved (fri #171), and kept out of the digest. So are
+        summary_dependencies, which are also kept with it (fri #216)."""
+        from .fri_member_summary import depend_write
         from .store import Store
         fresh(source, scope)
         if source.guild_id is not None or not scope['conversation_id'].startswith('private:'):
@@ -134,6 +142,7 @@ class Social:
             self.prune(db)
             Workspace.revision(db, scope['user_id'], revision)
             Store._summary_unchanged(db, scope['guild_id'], scope['user_id'], summary_generation)
+            Store._dependencies_unchanged(db, scope['guild_id'], summary_dependencies)
             old = db.execute('SELECT * FROM fri_reminders WHERE source_id=?', (source.id,)).fetchone()
             if old:
                 if old['payload'] != payload:
@@ -146,6 +155,7 @@ class Social:
             item, now = uuid.uuid4().hex, time.time()
             db.execute('INSERT INTO fri_reminders(id,guild_id,user_id,dm_id,body,local_time,timezone,due,state,revision,source_id,payload,created,expires) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (item, scope['guild_id'], scope['user_id'], source.channel_id, body, local_time, timezone, due, 'pending', revision, source.id, payload, now, due+7*86400))
+            depend_write(db, 'fri_reminder_dependencies', item, scope, summary_dependencies)
             return self.reminder_row(db, item)
 
     def reminder_list(self, scope):

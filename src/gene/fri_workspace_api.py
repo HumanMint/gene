@@ -1,10 +1,11 @@
 """Workspace authority belongs to the controller, not generated tool arguments."""
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
+from .api import SummaryDependency
 from .fri_context import ChatSource
 from .fri_workspace_store import Workspace
 
@@ -29,6 +30,9 @@ class Save(Scope):
     # The member summary's generation, sent by a Fri whose turn gave its model that summary: refused once it moved
     # (fri #171). An older Fri omits it.
     summary_generation: int | None = Field(default=None, ge=0)
+    # Other members' summaries the turn may repeat through Fri's earlier replies (fri #216), as a turn sends them: refused
+    # once one moved, and kept with the draft. An older Fri omits them.
+    summary_dependencies: Annotated[list[SummaryDependency], Field(max_length=200)] = []
 
 
 class Prepare(Scope):

@@ -396,13 +396,13 @@ def assert_linear(read, message):
 
 
 def test_a_long_repetitive_message_is_read_once_not_per_occurrence():
-    text = ('i play ' * 572)[:4000]
-    long = ('blah ' * 90 + 'i like chess ') * 8  # One 3,700-character sentence, at the cap.
-    started = time.perf_counter()
-    for evidence in ('i play', 'i play i play', 'i play i play i play'):
-        personal_note({'category': 'games', 'evidence': evidence}, text)
-    personal_note({'category': 'games', 'evidence': 'i like chess'}, long)
-    assert time.perf_counter() - started < 0.25
+    def read(text):
+        for evidence in ('i play', 'i play i play', 'i play i play i play'):
+            personal_note({'category': 'games', 'evidence': evidence}, text)
+    assert_linear(read, lambda length: ('i play ' * 572)[:length])
+    # Eight occurrences in one sentence of filler, at the cap: 3,984 characters at 4000.
+    assert_linear(lambda text: personal_note({'category': 'games', 'evidence': 'i like chess'}, text),
+                  lambda length: ('blah ' * ((length // 8 - 13) // 5) + 'i like chess ') * 8)
 
 
 def test_a_punctuation_heavy_message_is_read_in_one_pass():
@@ -476,11 +476,10 @@ def test_separator_runs_keep_the_same_decisions(text, expected):
 @pytest.mark.parametrize('separator', ['\u2003', ' ', ',', ', ', '\n'])
 def test_a_long_separator_run_is_crossed_once(separator):
     # Discord's 4,000-character cap; each suffix strip used to retry from every spot inside the run (gene #87).
-    text = 'x' + (separator * 4000)[:3998] + 'x'
-    started = time.perf_counter()
-    for _ in range(10):
-        assert memory_intent(text) is None
-    assert time.perf_counter() - started < 0.1
+    def read(text):
+        for _ in range(10):  # Microseconds each; ten make a read long enough to time.
+            assert memory_intent(text) is None
+    assert_linear(read, lambda length: 'x' + (separator * length)[:length - 2] + 'x')
 
 
 def test_public_replies_are_plain_and_scoped(monkeypatch):

@@ -331,6 +331,12 @@ def settle(db):
                       'WHERE g.guild_id=d.guild_id AND g.user_id=d.user_id) OR d.revision IS NOT '
                       'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=d.user_id), 0) OR NOT '
                       + _standing('d.guild_id', 'd.user_id'))
+    # A post going out as its draft was retired keeps no words (gene #169), but an older controller's retirement, and
+    # the trigger bodies its start puts back, keep them. One prepared from a version before its draft became the
+    # breadcrumb holds the draft's old words; one not yet sent is cancelled, or prepared from the breadcrumb itself.
+    db.execute("UPDATE fri_posts SET body='' WHERE body<>'' AND state NOT IN ('pending','authorized','claimed') AND "
+               'EXISTS (SELECT 1 FROM fri_work w WHERE w.id=fri_posts.work_id AND w.title=? AND w.body=? AND '
+               'w.version>fri_posts.version)', (WORK_TITLE, WORK_RETIRED))
 
 
 def keep(db, guild, user):

@@ -256,7 +256,9 @@ built from other members' messages.
     the draft's title and words become a breadcrumb (its version moves, and posts not yet sending are
     cancelled) and the reminder loses its text, cancelled unless it is already going out. No post keeps the
     draft's words either: one going out keeps its state and lease, so its receipt still lands, but not its
-    copy, since delivery already holds what it sends (gene #169). Each read that shows such a draft or
+    copy, since delivery already holds what it sends (gene #169). An older controller's retirement keeps
+    that copy, so a start here clears the words of any post prepared from a version before its draft
+    became the breadcrumb, once it's no longer waiting to go out. Each read that shows such a draft or
     reminder (the work list and read, a post's read, a reminder's list and read, open loops in chat
     context, a retried save) and each step that authorizes delivery (preparing, approving, claiming and
     sending a post; confirming, claiming and sending a reminder) first checks the summaries they depend on

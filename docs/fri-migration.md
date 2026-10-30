@@ -221,6 +221,28 @@ built from other members' messages.
   stays out of their idempotency digests, so a retry with or without it answers as the first did. A
   controller without the capability rejects the unknown field, so Fri sends it only when offered.
   Work and reminders saved while the summary was current stay: the member asked for them.
+- **Saved dependencies.** The optional `saved-dependencies` capability carries summary dependencies
+  through the member's own saved history and through a tool's writes (fri #216).
+  - `/chat/context` with `dependencies: true` adds `summaries` to each saved exchange whose reply drew on
+    a summary (its speaker's own, or one it depended on), as the sources lookup reports them, so a turn
+    reading that exchange as history depends on them in turn. It first checks each of those summaries
+    for a lapse, as the sources lookup does. Without the flag the answer is unchanged.
+  - `/workspace/save` and `/social/reminders/prepare` take `summary_dependencies` (the turn's, up to 200),
+    checked inside the write's transaction as `/chat/turn` checks them, and left out of the idempotency
+    digests. A reminder, or a draft in a DM (in a channel a draft is the member's own words), keeps
+    those of other members in the new tables `fri_work_dependencies` and `fri_reminder_dependencies`,
+    whose rows go with their item. When one of those summaries goes as a saved reply's would retire it,
+    the draft's title and words become a breadcrumb (its version moves, and posts not yet sending are
+    cancelled) and the reminder loses its text, cancelled unless it is already going out. A covered
+    rebuild moves them on instead, and the purge below retires them all. Each row also keeps that
+    member's privacy revision when it was written. A controller start retires the item and drops the row
+    when the generation moved or went, or when that member's revision moved since. The writer's own
+    summary is still checked but not kept, as above.
+  - Rollback: the tables are new, so an older controller's positional inserts into `fri_work` still fit,
+    and its deletes of work and reminders cascade to them. It ignores them otherwise: its erasure of the
+    member they depend on leaves the rows and the words until the next start of this code, which retires
+    them by the moved revision, even once a summary built again has brought the same generation back (as
+    `chat_turn_deletions` are dropped at start).
 
 Provenance also reaches what follow-ups inherit:
 

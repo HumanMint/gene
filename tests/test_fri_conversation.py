@@ -391,6 +391,8 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me dan', 'call me dan when we play'),
     ('nickname', 'call me dan unless i lose', 'pls call me dan unless i lose'),
     ('nickname', 'call me dan', 'you can call me dan once i win'),
+    ('nickname', 'my nickname is dan', 'my nickname is dan when i stream'),
+    ('nickname', 'my nickname is dan if i win', 'my nickname is dan if i win'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -415,6 +417,7 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('nickname', 'call me dan, but not danny', 'call me dan, but not danny'),
     ('nickname', 'call me dan but only here', 'call me dan but only here'),
     ('nickname', 'call me dan', 'you can call me dan if you want'),
+    ('nickname', 'my nickname is dan', 'my nickname is dan if you want'),
     ('nickname', "call me dan if that's ok", "call me dan if that's ok"),
     ('games', "i like chess if it's blitz", "i like chess if it's blitz"),
     # "that" or "which" before the verb describes a thing; it's no one's report.

@@ -26,6 +26,8 @@ WITHDRAWN_SECONDS = 7 * 86400
 WITHDRAWN = 'That message was edited or deleted while Fri was replying.'
 SUMMARY_CHANGED = 'What Fri remembered about you changed while it was replying. Ask again for a fresh reply.'
 DEPENDENCY_CHANGED = 'Something Fri said earlier changed while it was replying. Ask again for a fresh reply.'
+# A saved reply whose model request carried a message since edited or deleted (gene #141): it may repeat those words.
+DRAWN = 'Earlier answer drawing on a message since edited or deleted. Nothing from it is retained here.'
 
 
 def summaries(row):
@@ -34,6 +36,13 @@ def summaries(row):
     own = [] if row['summary_generation'] is None else [(row['user_id'], row['summary_generation'])]
     others = [(item['user_id'], item['generation']) for item in json.loads(row['summary_dependencies'] or '[]')]
     return [{'user_id': user, 'generation': generation} for user, generation in sorted({*own, *others})]
+
+
+def messages_of(turn):
+    """The Discord messages a saved exchange holds: its own and its burst's."""
+    source = json.loads(turn['source']) if turn['source'] else {}
+    ids = [source.get('id'), *(row['source']['id'] for row in json.loads(turn['burst'] or '[]'))]
+    return sorted({str(i) for i in ids if i})
 
 
 class Conflict(ValueError):
@@ -135,6 +144,14 @@ class Store:
                     guild_id TEXT NOT NULL, user_id TEXT NOT NULL, message_id TEXT NOT NULL, at REAL NOT NULL,
                     PRIMARY KEY(guild_id, user_id, message_id)
                 );
+                -- A message deleted, not edited (gene #141): its id, its author and their privacy revision then, so
+                -- their "forget me" takes it, and a start drops it once their revision moved (an older controller's
+                -- erasure leaves this table alone); never its words. Only one whose author is known is kept. As long
+                -- as a fence, apart from the fences, which an older controller writes positionally.
+                CREATE TABLE IF NOT EXISTS chat_turn_deletions (
+                    guild_id TEXT NOT NULL, message_id TEXT NOT NULL, at REAL NOT NULL, user_id TEXT, revision INTEGER,
+                    PRIMARY KEY(guild_id, message_id)
+                );
             ''')
             from .repair_store import initialize as initialize_repairs
             initialize_repairs(db)
@@ -194,8 +211,18 @@ class Store:
                 # Other members' summaries it may repeat through another reply of Fri's, with their generations: a
                 # JSON list, or NULL for none (fri #193). An older controller leaves it alone.
                 db.execute('ALTER TABLE chat_turns ADD COLUMN summary_dependencies TEXT')
+            if 'drew_on' not in {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}:
+                # The Discord messages its model requests carried besides its own (gene #141): a JSON list, or NULL for
+                # none or an older Fri. One withdrawn retires the reply (see _retire_drawn). An older controller
+                # leaves it alone.
+                db.execute('ALTER TABLE chat_turns ADD COLUMN drew_on TEXT')
+            columns = {r['name'] for r in db.execute('PRAGMA table_info(chat_turn_deletions)')}
+            for column, kind in (('user_id', 'TEXT'), ('revision', 'INTEGER')):  # A deletion's author (see _deleted).
+                if column not in columns:
+                    db.execute(f'ALTER TABLE chat_turn_deletions ADD COLUMN {column} {kind}')
             from .fri_member_summary import settle as settle_summaries
             settle_summaries(db)
+            self._settle_withdrawals(db)
             # Existing queued requests have never received intake approval. Fail closed
             # during migration; completed/running jobs and release approvals retain their history.
             db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
@@ -666,21 +693,27 @@ class Store:
             db.execute('UPDATE jobs SET approved_by="deleted" WHERE approved_by=?', (user_id,))
             db.execute('UPDATE jobs SET intake_approved_by="deleted" WHERE intake_approved_by=?', (user_id,))
 
-    def chat_context(self, guild_id, channel_id, user_id, profiles=True, summaries=False):
+    def chat_context(self, guild_id, channel_id, user_id, profiles=True, summaries=False, sources=False):
         """profiles=False is an older Fri: only this conversation's notes, as before profiles existed.
 
         summaries: a Fri that knows the member summary, which it alone may pass to its model and recheck.
         An older one never gets it, so it can't reach a model that wasn't told what it is.
+        sources: a Fri that keeps what a withdrawn message taught out of its requests until its withdrawal lands (fri
+        #215). Each note's messages come beside the notes, never in them (an older Fri passes the notes to its model
+        whole), and each exchange elsewhere names its own. Everything else is as it was.
         """
         with self.connection() as db:
             db.execute('DELETE FROM web_research WHERE created<?', (time.time()-86400,))
             db.execute('DELETE FROM web_requests WHERE created<?', (time.time()-600,))
             db.execute('DELETE FROM chat_turns WHERE at<?', (time.time() - 7 * 86400,))
             db.execute('DELETE FROM chat_turn_withdrawals WHERE at<?', (time.time() - WITHDRAWN_SECONDS,))
-            profile = self._personal_context(db, guild_id, channel_id, user_id, profiles, origins=profiles)
+            db.execute('DELETE FROM chat_turn_deletions WHERE at<?', (time.time() - WITHDRAWN_SECONDS,))
+            profile = self._personal_context(db, guild_id, channel_id, user_id, profiles, origins=profiles,
+                                             sources=sources)
             # Where each profile note was said, beside the notes rather than in them: an older Fri passes the
             # notes to its model whole. A newer one drops a note said where not everyone can read now (fri #98).
             origins = [note.pop('origin') for note in profile['notes']] if profiles else None
+            learned = [note.pop('sources') for note in profile['notes']] if sources else None
             # Before the turns: a summary that lapses as it's read retires the replies that drew on it (fri #172).
             summary = self._member_summary(db, guild_id, user_id) if summaries and profile['enabled'] else None
             revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
@@ -702,7 +735,7 @@ class Store:
             from .fri_pending import read as read_pending
             pending = read_pending(db, guild_id, channel_id, user_id, revision[0] if revision else 0)
             return {'pending': pending, 'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
-                    'elsewhere': self._elsewhere(db, guild_id, channel_id, user_id)
+                    'elsewhere': self._elsewhere(db, guild_id, channel_id, user_id, sources)
                     if profiles and profile['enabled'] else [],
                     'requests': self._own_requests(db, guild_id, channel_id, user_id) if profile['enabled'] else [],
                     'loops': self._open_loops(db, guild_id, channel_id, user_id, revision[0] if revision else 0,
@@ -712,6 +745,7 @@ class Store:
                         (guild_id, channel_id, user_id))],
                     'personal_memory': profile,
                     **({'profile_origins': origins} if profiles else {}),
+                    **({'note_sources': learned} if sources else {}),
                     **({'member_summary': summary} if summaries else {}),
                     'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
 
@@ -724,18 +758,18 @@ class Store:
         summary = view(read(db, guild_id, user_id))
         return summary and {**summary, 'generation': current}
 
-    def _elsewhere(self, db, guild_id, conversation, user_id):
+    def _elsewhere(self, db, guild_id, conversation, user_id, sources=False):
         """What the member said to Fri lately in the server's other everyone-readable conversations.
 
         Only their own words, said where everyone could read them. Fri's replies stay out: one can
         draw on a note or exchange that belongs to its own conversation. Private ones never appear.
         Provenance stays with each one: the member's words can repeat someone else's, so a reply built
-        on them inherits it and goes when that person erases.
+        on them inherits it and goes when that person erases. sources: each also names its messages (see chat_context).
         """
         since = time.time()-ELSEWHERE_SECONDS
         # A member keeps a few exchanges per conversation, so every candidate is read before the latest are picked.
         turns = [dict(row) for row in db.execute(
-            "SELECT id,channel_id AS conversation_id,input,at,provenance,source FROM chat_turns "
+            "SELECT id,channel_id AS conversation_id,input,at,provenance,source,burst FROM chat_turns "
             "WHERE guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND channel_id<>? "
             "AND response_kind='reply' AND attributed=1 AND at>? ORDER BY id",
             (guild_id, user_id, conversation, since))]
@@ -743,7 +777,8 @@ class Store:
             if turn['source']:
                 turn['at'] = min(turn['at'], ChatSource.model_validate_json(turn['source']).timestamp().timestamp())
         turns = self._current_turns(db, [turn for turn in turns if turn['at'] > since])
-        return [{key: turn[key] for key in ('conversation_id', 'input', 'at', 'provenance')}
+        return [{**{key: turn[key] for key in ('conversation_id', 'input', 'at', 'provenance')},
+                 **({'messages': messages_of(turn)} if sources else {})}
                 for turn in sorted(turns, key=lambda turn: turn['at'])[-ELSEWHERE_TURNS:]]
 
     @staticmethod
@@ -1000,12 +1035,13 @@ class Store:
         return True
 
     def check_chat(self, user_id, revision, provenance=(), *, guild_id=None, messages=(), summary_generation=None,
-                   summary_dependencies=()):
+                   summary_dependencies=(), drew_on=()):
         """The save's privacy fence without writing: run before a reply is delivered.
 
         messages: the Discord messages the turn answers (its own and its burst's). One its author withdrew since stops
         the reply (gene #90). summary_generation: the member summary's the turn drew on, if it did (gene #91).
         summary_dependencies: other members' summaries it may repeat through Fri's earlier replies (fri #193).
+        drew_on: the other messages its model requests carried. One deleted since stops it too (gene #141).
         """
         with self.connection() as db:
             if summary_generation is not None or summary_dependencies:  # A lapsed summary goes here, in one go.
@@ -1013,7 +1049,7 @@ class Store:
             if self._privacy_state(db, user_id)[0] != revision:
                 raise Conflict('This conversation was cleared while Fri was replying. Start again.')
             self._checked_provenance(db, user_id, provenance)
-            if self.taken_back(db, guild_id, user_id, messages):
+            if self.taken_back(db, guild_id, user_id, messages) or self.deleted_anywhere(db, guild_id, drew_on):
                 raise Conflict(WITHDRAWN)
             self._summary_unchanged(db, guild_id, user_id, summary_generation)
             self._dependencies_unchanged(db, guild_id, summary_dependencies)
@@ -1026,6 +1062,15 @@ class Store:
         return bool(messages) and bool(db.execute(
             f'SELECT 1 FROM chat_turn_withdrawals WHERE guild_id=? AND user_id=? '
             f'AND message_id IN ({",".join("?"*len(messages))})', (guild_id, user_id, *messages)).fetchone())
+
+    @staticmethod
+    def deleted_anywhere(db, guild_id, messages):
+        """Whether any of these messages, whoever wrote them, was deleted within the week: a Discord ID names one
+        message, so its author needn't be known (gene #141). An edit doesn't count (gene #150)."""
+        messages = sorted({str(message) for message in messages if message})
+        return any(db.execute(
+            f'SELECT 1 FROM chat_turn_deletions WHERE guild_id=? AND message_id IN ({",".join("?"*len(chunk))})',
+            (guild_id, *chunk)).fetchone() for chunk in (messages[i:i+500] for i in range(0, len(messages), 500)))
 
     @staticmethod
     def _summary_unchanged(db, guild_id, user_id, summary_generation):
@@ -1071,7 +1116,7 @@ class Store:
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
                   *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=None,
                   reply_message_id=None, verbatim=False, audience='conversation', summary_generation=None,
-                  summary_dependencies=()):
+                  summary_dependencies=(), drew_on=()):
         # None: a legacy companion that doesn't track sources. A list, even empty, is complete attribution.
         attributed = provenance is not None
         if audience not in ('server', 'conversation') or (audience == 'server' and not channel_id.startswith('public:')):
@@ -1117,9 +1162,12 @@ class Store:
             # theirs withdrawn before this save landed (gene #90): its exchange went, and this would be it again.
             from .fri_memory_store import predates
             first = ChatSource.model_validate(burst[0]['source']) if burst else source  # A burst's earliest.
-            fenced = self.taken_back(
-                db, guild_id, user_id, [*([source.id] if source else []), *(row['source']['id'] for row in burst)])
-            stale = fenced or predates(db, guild_id, channel_id, user_id, first)
+            own = [*([source.id] if source else []), *(row['source']['id'] for row in burst)]
+            fenced = self.taken_back(db, guild_id, user_id, own)
+            # Nor one whose model request carried a message deleted by now (gene #141): its reply may repeat it, so
+            # it keeps nothing, though the member's own message stands, so it settles what was pending as usual.
+            stale = (fenced or self.deleted_anywhere(db, guild_id, drew_on) or
+                     predates(db, guild_id, channel_id, user_id, first))
             # A withdrawn message's late save leaves what's pending as it is: a newer turn may have left a question.
             if response_kind == 'reply' and not fenced:
                 save_pending(db, guild_id, channel_id, user_id, revision, text, source,
@@ -1137,6 +1185,15 @@ class Store:
             from .fri_memory_store import save as save_note
             scope = SERVER if audience == 'server' else channel_id
             first, fresh = {}, set()  # Whether each scope had no notes before this turn; those it gave a first.
+            def learned(evidence):
+                """The message whose words hold the note's, the newest that does: in a burst, not the others,
+                which say something else (gene #141). [] when no message of Discord's said it; None, unknown."""
+                if not source:
+                    return None
+                if source.kind != 'discord_message':
+                    return []
+                saying = [row['source']['id'] for row in burst if evidence in row['text']]
+                return [saying[-1] if saying else source.id]
             for candidate in list(notes)[:3]:
                 note = personal_note(candidate, text)
                 if not note:
@@ -1146,8 +1203,9 @@ class Store:
                 if where not in first:
                     first[where] = not db.execute('SELECT 1 FROM personal_notes WHERE guild_id=? AND channel_id=? '
                                                   'AND user_id=?', (guild_id, where, user_id)).fetchone()
-                if save_note(db, guild_id, where, user_id, note, time.time(),
-                             channel_id if where == SERVER else None, provenance if attributed else None) and first[where]:
+                # With the messages it came from, so it goes when one is withdrawn (gene #141).
+                if save_note(db, guild_id, where, user_id, note, time.time(), channel_id if where == SERVER else None,
+                             provenance if attributed else None, learned(note[1])) and first[where]:
                     fresh.add(where)
             db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? '
@@ -1163,14 +1221,16 @@ class Store:
                 keep_generation(db, guild_id, dependency)
             dependencies = json.dumps([{'user_id': user, 'generation': g} for user, g in dependencies]) if dependencies \
                 else None
+            drawn = sorted({str(message) for message in drew_on} - set(own))  # Its own go with it already.
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
                        'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
                        'reply_message_id,verbatim,speaker_revision,attributed,audience,summary_generation,'
-                       'summary_dependencies) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       'summary_dependencies,drew_on) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
                         time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind,
                         reaction, allow_closing, json.dumps(burst), json.dumps(provenance), reply_message_id,
-                        bool(verbatim), revision, attributed, audience, summary_generation, dependencies))
+                        bool(verbatim), revision, attributed, audience, summary_generation, dependencies,
+                        json.dumps(drawn) if drawn else None))
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',
@@ -1180,13 +1240,14 @@ class Store:
                     'memory_scope': 'server' if shown == SERVER else 'conversation'}
 
     @staticmethod
-    def _personal_context(db, guild_id, channel_id, user_id, profiles=True, origins=False):
+    def _personal_context(db, guild_id, channel_id, user_id, profiles=True, origins=False, sources=False):
         """The member's profile and this conversation's own notes: never another conversation's.
 
         An older Fri (profiles=False) gets only this conversation's notes, within the bounds it was built for.
         origins: each note also says where a profile note was said (see chat_context), for Fri to recheck.
+        sources: and the messages it was learned from, None if unknown (see chat_context).
         """
-        from .fri_memory_store import HORIZON, SERVER, fences, limit
+        from .fri_memory_store import HORIZON, SERVER, fences, learned, limit
         db.execute('DELETE FROM personal_notes WHERE at<?', (time.time() - TTL,))
         # A removal that holds no words lasts as long as archive search reaches back, so nothing said
         # before it is learned again; older per-phrase fences go with the notes they fenced.
@@ -1208,9 +1269,11 @@ class Store:
                 'notes': [{'category': r['category'], 'evidence': r['evidence'],
                            'scope': 'server' if scope == SERVER else 'here',
                            **({'provenance': json.loads(r['provenance'] or '[]')} if profiles else {}),
-                           **({'origin': r['origin'] if scope == SERVER else None} if origins else {})}
+                           **({'origin': r['origin'] if scope == SERVER else None} if origins else {}),
+                           **({'sources': learned(r)} if sources else {})}
                           for scope in ((SERVER, channel_id) if profiles else (channel_id,)) for r in db.execute(
-                              'SELECT category,evidence,provenance,origin FROM personal_notes WHERE guild_id=? AND '
+                              'SELECT category,evidence,provenance,origin,sources,sources_at,at FROM personal_notes '
+                              'WHERE guild_id=? AND '
                               "channel_id=? AND user_id=? AND (? OR provenance IS NULL OR provenance='[]') "
                               'ORDER BY at DESC LIMIT ?', (guild_id, scope, user_id, profiles, limit(scope)))]}
 
@@ -1231,6 +1294,10 @@ class Store:
                 db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_note_removals WHERE user_id=?', (user_id,))
+                # Their deletions first, while their fences still say which messages were theirs (gene #145).
+                db.execute('DELETE FROM chat_turn_deletions WHERE user_id=? OR EXISTS (SELECT 1 FROM chat_turn_withdrawals '
+                           'w WHERE w.user_id=? AND w.guild_id=chat_turn_deletions.guild_id AND '
+                           'w.message_id=chat_turn_deletions.message_id)', (user_id, user_id))
                 db.execute('DELETE FROM chat_turn_withdrawals WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_turns WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM chat_pending WHERE user_id=?', (user_id,))
@@ -1260,25 +1327,36 @@ class Store:
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
             self.advance_revision(db, user_id)
 
-    def withdraw_turn(self, guild_id, conversation_id, user_id, message_id):
+    def withdraw_turn(self, guild_id, conversation_id, user_id, message_id, *, deleted=False, revision=None):
         """A member's message edited or deleted after Fri saved their exchange with it (fri #129): the exchanges
         holding it go, as erasure removes them, so its old words don't come back as history. Fri's reply goes too,
         since it may repeat them. Only that member's, in that conversation, and a repeat finds nothing. Not a
         privacy change: their revision stays, so replies to their other messages still save. Their summary goes if
-        it may have read the message (gene #83). Other members' replies and summaries that drew on it stay (fri #101).
-        A fence holding only the message's id keeps a save still on its way from bringing it back (gene #90)."""
+        it may have read the message (gene #83), and so does a note learned from it (gene #141). Other members'
+        summaries that drew on it stay (fri #101). deleted: it was deleted, not edited, so other members' replies whose
+        model request carried it, or Fri's reply to it, keep only a breadcrumb too (gene #141; an edit leaves them, as
+        before, gene #150). A fence holding only the message's id keeps a save still on its way, or a learning batch
+        reading it, from bringing it back (gene #90). revision: the member's privacy revision when the exchange was
+        saved, from a Fri that knows it; once it moved (a "forget me", say), or with memory off, nothing new about them
+        is written, as a late save under it is refused anyway, though anything still holding the message goes."""
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
-            return {'ok': True, 'removed': self._withdraw_turn(db, guild_id, conversation_id, user_id, message_id)}
+            return {'ok': True, 'removed': self._withdraw_turn(db, guild_id, conversation_id, user_id, message_id,
+                                                               deleted=deleted, revision=revision)}
 
     @staticmethod
-    def _withdraw_turn(db, guild_id, conversation_id, user_id, message_id):
+    def _withdraw_turn(db, guild_id, conversation_id, user_id, message_id, *, deleted=False, revision=None):
         now = time.time()
         db.execute('DELETE FROM chat_turn_withdrawals WHERE at<?', (now-WITHDRAWN_SECONDS,))
-        db.execute('INSERT INTO chat_turn_withdrawals VALUES (?,?,?,?) ON CONFLICT(guild_id,user_id,message_id) '
-                   'DO UPDATE SET at=excluded.at', (guild_id, user_id, message_id, now))
+        db.execute('DELETE FROM chat_turn_deletions WHERE at<?', (now-WITHDRAWN_SECONDS,))
+        current, enabled = Store._privacy_state(db, user_id)
+        recorded = enabled and revision in (None, current)  # Else erased or changed since: no trace of them again.
+        if recorded:
+            db.execute('INSERT INTO chat_turn_withdrawals VALUES (?,?,?,?) ON CONFLICT(guild_id,user_id,message_id) '
+                       'DO UPDATE SET at=excluded.at', (guild_id, user_id, message_id, now))
         turns = db.execute(
-            "SELECT id,json_extract(NULLIF(source,''),'$.id') AS source_id,at FROM chat_turns WHERE guild_id=? "
+            "SELECT id,json_extract(NULLIF(source,''),'$.id') AS source_id,at,input,burst,reply_message_id "
+            "FROM chat_turns WHERE guild_id=? "
             "AND channel_id=? AND user_id=? AND (json_extract(NULLIF(source,''),'$.id')=? OR EXISTS (SELECT 1 "
             "FROM json_each(chat_turns.burst) b WHERE json_extract(b.value,'$.source.id')=?))",
             (guild_id, conversation_id, user_id, message_id, message_id)).fetchall()
@@ -1291,29 +1369,117 @@ class Store:
                    f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
         db.execute(f'DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? '
                    f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
+        Store._withdraw_notes(db, guild_id, user_id, conversation_id, message_id)
+        if deleted:  # Others' replies that carried it, or Fri's reply to it, which may repeat it.
+            if recorded:
+                Store._deleted(db, guild_id, message_id, now, user_id, current)
+            Store._retire_drawn(db, guild_id, [message_id, *(turn['reply_message_id'] for turn in turns)])
         from .fri_member_summary import withdrawn
         withdrawn(db, guild_id, user_id, conversation_id, message_id, [turn['at'] for turn in turns])
         return len(turns)
 
-    def withdraw_saved(self, guild_id, message_ids):
+    @staticmethod
+    def _deleted(db, guild_id, message, now, user, revision):
+        """A deletion of the member's message, by its ID, their ID and their privacy revision now (never words): a save
+        landing later of a reply that carried it keeps nothing (see deleted_anywhere), as one of the message's own
+        exchange does after its fence. Their "forget me" takes it (see personal_control), and a start drops it once
+        their revision moved (see _settle_withdrawals). A deletion whose author isn't known keeps no record: the replies
+        that carried it retire there and then (see _retire_drawn)."""
+        db.execute('INSERT INTO chat_turn_deletions(guild_id,message_id,at,user_id,revision) VALUES (?,?,?,?,?) '
+                   'ON CONFLICT(guild_id,message_id) DO UPDATE SET at=excluded.at,user_id=excluded.user_id,'
+                   'revision=excluded.revision', (guild_id, str(message), now, user, revision))
+
+    @staticmethod
+    def _withdraw_notes(db, guild_id, user_id, conversation_id, message_id):
+        """The member's notes learned from a withdrawn message go, wherever they show (gene #141). Only notes whose
+        recorded messages are current name it: one whose messages are unknown (saved before notes named them) or stale
+        (an older controller learned it again since, maybe from another message) can't be traced to this one, so it
+        stays, as on main, rather than risk deleting a note another message still says (gene #145 round 4)."""
+        from .fri_memory_store import CURRENT
+        db.execute(f'DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND {CURRENT} AND instr(sources,?)>0',
+                   (guild_id, user_id, json.dumps(str(message_id))))
+
+    @staticmethod
+    def _carrying(db, guild_id, messages):
+        """Saved turns whose drew_on holds any of these messages. A substring test on the JSON first, so the rest of
+        the turns' lists are never parsed, then each one found is checked exactly."""
+        messages = {str(message) for message in messages if message}
+        rows, seen = [], set()
+        for message in sorted(messages):
+            for row in db.execute('SELECT id,user_id,reply_message_id,drew_on,json_extract(NULLIF(source,\'\'),\'$.id\') '
+                                  'AS source_id FROM chat_turns WHERE guild_id=? AND drew_on IS NOT NULL AND '
+                                  'instr(drew_on,?)>0', (guild_id, json.dumps(message))):
+                if row['id'] not in seen and messages.intersection(json.loads(row['drew_on'])):
+                    seen.add(row['id'])
+                    rows.append(row)
+        return rows
+
+    @staticmethod
+    def _retire_drawn(db, guild_id, messages):
+        """Saved replies whose model request carried one of these deleted messages keep a breadcrumb, not their words,
+        as a reply drawn on a withdrawn summary does (gene #141): whoever's they are, in any conversation. Then so do
+        those that carried Fri's reply in one of them, and so on. Not verbatim, so a reference to it fails closed, and
+        a question it left goes. The member's own words stay."""
+        found, asked = {str(message) for message in messages if message}, set()
+        while found-asked:
+            batch = sorted(found-asked)
+            asked |= found
+            rows = Store._carrying(db, guild_id, batch)
+            for row in rows:
+                db.execute('DELETE FROM chat_pending WHERE guild_id=? AND user_id=? AND source_id=?',
+                           (guild_id, row['user_id'], row['source_id']))
+                db.execute('UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL,summary_dependencies=NULL,'
+                           'drew_on=NULL WHERE id=?', (DRAWN, row['id']))
+            found |= {row['reply_message_id'] for row in rows if row['reply_message_id']}
+
+    @staticmethod
+    def _settle_withdrawals(db):
+        """At start: what an older controller left while it ran (a rollback window). It withdrew exchanges, and fenced
+        their messages, but kept the notes learned from them: those go now. It doesn't say which were deleted, so the
+        replies that carried them stay, as they would have on main (gene #150). One query per fence, each only over
+        that member's notes, so the start stays quick however many turns there are."""
+        # Deletion records outlive no privacy change of their author's: an older controller's "forget me" moves their
+        # revision but leaves this table, so a record under an older revision, or one naming nobody, goes now.
+        db.execute('DELETE FROM chat_turn_deletions WHERE user_id IS NULL OR revision IS NULL OR revision IS NOT '
+                   'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turn_deletions.user_id), 0)')
+        from .fri_memory_store import CURRENT
+        for guild, user, message in db.execute('SELECT guild_id,user_id,message_id FROM chat_turn_withdrawals').fetchall():
+            db.execute(f'DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND {CURRENT} AND instr(sources,?)>0',
+                       (guild, user, json.dumps(str(message))))
+
+    def withdraw_saved(self, guild_id, message_ids, *, deleted=False):
         """Messages edited or deleted that Fri can't place: it knows only the exchanges it saved since it started, so
         one saved before a restart, say, would keep its old words until it expires (fri #174). Each saved exchange
-        holding one goes as withdraw_turn takes it, under the member and conversation it was saved with. One nothing
-        holds changes nothing, not even a fence or the member's summary: Fri asks about every edit and delete it can't
-        place, and an unrelated one shouldn't cost a member their summary. Only one that finds an exchange takes the
-        write lock; the rest read."""
+        holding one goes as withdraw_turn takes it, under the member and conversation it was saved with. So does a note
+        learned from one, its exchange trimmed since (a note outlasts six exchanges), with a fence so nothing learns it
+        again, and, once deleted, a reply that carried one keeps only a breadcrumb (gene #141). One nothing holds
+        changes nothing, not even a fence or the member's summary: Fri asks about every edit and delete it can't place,
+        and an unrelated one shouldn't cost a member their summary. Only one that finds something takes the write lock;
+        the rest read."""
         ids = json.dumps(sorted(set(message_ids)))
         def held(db):
             return db.execute(
                 "SELECT DISTINCT t.channel_id,t.user_id,m.value FROM chat_turns t, json_each(?) m WHERE t.guild_id=? "
                 "AND (json_extract(NULLIF(t.source,''),'$.id')=m.value OR EXISTS (SELECT 1 FROM json_each(t.burst) b "
                 "WHERE json_extract(b.value,'$.source.id')=m.value)) ORDER BY m.value", (ids, guild_id)).fetchall()
+        def noted(db):
+            from .fri_memory_store import CURRENT
+            return [(row['user_id'], message) for message in json.loads(ids) for row in db.execute(
+                f'SELECT DISTINCT user_id FROM personal_notes WHERE guild_id=? AND {CURRENT} AND '
+                'instr(sources,?)>0 ORDER BY user_id', (guild_id, json.dumps(message)))]
         with self.connection() as db:
-            if not held(db):
+            if not (held(db) or noted(db) or (deleted and self._carrying(db, guild_id, json.loads(ids)))):
                 return {'ok': True, 'removed': 0}
             db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
-            removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message)
+            removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted)
                           for conversation, user, message in held(db))
+            now = time.time()
+            for user, message in noted(db):  # Its exchange went before: the note alone holds it now.
+                db.execute('INSERT INTO chat_turn_withdrawals VALUES (?,?,?,?) ON CONFLICT(guild_id,user_id,message_id) '
+                           'DO UPDATE SET at=excluded.at', (guild_id, user, message, now))
+                self._withdraw_notes(db, guild_id, user, '', message)
+            if deleted:  # Whose a message only replies carried is isn't known here: they retire, and nothing is kept.
+                self._retire_drawn(db, guild_id, json.loads(ids))
             return {'ok': True, 'removed': removed}
 
     def chat_models(self):

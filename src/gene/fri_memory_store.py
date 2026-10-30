@@ -35,8 +35,22 @@ def initialize(db):
         # Other members whose words the saving turn drew on: a member's message can quote someone else.
         # NULL is unknown: a note saved before this, or by a turn that didn't say. It stays where it was said.
         db.execute('ALTER TABLE personal_notes ADD COLUMN provenance TEXT')
+    if 'sources' not in {row[1] for row in db.execute('PRAGMA table_info(personal_notes)')}:
+        # The Discord messages the note was learned from (gene #141), so it goes when one is withdrawn: a JSON list,
+        # [] for words the member typed in a memory control. NULL is unknown: saved before this, or by an older
+        # controller, which leaves it alone. Such a note stays when a message is withdrawn (see Store._withdraw_notes).
+        db.execute('ALTER TABLE personal_notes ADD COLUMN sources TEXT')
+    if 'sources_at' not in {row[1] for row in db.execute('PRAGMA table_info(personal_notes)')}:
+        # The note's time when those sources were recorded (gene #145 round 2). An older controller that learns the
+        # same note again moves its time and leaves both, so a note whose time moved since has stale sources: it's
+        # judged as one of unknown source (see CURRENT), never by messages that may not be all that say it now.
+        db.execute('ALTER TABLE personal_notes ADD COLUMN sources_at REAL')
     db.execute('CREATE TABLE IF NOT EXISTS personal_note_removals (guild_id TEXT,channel_id TEXT,'
                'user_id TEXT,digest TEXT,at REAL,PRIMARY KEY(guild_id,channel_id,user_id,digest))')
+
+
+# A note's sources as recorded with its current time: anything else (none, or a time moved since) is unknown.
+CURRENT = 'sources IS NOT NULL AND sources_at IS at'
 
 
 def digest(category, evidence):
@@ -74,10 +88,12 @@ def fences():
     return [digest(category, '') for category in CATEGORIES]
 
 
-def save(db, guild, scope, user, note, at, origin=None, provenance=None):
+def save(db, guild, scope, user, note, at, origin=None, provenance=None, sources=None):
     """provenance: other members whose words the saving turn drew on; their privacy changes remove the note.
 
     None when the turn didn't say, so it's unknown: only a conversation note can be saved that way.
+    sources: the Discord messages it was learned from, which take it when withdrawn (gene #141); None, unknown. The
+    same note learned again comes from the newer message: the earlier one, withdrawn, no longer takes it.
     """
     if scope == SERVER and provenance is None:
         raise ValueError('A profile note needs to say whose words it drew on')
@@ -97,11 +113,13 @@ def save(db, guild, scope, user, note, at, origin=None, provenance=None):
     if not any(row['evidence'] == evidence and row['at'] >= at for row in rows):  # Else the upsert keeps that one.
         for row in same:
             db.execute('DELETE FROM personal_notes WHERE id=?', (row['id'],))
-    updated = db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at,origin,provenance) '
-        'VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category,evidence) '
-        'DO UPDATE SET at=excluded.at,origin=excluded.origin,provenance=excluded.provenance '
-        'WHERE excluded.at>personal_notes.at',
-        (guild, scope, user, category, evidence, at, origin, None if provenance is None else json.dumps(list(provenance))))
+    updated = db.execute('INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at,origin,provenance,'
+        'sources,sources_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,category,evidence) '
+        'DO UPDATE SET at=excluded.at,origin=excluded.origin,provenance=excluded.provenance,sources=excluded.sources,'
+        'sources_at=excluded.sources_at WHERE excluded.at>personal_notes.at',
+        (guild, scope, user, category, evidence, at, origin, None if provenance is None else json.dumps(list(provenance)),
+         None if sources is None else json.dumps(sorted({str(item) for item in sources})),
+         None if sources is None else at))
     db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? AND category=? '
         'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
         'AND category=? ORDER BY at DESC,id DESC LIMIT ?)',
@@ -112,6 +130,14 @@ def save(db, guild, scope, user, note, at, origin=None, provenance=None):
     return bool(updated.rowcount and db.execute('SELECT 1 FROM personal_notes WHERE guild_id=? AND '
         'channel_id=? AND user_id=? AND category=? AND evidence=?',
         (guild, scope, user, category, evidence)).fetchone())
+
+
+def learned(row):
+    """The messages a saved note was learned from, which a move keeps: the same words, from the same message. None if
+    unknown, stale ones included (see CURRENT)."""
+    if row['sources'] is None or row['sources_at'] is None or row['sources_at'] != row['at']:
+        return None
+    return json.loads(row['sources'])
 
 
 def folded(evidence):
@@ -140,8 +166,10 @@ def manageable(conversation, scope, profiles=True):
     return conversation.startswith('private:') or scope in visible(conversation)
 
 
-def entries(store, guild, conversation, user, profiles=True, summaries=False):
-    """summaries: a Fri that shows the member's summary, which only a private conversation lists."""
+def entries(store, guild, conversation, user, profiles=True, summaries=False, sources=False):
+    """summaries: a Fri that shows the member's summary, which only a private conversation lists. sources: each note
+    also names the messages it was learned from (None if unknown), for a Fri that holds back one whose withdrawal is
+    still on its way (fri #215)."""
     with store.connection() as db:
         profile = store._personal_context(db, guild, conversation, user, profiles)
         row = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
@@ -149,8 +177,9 @@ def entries(store, guild, conversation, user, profiles=True, summaries=False):
         for scope in [r[0] for r in db.execute('SELECT DISTINCT channel_id FROM personal_notes WHERE guild_id=? '
                                                 'AND user_id=? ORDER BY channel_id', (guild, user))]:
             if manageable(conversation, scope, profiles):
-                notes += [{**dict(r), 'scope': scope} for r in db.execute(
-                    'SELECT id,category,evidence,at,origin FROM personal_notes WHERE guild_id=? AND channel_id=? '
+                notes += [{**{key: r[key] for key in ('id', 'category', 'evidence', 'at', 'origin')}, 'scope': scope,
+                           **({'sources': learned(r)} if sources else {})} for r in db.execute(
+                    'SELECT id,category,evidence,at,origin,sources,sources_at FROM personal_notes WHERE guild_id=? AND channel_id=? '
                     'AND user_id=? ORDER BY at DESC,id DESC LIMIT ?', (guild, scope, user, limit(scope)))]
         # The profile first, then this conversation, then anywhere else; newest first within each.
         order = {SERVER: 0, conversation: 1}
@@ -209,10 +238,10 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
             if words in other['evidence'].casefold() or other['evidence'].casefold() in words:
                 db.execute('DELETE FROM personal_notes WHERE id=?', (other['id'],))
         if note:  # An edit keeps the note where it shows, as the member's list labels it, wherever it is made.
-            save(db, guild, scope, user, note, time.time(), row['origin'], ())  # In their own words now.
+            save(db, guild, scope, user, note, time.time(), row['origin'], (), ())  # In their own words now.
         if action == 'keep':  # Out of the profile the way a removal goes, then saved only in this private chat.
             if not save(db, guild, conversation, user, (row['category'], row['evidence']), time.time(), None,
-                        None if row['provenance'] is None else json.loads(row['provenance'])):
+                        None if row['provenance'] is None else json.loads(row['provenance']), learned(row)):
                 raise ValueError('That preference can’t be moved now. Open My memory again.')
         cleared(store, db, guild, user, scope, revision)
     return entries(store, guild, conversation, user, profiles)
@@ -272,7 +301,7 @@ def share(store, db, guild, conversation, user, row, profiles):
     db.execute('DELETE FROM personal_notes WHERE id=?', (row['id'],))
     # Its origin is the private chat where they pressed Share: their consent, so a Fri that drops profile notes
     # said where not everyone can read (fri #98) still shows this one wherever the profile does.
-    if not save(db, guild, SERVER, user, (row['category'], row['evidence']), time.time(), conversation, ()):
+    if not save(db, guild, SERVER, user, (row['category'], row['evidence']), time.time(), conversation, (), learned(row)):
         raise ValueError('That preference can’t be shared now. Open My memory again.')
     db.commit()
     return entries(store, guild, conversation, user, profiles)

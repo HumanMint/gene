@@ -331,7 +331,8 @@ def test_a_mention_saves_fingerprint_is_the_one_an_older_controller_kept(h):
     _, scope, _ = invited(h)
     payload = turn(scope)
     assert post(h, '/chat/turn', payload).status_code == 200
-    older = _hash(ChatTurn.model_validate(payload).model_dump_json(exclude={'summary_generation', 'summary_dependencies'}))
+    older = _hash(ChatTurn.model_validate(payload).model_dump_json(exclude={'summary_generation', 'summary_dependencies',
+                                                                            'drew_on'}))
     with h.store.connection() as db:
         assert db.execute('SELECT turn_hash FROM mention_grants').fetchone()[0] == older
     assert post(h, '/chat/turn', payload).status_code == 200
@@ -339,3 +340,5 @@ def test_a_mention_saves_fingerprint_is_the_one_an_older_controller_kept(h):
         assert post(h, '/chat/turn', {**payload, 'summary_generation': generation}).status_code == 200
     for dependencies in ([], [{'user_id': '30', 'generation': 7}]):  # Nor do these (fri #193).
         assert post(h, '/chat/turn', {**payload, 'summary_dependencies': dependencies}).status_code == 200
+    for drawn in ([], ['12345']):  # Nor the messages it carried (gene #141).
+        assert post(h, '/chat/turn', {**payload, 'drew_on': drawn}).status_code == 200

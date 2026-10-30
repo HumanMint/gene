@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from gene.api import create_app
 from gene.config import Settings
 from gene.store import Store
+from tests.test_dependent_writes import drafted, posted
 from tests.test_fri_endings import source
 from tests.test_saved_dependencies import (
     SAID,
@@ -60,15 +61,37 @@ def world(tmp_path):
 
 @pytest.fixture
 def older(monkeypatch):
-    """A controller before gene #137 and #154, the live release say: a summary going retires the member's own replies
-    that drew on it, never what depends on it elsewhere."""
+    """The live release (`34dbbb3`), before gene #137 and #154, as far as summaries go: a summary going retires the
+    member's own replies that drew on it, never what depends on it elsewhere, and a retired reply keeps any dependencies
+    it had, as it knows of none. A covered rebuild carries only the member's own replies on to the new generation (gene
+    #170). Its functions below are that release's own; everything else is this controller's code, so the same events
+    are also run with the real older code (see the PR)."""
     import gene.fri_member_summary as summaries
+
+    def advance(db, guild, user, covered=False):
+        db.execute('INSERT INTO fri_member_summary_generations VALUES (?,?,1) ON CONFLICT(guild_id, user_id) '
+                   'DO UPDATE SET generation=generation+1', (guild, user))
+        if covered:
+            db.execute('UPDATE chat_turns SET summary_generation=(SELECT generation FROM fri_member_summary_generations '
+                       'WHERE guild_id=? AND user_id=?) WHERE guild_id=? AND user_id=? AND summary_generation IS NOT NULL',
+                       (guild, user, guild, user))
+        else:
+            retire(db, 'guild_id=? AND user_id=?', (guild, user))
+
+    def retire(db, where, args=()):
+        turns = f'({where}) AND summary_generation IS NOT NULL'
+        db.execute("DELETE FROM chat_pending WHERE (guild_id,user_id,source_id) IN (SELECT guild_id,user_id,"
+                   f"json_extract(NULLIF(source,''),'$.id') FROM chat_turns WHERE {turns})", args)
+        db.execute(f'UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL WHERE {turns}',
+                   (summaries.RETIRED, *args))
 
     @contextmanager
     def running():
         with monkeypatch.context() as patched:
             for name in ('retire_dependents', 'retire_writes'):
                 patched.setattr(summaries, name, lambda *args, **kwargs: None)
+            patched.setattr(summaries, 'advance', advance)
+            patched.setattr(summaries, 'retire', retire)
             yield
     return running
 
@@ -120,10 +143,10 @@ def drawing_on(store, user='40', conversation='public:52', on='20'):
             db.execute('UPDATE chat_turns SET at=? WHERE id=(SELECT max(id) FROM chat_turns)', (time.time()-age+1,))
 
 
-def rebuilding(client, store):
-    """New readable exchanges of member 20's in #52 and a build of them claimed: its claim, for finish."""
-    readable(store, 'new plans over here', 5000, conversation='public:52')
-    readable(store, 'and more of them', 4900, conversation='public:52')
+def rebuilding(client, store, conversation='public:52'):
+    """New readable exchanges of member 20's (in #52, unless said) and a build of them claimed: its claim, for finish."""
+    readable(store, 'new plans over here', 5000, conversation=conversation)
+    readable(store, 'and more of them', 4900, conversation=conversation)
     with store.connection() as db:
         db.execute("DELETE FROM fri_member_summary_calls WHERE user_id='20'")
     return claimed(client.app.state.agent)
@@ -262,26 +285,38 @@ def test_what_an_older_controllers_withdrawal_leaves_alone(world, older):
 
 
 def snapshot(store):
-    """What a member could read back: every saved exchange, pending question, draft, post, reminder and link."""
+    """What a member could read back, and what a later summary change would still find: every saved exchange with the
+    generations it drew on, pending question, draft, post in each delivery state, reminder, link with the item it
+    belongs to, summary and generation. Items by the order they were written: their IDs differ between databases."""
     with store.connection() as db:
         def table(sql):
             return sorted(tuple(row) for row in db.execute(sql))
+        work, reminders = ({row[0]: n for n, row in enumerate(db.execute(f'SELECT id FROM {name} ORDER BY rowid'))}
+                           for name in ('fri_work', 'fri_reminders'))
         return {
-            'turns': table('SELECT user_id,channel_id,input,reply,verbatim,summary_generation IS NULL,'
-                           'summary_dependencies FROM chat_turns'),
+            'turns': table('SELECT user_id,channel_id,input,reply,verbatim,summary_generation,summary_dependencies '
+                           'FROM chat_turns'),
             'pending': table("SELECT user_id,conversation_id,json_extract(body,'$.question') FROM chat_pending"),
-            'work': table('SELECT user_id,title,body,version,state FROM fri_work'),
-            'reminders': table('SELECT user_id,body,state FROM fri_reminders'),
-            'links': table('SELECT user_id,generation FROM fri_work_dependencies UNION ALL '
-                           'SELECT user_id,generation FROM fri_reminder_dependencies'),
-            'summaries': table('SELECT user_id,body FROM fri_member_summaries'),
+            'work': sorted((work[row['id']], row['user_id'], row['title'], row['body'], row['version'], row['state'])
+                           for row in db.execute('SELECT * FROM fri_work')),
+            'posts': sorted((work[row['work_id']], row['state'], row['body'], row['message_id'], row['lease'] != '')
+                            for row in db.execute('SELECT * FROM fri_posts')),
+            'reminders': sorted((reminders[row['id']], row['user_id'], row['body'], row['state'])
+                                for row in db.execute('SELECT * FROM fri_reminders')),
+            'links': sorted([('work', work[row['work_id']], *row[1:]) for row in db.execute(
+                'SELECT work_id,guild_id,user_id,generation,revision FROM fri_work_dependencies')] + [
+                ('reminder', reminders[row['reminder_id']], *row[1:]) for row in db.execute(
+                    'SELECT reminder_id,guild_id,user_id,generation,revision FROM fri_reminder_dependencies')]),
+            'summaries': table('SELECT user_id,body,revision,provenance,origins FROM fri_member_summaries'),
+            'generations': table('SELECT guild_id,user_id,generation FROM fri_member_summary_generations'),
         }
 
 
 def scene(client, store):
     """Member 20's summary and member 40's, which drew on 20's words. 20's own reply on theirs; 30's reply depending on
     20's with a question pending; 50's reply depending on 40's; 30's draft depending on 20's, reminder depending on 40's,
-    and own reminder; 60's ordinary reply. The message 20's summary drew on."""
+    and own reminder; 60's ordinary reply. The owner's draft depending on 20's, with one-off posts sent, sending,
+    claimed, authorized and pending, and the owner's own draft with a pending post. The message 20's summary drew on."""
     taken, generation = summarized(client, store)
     drawing_on(store)
     built(client.app.state.agent, 'they main a healer')
@@ -296,10 +331,23 @@ def scene(client, store):
     plain = turn(source(age=2, user='60', channel='51'), 'hi', user='60', reply='hey', reply_message_id='802',
                  verbatim=True)
     assert post_turn(client, plain).status_code == 200
+    draft = drafted(client, generation, age=4)
+    sent, lease = posted(client, draft, 5, 'sending')
+    written(client, f'/workspace/posts/{sent}/finish', {'lease': lease, 'state': 'sent', 'message_id': '987'})
+    for age, state in ((6, 'sending'), (7, 'claimed'), (8, 'authorized'), (9, 'pending')):
+        posted(client, draft, age, state)
+    own = written(client, '/workspace/save', {**work(dm(10, '9'), body='my own plan'), 'user_id': '9'})
+    posted(client, own, 11, 'pending')
     return taken
 
 
+EVENTS = ['withdraw', 'disable', 'expire', 'rebuild', 'same-origin rebuild', 'covered rebuild']
+
+
 def happen(client, store, taken, event):
+    """rebuild: one not sent the summary it replaces, from new exchanges elsewhere, so its lineage is lost. same-origin
+    rebuild: not sent it either, but from new exchanges where the old one's were, so its origins and provenance cover
+    the old one's anyway (gene #170). covered rebuild: sent it, as the daily rebuild is."""
     from gene.fri_member_summary import finish
     if event == 'withdraw':
         withdraw(client, taken)
@@ -310,15 +358,39 @@ def happen(client, store, taken, event):
         lapsed(store)
         store.status()  # Its prune drops a lapsed summary.
     else:
-        claim_id, conversations, _ = rebuilding(client, store)
-        finish(client.app.state.agent, claim_id, 'they made new plans', 'completed', conversations,
-               event == 'covered rebuild')
+        claim_id, conversations, _ = rebuilding(client, store,
+                                                'public:51' if event == 'same-origin rebuild' else 'public:52')
+        assert finish(client.app.state.agent, claim_id, 'they made new plans', 'completed', conversations,
+                      event == 'covered rebuild')['kept']
 
 
-@pytest.mark.parametrize('event', ['withdraw', 'disable', 'expire', 'rebuild', 'covered rebuild'])
+@pytest.mark.parametrize('event', EVENTS)
+def test_an_older_controller_with_the_triggers_leaves_what_a_start_here_would(tmp_path, older, event):
+    """No data loss, and nothing left for later: each summary event, run by the live release on a database with the
+    triggers, leaves exactly what the same event run on one without them leaves once this controller starts. A start
+    after it then finds nothing more to do."""
+    legacy, started = make(tmp_path/'older.sqlite3'), make(tmp_path/'started.sqlite3')
+    taken = scene(*legacy)
+    with older():
+        happen(*legacy, taken, event)
+    taken = scene(*started)
+    without_triggers(started[1])
+    with older():
+        happen(*started, taken, event)
+    Store(started[1].path)
+    after = snapshot(legacy[1])
+    assert after == snapshot(started[1])
+    Store(legacy[1].path)
+    assert snapshot(legacy[1]) == after
+
+
+@pytest.mark.parametrize('event', EVENTS)
 def test_an_older_controller_with_the_triggers_leaves_what_this_one_leaves(tmp_path, older, event):
     """Never more than this controller retires: the same members and writes, each summary event run by this code on a
-    database without the triggers, and by an older controller on one with them, leave the same state behind."""
+    database without the triggers, and by the live release on one with them, leave the same state behind. The one
+    exception is the covered rebuild: the live release can't carry what depends on it on to the new generation, so it
+    goes then, as a start here would retire it (above). A same-origin rebuild not sent the old summary keeps its lineage
+    by structure alone; this controller retires what depended on the old one then, and so does the live release now."""
     newer, legacy = make(tmp_path/'newer.sqlite3'), make(tmp_path/'older.sqlite3')
     taken = scene(*newer)
     without_triggers(newer[1])
@@ -326,9 +398,14 @@ def test_an_older_controller_with_the_triggers_leaves_what_this_one_leaves(tmp_p
     taken = scene(*legacy)
     with older():
         happen(*legacy, taken, event)
-    assert snapshot(legacy[1]) == snapshot(newer[1])
-    reached = event != 'covered rebuild'  # The event reached 30's reply and question.
-    assert (ASKED in str(snapshot(legacy[1])['turns'])) != reached and pending(legacy[1]) == (not reached)
+    mine, theirs = snapshot(newer[1]), snapshot(legacy[1])
+    carried = event == 'covered rebuild'
+    assert (theirs == mine) != carried
+    # The event reached 30's reply and question here unless the rebuild carried them on; under the live release, always.
+    assert (ASKED in str(mine['turns']), pending(newer[1])) == (carried, int(carried))
+    assert (ASKED in str(theirs['turns']), pending(legacy[1])) == (False, 0)
+    # The owner's post that was sending keeps its state and lease, and none keeps the draft's words (gene #169).
+    assert (1, 'sending', '', '', True) in theirs['posts'] and MARKER not in str(theirs['posts'])
 
 
 def test_a_pre_generation_controllers_clear_retires_what_depends_on_that_summary_at_once(world):

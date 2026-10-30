@@ -161,7 +161,11 @@ built from other members' messages.
     that carried them (gene #150). Where the controller knows the message's author (a ping's grant or a
     research permit names them), the fence names them with their privacy revision then. Their "forget
     me" takes it, and a start drops it once that revision moved. A member with memory off gets none.
-    Otherwise it names nobody and holds only the ID. An older controller ignores the table.
+    Otherwise it names nobody and holds only the ID. An older controller ignores the table, but the
+    database's triggers keep the week for it: they expire old fences whenever any controller records
+    Gene's runtime heartbeat, saves a turn, a pending question, a ping's grant or Fri's state, or writes a
+    member's chat session or a model call's usage (gene #168). One that does none of those keeps them
+    until it does, or until this code starts; nothing reads them meanwhile.
   - **Nothing about a member after a privacy change.** `/chat/turn/withdraw` also takes `revision`, the
     member's privacy revision when the exchange was saved. One that arrives after the member's revision
     moved ("forget me", say), or with their memory off, still takes anything that holds the message but
@@ -250,7 +254,15 @@ built from other members' messages.
     those of other members in the new tables `fri_work_dependencies` and `fri_reminder_dependencies`,
     whose rows go with their item. When one of those summaries goes as a saved reply's would retire it,
     the draft's title and words become a breadcrumb (its version moves, and posts not yet sending are
-    cancelled) and the reminder loses its text, cancelled unless it is already going out. A covered
+    cancelled) and the reminder loses its text, cancelled unless it is already going out. No post keeps the
+    draft's words either: one going out keeps its state and lease, so its receipt still lands, but not its
+    copy, since delivery already holds what it sends (gene #169). Each read that shows such a draft or
+    reminder (the work list and read, a post's read, a reminder's list and read, open loops in chat
+    context, a retried save) and each step that authorizes delivery (preparing, approving, claiming and
+    sending a post; confirming, claiming and sending a reminder) first checks the summaries they depend on
+    for a lapse, in its own transaction, as a turn's check does (gene #158). One that lapsed with nothing
+    pruning it yet goes then, retiring what they hold of it, and stays gone even when that step is then
+    refused. A covered
     rebuild moves them on instead, and the purge below retires them all. Each row also keeps that
     member's privacy revision when it was written. A controller start retires the item and drops the row
     when the generation moved or went, when that member's revision moved since, or when their summary is
@@ -263,14 +275,20 @@ built from other members' messages.
     was left, by the moved revision, even once a summary built again has brought the same generation back
     (as `chat_turn_deletions` are dropped at start).
 - **In a rollback window (gene #147, #161, #162).** An older controller knows nothing of what depends on a
-  member's summary, so two triggers on `fri_member_summaries`, which it runs too, retire at once what this
+  member's summary, so triggers on `fri_member_summaries`, which it runs too, retire at once what this
   controller retires when that summary goes. One fires when a row is deleted: a withdrawal, an expiry, a
   privacy change, or another member's privacy change through the summary's provenance. The other fires when
   a rebuild replaces a row without keeping its lineage: its words emptied, its revision changed, or its
   origins, provenance or `through` not kept. Either way the member's own replies that drew on it, other
   members' replies depending on it with any question they left pending, and saved work and reminders
   depending on it with all their links go, as above. A rebuild sent the earlier summary keeps its lineage,
-  so nothing goes. Each start of this code replaces the triggers, and the purge drops them with the table.
+  and so can one that wasn't, when its origins and provenance cover the old one's anyway: the row can't
+  tell them apart. So a third trigger, on an update that keeps the lineage, retires only what still
+  depends on the member at another generation than theirs now, which is what the controller didn't carry
+  on to the new one, as a start here would (gene #170). This controller and Gene main carry it on for a
+  rebuild sent the earlier summary and retire it otherwise, before the update, so nothing more goes. The
+  live release carries on only the member's own replies, so the rest goes then rather than at the next
+  start here. Each start of this code replaces the triggers, and the purge drops them with the table.
   There is no schema change and no release-script downgrade step: the older controller's own summary
   changes run them, and what still depends on a current summary stays.
 

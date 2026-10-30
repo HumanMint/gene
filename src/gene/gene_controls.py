@@ -331,8 +331,10 @@ def replacement(text, song, start, named):
             artists.append((m, *artist_spans(text, m)))
     plain = masked(text, [span for _, first, _, _ in artists for span in first])
     nameless = masked(text, [name for _, _, name, _ in artists])
-    # A denial right after an artist they quoted is read past its closing mark ("by "Taylor" isn't what we chose").
-    denials = (clause, song_end, *(close for *_, close in artists if close))
+    # A denial right after the last artist, if they quoted it, is read past its closing mark ("by "Taylor" isn't what
+    # we chose"). Only the last: any before it is in the song they named.
+    after = artists[-1][3] if artists else None
+    denials = (clause, song_end, after) if after else (clause, song_end)
     if not quoted:  # Its own title is the words before an artist they named in it ("Not Now by Blink-182").
         own = min((m.start() for m, *_ in artists if m.start() < song_end), default=song_end)
     # Past the song they named, or their own "i said not now" it took in, and not that song said again: the named

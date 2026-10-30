@@ -254,7 +254,9 @@ built from other members' messages.
     those of other members in the new tables `fri_work_dependencies` and `fri_reminder_dependencies`,
     whose rows go with their item. When one of those summaries goes as a saved reply's would retire it,
     the draft's title and words become a breadcrumb (its version moves, and posts not yet sending are
-    cancelled) and the reminder loses its text, cancelled unless it is already going out. A covered
+    cancelled) and the reminder loses its text, cancelled unless it is already going out. No post keeps the
+    draft's words either: one going out keeps its state and lease, so its receipt still lands, but not its
+    copy, since delivery already holds what it sends (gene #169). A covered
     rebuild moves them on instead, and the purge below retires them all. Each row also keeps that
     member's privacy revision when it was written. A controller start retires the item and drops the row
     when the generation moved or went, when that member's revision moved since, or when their summary is

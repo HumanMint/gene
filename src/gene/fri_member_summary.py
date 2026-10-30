@@ -142,16 +142,16 @@ def depend_write(db, table, item, scope, dependencies):
 def retire_writes(db, where, args=()):
     """Saved work and reminders that may repeat a summary now gone keep nothing of it (fri #216). A draft keeps a
     breadcrumb for its title and words, a version on, so an edit of the old one fails; its posts not yet sending are
-    cancelled, and keep no words unless one is going out now. A reminder not yet sending is cancelled, and none keeps
-    its text: delivery already holds what it sends. where: about `d`, each of their dependencies."""
+    cancelled. A reminder not yet sending is cancelled. None keeps its words, one going out now included, which keeps
+    its state and lease so its receipt still lands: delivery already holds what it sends (gene #169). where: about `d`,
+    each of their dependencies."""
     for table, key in writes(db):
         items = f'(SELECT {key} FROM {table} d WHERE {where})'
         if table == 'fri_work_dependencies':
             db.execute(f'UPDATE fri_work SET title=?,body=?,version=version+1 WHERE id IN {items}',
                        (WORK_TITLE, WORK_RETIRED, *args))
             db.execute("UPDATE fri_posts SET state=CASE WHEN state IN ('pending','authorized','claimed') THEN 'cancelled' "
-                       f"ELSE state END,body=CASE WHEN state='sending' THEN body ELSE '' END WHERE work_id IN {items}",
-                       args)
+                       f"ELSE state END,body='' WHERE work_id IN {items}", args)
         else:
             db.execute("UPDATE fri_reminders SET state=CASE WHEN state IN ('pending','scheduled','claimed') THEN "
                        f"'cancelled' ELSE state END,body='' WHERE id IN {items}", args)
@@ -172,8 +172,7 @@ def erasure_triggers(db):
         UPDATE fri_work SET title='{title}',body='{retired}',version=version+1
             WHERE id IN (SELECT work_id FROM fri_work_dependencies d WHERE {moved});
         UPDATE fri_posts SET state=CASE WHEN state IN ('pending','authorized','claimed') THEN 'cancelled' ELSE state END,
-            body=CASE WHEN state='sending' THEN body ELSE '' END
-            WHERE work_id IN (SELECT work_id FROM fri_work_dependencies d WHERE {moved});
+            body='' WHERE work_id IN (SELECT work_id FROM fri_work_dependencies d WHERE {moved});
         DELETE FROM fri_work_dependencies WHERE work_id IN (SELECT work_id FROM fri_work_dependencies d WHERE {moved});
         UPDATE fri_reminders SET state=CASE WHEN state IN ('pending','scheduled','claimed') THEN 'cancelled'
             ELSE state END,body='' WHERE id IN (SELECT reminder_id FROM fri_reminder_dependencies d WHERE {moved});
@@ -243,7 +242,7 @@ def summary_triggers(db):
         UPDATE fri_work SET title='{quoted['title']}',body='{quoted['work']}',version=version+1
             WHERE {depending(*work, 'fri_work.id')};
         UPDATE fri_posts SET state=CASE WHEN state IN ('pending','authorized','claimed') THEN 'cancelled' ELSE state END,
-            body=CASE WHEN state='sending' THEN body ELSE '' END WHERE {depending(*work, 'fri_posts.work_id')};
+            body='' WHERE {depending(*work, 'fri_posts.work_id')};
         DELETE FROM fri_work_dependencies WHERE {depending(*work, 'fri_work_dependencies.work_id')};
         UPDATE fri_reminders SET state=CASE WHEN state IN ('pending','scheduled','claimed') THEN 'cancelled'
             ELSE state END,body='' WHERE {depending(*reminders, 'fri_reminders.id')};

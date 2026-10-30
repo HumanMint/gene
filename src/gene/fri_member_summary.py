@@ -196,34 +196,47 @@ def summary_triggers(db):
     nothing drops."""
     quoted = {name: text.replace("'", "''") for name, text in
               (('retired', RETIRED), ('title', WORK_TITLE), ('work', WORK_RETIRED))}
-    turns = ("guild_id=OLD.guild_id AND ((user_id=OLD.user_id AND summary_generation IS NOT NULL) OR "
-             "(summary_dependencies IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(chat_turns.summary_dependencies) d "
-             "WHERE json_extract(d.value,'$.user_id')=OLD.user_id)))")
-    work, reminders = (f'SELECT {key} FROM {table} d WHERE d.guild_id=OLD.guild_id AND d.user_id=OLD.user_id'
-                       for table, key in WRITES)
+    turns = ("chat_turns.guild_id=OLD.guild_id AND ((chat_turns.user_id=OLD.user_id AND chat_turns.summary_generation IS "
+             "NOT NULL) OR (chat_turns.summary_dependencies IS NOT NULL AND EXISTS (SELECT 1 FROM "
+             "json_each(chat_turns.summary_dependencies) d WHERE json_extract(d.value,'$.user_id')=OLD.user_id)))")
+
+    def depending(table, key, item):  # One of their items depends on the summary.
+        return (f'EXISTS (SELECT 1 FROM {table} d WHERE d.{key}={item} AND d.guild_id=OLD.guild_id AND '
+                'd.user_id=OLD.user_id)')
+    work, reminders = WRITES
+    # Correlated EXISTS throughout: SQLite 3.53 skipped a row-value IN in this body under the rebuild trigger's WHEN.
     body = f"""
-        DELETE FROM chat_pending WHERE (guild_id,user_id,source_id) IN
-            (SELECT guild_id,user_id,json_extract(NULLIF(source,''),'$.id') FROM chat_turns WHERE {turns});
+        DELETE FROM chat_pending WHERE EXISTS (SELECT 1 FROM chat_turns WHERE chat_turns.guild_id=chat_pending.guild_id
+            AND chat_turns.user_id=chat_pending.user_id
+            AND json_extract(NULLIF(chat_turns.source,''),'$.id')=chat_pending.source_id AND {turns});
         UPDATE chat_turns SET reply='{quoted['retired']}',verbatim=0,summary_generation=NULL,summary_dependencies=NULL
             WHERE {turns};
-        UPDATE fri_work SET title='{quoted['title']}',body='{quoted['work']}',version=version+1 WHERE id IN ({work});
+        UPDATE fri_work SET title='{quoted['title']}',body='{quoted['work']}',version=version+1
+            WHERE {depending(*work, 'fri_work.id')};
         UPDATE fri_posts SET state=CASE WHEN state IN ('pending','authorized','claimed') THEN 'cancelled' ELSE state END,
-            body=CASE WHEN state='sending' THEN body ELSE '' END WHERE work_id IN ({work});
-        DELETE FROM fri_work_dependencies WHERE work_id IN ({work});
+            body=CASE WHEN state='sending' THEN body ELSE '' END WHERE {depending(*work, 'fri_posts.work_id')};
+        DELETE FROM fri_work_dependencies WHERE {depending(*work, 'fri_work_dependencies.work_id')};
         UPDATE fri_reminders SET state=CASE WHEN state IN ('pending','scheduled','claimed') THEN 'cancelled'
-            ELSE state END,body='' WHERE id IN ({reminders});
-        DELETE FROM fri_reminder_dependencies WHERE reminder_id IN ({reminders});"""
+            ELSE state END,body='' WHERE {depending(*reminders, 'fri_reminders.id')};
+        DELETE FROM fri_reminder_dependencies WHERE {depending(*reminders, 'fri_reminder_dependencies.reminder_id')};"""
     covered = ("NEW.body<>'' AND NEW.revision=OLD.revision AND NEW.through>=OLD.through AND json_valid(OLD.origins) "
                "AND json_valid(NEW.origins) AND json_valid(OLD.provenance) AND json_valid(NEW.provenance) AND NOT EXISTS "
-               "(SELECT 1 FROM json_each(OLD.origins) o WHERE o.value NOT IN (SELECT value FROM json_each(NEW.origins))) "
-               "AND NOT EXISTS (SELECT 1 FROM json_each(OLD.provenance) p WHERE NOT EXISTS (SELECT 1 FROM "
-               "json_each(NEW.provenance) q WHERE json_extract(q.value,'$.user_id') IS json_extract(p.value,'$.user_id') "
-               "AND json_extract(q.value,'$.revision') IS json_extract(p.value,'$.revision')))")
-    for name, event in (('member_summary_gone', 'DELETE'), ('member_summary_replaced', 'UPDATE')):
-        when = f' WHEN NOT ({covered})' if event == 'UPDATE' else ''
-        # Replaced, so a body changed since an earlier controller made it takes effect.
+               "(SELECT 1 FROM json_each(OLD.origins) o WHERE NOT EXISTS (SELECT 1 FROM json_each(NEW.origins) n "
+               "WHERE n.value IS o.value)) AND NOT EXISTS (SELECT 1 FROM json_each(OLD.provenance) p WHERE NOT EXISTS "
+               "(SELECT 1 FROM json_each(NEW.provenance) q WHERE json_extract(q.value,'$.user_id') IS "
+               "json_extract(p.value,'$.user_id') AND json_extract(q.value,'$.revision') IS json_extract(p.value,'$.revision')))")
+    triggers = (('member_summary_gone', 'AFTER DELETE ON fri_member_summaries FOR EACH ROW'),
+                ('member_summary_replaced', f'AFTER UPDATE ON fri_member_summaries FOR EACH ROW WHEN NOT ({covered})'))
+    # Replaced, so a body changed since an earlier controller made them takes effect, in one transaction, so a start cut
+    # off between them, or an older controller starting meanwhile, never finds one missing (as erasure_triggers does).
+    began = not db.in_transaction
+    if began:
+        db.execute('BEGIN IMMEDIATE')
+    for name, event in triggers:
         db.execute(f'DROP TRIGGER IF EXISTS {name}')
-        db.execute(f'CREATE TRIGGER {name} AFTER {event} ON fri_member_summaries FOR EACH ROW{when} BEGIN {body} END')
+        db.execute(f'CREATE TRIGGER {name} {event} BEGIN {body} END')
+    if began:
+        db.commit()
 
 
 def _standing(guild, user):

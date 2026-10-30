@@ -199,13 +199,14 @@ def test_an_older_controllers_rebuild_not_sent_the_old_summary_retires_what_depe
     from gene.fri_member_summary import finish
     client, store = world
     _, generation = summarized(client, store)
-    repeated(client, generation)
+    asking(client, generation)
     written(client, '/workspace/save', work(dm(1), depending(generation)))
     written(client, '/social/reminders/prepare', reminder(dm(2), depending(generation)))
     claim_id, conversations, _ = rebuilding(client, store)
     with older():
         assert finish(client.app.state.agent, claim_id, 'they made new plans', 'completed', conversations, False)['kept']
-    assert retired(saved_reply(store)) and not holds(store) and dependencies(store) == []
+    assert retired(saved_reply(store)) and pending(store) == 0
+    assert not holds(store) and dependencies(store) == []
 
 
 def test_a_rebuild_sent_the_old_summary_keeps_what_depends_on_it_through_a_rollback_window(world):
@@ -279,19 +280,20 @@ def snapshot(store):
 
 def scene(client, store):
     """Member 20's summary and member 40's, which drew on 20's words. 20's own reply on theirs; 30's reply depending on
-    20's with a question pending, and one depending on 40's; 30's draft depending on 20's, reminder depending on 40's,
-    and own reminder; 50's ordinary reply. The message 20's summary drew on."""
+    20's with a question pending; 50's reply depending on 40's; 30's draft depending on 20's, reminder depending on 40's,
+    and own reminder; 60's ordinary reply. The message 20's summary drew on."""
     taken, generation = summarized(client, store)
     drawing_on(store)
     built(client.app.state.agent, 'they main a healer')
     theirs = summary_generation_now(store, '40')
     quoted(store, generation, conversation='public:51')
     asking(client, generation)
-    repeated(client, theirs, message_id='801', on='40', provenance=[{'user_id': '40', 'revision': 0}])
+    repeated(client, theirs, user='50', message_id='801', on='40', provenance=[{'user_id': '40', 'revision': 0}])
+    assert pending(store) == 1
     written(client, '/workspace/save', work(dm(1), depending(generation)))
     written(client, '/social/reminders/prepare', reminder(dm(2), depending(theirs, '40')))
     written(client, '/social/reminders/prepare', {**reminder(dm(3), depending(0, '30')), 'body': 'own '+SAID})
-    plain = turn(source(age=2, user='50', channel='51'), 'hi', user='50', reply='hey', reply_message_id='802',
+    plain = turn(source(age=2, user='60', channel='51'), 'hi', user='60', reply='hey', reply_message_id='802',
                  verbatim=True)
     assert post_turn(client, plain).status_code == 200
     return taken
@@ -325,7 +327,8 @@ def test_an_older_controller_with_the_triggers_leaves_what_this_one_leaves(tmp_p
     with older():
         happen(*legacy, taken, event)
     assert snapshot(legacy[1]) == snapshot(newer[1])
-    assert (ASKED in str(snapshot(legacy[1])['turns'])) == (event == 'covered rebuild')  # The event reached it.
+    reached = event != 'covered rebuild'  # The event reached 30's reply and question.
+    assert (ASKED in str(snapshot(legacy[1])['turns'])) != reached and pending(legacy[1]) == (not reached)
 
 
 def test_a_pre_generation_controllers_clear_retires_what_depends_on_that_summary_at_once(world):
@@ -397,3 +400,17 @@ def test_a_purge_before_a_rollback_takes_the_triggers_with_the_summaries(world):
     with store.connection() as db:  # The older controller's own privacy change still runs.
         db.execute("DELETE FROM chat_turns WHERE user_id='30'")
         db.execute("INSERT INTO chat_revisions VALUES ('30',1) ON CONFLICT(user_id) DO UPDATE SET revision=revision+1")
+
+
+def test_a_start_replaces_a_trigger_an_earlier_controller_made(world):
+    """A body changed since takes effect at the next start, both triggers replaced in one transaction."""
+    client, store = world
+    with store.connection() as db:
+        db.execute('DROP TRIGGER member_summary_gone')
+        db.execute("CREATE TRIGGER member_summary_gone AFTER DELETE ON fri_member_summaries BEGIN SELECT 1; END")
+        db.execute('DROP TRIGGER member_summary_replaced')
+    Store(store.path)
+    with store.connection() as db:
+        bodies = dict(db.execute("SELECT name, sql FROM sqlite_master WHERE name LIKE 'member_summary_%'").fetchall())
+    assert set(bodies) == {'member_summary_gone', 'member_summary_replaced'}
+    assert 'chat_turns' in bodies['member_summary_gone'] and 'SELECT 1;' not in bodies['member_summary_gone']

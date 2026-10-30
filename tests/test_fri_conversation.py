@@ -393,6 +393,23 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me dan', 'you can call me dan once i win'),
     ('nickname', 'my nickname is dan', 'my nickname is dan when i stream'),
     ('nickname', 'my nickname is dan if i win', 'my nickname is dan if i win'),
+    # Round 1 of #167's review. After "but" or "and" the subject may still be someone else's, so at most one
+    # interjection may sit before "have to say" there, as main had it; longer runs only start a sentence.
+    ('games', 'i like chess', 'my friends agree and also honestly have to say i like chess'),
+    ('games', 'i like chess', 'they disagree but also honestly gotta say i like chess'),
+    ('games', 'i like chess', 'they lost and lol honestly gotta say i like chess'),
+    # Every form of a report verb after the claim, as before it.
+    ('games', 'i like chess', 'i like chess, my friend keeps saying'),
+    ('games', 'i like chess', 'i like chess, or so my friend believes'),
+    ('games', 'i like chess, my friend keeps saying', 'i like chess, my friend keeps saying'),
+    ('games', 'i like chess', 'i like chess according to my brother'),
+    ('games', 'i like chess', 'i like chess, people say'),
+    ('games', 'i like chess', 'i like chess, apparently'),
+    ('music', 'i love jazz', 'i love jazz, she insists'),
+    # A courtesy is one only as a whole clause that ends the claim: "if you like chess" is a condition.
+    ('nickname', 'call me dan', 'call me dan if you like chess'),
+    ('nickname', 'my nickname is dan', 'my nickname is dan if you want to win'),
+    ('nickname', 'call me dan', 'call me dan whenever you want to beat me'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -424,6 +441,17 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('projects', 'im building a bot that tells jokes', 'im building a bot that tells jokes'),
     ('projects', 'im building a bot', 'im building a bot that tells jokes'),
     ('games', 'i play a game which says it in the title', 'i play a game which says it in the title'),
+    # Round 1 of #167's review: a description may carry an everyday adverb or odd spacing, and a whole courtesy
+    # clause ending the claim only asks nicely.
+    ('projects', 'im building a bot', 'im building a bot that always tells jokes'),
+    ('projects', 'im building a bot', 'im building a bot which sometimes tells jokes'),
+    ('projects', 'im building a bot', 'im building a bot that\ttells jokes'),
+    ('projects', 'im building a bot', "im building a bot that's always telling jokes"),
+    ('nickname', 'call me dan', 'call me dan whenever you want'),
+    ('nickname', 'call me dan', 'call me dan if you feel like it'),
+    ('nickname', 'call me dan', 'call me dan if you want to'),
+    ('nickname', 'call me dan', 'call me dan if you want lol'),
+    ('games', 'i like chess', 'they disagree but gotta say i like chess'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

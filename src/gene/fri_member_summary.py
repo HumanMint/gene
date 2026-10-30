@@ -240,9 +240,9 @@ def summary_triggers(db):
     withdrawal of anything the old one drew on still finds it. The row can't tell that from one that wasn't sent it but
     covers the old one's origins and provenance by structure (gene #170), so a covering update retires only what still
     depends on the member at another generation than theirs now: what the controller didn't carry on to it, as a start
-    here would (see settle). This one carries it on for a rebuild sent the old summary and retires it otherwise, before
-    the update; the live release carries on only the member's own replies, so the rest goes then. A purge drops them
-    with the table, before the generations they read; their bodies name only tables nothing else drops."""
+    here would (see settle). This controller carries it on for a rebuild sent the old summary and retires it otherwise,
+    before the update; the live release carries on only the member's own replies, so the rest goes then. A purge drops
+    them with the table, before the generations they read; their bodies name only tables nothing else drops."""
     quoted = {name: text.replace("'", "''") for name, text in
               (('retired', RETIRED), ('title', WORK_TITLE), ('work', WORK_RETIRED))}
     now = ('(SELECT generation FROM fri_member_summary_generations g WHERE g.guild_id=OLD.guild_id AND '

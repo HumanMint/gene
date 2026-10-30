@@ -113,9 +113,10 @@ built from other members' messages.
   and up to 10 Discord `message_ids`. Each saved turn in that server whose source, or a message of
   whose burst, is one of them goes exactly as `/chat/turn/withdraw` takes it, under the member and
   conversation it was saved with: its fence, its pending clarification and research permit, and the
-  member's summary if it could have read the message. A message no saved turn holds changes nothing:
-  no fence is written and no summary goes, so the many edits and deletes Fri can't place cost nobody
-  their summary. That lookup reads only; one that finds a turn takes the write lock and reads again.
+  member's summary if it could have read the message. A message no saved turn holds costs nobody their
+  summary, so the many edits and deletes Fri can't place change nothing else, with one exception, the
+  fence by ID below (gene #149). An edit with no learning batch in flight reads only. One that finds a
+  turn takes the write lock and reads again, and so does a deletion or an edit during a learning batch.
   It answers `{"ok": true, "removed": n}`. An older controller lacks it and Fri asks only about the
   messages it saved since it started, as before.
 - **What else a withdrawn message reached (gene #141).** Both withdrawals above also take:
@@ -147,7 +148,20 @@ built from other members' messages.
     start drops one whose author's revision has moved since (an older controller's erasure leaves this
     table alone). A check whose `drew_on` holds one refuses with the 409 above, and such a save keeps
     nothing. By ID, a deletion that only such a reply holds retires that reply there and then and keeps
-    no record and no fence: its author is unknown there.
+    no deletion record: its author is unknown there.
+  - **A fence by ID when nothing holds it yet (gene #149).** By ID, a message nothing stored holds (no
+    exchange, no note) still keeps a fence when it's deleted, or edited while a learning batch is
+    reading history: `chat_message_fences`, by guild, message ID, time and whether it was deleted, never
+    words, for a week, at most 100,000 (the oldest go first). A save still on its way that answers a
+    deleted message, or whose `drew_on` holds one, keeps nothing, and its check refuses with the 409
+    above. A learning batch claimed before the fence keeps nothing from the message, edited or deleted;
+    one claimed after reads it as it is now. An edit's fence stops nothing else. A save of the member's
+    own edited message is Fri answering it again as it now reads, under the same ID, and a save of its
+    old words that lands late is withdrawn by Fri itself. Edits from other members leave the replies
+    that carried them (gene #150). Where the controller knows the message's author (a ping's grant or a
+    research permit names them), the fence names them with their privacy revision then. Their "forget
+    me" takes it, and a start drops it once that revision moved. A member with memory off gets none.
+    Otherwise it names nobody and holds only the ID. An older controller ignores the table.
   - **Nothing about a member after a privacy change.** `/chat/turn/withdraw` also takes `revision`, the
     member's privacy revision when the exchange was saved. One that arrives after the member's revision
     moved ("forget me", say), or with their memory off, still takes anything that holds the message but

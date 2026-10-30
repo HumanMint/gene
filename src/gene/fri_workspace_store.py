@@ -35,10 +35,12 @@ def initialize(db):
         );
         -- Other members' summaries the model may have repeated into a draft, through Fri's earlier replies its turn
         -- carried, at the generation it was told (fri #216): the draft is retired once one goes. Its own table, so an
-        -- older controller's positional inserts into fri_work still fit; its deletes cascade here.
+        -- older controller's positional inserts into fri_work still fit; its deletes cascade here. With that member's
+        -- privacy revision then: an older controller's erasure of them leaves the row, which a start retires once it
+        -- finds the revision moved, whatever the generation is by then (gene #154).
         CREATE TABLE IF NOT EXISTS fri_work_dependencies (
             work_id TEXT NOT NULL REFERENCES fri_work(id) ON DELETE CASCADE, guild_id TEXT NOT NULL,
-            user_id TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(work_id, user_id)
+            user_id TEXT NOT NULL, generation INTEGER NOT NULL, revision INTEGER, PRIMARY KEY(work_id, user_id)
         );
     ''')
 

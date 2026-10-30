@@ -61,10 +61,11 @@ def initialize(db):
             event_id TEXT PRIMARY KEY, item_id TEXT NOT NULL, user_id TEXT NOT NULL,
             payload TEXT NOT NULL, created REAL NOT NULL
         );
-        -- As for saved work: other members' summaries a reminder's text may repeat (fri #216).
+        -- As for saved work: other members' summaries a reminder's text may repeat (fri #216), with each member's
+        -- privacy revision then.
         CREATE TABLE IF NOT EXISTS fri_reminder_dependencies (
             reminder_id TEXT NOT NULL REFERENCES fri_reminders(id) ON DELETE CASCADE, guild_id TEXT NOT NULL,
-            user_id TEXT NOT NULL, generation INTEGER NOT NULL, PRIMARY KEY(reminder_id, user_id)
+            user_id TEXT NOT NULL, generation INTEGER NOT NULL, revision INTEGER, PRIMARY KEY(reminder_id, user_id)
         );
     ''')
 

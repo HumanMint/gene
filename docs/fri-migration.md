@@ -234,11 +234,15 @@ built from other members' messages.
     whose rows go with their item. When one of those summaries goes as a saved reply's would retire it,
     the draft's title and words become a breadcrumb (its version moves, and posts not yet sending are
     cancelled) and the reminder loses its text, cancelled unless it is already going out. A covered
-    rebuild moves them on instead, a controller start retires what an older controller left stale, and
-    the purge below retires them all. The writer's own summary is still checked but not kept, as above.
+    rebuild moves them on instead, and the purge below retires them all. Each row also keeps that
+    member's privacy revision when it was written. A controller start retires the item and drops the row
+    when the generation moved or went, or when that member's revision moved since. The writer's own
+    summary is still checked but not kept, as above.
   - Rollback: the tables are new, so an older controller's positional inserts into `fri_work` still fit,
-    and its deletes of work and reminders cascade to them. It ignores them otherwise, and the next start
-    retires what its moved generations left.
+    and its deletes of work and reminders cascade to them. It ignores them otherwise: its erasure of the
+    member they depend on leaves the rows and the words until the next start of this code, which retires
+    them by the moved revision, even once a summary built again has brought the same generation back (as
+    `chat_turn_deletions` are dropped at start).
 
 Provenance also reaches what follow-ups inherit:
 

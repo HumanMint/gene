@@ -125,16 +125,18 @@ def writes(db):
 def depend_write(db, table, item, scope, dependencies):
     """A tool's write of the model's words keeps the summaries its turn may repeat through Fri's earlier replies, with
     their generations, so it's retired once one goes (see retire_writes), as a saved reply is (fri #216). Each goes on
-    record (see keep). Not the writer's own: work and reminders drawn on that stay, as they asked for them (gene #112).
-    A draft edited again keeps what it had, as the edit may still hold those words."""
+    record (see keep), and so is that member's privacy revision now, which a start checks (see settle). Not the writer's
+    own: work and reminders drawn on that stay, as they asked for them (gene #112). A draft edited again keeps what it
+    had, as the edit may still hold those words."""
+    from .store import Store
     key = dict(WRITES)[table]
     for user, number in sorted({(row['user_id'], row['generation']) for row in dependencies}):
         if user == scope['user_id']:
             continue
         keep(db, scope['guild_id'], user)
-        db.execute(f'INSERT INTO {table}({key},guild_id,user_id,generation) VALUES (?,?,?,?) '
-                   f'ON CONFLICT({key},user_id) DO UPDATE SET generation=excluded.generation',
-                   (item, scope['guild_id'], user, number))
+        db.execute(f'INSERT INTO {table}({key},guild_id,user_id,generation,revision) VALUES (?,?,?,?,?) '
+                   f'ON CONFLICT({key},user_id) DO UPDATE SET generation=excluded.generation,revision=excluded.revision',
+                   (item, scope['guild_id'], user, number, Store._privacy_state(db, user)[0]))
 
 
 def retire_writes(db, where, args=()):
@@ -170,9 +172,11 @@ def settle(db):
                           "g.user_id=json_extract(d.value,'$.user_id')) OR chat_turns.speaker_revision IS NOT "
                           "coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=chat_turns.user_id), 0)")
     # And saved work and reminders that may repeat one (fri #216). An older controller's erasure of the writer took
-    # theirs outright.
+    # theirs outright. Its privacy change of the member they depend on left the link, and a summary built again since
+    # can bring the same generation back, so a moved revision of theirs retires it too (gene #154).
     retire_writes(db, 'd.generation IS NOT (SELECT generation FROM fri_member_summary_generations g '
-                      'WHERE g.guild_id=d.guild_id AND g.user_id=d.user_id)')
+                      'WHERE g.guild_id=d.guild_id AND g.user_id=d.user_id) OR d.revision IS NOT '
+                      'coalesce((SELECT revision FROM chat_revisions r WHERE r.user_id=d.user_id), 0)')
 
 
 def keep(db, guild, user):

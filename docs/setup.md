@@ -23,6 +23,7 @@ for text, reactions and voice Connect/Speak. Start in a separate test server.
 git clone git@github.com:HumanMint/gene.git
 cd gene
 uv sync --frozen --extra red
+uv run --no-sync python scripts/install_audio_adapter.py
 uv run --no-sync pytest -q
 uv run --no-sync ruff check .
 uv run --no-sync python scripts/configure.py
@@ -67,11 +68,15 @@ starting their services. Keep `GENE_SHOW_FRI=false` until the companion is confi
 
 ## Music
 
-The repository includes a separate Red-compatible Lavalink node and source resolver
-in `ops/Dockerfile.audio` and `ops/audio-compose.yml`. Build/pin these independently
-and set Gene's external audio host/port/password as described in the
-[operator runbook](operations.md). The audio services and the optional download relay
-are optional infrastructure, not a guarantee that every source works from every host.
+The optional [red-audio-adapter](https://github.com/HumanMint/red-audio-adapter)
+repository owns the Red-compatible Lavalink source, resolver/cache and private download
+relay. Install and pin its audio services separately; Gene consumes the exact Python
+adapter revision recorded in [audio-adapter.json](../ops/audio-adapter.json).
+
+Follow [Gene audio integration](audio-adapter.md) and the adapter's portable setup guide.
+Keep Gene's external audio host/port/password and prepare token private. The audio
+services and the optional download relay are optional infrastructure, not a guarantee
+that every source works from every host.
 
 An optional download relay only downloads and transfers files. The bot host plays them
 and owns the bounded cache. No personal YouTube cookies are required by this setup.

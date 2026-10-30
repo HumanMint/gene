@@ -7,11 +7,13 @@ import time
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .fri_member_summary import current_writes
 from .fri_workspace_store import Workspace
 from .privacy import redact
 from .store import LOOP_SETTLED_SECONDS
 
 ACTIVE = ('pending', 'scheduled', 'claimed', 'sending')
+REMINDERS = 'fri_reminder_dependencies'
 
 
 def local_timestamp(value, timezone, *, now=None):
@@ -141,6 +143,8 @@ class Social:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
+            # The one a retry answers with holds nothing of a summary since lapsed (gene #158).
+            current_writes(db, REMINDERS, 'SELECT id FROM fri_reminders WHERE source_id=?', (source.id,))
             Workspace.revision(db, scope['user_id'], revision)
             Store._summary_unchanged(db, scope['guild_id'], scope['user_id'], summary_generation)
             Store._dependencies_unchanged(db, scope['guild_id'], summary_dependencies)
@@ -160,10 +164,20 @@ class Social:
             return self.reminder_row(db, item)
 
     def reminder_list(self, scope):
+        dm = scope['conversation_id'].split(':')[1]
         with self.store.connection() as db:
             self.prune(db)
+            # Whatever is shown holds nothing of a summary since lapsed (gene #158).
+            current_writes(db, REMINDERS, 'SELECT id FROM fri_reminders WHERE guild_id=? AND user_id=? AND dm_id=?',
+                           (scope['guild_id'], scope['user_id'], dm))
             return {'items': [dict(r) for r in db.execute('SELECT id,body,due,local_time,timezone,state,message_id FROM fri_reminders WHERE guild_id=? AND user_id=? AND dm_id=? ORDER BY due DESC LIMIT 15',
-                            (scope['guild_id'], scope['user_id'], scope['conversation_id'].split(':')[1]))]}
+                            (scope['guild_id'], scope['user_id'], dm))]}
+
+    def reminder_read(self, item, scope):
+        with self.store.connection() as db:
+            self.prune(db)
+            current_writes(db, REMINDERS, 'SELECT ?', (item,))
+            return self.reminder_row(db, item, scope)
 
     def bind(self, kind, item, scope, message_id):
         with self.store.connection() as db:
@@ -183,6 +197,7 @@ class Social:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
+            current_writes(db, REMINDERS, 'SELECT ?', (item,))  # Confirming shows it back, and schedules it.
             row = self.reminder_row(db, item, scope)
             if preview_id and (not row['preview_id'] or preview_id != row['preview_id']):
                 raise ValueError('Use the original bound reminder preview.')
@@ -200,7 +215,10 @@ class Social:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
-            for row in db.execute("SELECT * FROM fri_reminders WHERE state='scheduled' AND due<=? ORDER BY due LIMIT 10", (time.time(),)).fetchall():
+            # Delivery is authorized only for one holding nothing of a summary since lapsed (gene #158).
+            now = time.time()
+            current_writes(db, REMINDERS, "SELECT id FROM fri_reminders WHERE state='scheduled' AND due<=?", (now,))
+            for row in db.execute("SELECT * FROM fri_reminders WHERE state='scheduled' AND due<=? ORDER BY due LIMIT 10", (now,)).fetchall():
                 try:
                     Workspace.revision(db, row['user_id'], row['revision'])
                 except ValueError:
@@ -215,6 +233,7 @@ class Social:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
+            current_writes(db, REMINDERS, 'SELECT ?', (item,))
             row = self.reminder_row(db, item)
             if row['state'] != 'claimed' or row['lease'] != lease:
                 raise ValueError('Reminder delivery is no longer authorized.')

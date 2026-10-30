@@ -256,7 +256,13 @@ built from other members' messages.
     the draft's title and words become a breadcrumb (its version moves, and posts not yet sending are
     cancelled) and the reminder loses its text, cancelled unless it is already going out. No post keeps the
     draft's words either: one going out keeps its state and lease, so its receipt still lands, but not its
-    copy, since delivery already holds what it sends (gene #169). A covered
+    copy, since delivery already holds what it sends (gene #169). Each read that shows such a draft or
+    reminder (the work list and read, a post's read, a reminder's list and read, open loops in chat
+    context, a retried save) and each step that authorizes delivery (preparing, approving, claiming and
+    sending a post; confirming, claiming and sending a reminder) first checks the summaries they depend on
+    for a lapse, in its own transaction, as a turn's check does (gene #158). One that lapsed with nothing
+    pruning it yet goes then, retiring what they hold of it, and stays gone even when that step is then
+    refused. A covered
     rebuild moves them on instead, and the purge below retires them all. Each row also keeps that
     member's privacy revision when it was written. A controller start retires the item and drops the row
     when the generation moved or went, when that member's revision moved since, or when their summary is

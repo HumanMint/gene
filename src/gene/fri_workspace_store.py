@@ -9,7 +9,10 @@ import json
 import time
 import uuid
 
+from .fri_member_summary import current_writes
 from .privacy import redact
+
+WORK = 'fri_work_dependencies'
 
 
 def initialize(db):
@@ -79,6 +82,10 @@ class Workspace:
     def read(self, scope, work_id=''):
         with self.store.connection() as db:
             self.prune(db)
+            # Whatever is shown holds nothing of a summary since lapsed (gene #158).
+            current_writes(db, WORK, 'SELECT id FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND '
+                                     "(?='' OR id=?)", (scope['guild_id'], scope['user_id'],
+                                                         scope['conversation_id'], work_id, work_id))
             if work_id:
                 work = self.get(db, work_id, scope)
                 work['deliveries'] = [dict(r) for r in db.execute(
@@ -110,6 +117,9 @@ class Workspace:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
+            # The draft edited, or the one a retry answers with, holds nothing of a summary since lapsed (gene #158).
+            current_writes(db, WORK, 'SELECT work_id FROM fri_work_events WHERE source_id=? UNION SELECT ?',
+                           (source.id, work_id))
             self.revision(db, scope['user_id'], revision)
             Store._summary_unchanged(db, scope['guild_id'], scope['user_id'], summary_generation)
             Store._dependencies_unchanged(db, scope['guild_id'], summary_dependencies)
@@ -154,6 +164,7 @@ class Workspace:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
+            current_writes(db, WORK, 'SELECT ?', (work_id,))  # Its words are copied into the post (gene #158).
             self.revision(db, scope['user_id'], revision)
             work = self.get(db, work_id, scope)
             if work['version'] != version or work['state'] != 'open':
@@ -175,6 +186,7 @@ class Workspace:
     def post(self, post_id):
         with self.store.connection() as db:
             self.prune(db)
+            current_writes(db, WORK, 'SELECT work_id FROM fri_posts WHERE id=?', (post_id,))
             row = db.execute('SELECT * FROM fri_posts WHERE id=?', (post_id,)).fetchone()
             if not row:
                 raise KeyError('Post expired or was erased')
@@ -191,6 +203,7 @@ class Workspace:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
+            current_writes(db, WORK, 'SELECT work_id FROM fri_posts WHERE id=?', (post_id,))
             row = db.execute('SELECT * FROM fri_posts WHERE id=?', (post_id,)).fetchone()
             if not row:
                 raise KeyError('Post expired or was erased')
@@ -211,6 +224,8 @@ class Workspace:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
+            # Delivery is authorized only for a draft holding nothing of a summary since lapsed (gene #158).
+            current_writes(db, WORK, "SELECT work_id FROM fri_posts WHERE state='authorized'")
             row = db.execute("SELECT * FROM fri_posts WHERE state='authorized' ORDER BY created LIMIT 1").fetchone()
             if not row:
                 return None
@@ -227,6 +242,7 @@ class Workspace:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
+            current_writes(db, WORK, 'SELECT work_id FROM fri_posts WHERE id=?', (post_id,))
             row = db.execute('SELECT * FROM fri_posts WHERE id=?', (post_id,)).fetchone()
             if not row or row['state'] != 'claimed' or row['lease'] != lease:
                 raise ValueError('Delivery grant unavailable; do not send')

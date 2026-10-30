@@ -175,8 +175,9 @@ def test_open_loops_retire_a_draft_title_or_reminder_whose_summary_lapsed_first(
         'guild_id': '123', 'channel_id': '50', 'conversation_id': 'private:19', 'user_id': '30'})
     assert answer.status_code == 200
     loops = answer.json()['loops']
-    assert loops['reminders'] and loops['saved_work'] and MARKER not in str(loops)
-    assert summary_generation_now(store) != generation
+    assert MARKER not in str(loops) and summary_generation_now(store) != generation
+    # The draft stays open under its breadcrumb; the reminder, cancelled, no longer shows.
+    assert ([item['title'] for item in loops['saved_work']], loops['reminders']) == (['Withdrawn draft'], [])
 
 
 def scheduled(client, store, generation, age=1):

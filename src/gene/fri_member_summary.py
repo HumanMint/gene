@@ -158,6 +158,22 @@ def retire_writes(db, where, args=()):
         db.execute(f'DELETE FROM {table} WHERE {key} IN {items}', args)
 
 
+def current_writes(db, table, items, args=()):
+    """Saved work or reminders are about to be shown or sent: a summary one depends on that lapsed (expired, say, with
+    nothing pruning it yet) goes first, retiring what they hold of it, as a turn's check does (gene #113, #158). Call it
+    first in the transaction: a drop is committed at once, so a refusal that follows can't undo it, and the
+    transaction begins again under the write lock for the checks after it. items: SQL selecting those items' IDs."""
+    key = dict(WRITES)[table]
+    went = False
+    for guild, user in db.execute(f'SELECT DISTINCT guild_id,user_id FROM {table} WHERE {key} IN ({items}) '
+                                  'ORDER BY guild_id,user_id', args).fetchall():
+        went = lapsed(db, guild, user) or went
+    if went:
+        db.commit()
+        db.execute('BEGIN IMMEDIATE')
+    return went
+
+
 def erasure_triggers(db):
     """A member's privacy revision moves (an erasure, memory off, chats cleared), and an older controller in a rollback
     window does that without knowing what newer ones keep about them. These triggers, which it runs too, do what a start

@@ -113,9 +113,10 @@ built from other members' messages.
   and up to 10 Discord `message_ids`. Each saved turn in that server whose source, or a message of
   whose burst, is one of them goes exactly as `/chat/turn/withdraw` takes it, under the member and
   conversation it was saved with: its fence, its pending clarification and research permit, and the
-  member's summary if it could have read the message. A message no saved turn holds changes nothing:
-  no fence is written and no summary goes, so the many edits and deletes Fri can't place cost nobody
-  their summary. That lookup reads only; one that finds a turn takes the write lock and reads again.
+  member's summary if it could have read the message. A message no saved turn holds costs nobody their
+  summary, so the many edits and deletes Fri can't place change nothing else, with one exception, the
+  fence by ID below (gene #149). An edit with no learning batch in flight reads only. One that finds a
+  turn takes the write lock and reads again, and so does a deletion or an edit during a learning batch.
   It answers `{"ok": true, "removed": n}`. An older controller lacks it and Fri asks only about the
   messages it saved since it started, as before.
 - **What else a withdrawn message reached (gene #141).** Both withdrawals above also take:
@@ -147,7 +148,20 @@ built from other members' messages.
     start drops one whose author's revision has moved since (an older controller's erasure leaves this
     table alone). A check whose `drew_on` holds one refuses with the 409 above, and such a save keeps
     nothing. By ID, a deletion that only such a reply holds retires that reply there and then and keeps
-    no record and no fence: its author is unknown there.
+    no deletion record: its author is unknown there.
+  - **A fence by ID when nothing holds it yet (gene #149).** By ID, a message nothing stored holds (no
+    exchange, no note) still keeps a fence when it's deleted, or edited while a learning batch is
+    reading history: `chat_message_fences`, by guild, message ID, time and whether it was deleted, never
+    words, for a week, at most 100,000 (the oldest go first). A save still on its way that answers a
+    deleted message, or whose `drew_on` holds one, keeps nothing, and its check refuses with the 409
+    above. A learning batch claimed before the fence keeps nothing from the message, edited or deleted;
+    one claimed after reads it as it is now. An edit's fence stops nothing else. A save of the member's
+    own edited message is Fri answering it again as it now reads, under the same ID, and a save of its
+    old words that lands late is withdrawn by Fri itself. Edits from other members leave the replies
+    that carried them (gene #150). Where the controller knows the message's author (a ping's grant or a
+    research permit names them), the fence names them with their privacy revision then. Their "forget
+    me" takes it, and a start drops it once that revision moved. A member with memory off gets none.
+    Otherwise it names nobody and holds only the ID. An older controller ignores the table.
   - **Nothing about a member after a privacy change.** `/chat/turn/withdraw` also takes `revision`, the
     member's privacy revision when the exchange was saved. One that arrives after the member's revision
     moved ("forget me", say), or with their memory off, still takes anything that holds the message but
@@ -191,7 +205,9 @@ built from other members' messages.
   (gene #120). Only a lookup that finds such a reply takes the write lock.
   A controller start retires any an older controller left behind during a rollback window: with a
   moved generation, with none on record (its privacy changes delete the generation, so a save records
-  generation zero too), or saved under a revision of the member's that has moved since (gene #114). The
+  generation zero too), or saved under a revision of the member's that has moved since (gene #114), or
+  drawn on a summary no longer there under the member's current revision (a controller from before
+  summary generations takes a summary and leaves its generation, gene #148). The
   purge below retires all of them first. A non-empty rebuild that was sent the
   earlier summary keeps its origins, provenance and a later `through`, so a withdrawal of anything the
   old one drew on still finds it: those replies move to the new generation instead of being retired,
@@ -210,7 +226,8 @@ built from other members' messages.
   same breadcrumb in the same transaction, even where its provenance didn't name them. A rebuild that was
   sent the earlier summary moves the dependency to the new generation instead. A sources lookup
   checks each summary for a lapse first, under the write lock. A controller start retires any whose
-  generation moved or went, or whose speaker's revision moved, while an older controller ran, and the purge below
+  generation moved or went, or whose speaker's revision moved, while an older controller ran, or whose summary is no
+  longer there under its member's current revision (gene #148), and the purge below
   retires all of them. Chat context never shows the dependencies. An older Fri sends none, which is checked as before; an older
   controller ignores the field, so Fri sends it only when offered. Mention turns leave both fields out
   of their fingerprint.
@@ -236,13 +253,26 @@ built from other members' messages.
     cancelled) and the reminder loses its text, cancelled unless it is already going out. A covered
     rebuild moves them on instead, and the purge below retires them all. Each row also keeps that
     member's privacy revision when it was written. A controller start retires the item and drops the row
-    when the generation moved or went, or when that member's revision moved since. The writer's own
+    when the generation moved or went, when that member's revision moved since, or when their summary is
+    no longer there under their current revision (gene #148). The writer's own
     summary is still checked but not kept, as above.
   - Rollback: the tables are new, so an older controller's positional inserts into `fri_work` still fit,
-    and its deletes of work and reminders cascade to them. It ignores them otherwise: its erasure of the
-    member they depend on leaves the rows and the words until the next start of this code, which retires
-    them by the moved revision, even once a summary built again has brought the same generation back (as
-    `chat_turn_deletions` are dropped at start).
+    and its deletes of work and reminders cascade to them. It ignores them otherwise, but the database's
+    triggers act for it: its privacy change of the member they depend on retires them at once (gene #160),
+    and so does that member's summary going any other way (below). A start of this code still retires what
+    was left, by the moved revision, even once a summary built again has brought the same generation back
+    (as `chat_turn_deletions` are dropped at start).
+- **In a rollback window (gene #147, #161, #162).** An older controller knows nothing of what depends on a
+  member's summary, so two triggers on `fri_member_summaries`, which it runs too, retire at once what this
+  controller retires when that summary goes. One fires when a row is deleted: a withdrawal, an expiry, a
+  privacy change, or another member's privacy change through the summary's provenance. The other fires when
+  a rebuild replaces a row without keeping its lineage: its words emptied, its revision changed, or its
+  origins, provenance or `through` not kept. Either way the member's own replies that drew on it, other
+  members' replies depending on it with any question they left pending, and saved work and reminders
+  depending on it with all their links go, as above. A rebuild sent the earlier summary keeps its lineage,
+  so nothing goes. Each start of this code replaces the triggers, and the purge drops them with the table.
+  There is no schema change and no release-script downgrade step: the older controller's own summary
+  changes run them, and what still depends on a current summary stays.
 
 Provenance also reaches what follow-ups inherit:
 

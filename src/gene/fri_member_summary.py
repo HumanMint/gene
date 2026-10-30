@@ -163,7 +163,7 @@ def erasure_triggers(db):
     window does that without knowing what newer ones keep about them. These triggers, which it runs too, do what a start
     here does for such a move (see settle and Store._settle_withdrawals) at once: saved work and reminders depending on
     that member's summary keep nothing of it and lose all their links, as retire_writes does, and the deletion records
-    naming them go, so nothing identifying
+    and message fences (gene #149) naming them go, so nothing identifying
     them outlives the change (delta review of the 2026-10-30 release). Nothing may drop the tables they name while
     they exist."""
     moved = 'd.user_id=NEW.user_id AND d.revision IS NOT NEW.revision'
@@ -179,9 +179,12 @@ def erasure_triggers(db):
             ELSE state END,body='' WHERE id IN (SELECT reminder_id FROM fri_reminder_dependencies d WHERE {moved});
         DELETE FROM fri_reminder_dependencies WHERE reminder_id IN
             (SELECT reminder_id FROM fri_reminder_dependencies d WHERE {moved});
-        DELETE FROM chat_turn_deletions WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;"""
+        DELETE FROM chat_turn_deletions WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;
+        DELETE FROM chat_message_fences WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;"""
     for name, event in (('privacy_revision_inserted', 'INSERT'), ('privacy_revision_moved', 'UPDATE OF revision')):
-        db.execute(f'CREATE TRIGGER IF NOT EXISTS {name} AFTER {event} ON chat_revisions BEGIN {body} END')
+        # Replaced, not kept if it exists, so a body changed since an earlier controller made it takes effect.
+        db.execute(f'DROP TRIGGER IF EXISTS {name}')
+        db.execute(f'CREATE TRIGGER {name} AFTER {event} ON chat_revisions BEGIN {body} END')
 
 
 def settle(db):

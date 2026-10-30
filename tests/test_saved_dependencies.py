@@ -393,3 +393,20 @@ def test_an_older_controllers_privacy_change_retires_dependent_writes_at_once(wo
         db.execute("INSERT INTO chat_revisions VALUES ('20',1) ON CONFLICT(user_id) DO UPDATE SET revision=revision+1")
     assert not holds(store) and dependencies(store) == []
     assert len(rows(store, 'fri_work')) == 1 and len(rows(store, 'fri_reminders')) == 1
+
+
+def test_an_older_controllers_privacy_change_takes_every_link_of_a_write_it_retires(world):
+    """Review of gene #160: a draft depending on A and on B. The trigger for A's moved revision retires the draft and,
+    as retire_writes does, drops all its links, so a replacement saved later with no dependencies isn't retired when
+    B's revision moves."""
+    client, store = world
+    _, generation = summarized(client, store)
+    written(client, '/workspace/save', work(dm(1), depending(generation) + depending(0, '40')))
+    with store.connection() as db:  # The older controller's own statement for A's privacy change.
+        db.execute("INSERT INTO chat_revisions VALUES ('20',1) ON CONFLICT(user_id) DO UPDATE SET revision=revision+1")
+    assert not holds(store) and dependencies(store) == []
+    work_id, draft = next(iter(rows(store, 'fri_work').items()))
+    written(client, '/workspace/save', work(dm(3), body='a fresh plan', work_id=work_id, version=draft['version']))
+    with store.connection() as db:  # Then B's.
+        db.execute("INSERT INTO chat_revisions VALUES ('40',1) ON CONFLICT(user_id) DO UPDATE SET revision=revision+1")
+    assert rows(store, 'fri_work')[work_id]['body'] == 'a fresh plan'

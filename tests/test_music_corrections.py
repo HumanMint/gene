@@ -451,6 +451,13 @@ FIX = 'not the one, i meant join us for a bite'
     ('wrong song, "Not Now by “My Chemical Romance”", i said "Not Now"', 'Not Now by My Chemical Romance', True),
     ('wrong song, "Not Now by \'Our Lady Peace\'", i said "Not Now"', 'Not Now by Our Lady Peace', True),
     ('wrong song, Glad You Came by "My Chemical Romance", not now', 'Glad You Came My Chemical Romance not now', False),
+    # Round 2 of #165's review: spaces inside the quote, or a quote never closed, don't make a pronoun a name.
+    ('wrong song, Stand By "Me ", No More', 'Stand By Me No More', True),
+    ("wrong song, Stand By 'Me ', No More", 'Stand By Me No More', True),
+    ('wrong song, Stand By “ Me ”, No More', 'Stand By Me No More', True),
+    ('wrong song, Stand By "Me, No More', 'Stand By Me No More', True),
+    ('wrong song, "Not Now by \'Me \'", not now', 'Not Now by Me', False),
+    ('wrong song, "Not Now by ‘My Chemical Romance ’", i said "Not Now"', 'Not Now by My Chemical Romance', True),
 ])
 def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argument, expected):
     assert correction(text, argument) is expected

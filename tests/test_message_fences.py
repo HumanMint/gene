@@ -249,3 +249,32 @@ def test_nothing_it_keeps_holds_the_words(world):
         rows = [dict(row) for row in db.execute('SELECT * FROM chat_message_fences')]
     assert set(rows[0]) == {'guild_id', 'message_id', 'at', 'deleted', 'user_id', 'revision'}
     assert 'lavender' not in json.dumps(rows) and MARKER not in json.dumps(rows)
+
+
+def test_a_stale_permit_from_before_their_forget_me_leaves_no_fence(world):
+    """Review of gene #159 (round 1): a permit made at the member's revision then, its withdrawal delivered after they
+    erased and turned memory back on. The permit's revision is stale, so nothing names them under their new one, and
+    as a withdrawal after a privacy change writes nothing about them (gene #145), no fence is kept at all."""
+    client, store = world
+    mine = source(age=30, channel='51')['id']
+    store.personal_control('20', 'disable')
+    store.personal_control('20', 'enable')
+    permit(store, mine)  # At revision 0, as it was made before, kept by a grant or permit outliving the erasure.
+    withdraw_saved(client, mine, deleted=True)
+    assert fences(store) == []
+    assert fences(Store(store.path)) == []
+
+
+@pytest.mark.parametrize('read', ['status', 'chat context'])
+def test_an_expired_fence_goes_at_the_next_health_check_or_chat_read(world, read):
+    """Review of gene #159 (round 1): a week is enforced without another withdrawal or a restart, for fences naming
+    an author and for those naming nobody (which no "forget me" can find)."""
+    _, store = world
+    named, nobodys = source(age=30, channel='51')['id'], source(age=20, channel='51')['id']
+    with store.connection() as db:
+        for message, user, revision in ((named, '20', 0), (nobodys, None, None)):
+            db.execute('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted,user_id,revision) '
+                       'VALUES (?,?,?,1,?,?)', ('123', message, time.time()-controller.WITHDRAWN_SECONDS-1, user,
+                                                revision))
+    store.status() if read == 'status' else store.chat_context('123', 'public:51', '30')
+    assert fences(store) == []

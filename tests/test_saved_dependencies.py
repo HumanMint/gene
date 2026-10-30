@@ -297,7 +297,9 @@ def test_a_restart_retires_writes_whose_dependency_an_older_controller_erased(wo
             store.personal_control('20', 'enable')
             built_again(client, store)
             assert summary_generation_now(store) == 0
-    assert holds(store) and dependencies(store)  # As the older controller leaves them.
+    # The database's own triggers retire them as the older controller moves A's revision (delta review, 2026-10-29),
+    # and a start here finds nothing left to do.
+    assert not holds(store) and dependencies(store) == []
     Store(store.path)
     assert not holds(store) and dependencies(store) == []
     assert len(rows(store, 'fri_work')) == 1 and len(rows(store, 'fri_reminders')) == 1  # B's items stay, emptied.
@@ -376,3 +378,18 @@ def test_a_dependent_history_turn_stays_until_its_summary_goes(world):
     withdraw(client, taken)
     [turn] = history(client, dependencies=True)['turns']
     assert retired(turn['reply']) and 'summaries' not in turn
+
+
+def test_an_older_controllers_privacy_change_retires_dependent_writes_at_once(world):
+    """Delta review of the 2026-10-30 release: an older controller, which knows nothing of these links, moves A's
+    privacy revision the way it always has. The database's triggers retire B's writes and drop the links naming A
+    then and there, so nothing identifying A outlives the change during a rollback window."""
+    client, store = world
+    _, generation = summarized(client, store)
+    written(client, '/workspace/save', work(dm(1), depending(generation)))
+    written(client, '/social/reminders/prepare', reminder(dm(2), depending(generation)))
+    assert holds(store) and dependencies(store)
+    with store.connection() as db:  # The older controller's own statement for a privacy change.
+        db.execute("INSERT INTO chat_revisions VALUES ('20',1) ON CONFLICT(user_id) DO UPDATE SET revision=revision+1")
+    assert not holds(store) and dependencies(store) == []
+    assert len(rows(store, 'fri_work')) == 1 and len(rows(store, 'fri_reminders')) == 1

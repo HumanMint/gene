@@ -300,50 +300,17 @@ def test_reads_leave_another_members_lapsed_summary_they_dont_depend_on(world):
     assert summary_generation_now(store) == generation
 
 
-def older_retirement(store):
-    """Gene main's own retirement of the drafts depending on member 20's summary, in a rollback window (its start puts
-    its own trigger bodies back): a breadcrumb and a version on, posts not yet sending cancelled, and a sending one's
-    words kept."""
+def test_a_start_keeps_a_sent_posts_words_when_its_draft_is_edited_to_the_breadcrumbs(world):
+    """Review of #171 (round 1): a member may type the breadcrumb's own words into a draft. That's no retirement, and
+    a start keeps the words of a post sent from it before."""
     from gene.fri_member_summary import WORK_RETIRED, WORK_TITLE
-    with store.connection() as db:
-        items = "(SELECT work_id FROM fri_work_dependencies WHERE user_id='20')"
-        db.execute(f'UPDATE fri_work SET title=?,body=?,version=version+1 WHERE id IN {items}',
-                   (WORK_TITLE, WORK_RETIRED))
-        db.execute("UPDATE fri_posts SET state=CASE WHEN state IN ('pending','authorized','claimed') THEN 'cancelled' "
-                   f"ELSE state END,body=CASE WHEN state='sending' THEN body ELSE '' END WHERE work_id IN {items}")
-        db.execute(f'DELETE FROM fri_work_dependencies WHERE work_id IN {items}')
-
-
-def test_a_start_clears_the_words_an_older_controllers_retirement_left_in_a_post(world):  # gene #169
-    """Gene main's retirement keeps a sending post's words, and its start puts back trigger bodies that do the same, so a
-    post delivered during a rollback window keeps them. The next start here clears them: the post was prepared from a
-    version before its draft became the breadcrumb."""
     from gene.store import Store
     client, store = world
-    _, generation = summarized(client, store)
-    sending, lease = posted(client, drafted(client, generation), 2, 'sending')
-    older_retirement(store)
-    written(client, f'/workspace/posts/{sending}/finish', {'lease': lease, 'state': 'sent', 'message_id': '987'})
-    assert SAID in shown(client, sending)['body']
-    Store(store.path)
-    assert {key: shown(client, sending)[key] for key in ('state', 'message_id', 'body')} == {
-        'state': 'sent', 'message_id': '987', 'body': ''}
-
-
-def test_a_start_keeps_the_words_of_posts_no_retirement_reached(world):
-    """The guard: a sent post of a draft edited since, and a post prepared from the breadcrumb itself, keep theirs."""
-    from gene.store import Store
-    client, store = world
-    _, generation = summarized(client, store)
-    plain = written(client, '/workspace/save', {**work(dm(1, '9'), body='my own plan'), 'user_id': '9'})
+    plain = written(client, '/workspace/save', {**work(dm(1, '9'), body='ordinary authored post'), 'user_id': '9'})
     sent, lease = posted(client, plain, 2, 'claimed')
     written(client, f'/workspace/posts/{sent}/sending', {'lease': lease})
     written(client, f'/workspace/posts/{sent}/finish', {'lease': lease, 'state': 'sent', 'message_id': '986'})
-    written(client, '/workspace/save', {**work(dm(3, '9'), body='my newer plan'), 'user_id': '9',
+    written(client, '/workspace/save', {**work(dm(3, '9'), title=WORK_TITLE, body=WORK_RETIRED), 'user_id': '9',
                                         'work_id': plain['id'], 'version': 1})
-    draft = drafted(client, generation, age=4)
-    older_retirement(store)
-    breadcrumb = written(client, '/workspace/read/'+draft['id'], OWNER)
-    again, _ = posted(client, breadcrumb, 5, 'pending')
     Store(store.path)
-    assert shown(client, sent)['body'] == 'my own plan' and shown(client, again)['body'] == breadcrumb['body']
+    assert shown(client, sent)['body'] == 'ordinary authored post'

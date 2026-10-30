@@ -16,17 +16,13 @@ from contextlib import closing
 import pytest
 from fastapi.testclient import TestClient
 
+from gene import fence_downgrade
 from gene import store as controller
 from gene.api import create_app
 from gene.config import Settings
 from gene.fri_agent_store import AgentStore
 from gene.fri_member_summary import erasure_triggers
 from gene.store import Conflict, Store
-
-try:
-    from gene import fence_downgrade
-except ImportError:  # Until it exists, so the rest of this file still runs.
-    fence_downgrade = None
 from tests.test_fri_endings import source
 from tests.test_saved_withdrawal import withdraw_saved
 from tests.test_turn_withdrawal import MARKER

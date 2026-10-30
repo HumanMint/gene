@@ -181,10 +181,17 @@ def erasure_triggers(db):
             (SELECT reminder_id FROM fri_reminder_dependencies d WHERE {moved});
         DELETE FROM chat_turn_deletions WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;
         DELETE FROM chat_message_fences WHERE user_id=NEW.user_id AND revision IS NOT NEW.revision;"""
+    # Replaced, not kept if they exist, so a body changed since an earlier controller made them takes effect; both in
+    # one transaction, so a start cut off between them, or an older controller starting meanwhile, never finds either
+    # missing.
+    began = not db.in_transaction
+    if began:
+        db.execute('BEGIN IMMEDIATE')
     for name, event in (('privacy_revision_inserted', 'INSERT'), ('privacy_revision_moved', 'UPDATE OF revision')):
-        # Replaced, not kept if it exists, so a body changed since an earlier controller made it takes effect.
         db.execute(f'DROP TRIGGER IF EXISTS {name}')
         db.execute(f'CREATE TRIGGER {name} AFTER {event} ON chat_revisions BEGIN {body} END')
+    if began:
+        db.commit()
 
 
 def settle(db):

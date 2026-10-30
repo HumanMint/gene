@@ -78,6 +78,7 @@ A rollback never restores a DB snapshot: the old release runs on the migrated DB
 - `gene.fri_reply_checks purge` drops the reply-check tables and settings.
 - `gene.profile_downgrade` deletes member-profile notes, copies their removals to every configured and known channel, and keeps conversation notes and exchanges. It never migrates, and it reads the channels from `FRI_CHANNEL_IDS` and `FRI_HISTORY_CHANNEL_IDS` in `controller.env`.
 - `gene.fri_member_summary purge` drops Fri's member summaries and their daily call stamps, since an older controller could neither show, edit nor erase them.
+- `gene.fence_downgrade` empties `chat_message_fences` (gene #149: withdrawn message IDs, some with their author), since an older controller neither reads nor expires them. The table stays, as the privacy triggers on `chat_revisions` name it.
 
 `7d6e36a` has the first two features, so a rollback to it runs only the member-summary purge. Don't run `gene.provenance_downgrade` either: every release since `f667001` has turn provenance, and it would discard member continuity they support.
 

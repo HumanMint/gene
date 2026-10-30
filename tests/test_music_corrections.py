@@ -434,7 +434,7 @@ SHAPES = [("'", "a' ", ''), ("'", "rockin' ", ''), ('', "''a ", ''), ('', "' ", 
           ('love story', ', no more of those songs', ''), ('love story', ' is what x, y and', ' i never asked'),
           ('love story', " isn't what i and", ' x chose'), ('no more', ', no more', ' x'),
           ('love story', ' by she wants revenge', ''), ('love', ' by "she wants revenge"', ''), ('love', ' by a b c d', ''),
-          ('love', " by 'a", ''), ('love story', ', i said no, not now', ' x')]
+          ('love', " by 'a", ''), ('love story', ', i said no, not now', ' x'), ('love', " by 'a'", '')]
 
 
 def message(shape, length=4000):
@@ -444,8 +444,9 @@ def message(shape, length=4000):
 
 
 def read(text):
-    """Every check, for the arguments a correction might propose."""
-    for argument in ('love story', 'a', text[12:200]):
+    """Every check, for the arguments a correction might propose, up to the whole message: with every artist in the
+    song they named, a check made once per artist reads them all."""
+    for argument in ('love story', 'a', text[12:200], text[12:]):
         correction(text, argument)
 
 

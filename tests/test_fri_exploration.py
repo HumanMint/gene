@@ -8,11 +8,11 @@ from fastapi.testclient import TestClient
 from redbot.core import commands
 
 from gene.api import create_app
-from gene.fri import Fri
-from gene.fri_agent import Agent
 from gene.fri_agent_store import AgentStore, snowflake_floor
-from gene.fri_explore import search
 from gene.store import Store
+from tests.legacy_fri.fri import Fri
+from tests.legacy_fri.fri_agent import Agent
+from tests.legacy_fri.fri_explore import search
 from tests.test_api import headers
 from tests.test_fri_learning import learning as learning
 

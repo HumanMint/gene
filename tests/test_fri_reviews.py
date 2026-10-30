@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, Mock
 
 import discord
 
-from gene.fri_reviews import ReviewButton, deliver_review, notify_owner, review_message
 from gene.reviews import REVIEW_ID, owner_dm_component
+from tests.legacy_fri.fri_reviews import ReviewButton, deliver_review, notify_owner, review_message
 
 
 def notice():

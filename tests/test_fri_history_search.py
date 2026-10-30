@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from gene.fri_actions import Actions
-from gene.fri_chat import Chat, ChatResult
-from gene.fri_history_search import MAX_DAYS, bounds, requested, snowflake, valid_action
-from gene.fri_runner import run
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_chat import Chat, ChatResult
+from tests.legacy_fri.fri_history_search import MAX_DAYS, bounds, requested, snowflake, valid_action
+from tests.legacy_fri.fri_runner import run
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
 from tests.test_fri_runtime import event
@@ -213,7 +213,7 @@ def test_history_action_schema_and_runner_keep_one_refinement_and_remove_persist
         offered = await actions.available()
         assert 'history_search' in offered
         assert 'plan_prepare' in offered
-        from gene.fri_social import KINDS
+        from tests.legacy_fri.fri_social import KINDS
         persistent = {'work_save', 'prepare_post', 'clarify'} | KINDS
         context = {**CONTEXT, 'actions': {**offered, **dict.fromkeys(persistent, {})}}
         calls = []

@@ -10,10 +10,10 @@ import httpx
 import pytest
 from redbot.core import commands
 
-from gene.fri_actions import Actions
-from gene.fri_chat import Chat, ChatResult
-from gene.fri_social import SocialButton, available, show_preview
 from gene.fri_social_store import Social
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_chat import Chat, ChatResult
+from tests.legacy_fri.fri_social import SocialButton, available, show_preview
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
 from tests.test_fri_social import DM, PUBLIC, api, confirmed, future, source  # noqa: F401
@@ -102,7 +102,7 @@ def test_explicit_image_and_reminder_workflow_keeps_source_checks_preview_and_co
         event.attachments = [SimpleNamespace(url='https://cdn.discordapp.com/attachments/999/1/test.png',
             content_type='image/png', size=100, width=100, height=100, is_spoiler=lambda: False)]
         loader = AsyncMock(return_value='data:image/png;base64,aGVsbG8=')
-        monkeypatch.setattr('gene.fri_images.load_image', loader)
+        monkeypatch.setattr('tests.legacy_fri.fri_images.load_image', loader)
         fri.chat_once = AsyncMock(return_value=ChatResult(status='completed', action={
             'kind': 'reminder_prepare', 'body': 'update the mods', 'local_time': future(), 'timezone': 'UTC'}))
         try:
@@ -141,7 +141,7 @@ def test_reply_and_image_guards_both_reject_changes_before_saved_answer(api, mon
         event.content = 'fri what does this image show compared with that suggestion?'
         event.attachments = [SimpleNamespace(url='https://cdn.discordapp.com/attachments/456/1/test.png',
             content_type='image/png', size=100, width=100, height=100, is_spoiler=lambda: False)]
-        monkeypatch.setattr('gene.fri_images.load_image', AsyncMock(return_value='data:image/png;base64,aGVsbG8='))
+        monkeypatch.setattr('tests.legacy_fri.fri_images.load_image', AsyncMock(return_value='data:image/png;base64,aGVsbG8='))
         async def respond(text, context):
             assert context['reply_target'] and context['images']
             if changed == 'target':

@@ -6,9 +6,9 @@ import discord
 import pytest
 from redbot.core import commands
 
-from gene.fri_requests import DraftView, request_dm_component
 from gene.previews import pages
 from gene.reviews import request_reference
+from tests.legacy_fri.fri_requests import DraftView, request_dm_component
 
 
 def setup(user=10, guild=None):

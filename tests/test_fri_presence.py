@@ -14,11 +14,11 @@ from discord.gateway import DiscordWebSocket
 from fastapi.testclient import TestClient
 
 from gene.api import create_app
-from gene.fri import Fri
-from gene.fri_agent import Agent
 from gene.fri_agent_store import AgentStore
-from gene.fri_chat import Chat
-from gene.fri_presence import Presence, valid_line
+from tests.legacy_fri.fri import Fri
+from tests.legacy_fri.fri_agent import Agent
+from tests.legacy_fri.fri_chat import Chat
+from tests.legacy_fri.fri_presence import Presence, valid_line
 from tests.test_api import headers
 from tests.test_fri_chat import response_event
 from tests.test_fri_learning import learning as learning

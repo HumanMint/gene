@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, Mock, patch
 import discord
 import pytest
 
-from gene.fri_actions import Actions
-from gene.fri_chat import ChatResult
-from gene.fri_workspace import execute as execute_workspace
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_chat import ChatResult
+from tests.legacy_fri.fri_workspace import execute as execute_workspace
 from tests.test_api import headers
 from tests.test_fri_actions import harness
 from tests.test_gene_controls import controls_api  # noqa: F401
@@ -77,7 +77,7 @@ def test_target_derived_clarifier_is_replaced_before_retention_and_own_music_req
             with controls.store.connection() as db:
                 assert 'Paddington' not in '\n'.join(db.iterdump())
             assert 'Paddington' not in str(requests)
-            with patch('gene.fri_actions.asyncio.sleep', new=deliver):
+            with patch('tests.legacy_fri.fri_actions.asyncio.sleep', new=deliver):
                 result = await fri.talk(123, 1, 20, answer.content, 'public', event=answer)
             assert result.reply == 'queued it' and calls == [(member, answer.content, answer.id)]
             assert controls.store.chat_context('123', 'public:1', '20')['pending'] is None

@@ -5,8 +5,9 @@ commands and music. A separate controller owns requests, approved context, usage
 and releases. Fri is the separate chat and request companion. The controller remains the only deployment authority.
 
 Fri's active companion runtime now lives in `HumanMint/fri`. This repository retains
-its controller contracts/state and a temporary legacy companion snapshot for rollback
-and compatibility tests. See `docs/fri-migration.md`. Do not redirect Gene job approvals
+its controller contracts/state. The retired companion snapshot lives only in
+`tests/legacy_fri/` for compatibility tests; it is not installed in Gene's runtime.
+Rollback uses retained immutable images. See `docs/fri-migration.md`. Do not redirect Gene job approvals
 or expand feature-job paths to the Fri repository.
 
 ## Working here
@@ -89,7 +90,7 @@ or expand feature-job paths to the Fri repository.
 - Report which workflows were verified and what remains untested. A passing test
   count, healthy heartbeat, or queued track alone does not prove user-facing success.
 - Never inject synthetic live-test dialogue into a real member's conversation.
-  Use `python -m gene.fri_eval` for isolated voice checks. Live conversation writes
+  Use `python -m fri.fri_eval` in the independent Fri runtime for isolated voice checks. Live conversation writes
   require a matching Discord event; usage receipts are separate from chat history.
 - Gene's voice is concise, calm, and structured. Fri can be playful and lightly
   sarcastic. Neither should pretend a job or deployment has succeeded.

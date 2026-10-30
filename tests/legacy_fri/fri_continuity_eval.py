@@ -6,8 +6,9 @@ Inputs are fictional fixtures. The caller records only anonymous evaluation usag
 import datetime as dt
 import time
 
+from gene.fri_pending import completion, research_query
+
 from .fri_chat import ChatResult
-from .fri_pending import completion, research_query
 from .fri_web import cite_reply, lookup
 
 

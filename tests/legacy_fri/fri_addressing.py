@@ -4,7 +4,7 @@ import re
 
 import discord
 
-from .fri_context import addressed_content
+from gene.fri_context import addressed_content
 
 
 async def addressed_text(message, bot_id):

@@ -3,8 +3,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gene.fri_actions import Actions
-from gene.fri_chat import ChatResult
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_chat import ChatResult
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT
 from tests.test_fri_runtime import event
@@ -124,7 +124,7 @@ def test_verified_member_report_submits_only_to_bounded_repair_intake(monkeypatc
                 return {'repairs':[]}
             if path=='/repairs':
                 if outcome=='rejected':
-                    from gene.fri_errors import ControllerRejected
+                    from tests.legacy_fri.fri_errors import ControllerRejected
                     raise ControllerRejected('Repair checks need a fresh Discord message')
                 if outcome=='unknown':
                     raise commands.UserFeedbackCheckFailure('No acknowledgement')
@@ -177,7 +177,7 @@ def test_controller_rejection_is_distinct_from_an_uncertain_server_outcome(monke
 
     from redbot.core import commands
 
-    from gene.fri_errors import ControllerRejected
+    from tests.legacy_fri.fri_errors import ControllerRejected
     async def scenario():
         fri,_,_,_=harness(monkeypatch,tmp_path)
         response=Mock(status=status)

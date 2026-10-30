@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from gene.fri_actions import Actions
-from gene.fri_chat import Chat, ChatResult
-from gene.fri_web import cite_reply, lookup
 from gene.web_policy import public_query
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_chat import Chat, ChatResult
+from tests.legacy_fri.fri_web import cite_reply, lookup
 from tests.test_api import actor, headers
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
@@ -95,7 +95,7 @@ def test_search_action_keeps_context_out_and_records_separate_usage(monkeypatch,
         agent.record = AsyncMock()
         actions = Actions(agent, 20, 1, True)
         actions.message, actions.model, actions.effort = 'fri current Python release?', 'gpt-6.1-sol', 'high'
-        with patch('gene.fri_actions.lookup', new=AsyncMock(return_value=(
+        with patch('tests.legacy_fri.fri_actions.lookup', new=AsyncMock(return_value=(
                 {'kind': 'web_search', 'sources': ['https://python.org']}, {'input_tokens': 100}, 'completed'))) as search:
             assert 'web_search' in await actions.available()
             assert 'blocked' in await actions.execute({'kind': 'web_search', 'query': 'private saved notes'})
@@ -138,7 +138,7 @@ def test_web_reply_preserves_sources_and_keeps_only_a_neutral_receipt(monkeypatc
             ChatResult(status='completed', reply='heres the [current release](https://python.org/downloads/)', draft='unexpected draft')])
         receipt = {'kind': 'web_search', 'answer': 'public evidence', 'sources': ['https://python.org/downloads/'],
                    'checked_at': '2026-10-19T20:00:00+00:00'}
-        with patch('gene.fri_actions.lookup', new=AsyncMock(return_value=(receipt, {'input_tokens': 20}, 'completed'))):
+        with patch('tests.legacy_fri.fri_actions.lookup', new=AsyncMock(return_value=(receipt, {'input_tokens': 20}, 'completed'))):
             result = await fri.talk(123, 1, 20, 'fri Python release?', 'public',
                 event=event(user=20, channel=1, content='fri Python release?'))
         assert 'http' not in result.reply and 'current release' in result.reply and result.draft is None
@@ -174,7 +174,7 @@ def test_first_request_for_a_link_is_fulfilled_without_an_extra_sources_turn(mon
             ChatResult(status='completed', reply=f'here’s the [artwork]({url})')])
         receipt = {'answer': 'Selected public artwork', 'sources': [url], 'checked_at': '2026-10-22T00:00:00+00:00'}
         try:
-            with patch('gene.fri_actions.lookup', new=AsyncMock(return_value=(receipt, {}, 'completed'))):
+            with patch('tests.legacy_fri.fri_actions.lookup', new=AsyncMock(return_value=(receipt, {}, 'completed'))):
                 result = await fri.talk(123, 1, 20, wording, 'public', event=event(user=20, channel=1, content=wording))
             assert result.reply == f'here’s the [artwork](<{url}>)'
             assert fri.chat.respond.await_count == 2

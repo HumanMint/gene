@@ -8,9 +8,15 @@ from unittest.mock import AsyncMock, Mock, patch
 import discord
 import pytest
 
-from gene.fri_memory_panel import EditMemory, MemoryLauncher, MemoryView, allowed, memory_component
 from gene.fri_memory_store import edit, entries, save
 from gene.store import Conflict, Store
+from tests.legacy_fri.fri_memory_panel import (
+    EditMemory,
+    MemoryLauncher,
+    MemoryView,
+    allowed,
+    memory_component,
+)
 from tests.test_api import headers
 from tests.test_fri_actions import harness
 from tests.test_gene_controls import control_body, controls_api  # noqa: F401
@@ -244,7 +250,7 @@ def test_memory_controls_bind_member_audience_and_modal_and_send_exact_evidence(
             modal.preference._value = 'I prefer Terraria'
             fri.api = AsyncMock(return_value={**state, 'revision': 3})
             agent.forget = Mock()
-            with patch('gene.fri_memory_panel.show', new=AsyncMock()) as show:
+            with patch('tests.legacy_fri.fri_memory_panel.show', new=AsyncMock()) as show:
                 await modal.on_submit(interaction)
             body = fri.api.await_args.args[2]
             assert body['evidence'] == 'I prefer Terraria' and body['revision'] == 2

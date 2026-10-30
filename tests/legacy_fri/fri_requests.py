@@ -7,9 +7,10 @@ import uuid
 import discord
 from redbot.core import commands
 
+from gene.previews import PagedPreview
+from gene.reviews import request_reference
+
 from .fri_notices import notice_text
-from .previews import PagedPreview
-from .reviews import request_reference
 
 NO_MENTIONS = discord.AllowedMentions.none()
 REQUEST_COMPONENT = re.compile(r'^fri:request:(?:(?:preview|submit):[a-f0-9]{32}|[a-f0-9]{32}:(?:back|next|submit|cancel))$')
@@ -80,7 +81,7 @@ class DraftView(PagedPreview):
             job = await self.cog.api('POST', '/requests', {**identity,
                 'channel_id': str(channel), 'source_id': 'fri-draft:'+self.source_id, 'source_url': '', 'body': self.draft})
             # Never approve content differing from the full preview, even if a duplicate ID is returned.
-            from .privacy import clean
+            from gene.privacy import clean
             if job['body'] != clean(self.draft) or job['user_id'] != str(self.user_id):
                 raise commands.UserFeedbackCheckFailure('The stored request differs from this preview. Review it in Requests.')
             if self.owner and job['state'] == 'awaiting_owner':

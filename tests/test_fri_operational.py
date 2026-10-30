@@ -8,10 +8,10 @@ from unittest.mock import AsyncMock, patch
 import discord
 import pytest
 
-from gene.fri_chat import ChatResult
-from gene.fri_errors import ControllerRejected
 from gene.fri_operation_store import LIMIT, admit, command
 from gene.store import Store
+from tests.legacy_fri.fri_chat import ChatResult
+from tests.legacy_fri.fri_errors import ControllerRejected
 from tests.test_api import headers
 from tests.test_fri_actions import harness
 from tests.test_fri_continuity import arm, origin
@@ -127,7 +127,7 @@ def test_exact_control_works_during_cooldown_without_model_and_keeps_red_refusal
         actual.webhook_id = None
         actual.channel.fetch_message = AsyncMock(return_value=actual)
         try:
-            with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock()):
+            with patch('tests.legacy_fri.fri_actions.asyncio.sleep', new=AsyncMock()):
                 result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
             assert 'normal dj checks denied' in result.reply
             assert 'uncertain' not in result.reply
@@ -194,7 +194,7 @@ def test_accepted_music_clarification_finishes_in_cooldown_through_real_red_chec
             outcome = await runner.execute(cog, claim)
             controls.finish(claim['id'], claim['lease'], outcome)
         try:
-            with patch('gene.fri_actions.asyncio.sleep', new=deliver):
+            with patch('tests.legacy_fri.fri_actions.asyncio.sleep', new=deliver):
                 result = await fri.talk(123, 1, 20, message.content, 'public', event=message)
             assert '/agent/admit' not in paths
             first_context = fri.chat.respond.await_args_list[0].args[1]
@@ -243,7 +243,7 @@ def test_accepted_web_clarification_uses_only_public_research_during_cooldown(mo
             ChatResult(status='failed', error='final reply disconnected')])
         lookup = AsyncMock(return_value=({'kind': 'web_search', **RECEIPT}, {}, 'completed'))
         try:
-            with patch('gene.fri_actions.lookup', new=lookup):
+            with patch('tests.legacy_fri.fri_actions.lookup', new=lookup):
                 result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
             assert 'Public facts only.' in result.reply
             assert '/agent/admit' not in paths
@@ -280,7 +280,7 @@ def test_duplicate_operational_event_is_not_a_second_allowance_or_execution(cont
 
 
 def test_source_edit_stops_operational_control_before_admission_or_execution(monkeypatch, tmp_path):
-    from gene.fri_actions import Actions
+    from tests.legacy_fri.fri_actions import Actions
     async def scenario():
         fri, _, _, _ = harness(monkeypatch, tmp_path)
         actual = event(user=20, channel=1, content='fri stop the music')
@@ -330,7 +330,7 @@ def test_controller_requires_real_scoped_recent_music_receipt_for_shorthand(cont
 
 
 def test_bare_stop_in_nonmusic_dm_never_forces_or_authorizes_a_music_command(monkeypatch, tmp_path):
-    from gene.fri_actions import Actions
+    from tests.legacy_fri.fri_actions import Actions
     from tests.test_fri_chat import CONTEXT
     async def scenario():
         fri, _, _, _ = harness(monkeypatch, tmp_path)
@@ -368,7 +368,7 @@ def test_bare_stop_in_nonmusic_dm_never_forces_or_authorizes_a_music_command(mon
 def test_confirmed_exact_control_is_not_hidden_by_breadcrumb_recording_outage(monkeypatch, tmp_path, controls_api, record_failure, access_allowed):  # noqa: F811
     from redbot.core import commands
 
-    from gene.fri_actions import Actions
+    from tests.legacy_fri.fri_actions import Actions
     async def scenario():
         client, controls = controls_api
         fri, _, _, _ = harness(monkeypatch, tmp_path)
@@ -393,7 +393,7 @@ def test_confirmed_exact_control_is_not_hidden_by_breadcrumb_recording_outage(mo
         actual.webhook_id = None
         actual.channel.fetch_message = AsyncMock(return_value=actual)
         try:
-            with patch('gene.fri_actions.asyncio.sleep', new=AsyncMock()), \
+            with patch('tests.legacy_fri.fri_actions.asyncio.sleep', new=AsyncMock()), \
                     patch.object(Actions, 'valid', new=AsyncMock(return_value=access_allowed)):
                 result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
             assert ('confirmed command result' if record_failure != 'none' or not access_allowed else 'Stopped playback.') in result.reply
@@ -414,8 +414,8 @@ def test_confirmed_exact_control_is_not_hidden_by_breadcrumb_recording_outage(mo
     ('can you get gene to skip the track', 'skip'), ('hey fri, can u resume playback', 'resume'),
 ])
 def test_explicit_music_controls_reuse_the_established_request_grammar(controls_api, text, verb):  # noqa: F811
-    from gene.fri_actions import Actions
     from gene.gene_controls import requested
+    from tests.legacy_fri.fri_actions import Actions
     assert requested(text, verb)
     assert Actions.command_requested(SimpleNamespace(message=text, event=None), {'action': verb, 'argument': ''})
     assert command(text) == {'action': verb, 'argument': ''}

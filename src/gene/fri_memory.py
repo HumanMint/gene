@@ -165,8 +165,10 @@ class Source:
         if (RETRACTED.search(claim) or REPORT.search(claim) or TAKEN_BACK.fullmatch(following)
                 or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest)):
             return False  # "… jk", "… said no one ever", "… my friend said", "… . jk".
+        if CONDITION.search(claim) and evidence.lower().startswith(('call me', 'my nickname')):
+            return False  # "call me dan if i win", "my nickname is dan when i stream".
         if call:
-            return bool(ASKING.search(lead)) and not IDIOM.match(claim) and not CONDITION.search(claim)
+            return bool(ASKING.search(lead)) and not IDIOM.match(claim)
         words = re.findall(r"[\w']+", lead.lower())
         return not words or words[-1] not in ASKED
 

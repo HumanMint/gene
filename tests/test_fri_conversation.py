@@ -451,6 +451,8 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('nickname', 'call me dan', 'call me dan if you feel like it'),
     ('nickname', 'call me dan', 'call me dan if you want to'),
     ('nickname', 'call me dan', 'call me dan if you want lol'),
+    ('nickname', 'call me dan', 'call me dan if that makes sense'),
+    ('projects', 'im building a bot', 'im building a bot that keeps saying gm'),
     ('games', 'i like chess', 'they disagree but gotta say i like chess'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
@@ -505,6 +507,15 @@ def test_a_punctuation_heavy_message_is_read_in_one_pass():
             personal_note({'category': 'games', 'evidence': evidence}, text)
     for pad in (',', ', ', ',!.,'):  # Before every occurrence, a run of separators for the filler check to cross.
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
+
+
+def test_a_long_tail_after_the_claim_is_read_in_one_pass():
+    def read(text):
+        for category, evidence in (('games', 'i like chess'), ('nickname', 'call me dan')):
+            personal_note({'category': category, 'evidence': evidence}, text)
+    # Each report word looks back a bounded way for a description; a courtesy is matched once, at the end.
+    for pad in ('that said ', 'which sometimes tells ', 'if you want lol ', "that's always telling "):
+        assert_linear(read, lambda length: 'i like chess call me dan ' + (pad * length)[:length])
 
 
 def test_a_long_run_of_interjections_is_read_in_one_pass():

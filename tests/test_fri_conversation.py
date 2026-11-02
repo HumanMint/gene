@@ -431,6 +431,22 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me dan', 'once i win, call me dan'),
     ('nickname', 'call me dan', 'when we play, you can call me dan'),
     ('nickname', 'my nickname is dan', 'until further notice my nickname is dan'),
+    # Before the claim, a report frames it as someone else's: their subject, hearsay, a passive or one told to the
+    # member, or one that introduces the claim, the member's own hedge included.
+    ('games', 'i like chess', 'my mom was saying, i like chess'),
+    ('games', 'i like chess', 'jo writes, i like chess'),
+    ('games', 'i like chess', 'my mom says that i like chess'),
+    ('games', 'i like chess', 'everyone keeps saying i like chess'),
+    ('games', 'i like chess', 'you said i like chess'),
+    ('games', 'i like chess', 'she told me, i like chess'),
+    ('games', 'i like chess', 'told me, i like chess'),
+    ('games', 'i like chess', 'kept telling me, i like chess'),
+    ('games', 'i like chess', 'i was told by my mom, i like chess'),
+    ("games", "i like chess", "it's said that i like chess"),
+    ('games', 'i like chess', 'according to my mom, i like chess'),
+    ('games', 'i like chess', 'i swear i like chess'),
+    ('games', 'i like chess', 'i reckon i like chess'),
+    ('games', 'i like chess', 'i told jo i like chess'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -489,6 +505,17 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     # gene #173: a whole courtesy clause before a nickname only asks nicely, as after it.
     ('nickname', 'call me dan', 'whenever you want, please call me dan'),
     ('nickname', 'call me dan', 'when you like, please call me dan'),
+    # A clause of the member's own before the claim that does something else is no one else's report, even with a
+    # report word in it.
+    ('games', 'i like chess', 'been writing all day, i like chess'),
+    ('games', 'i like chess', 'i was saying earlier, i like chess'),
+    ('games', 'i like chess', 'just told jo, i like chess'),
+    ('games', 'i like chess', 'let me tell you, i like chess'),
+    ('games', 'i like chess', 'my text was long, i like chess'),
+    ('games', 'i like chess', 'stop swearing lol, i like chess'),
+    ('games', 'i like chess', 'i keep saying i like chess'),
+    ('games', 'i like chess', 'believe me, i like chess'),
+    ('games', 'i like chess', 'just a thought but i like chess'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

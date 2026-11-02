@@ -528,6 +528,9 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess u say'),
     ('games', 'i like chess', 'i like chess ya say'),
     ('games', 'i like chess', 'i like chess you say'),
+    # gene #188: a report word used as a noun or an activity still frames a claim it introduces.
+    ('games', 'i like chess', 'my writing i like chess'),
+    ('games', 'i like chess', 'my mom is tired of writing that i like chess'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -627,6 +630,8 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'my texting is slow, i like chess'),
     ('games', 'i like chess', 'the swearing was wild, i like chess'),
     ('games', 'i like chess', 'i finally finished writing my essay, i like chess'),
+    ('games', 'i like chess', 'after writing all night, i like chess'),
+    ('games', 'i like chess', 'tired of texting, i like chess'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

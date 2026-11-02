@@ -33,17 +33,19 @@ FILLER = re.compile(rf"(?i)(^\W*|\b(?:{STARTER})\W+|(?:^\W*|[^\w\s']\s*|\b(?:{ST
                     rf"if (?:i'm|im|i am) honest|if you ask me)\b|"
                     rf"(^\W*(?:(?:{SAID})\W+)*|\b(?:but|and)\W+(?:(?:{SAID})\W+)?|{ME})"
                     rf"(?:gotta|got to|have to|must|needless to) say\b")
-# One report vocabulary, every form, for both places a report can stand (gene #172). Before the claim any of them frames
-# it (FRAMED); after it starts, an inflected one is a report, and a bare one is after someone else (REPORT).
+# One report vocabulary, every form, for both places a report can stand (gene #172): before the claim (see frames) and
+# after it starts, where an inflected one is a report and a bare one is after someone else (REPORT).
 BARE = r"say|tell|ask|write|text|think|believe|assume|claim|insist|reckon|swear|quote"
 INFLECTED = (r"says|said|saying|tells|told|telling|asks|asked|asking|writes|wrote|written|writing|texts|texted|texting|"
              r"thinks|thought|thinking|believes|believed|believing|assumes|assumed|assuming|claims|claimed|claiming|"
              r"insists|insisted|insisting|reckons|reckoned|reckoning|swears|swore|sworn|swearing|quotes|quoted|quoting")
 HEARSAY = r"according to|apparently|supposedly|allegedly"
-# Someone else's words, a supposition or a quotation: nothing after it in the sentence is the member's claim.
+# Hearsay, a supposition or a quotative: nothing after it in the sentence is the member's claim. A report verb there
+# counts only where it frames the claim as someone else's (see frames).
 FRAMED = re.compile(
-    rf"(?i)\b(?:{BARE}|{INFLECTED}|{HEARSAY}|goes|pretend\w*|imagine|suppose[sd]?|if|unless|whether|wish(?:es|ed)?|"
+    rf"(?i)\b(?:{HEARSAY}|goes|pretend\w*|imagine|suppose[sd]?|if|unless|whether|wish(?:es|ed)?|"
     r"(?:am|is|are|was|were|be|been|im|'m|'s|'re)\s+(?:\w+\s+)?like)\b")
+VERB = re.compile(rf"(?i)\b(?:{BARE}|{INFLECTED})\b")
 # A denial anywhere earlier in the sentence, however many words sit between: "dont ever call me dan".
 NEGATED = re.compile(r"(?i)\b(?:not|never|no(?!\s*,)|nobody|noone|nothing|neither|nor|without|cannot|ain'?t|"
                      r"\w+n't|(?:do|does|did|is|are|was|were|ca|could|wo|would|should|have|has|had)nt)\b")
@@ -76,6 +78,54 @@ OWN = frozenset(
     "that which a an the this his her its their to and or but nor not never no dont doesnt didnt cant cannot wont "
     "wouldnt shouldnt couldnt aint isnt arent wasnt werent let lets please pls plz go come if as than then when "
     f"{SAID.replace('|', ' ')} {BETWEEN.replace('|', ' ')}".split())
+
+
+# Before the claim, what may sit between a report verb and its subject ("my mom was always saying", "they keep telling"),
+# and what makes a past participle someone else's report ("i was told", "it's said").
+LEAD_BETWEEN = frozenset(BETWEEN.split('|')) | {'keeps', 'kept', 'was', 'were', 'is', 'are', 'am', 'be', 'been', 'being',
+                                               'has', 'have', 'had', 'never', 'stop', 'stopped', 'quit', 'start', 'started'}
+PASSIVE = frozenset({'was', 'were', 'been', 'be', 'is', 'are', 'am', 'being', 'get', 'got', 'gets', 'getting'})
+PARTICIPLES = frozenset({'said', 'told', 'written', 'asked', 'texted', 'thought', 'believed', 'assumed', 'claimed',
+                         'insisted', 'reckoned', 'sworn', 'quoted'})
+SECOND = frozenset({'you', 'u', 'ya', 'your', 'yours', 'yourself', 'yourselves'})
+# A clause of the member's own that only sits before the claim ends at punctuation or one of these.
+JOINS = r"and|but|so|then|anyway|because|cuz|since|while|though|plus"
+
+
+def frames(lead):
+    """Whether a report verb before the claim, in its sentence, frames the claim as someone else's: its subject is
+    anyone but the member ("my mom was saying, …", "jo writes …", "you said …"); it's passive ("i was told by my mom,
+    …") or told to the member ("told me, …"); or, the member's own or with no subject, it introduces the claim, with
+    nothing but punctuation and interjections or up to three plain words between ("i think i like chess", "said, i
+    like …", "i told jo i like …"). A clause of the member's own that does something else first keeps the note: "been
+    writing all day, i like chess", "i was saying earlier, …", "just told jo, …", "let me tell you, …" (gene #172)."""
+    for m in VERB.finditer(lead):
+        verb = m.group().lower()
+        near = re.findall(r"[\w']+|[^\w\s]", lead[max(0, m.start() - 120):m.start()])[-4:]
+        subject, crossed = None, 0
+        for token in reversed(near):
+            word = re.sub(r"'(?:d|ll|re|ve|s|m)$", '', token.lower())
+            if not re.match(r"[\w']", token):
+                break  # Punctuation: no subject within this clause.
+            if word in LEAD_BETWEEN and crossed < 3:
+                crossed += 1
+                continue
+            subject = word
+            break
+        if subject is not None and (subject in SECOND or (subject not in OWN and subject.replace("'", '') not in OWN)):
+            return True
+        previous = near[-1].lower() if near else ''
+        after = lead[m.end():]
+        if verb in PARTICIPLES and (previous in PASSIVE or re.search(r"'(?:s|re|m)$|^im$", previous)):
+            return True  # "i was told …", "it's said …".
+        if verb in INFLECTED.split('|') and re.match(r"(?i)\s+(?:to\s+)?(?:me|us)\b", after):
+            return True  # "told me, …", "kept telling me, …", "said to me …".
+        if verb.endswith('ing'):
+            continue  # What the member was doing: "been writing all day, …", "i keep saying …".
+        if (re.fullmatch(rf"(?i)\W*(?:(?:{SAID})\W+)*", after)
+                or re.fullmatch(rf"(?i)\s+(?:(?!(?:{JOINS})\b)[\w']+\s+){{0,3}}", after)):
+            return True
+    return False
 
 
 def reported_by(subject):
@@ -187,7 +237,7 @@ class Source:
         lead = FILLER.sub(r'\1\2 ', t[self.starts[k]:at])
         rest = t[end:self.ends[k]]  # Empty when the evidence takes in the terminator.
         before = bisect.bisect_left(self.filled, k)
-        if ((before and self.reported[before - 1]) or FRAMED.search(lead) or NEGATED.search(lead)
+        if ((before and self.reported[before - 1]) or FRAMED.search(lead) or frames(lead) or NEGATED.search(lead)
                 or re.search(r'\w:(?:\s|$)', lead)):
             return False  # "she said:" the line before, "she said honestly …", "dont ever …", "bob: …".
         call = evidence.lower().startswith('call me')

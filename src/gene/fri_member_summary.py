@@ -218,14 +218,36 @@ def erasure_triggers(db):
     # Whatever drops one of those (count eviction at MESSAGE_FENCES, an erasure, an older controller's own eviction),
     # the batch keeps nothing it read: its finish discards its findings and leaves its cursor, so it's read again
     # (gene #163). Older fences, and deletions with no batch in flight, change nothing.
-    claimed = "(SELECT json_extract(value,'$.at') FROM agent_state WHERE key='learning_claim')"
+    claimed = "(SELECT json_extract(value,'$.at') FROM agent_state WHERE key='learning_claim' AND json_valid(value))"
     learning = ("UPDATE agent_state SET value=json_set(value,'$.privacy_invalidated',json('true')) "
-                "WHERE key='learning_claim' AND json_type(value)='object';")
+                "WHERE key='learning_claim' AND json_valid(value) AND json_type(value)='object';")
+    # A fence dated before the batch in flight was written while the clock was set back, after the batch was claimed:
+    # withdrawn_during() orders fences by time and would miss it, so the batch keeps nothing it read, whichever message
+    # it names (gene #182). One dated at or after the claim is left to withdrawn_during(), message by message.
+    # Whoever writes it, an older controller too.
+    # A batch's finish more than a week after its claim can't tell what it read was withdrawn: a fence it depended on
+    # may have expired, and an older controller's finish (one before gene #180) counts only fences inside their week,
+    # then expires the rest as it moves the cursor, after saving its notes (gene #183). So clearing such a claim from a
+    # completed finish (its report not yet written) aborts the finish whole: nothing it read is kept, and the claim
+    # stays for the next pass to interrupt, which reports it first and then clears it. So is a claim whose time
+    # can't be read, which no fence can be ordered against. This controller refuses both itself (see finish).
+    old = (f"json_extract(OLD.value,'$.at')<(julianday('now')-2440587.5)*86400.0-{WITHDRAWN_SECONDS}")
+    finished = ("OLD.key='learning_claim' AND NEW.value='null' AND json_valid(OLD.value) "
+                "AND json_type(OLD.value)='object' AND json_type(OLD.value,'$.id')='text' "
+                "AND NOT EXISTS (SELECT 1 FROM agent_reports WHERE id=json_extract(OLD.value,'$.id')) "
+                f"AND (json_type(OLD.value,'$.at') NOT IN ('integer','real') OR {old})")
     triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),
                 ('privacy_revision_moved', 'AFTER UPDATE OF revision ON chat_revisions', body),
                 *((f'message_fences_expire{suffix}', event, expire) for suffix, event in FREQUENT),
                 ('message_fence_dropped_while_learning',
-                 f'AFTER DELETE ON chat_message_fences WHEN OLD.at>={claimed}', learning))
+                 f'AFTER DELETE ON chat_message_fences WHEN OLD.at>={claimed}', learning),
+                ('message_fence_before_learning_claim',
+                 f'AFTER INSERT ON chat_message_fences WHEN NEW.at<{claimed}', learning),
+                ('message_fence_moved_before_learning_claim',
+                 f'AFTER UPDATE OF at ON chat_message_fences WHEN NEW.at<{claimed}', learning),
+                ('learning_claim_finished_past_fences',
+                 f'BEFORE UPDATE OF value ON agent_state WHEN {finished}',
+                 "SELECT RAISE(ABORT, 'learning claim older than its message fences');"))
     # Replaced, not kept if they exist, so a body changed since an earlier controller made them takes effect; all in
     # one transaction, so a start cut off between them, or an older controller starting meanwhile, never finds one
     # missing.

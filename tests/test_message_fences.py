@@ -10,6 +10,7 @@ author when the controller knows who that is, from a ping's grant or a research 
 """
 import json
 import sqlite3
+import sys
 import time
 from contextlib import closing
 
@@ -151,13 +152,15 @@ def test_an_edit_with_no_learning_batch_in_flight_keeps_nothing(world):
     assert fences(store) == []
 
 
-def test_a_batch_claimed_after_a_fence_learns_from_the_message_as_it_reads_now(world):
+def test_a_batch_claimed_after_a_fence_learns_from_the_message_as_it_reads_now(world, monkeypatch):
     """An edit's fence stops only a batch that was already reading: a later batch reads the edited words."""
     client, store = world
-    taken, finish, claim = batch(client, store)
-    with store.connection() as db:  # A fence from before this batch began.
+    made = [source(age=200, channel='51'), source(age=190, channel='51')]  # What batch() reads, made up front.
+    with store.connection() as db:  # A fence from before this batch began, written before it was claimed.
         db.execute('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted) VALUES (?,?,?,0)',
-                   ('123', taken, claim['at']-1))
+                   ('123', made[0]['id'], time.time()-1))
+    monkeypatch.setattr(sys.modules[__name__], 'source', lambda **_: made.pop(0))
+    _, finish, _ = batch(client, store)
     finish()
     assert sorted(notes(store)) == sorted([LIKE, 'i play chess on weekends'])
 

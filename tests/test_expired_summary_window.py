@@ -181,3 +181,27 @@ def test_a_summary_refreshed_again_moves_what_is_mirrored(world, unaware):
     with unaware():
         written(client, f'/workspace/posts/{post}/sending', {'lease': lease})
     assert rows(store, 'fri_posts')[post]['state'] == 'sending'
+
+
+@pytest.mark.parametrize('kind', ['post', 'reminder'])
+def test_an_item_already_sending_when_its_summary_lapses_is_retired_not_jammed(world, kind):
+    """gene #181 review: a post or reminder already `sending` when its summary lapses keeps its state as retirement
+    clears its words. The delivery guard fires only on a move into `claimed` or `sending`, so that same-state cleanup
+    isn't refused: the next frequent write retires the words, and a purge before a rollback still goes through."""
+    from gene.fri_member_summary import purge
+    client, store = world
+    _, generation = summarized(client, store)
+    if kind == 'post':
+        item, _ = posted(client, drafted(client, generation), 2, 'sending')
+        table = 'fri_posts'
+    else:
+        item = scheduled(client, store, generation)
+        lease = written(client, '/social/reminders/claim', {})['lease']
+        written(client, f'/social/reminders/{item}/sending', {'lease': lease})
+        table = 'fri_reminders'
+    assert rows(store, table)[item]['state'] == 'sending'
+    lapsed(store)
+    older(store)  # Refused before: the guard aborted the retirement, words and all.
+    assert (rows(store, table)[item]['state'], rows(store, table)[item]['body']) == ('sending', '')
+    assert MARKER not in str(rows(store, 'fri_work')) and mirrored(store) == []
+    purge(store.path)

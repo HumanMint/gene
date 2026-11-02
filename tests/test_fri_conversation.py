@@ -410,6 +410,27 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me dan', 'call me dan if you like chess'),
     ('nickname', 'my nickname is dan', 'my nickname is dan if you want to win'),
     ('nickname', 'call me dan', 'call me dan whenever you want to beat me'),
+    # gene #172: one report vocabulary, every form, before the claim and after it starts.
+    ('games', 'i like chess', 'she insists i like chess'),
+    ('games', 'i like chess', 'my parents insisted i like chess'),
+    ('games', 'i like chess', 'my friend is writing that i like chess'),
+    ('games', 'i like chess', 'the boys keep swearing i like chess'),
+    ('games', 'i like chess', 'i like chess, they are swearing'),
+    ('games', 'i like chess', 'i like chess, she has written'),
+    ('games', 'i like chess', 'i like chess, they keep texting'),
+    # A bare report verb after someone else, any noun phrase, through an adverb or an auxiliary.
+    ('games', 'i like chess', 'i like chess, my parents say'),
+    ('games', 'i like chess', 'i like chess, my coworkers all think'),
+    ('games', 'i like chess', 'i like chess, the boys would say'),
+    ('games', 'i like chess', 'i like chess, my mom will tell you'),
+    ('music', 'i love jazz', 'i love jazz, my bandmates reckon'),
+    ('music', 'i love jazz', "i love jazz, they'd swear"),
+    ('projects', 'im building a bot', 'im building a bot which people say is cute'),
+    # gene #173: a condition before nickname evidence, as after it.
+    ('nickname', 'call me dan', 'whenever we play, please call me dan'),
+    ('nickname', 'call me dan', 'once i win, call me dan'),
+    ('nickname', 'call me dan', 'when we play, you can call me dan'),
+    ('nickname', 'my nickname is dan', 'until further notice my nickname is dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -454,6 +475,20 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('nickname', 'call me dan', 'call me dan if that makes sense'),
     ('projects', 'im building a bot', 'im building a bot that keeps saying gm'),
     ('games', 'i like chess', 'they disagree but gotta say i like chess'),
+    # gene #172: the member's own hedge after the claim stays theirs, and so does an aside to them.
+    ('games', 'i like chess', 'i like chess, i think'),
+    ('games', 'i like chess', 'i like chess, i swear'),
+    ('games', 'i like chess', "i like chess, i'd say"),
+    ('games', 'i like chess', 'i like chess, i must say'),
+    ('games', 'i like chess', 'i like chess, we all think'),
+    ('games', 'i like chess', 'i like chess, needless to say'),
+    ('games', 'i like chess', 'i like chess if you ask me'),
+    ('games', 'i like chess', 'i like chess, makes you think'),
+    ('games', 'i like chess', 'i like chess, never say never'),
+    ('nickname', 'call me dan', 'call me dan, i insist'),
+    # gene #173: a whole courtesy clause before a nickname only asks nicely, as after it.
+    ('nickname', 'call me dan', 'whenever you want, please call me dan'),
+    ('nickname', 'call me dan', 'when you like, please call me dan'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -527,6 +562,20 @@ def test_a_long_run_of_interjections_is_read_in_one_pass():
     # Each "but" or "and" starts a run of interjections that "have to say" may end; none is crossed twice.
     for pad in ('but lol ', 'and and ', 'so so honestly ', 'they, honestly, ', 'but lol have to '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
+
+
+def test_reports_and_conditions_are_read_in_one_pass():
+    body = 'i like chess i love go call me dan ' * 4
+
+    def read(text):
+        for category, evidence in (('games', 'i like chess'), ('music', 'i love go'), ('nickname', 'call me dan')):
+            personal_note({'category': category, 'evidence': evidence}, text)
+    # Every word may be a report's subject, an adverb between, or start a condition before a nickname; each is
+    # looked at once, before the claims and after them.
+    for pad in ('my parents always ', 'they would really ', "a'b'c'd'", 'people ' 'whenever we play, ',
+                'whenever you want, ', 'the boys keep swearing '):
+        assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
+        assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
 
 def test_the_same_words_too_many_times_keep_nothing():

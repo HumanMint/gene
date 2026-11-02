@@ -529,7 +529,7 @@ def set_claim_time(store, client, value):
     return agent
 
 
-@pytest.mark.parametrize('value', [None, 'oops', float('nan'), float('inf'), True], ids=repr)
+@pytest.mark.parametrize('value', [None, 'oops', float('nan'), float('inf'), True, 10**400], ids=lambda v: repr(v)[:12])
 def test_a_claim_with_a_malformed_time_is_refused_or_interrupted_not_crashed(world, monkeypatch, value):
     """gene #180 review: a claim whose stored time isn't a number crashed the finish (500, the claim kept). It's
     refused like an expired claim, its cursor kept, and the next claim reports it interrupted instead of crashing."""
@@ -542,3 +542,23 @@ def test_a_claim_with_a_malformed_time_is_refused_or_interrupted_not_crashed(wor
     assert notes(store) == [] and cursors(store, client) == before
     blocked = agent.claim(manual=True)
     assert blocked == {'blocked': 'The previous pass was interrupted. Its report is pending; its allowance remains reserved.'}
+
+
+def test_a_claim_dated_far_ahead_is_interrupted_not_left_running(world):
+    """gene #180 review: a claim dated two hours ahead (a clock that ran fast, then was corrected) is refused at its
+    finish, which can't order fences against it, and the next claim reports it interrupted instead of calling it
+    running for two hours more. A claim a little ahead (a small clock step) still counts as running."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    agent = set_claim_time(store, client, time.time()+7200)
+    with pytest.raises(ValueError, match='expired'):
+        finish()
+    assert agent.claim(manual=True) == {
+        'blocked': 'The previous pass was interrupted. Its report is pending; its allowance remains reserved.'}
+
+
+def test_a_claim_a_little_ahead_still_counts_as_running(world):
+    client, store = world
+    batch(client, store)
+    agent = set_claim_time(store, client, time.time()+30)
+    assert agent.claim(manual=True) == {'blocked': 'A learning pass is already running.'}

@@ -14,6 +14,8 @@ from .fri_memory import personal_note
 from .fri_memory_store import last_removal
 from .privacy import clean
 
+CLAIM_SECONDS = 600  # A learning pass's claim: one older is interrupted (see claim) and finishes nothing (see finish).
+
 DEFAULTS = {
     'enabled': False, 'learning_enabled': True, 'proactive': True, 'support_dms': True,
     'attention_model': 'gpt-6-luna', 'attention_effort': 'low',
@@ -229,7 +231,7 @@ class AgentStore:
                 return blocked('The previous learning report still needs to reach the owner.')
             pending = self.get(db, 'learning_claim')
             if pending:
-                if now-pending['at'] < 600:
+                if now-pending['at'] < CLAIM_SECONDS:
                     return blocked('A learning pass is already running.')
                 db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
                            (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; no automatic replay.'))
@@ -294,8 +296,16 @@ class AgentStore:
             raise ValueError('Invalid historical observations')
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
+            from .store import WITHDRAWN_SECONDS
+            # Fences past their week go first, so one the claim depends on invalidates it as it goes (gene #163).
+            db.execute('DELETE FROM chat_message_fences WHERE at<?', (now-WITHDRAWN_SECONDS,))
             claim = self.get(db, 'learning_claim')
             if not claim or claim['id'] != batch_id:
+                raise ValueError('Learning claim expired or already completed')
+            # Past its lifetime it's interrupted (see claim), and the fences it depends on may be past their week and
+            # count for nothing (withdrawn_during): nothing it read is kept, and its cursor stays, so the slice is read
+            # again (gene #179). So is one claimed after now (a clock set back), which their times can't be ordered against.
+            if not 0 <= now-claim.get('at', 0) < CLAIM_SECONDS:
                 raise ValueError('Learning claim expired or already completed')
             if not 0 <= scanned <= claim['limit'] or len(records) > scanned:
                 raise ValueError('Invalid learning batch size')

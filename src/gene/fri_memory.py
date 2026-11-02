@@ -298,8 +298,9 @@ class Source:
         resolved ("i lost when we played\n…") (Sol round 1 of #178)."""
         t, j = self.text, k - 1
         while j >= 0 and not set(t[self.ends[j]:self.stops[j]]) - {'\n', '\r', ' ', '\t'}:
-            tokens = TOKEN.findall(t, self.starts[j], self.ends[j])
-            if not tokens:
+            # A whole courtesy clause ending the line first, before its own "ok" or "lol" is taken for an aside.
+            tokens = TOKEN.findall(COURTESY.sub('', t[self.starts[j]:self.ends[j]], count=1))
+            if not TOKEN.findall(t, self.starts[j], self.ends[j]):
                 j -= 1  # A blank line between.
                 continue
             while tokens and (not WORD.fullmatch(tokens[-1]) or tokens[-1].lower() in ASIDE_WORDS | {'please', 'pls', 'plz'}):
@@ -309,7 +310,7 @@ class Source:
                 if not WORD.fullmatch(token):
                     break
                 clause.insert(0, token)
-            last = COURTESY.sub('', ' '.join(clause), count=1)
+            last = ' '.join(clause)
             return bool(re.match(rf"(?i)(?:(?:{ASIDES}|and|but|or|then|plus)\s+)*(?:unless|when|whenever|once|until|till|"
                                  r"as long as|provided|if)\b", last))
         return False

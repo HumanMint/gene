@@ -392,3 +392,83 @@ def test_an_older_controller_expires_fences_with_gene_s_heartbeat_or_as_it_serve
             statement, args = OLDER[write]
             raw.execute(statement, args())
     assert [row[0] for row in fences(store)] == [fresh]
+
+
+# gene #163: count eviction never drops a fence an active learning batch still needs.
+
+def fill(store, count, after, prefix='9'):
+    """`count` fences newer than `after`, as many withdrawals by ID would leave."""
+    with store.connection() as db:
+        db.executemany('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted) VALUES (?,?,?,0)',
+                       [('123', f'{prefix}{i:012d}', after+(i+1)*1e-6) for i in range(count)])
+
+
+def fenced(store):
+    with store.connection() as db:
+        return db.execute('SELECT count(*) FROM chat_message_fences').fetchone()[0]
+
+
+def test_the_issues_repro_a_batch_whose_fence_was_evicted_learns_nothing(world):
+    """A batch claims M, M is withdrawn (fenced), newer fences fill the table to its limit, and one more evicts M's. The
+    batch, finishing, saves nothing it read: its work was invalidated before the fence went. The table stays bounded."""
+    client, store = world
+    taken, finish, _ = batch(client, store)
+    withdraw_saved(client, taken)  # Edited while the batch reads it: fenced.
+    with store.connection() as db:
+        at = db.execute('SELECT at FROM chat_message_fences WHERE message_id=?', (taken,)).fetchone()[0]
+    fill(store, controller.MESSAGE_FENCES-1, at)
+    assert fenced(store) == controller.MESSAGE_FENCES
+    withdraw_saved(client, source(age=5, channel='51')['id'])  # One more: M's is the oldest, so it goes.
+    assert fenced(store) == controller.MESSAGE_FENCES
+    with store.connection() as db:
+        assert not db.execute('SELECT 1 FROM chat_message_fences WHERE message_id=?', (taken,)).fetchone()
+    finish()
+    assert LIKE not in notes(store)
+    assert notes(store) == []  # Nothing of the batch: it's read again later, after the cursor it never moved.
+
+
+def test_eviction_with_no_batch_in_flight_keeps_the_newest(world, monkeypatch):
+    client, store = world
+    monkeypatch.setattr(controller, 'MESSAGE_FENCES', 3)
+    ids = [source(age=age, channel='51')['id'] for age in (50, 40, 30, 20, 10)]
+    for i in ids:
+        withdraw_saved(client, i, deleted=True)
+    assert [row[0] for row in fences(store)] == sorted(ids[-3:]) and fenced(store) == 3
+
+
+def test_evicting_fences_from_before_a_batch_leaves_it_learning(world, monkeypatch):
+    """Only fences a batch could depend on (written since it was claimed) invalidate it; older ones go as before."""
+    client, store = world
+    monkeypatch.setattr(controller, 'MESSAGE_FENCES', 3)
+    for age in (50, 40, 30):
+        withdraw_saved(client, source(age=age, channel='51')['id'], deleted=True)
+    _, finish, _ = batch(client, store)
+    withdraw_saved(client, source(age=5, channel='51')['id'], deleted=True)  # Evicts one from before the claim.
+    assert fenced(store) == 3
+    finish()
+    assert sorted(notes(store)) == sorted([LIKE, 'i play chess on weekends'])
+
+
+def test_an_older_controllers_eviction_also_stops_the_batch(world):
+    """The rule lives in a trigger replaced at start, so a controller rolled back to one that evicts fences by count
+    without knowing it still invalidates the batch: its own statement, run against this database."""
+    client, store = world
+    taken, finish, _ = batch(client, store)
+    withdraw_saved(client, taken)
+    with closing(sqlite3.connect(store.path)) as raw, raw:  # Gene main 8aad087's eviction, M's the only fence.
+        raw.execute('DELETE FROM chat_message_fences WHERE rowid IN (SELECT rowid FROM chat_message_fences '
+                    'ORDER BY at DESC, rowid DESC LIMIT -1 OFFSET ?)', (0,))
+    finish()
+    assert notes(store) == []
+
+
+def test_a_claim_with_nothing_dropped_since_learns_as_before(world):
+    """Guard: a fence dropped from before the claim, or none at all, leaves the batch learning."""
+    client, store = world
+    old = source(age=50, channel='51')['id']
+    withdraw_saved(client, old, deleted=True)
+    _, finish, _ = batch(client, store)
+    with store.connection() as db:
+        db.execute('DELETE FROM chat_message_fences WHERE message_id=?', (old,))
+    finish()
+    assert sorted(notes(store)) == sorted([LIKE, 'i play chess on weekends'])

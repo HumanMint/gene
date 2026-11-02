@@ -152,7 +152,10 @@ built from other members' messages.
   - **A fence by ID when nothing holds it yet (gene #149).** By ID, a message nothing stored holds (no
     exchange, no note) still keeps a fence when it's deleted, or edited while a learning batch is
     reading history: `chat_message_fences`, by guild, message ID, time and whether it was deleted, never
-    words, for a week, at most 100,000 (the oldest go first). A save still on its way that answers a
+    words, for a week, at most 100,000 (the oldest go first). Whatever drops a fence written since the
+    learning batch in flight was claimed (that limit, an erasure, an older controller's own eviction), the
+    batch keeps nothing it read and is read again: a trigger replaced at start marks its claim
+    invalidated, which its finish already honours (gene #163). A save still on its way that answers a
     deleted message, or whose `drew_on` holds one, keeps nothing, and its check refuses with the 409
     above. A learning batch claimed before the fence keeps nothing from the message, edited or deleted;
     one claimed after reads it as it is now. An edit's fence stops nothing else. A save of the member's

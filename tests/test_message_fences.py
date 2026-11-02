@@ -472,3 +472,93 @@ def test_a_claim_with_nothing_dropped_since_learns_as_before(world):
         db.execute('DELETE FROM chat_message_fences WHERE message_id=?', (old,))
     finish()
     assert sorted(notes(store)) == sorted([LIKE, 'i play chess on weekends'])
+
+
+def cursors(store, client):
+    with store.connection() as db:
+        return AgentStore(store, client.settings).get(db, 'cursors', {})
+
+
+@pytest.mark.parametrize('late', [3601, 8*86400], ids=['past an hour', 'past the fences week'])
+def test_a_batch_finishing_after_its_claims_lifetime_learns_nothing(world, monkeypatch, late):
+    """gene #179: a batch claims M, M is withdrawn (fenced), and the same claim finishes more than a week later, with
+    nothing pruning the fences meanwhile. withdrawn_during() counts only fences inside their week, so the withdrawn
+    note was kept. A finish more than an hour after its claim, far inside the fences' week and past any batch Fri
+    runs, is refused: nothing it read is kept and its cursor stays, so the slice is read again once the claim is
+    cleared."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    withdraw_saved(client, taken)  # Edited while the batch reads it: fenced.
+    before = cursors(store, client)
+    real = time.time
+    monkeypatch.setattr(time, 'time', lambda: real()+late)
+    with pytest.raises(ValueError, match='expired'):
+        finish()
+    assert notes(store) == [] and cursors(store, client) == before
+
+
+def test_a_batch_finishing_inside_its_claims_lifetime_learns_as_before(world, monkeypatch):
+    """Guard: a finish inside the ten minutes keeps what it may, as before, and leaves out the withdrawn message."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    withdraw_saved(client, taken)
+    real = time.time
+    monkeypatch.setattr(time, 'time', lambda: real()+590)
+    finish()
+    assert notes(store) == ['i play chess on weekends']
+
+
+def test_a_batch_slower_than_the_claims_ten_minutes_still_learns(world, monkeypatch):
+    """gene #180 review: Fri gives one model call up to ten minutes, so a whole batch can run past a claim's ten
+    minutes. Its finish, with nothing claimed since, keeps what it may, as before (main accepts it too)."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    withdraw_saved(client, taken)
+    real = time.time
+    monkeypatch.setattr(time, 'time', lambda: real()+1201)
+    finish()
+    assert notes(store) == ['i play chess on weekends']
+
+
+def set_claim_time(store, client, value):
+    agent = AgentStore(store, client.settings)
+    with store.connection() as db:
+        claim = agent.get(db, 'learning_claim')
+        claim['at'] = value
+        agent.put(db, 'learning_claim', claim)
+    return agent
+
+
+@pytest.mark.parametrize('value', [None, 'oops', float('nan'), float('inf'), True, 10**400], ids=lambda v: repr(v)[:12])
+def test_a_claim_with_a_malformed_time_is_refused_or_interrupted_not_crashed(world, monkeypatch, value):
+    """gene #180 review: a claim whose stored time isn't a number crashed the finish (500, the claim kept). It's
+    refused like an expired claim, its cursor kept, and the next claim reports it interrupted instead of crashing."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    before = cursors(store, client)
+    agent = set_claim_time(store, client, value)
+    with pytest.raises(ValueError, match='expired'):
+        finish()
+    assert notes(store) == [] and cursors(store, client) == before
+    blocked = agent.claim(manual=True)
+    assert blocked == {'blocked': 'The previous pass was interrupted. Its report is pending; its allowance remains reserved.'}
+
+
+def test_a_claim_dated_far_ahead_is_interrupted_not_left_running(world):
+    """gene #180 review: a claim dated two hours ahead (a clock that ran fast, then was corrected) is refused at its
+    finish, which can't order fences against it, and the next claim reports it interrupted instead of calling it
+    running for two hours more. A claim a little ahead (a small clock step) still counts as running."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    agent = set_claim_time(store, client, time.time()+7200)
+    with pytest.raises(ValueError, match='expired'):
+        finish()
+    assert agent.claim(manual=True) == {
+        'blocked': 'The previous pass was interrupted. Its report is pending; its allowance remains reserved.'}
+
+
+def test_a_claim_a_little_ahead_still_counts_as_running(world):
+    client, store = world
+    batch(client, store)
+    agent = set_claim_time(store, client, time.time()+30)
+    assert agent.claim(manual=True) == {'blocked': 'A learning pass is already running.'}

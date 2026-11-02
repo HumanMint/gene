@@ -678,7 +678,8 @@ def test_reports_and_conditions_are_read_in_one_pass():
     # looked at once, before the claims and after them.
     for pad in ('my parents always ', 'they would really ', "a'b'c'd'", 'people ', 'whenever we play, ',
                 'whenever you want, ', 'the boys keep swearing ', 'my mom lol was saying ', 'said, ', 'told me, ',
-                'my mom, as usual, said that, ', 'i was saying earlier, ', 'whenever we play\n', 'you say '):
+                'my mom, as usual, said that, ', 'i was saying earlier, ', 'whenever we play\n', 'you say ',
+                "if that's ok\n", 'if i win, then\n'):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

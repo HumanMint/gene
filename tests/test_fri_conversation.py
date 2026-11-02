@@ -572,6 +572,7 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess if u ask me'),
     # A courtesy clause on the line before a nickname only asks nicely.
     ('nickname', 'call me dan', 'whenever you want\nplease call me dan'),
+    ('nickname', 'call me dan', "if that's ok\nplease call me dan"),
     ('nickname', 'call me dan', 'i lost when we played\nanyway please call me dan'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):

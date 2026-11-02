@@ -94,8 +94,7 @@ PLURALS = frozenset({'they', 'people', 'everyone', 'everybody', 'folks', 'friend
                     # Whoever the member speaks to, however it's spelled, counts like y'all (gene #187).
                     {'you', 'u', 'ya', 'yall', 'guys'})
 # The member's own asides to whoever they speak to, never a report: "… if you ask me", "…, makes you think".
-YOU = r"(?:you guys|you|u|ya|yall|y'all)"  # Every spelling, in each place (gene #187).
-ASIDE_PHRASES = re.compile(rf"(?i)\bif {YOU} (?:ask|asked) me\b|\bmakes? {YOU} (?:think|wonder)\b")
+ASIDE_PHRASES = re.compile(r"(?i)\bif (?:you|u|ya) (?:ask|asked) me\b|\bmakes? (?:you|u|ya) (?:think|wonder)\b")
 # After the claim, a report form in the member's own clause with something of its own after it: "…, ive written a
 # song", "…, im swearing at the lag" (S1). Not one that points back at the claim ("…, i said", "…, i told you so") or
 # is passive ("…, or so i was told").
@@ -133,16 +132,9 @@ ME_BETWEEN = frozenset({'was', 'were', 'am', 'are', 'have', 'had', 'been', 'keep
                         'tried', 'practice'})
 # Between a passive's helper and its participle: "i was just told", "or so i've recently been told".
 ADVERBS = frozenset({'just', 'really', 'also', 'already', 'always', 'still', 'even', 'actually', 'literally',
-                     'recently', 'once', 'often', 'never', 'finally', 'lately', 'usually', 'sometimes', 'mostly'})
-# A noun, not a verb, after these: "just a thought but …", "my text was long, …", and so is a gerund or a participle
-# used as one ("my writing is messy, …", "the swearing was wild, …", "my sworn enemy, …", gene #188).
-NOUNS = frozenset({'thought', 'text', 'quote', 'claim', 'say', 'texts', 'quotes', 'claims', 'written', 'sworn'})
-OWN_NOUNS = frozenset({'a', 'an', 'the', 'my', 'your', 'our', 'his', 'her', 'their', 'this', 'that', 'some'})
-# A gerund after these is an activity's name, not a report: "after writing all night, …", "tired of texting, …".
-PREPOSITIONS = frozenset({'after', 'before', 'from', 'about', 'at', 'with', 'for', 'of', 'in', 'on', 'into', 'by'})
-# A gerund that starts its clause before one of these is its subject: "writing is fun, …", "swearing makes it worse".
-COPULAS = frozenset({'is', 'was', 'are', 'were', "isn't", "wasn't", 'has', 'had', 'can', 'could', 'will', 'would',
-                     'might', 'should', 'makes', 'made', 'takes', 'took', 'gets', 'got', 'feels', 'felt', 'seems'})
+                     'recently', 'once', 'often', 'never'})
+# A noun, not a verb, after these: "just a thought but …", "my text was long, …".
+NOUNS, OWN_NOUNS = frozenset({'thought', 'text', 'quote', 'claim', 'say'}), frozenset({'a', 'my'})
 PASSIVE = frozenset({'was', 'were', 'been', 'be', 'is', 'are', 'am', 'being', 'get', 'got', 'gets', 'getting'})
 PARTICIPLES = frozenset({'said', 'told', 'written', 'asked', 'texted', 'thought', 'believed', 'assumed', 'claimed',
                          'insisted', 'reckoned', 'sworn', 'quoted'})
@@ -166,10 +158,8 @@ def own_clause(lead, low, m):
     for a short list of theirs without an "i", in a clause that starts at punctuation or the sentence's start ("let
     me tell you, …", "believe me, …", "been writing all day, …", "stop swearing lol, …", "just a thought but …", "ask
     anyone, …"), else None: someone else's, or no one can tell, which keeps nothing ("said jo, …", "just said jo, …",
-    whose "just" may be a name, "my mom, as usual, said that, …", "May said earlier, …"). What the member does
-    counts, through adverbs ("i've recently been writing songs, …"), and so does a report word used as a noun ("my
-    writing is messy, …", "writing is fun, …", "after writing all night, …"), gene #188. `low` is `lead` lowercased,
-    once for every report verb in it (gene #188)."""
+    whose "just" may be a name, "my mom, as usual, said that, …", "May said earlier, …"). `low` is `lead`
+    lowercased, once for every report verb in it (gene #188's nit)."""
     verb, window = m.group().lower(), max(0, m.start() - 80)
     starts = list(STARTS.finditer(lead, window, m.start()))
     if not starts and window > 0:
@@ -181,8 +171,7 @@ def own_clause(lead, low, m):
     if lead_in < len(words) and words[lead_in] in ME:
         del words[:lead_in]  # "lol i was saying", "bro i was saying". Before anything else, any of them may be a
         # name ("So just said …", "bro just said …"), and "ya" may be "you": no member there.
-    helping = [word for word in words[1:] if word not in ADVERBS]  # "i've recently been writing" (gene #188).
-    if words and words[0] in ME and len(helping) <= 3 and all(word in ME_BETWEEN for word in helping):
+    if words and words[0] in ME and len(words) <= 4 and all(word in ME_BETWEEN for word in words[1:]):
         return 'me'
     if joined:
         return None  # Without an "i", only a clause that starts at punctuation or the sentence's start.
@@ -190,9 +179,7 @@ def own_clause(lead, low, m):
     if (words == ['let', 'me'] or (not words and verb == 'believe' and (tail == 'me' or tail == 'it or not')) or
             (not words and verb == 'ask' and tail in ('anyone', 'anybody')) or
             (verb.endswith('ing') and words in (['been'], ['just', 'been'], ['stop'])) or
-            ((verb in NOUNS or verb.endswith('ing')) and 0 < len(words) <= 2 and words[-1] in OWN_NOUNS) or
-            (verb.endswith('ing') and words and words[-1] in PREPOSITIONS) or
-            (verb.endswith('ing') and not words and tail.split(' ')[0] in COPULAS)):
+            (verb in NOUNS and 0 < len(words) <= 2 and words[-1] in OWN_NOUNS)):
         return 'own'
     return None
 

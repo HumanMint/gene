@@ -87,14 +87,19 @@ LEAD_BETWEEN = frozenset(BETWEEN.split('|')) | {'keeps', 'kept', 'was', 'were', 
 PASSIVE = frozenset({'was', 'were', 'been', 'be', 'is', 'are', 'am', 'being', 'get', 'got', 'gets', 'getting'})
 PARTICIPLES = frozenset({'said', 'told', 'written', 'asked', 'texted', 'thought', 'believed', 'assumed', 'claimed',
                          'insisted', 'reckoned', 'sworn', 'quoted'})
-SECOND = frozenset({'you', 'u', 'ya', 'your', 'yours', 'yourself', 'yourselves'})
+# Words that aren't the member before a report verb, though OWN takes them after the claim: whoever the member speaks
+# to, and names an interjection may also be ("fri said …", "bro says …").
+SECOND = frozenset({'you', 'u', 'ya', 'your', 'yours', 'yourself', 'yourselves', 'fri', 'bro', 'dude'})
+FIRST = frozenset({'i', 'me', 'my', 'myself', 'im', 'ive', 'we', 'us', 'our', 'ourselves'})
+THIRD = frozenset(form for form in INFLECTED.split('|') if form.endswith('s'))  # "says", "claims": never the member.
 # A clause of the member's own that only sits before the claim ends at punctuation or one of these.
 JOINS = r"and|but|so|then|anyway|because|cuz|since|while|though|plus"
 
 
 def frames(lead):
     """Whether a report verb before the claim, in its sentence, frames the claim as someone else's: its subject is
-    anyone but the member ("my mom was saying, …", "jo writes …", "you said …"); it's passive ("i was told by my mom,
+    anyone but the member ("my mom was saying, …", "jo writes …", "you said …"), or it's a third-person form
+    ("claims that, …"); it's passive ("i was told by my mom,
     …") or told to the member ("told me, …"); or, the member's own or with no subject, it introduces the claim, with
     nothing but punctuation and interjections or up to three plain words between ("i think i like chess", "said, i
     like …", "i told jo i like …"). A clause of the member's own that does something else first keeps the note: "been
@@ -114,16 +119,20 @@ def frames(lead):
             break
         if subject is not None and (subject in SECOND or (subject not in OWN and subject.replace("'", '') not in OWN)):
             return True
+        if verb in THIRD and subject not in FIRST:
+            return True  # Someone else's, whoever it is: "claims that, honestly, …", "lol says …".
         previous = near[-1].lower() if near else ''
         after = lead[m.end():]
         if verb in PARTICIPLES and (previous in PASSIVE or re.search(r"'(?:s|re|m)$|^im$", previous)):
             return True  # "i was told …", "it's said …".
         if verb in INFLECTED.split('|') and re.match(r"(?i)\s+(?:to\s+)?(?:me|us)\b", after):
             return True  # "told me, …", "kept telling me, …", "said to me …".
+        words = re.fullmatch(rf"(?i)\s+(?:(?!(?:{JOINS})\b)[\w']+\s+){{0,3}}", after)
         if verb.endswith('ing'):
+            if words and subject not in FIRST:
+                return True  # A participle that introduces it: "jo's post, saying i like chess".
             continue  # What the member was doing: "been writing all day, …", "i keep saying …".
-        if (re.fullmatch(rf"(?i)\W*(?:(?:{SAID})\W+)*", after)
-                or re.fullmatch(rf"(?i)\s+(?:(?!(?:{JOINS})\b)[\w']+\s+){{0,3}}", after)):
+        if words or re.fullmatch(rf"(?i)\W*(?:(?:{SAID})\W+)*", after):
             return True
     return False
 

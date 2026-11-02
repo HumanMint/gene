@@ -3,7 +3,7 @@
 # runs. In the rollback window the old controller withdraws a member's message their summary drew on: the database's
 # triggers retire, then and there, another member's reply depending on that summary with the question it left
 # pending, and that member's draft and reminder depending on it (gene #147, #161). Their own words and an ordinary
-# reply stay, and the old controller's start leaves the triggers in place.
+# reply stay, and the old controller's start leaves the three triggers in place (gene #170 added the third).
 export MOCK_OLD_G=34dbbb3799715328772b0ae68ab2fb1d81a68fdb
 . "$(dirname "$0")/common.sh"
 DB=$BATCH_ROOT/data/controller/gene.sqlite3
@@ -66,7 +66,7 @@ print('retired' if 'older summary' in reply and 'marker' not in reply else 'kept
       one("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name LIKE 'member_summary_%'")[0], sep='|')
 PY
 ) || fail 'the old controller could not withdraw the message'
-[[ $left == 'retired|0|fri play a song|0|Withdrawn draft|cancelled|0|0|hey|1|2' ]] \
+[[ $left == 'retired|0|fri play a song|0|Withdrawn draft|cancelled|0|0|hey|1|3' ]] \
   || fail "the old controller's withdrawal left what depended on the summary: $left"
 run 0 resume-old 1
 expect old false up

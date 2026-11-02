@@ -855,10 +855,17 @@ class Store:
         game_nights = [] if kind == 'public' else None
         if not enabled:  # Memory off: Fri keeps none of these, and forget-me erased them.
             return {'reminders': reminders, 'saved_work': [], 'game_nights': game_nights}
+        from .fri_member_summary import current_writes
         from .fri_social_store import ACTIVE, Social
         from .fri_workspace_store import Workspace
         Social.prune(db)
         Workspace.prune(db)
+        # What shows here holds nothing of a summary since lapsed: a reminder's text, a draft's title (gene #158).
+        if kind == 'private':
+            current_writes(db, 'fri_reminder_dependencies', 'SELECT id FROM fri_reminders WHERE guild_id=? AND '
+                           'user_id=? AND dm_id=?', (guild_id, user_id, place))
+        current_writes(db, 'fri_work_dependencies', "SELECT id FROM fri_work WHERE guild_id=? AND user_id=? AND "
+                       "scope=? AND state='open'", (guild_id, user_id, conversation))
         now = time.time()
         if kind == 'private':
             # A settled one stays a day from when it settled: delivery stamps lease_until (two minutes on) when it

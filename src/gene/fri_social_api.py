@@ -73,9 +73,7 @@ def register(app, store, settings, auth, chat_scope):
 
     @app.post('/social/reminders/{item}/read', dependencies=[auth('fri')])
     def reminder_read(item: str, body: Scope):
-        with store.connection() as db:
-            social.prune(db)
-            return social.reminder_row(db, item, scope(body, 'reminder'))
+        return social.reminder_read(item, scope(body, 'reminder'))
 
     @app.post('/social/reminders/{item}/bind', dependencies=[auth('fri')])
     def reminder_bind(item: str, body: Bind):

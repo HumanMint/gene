@@ -99,9 +99,16 @@ PARTICIPLES = frozenset({'said', 'told', 'written', 'asked', 'texted', 'thought'
 SECOND = frozenset({'you', 'u', 'ya', 'your', 'yours', 'yourself', 'yourselves'}) | NAMES
 ASIDE_WORDS = frozenset(ASIDES.split('|'))
 FIRST = frozenset({'i', 'me', 'my', 'myself', 'im', 'ive', 'we', 'us', 'our', 'ourselves'})
-THIRD = frozenset(form for form in INFLECTED.split('|') if form.endswith('s'))  # "says", "claims": never the member.
+FORMS = frozenset(INFLECTED.split('|'))
+THIRD = frozenset(form for form in FORMS if form.endswith('s'))  # "says", "claims": never the member.
 # A clause of the member's own that only sits before the claim ends at punctuation or one of these.
 JOINS = r"and|but|so|then|anyway|because|cuz|since|while|though|plus"
+# Matched from just after a report verb to the claim: up to three plain words, or only punctuation and interjections,
+# introduce it; "me" or "us" right after an inflected form is who it was told to.
+INTRODUCES = re.compile(rf"(?i)\s+(?:(?!(?:{JOINS})\b)[\w']+\s+){{0,3}}")
+ASIDE_ONLY = re.compile(rf"(?i)\W*(?:(?:{SAID})\W+)*")
+TOLD = re.compile(r"(?i)\s+(?:to\s+)?(?:me|us)\b")
+TOKEN = re.compile(r"[\w']+|[^\w\s]")
 
 
 def frames(lead):
@@ -114,7 +121,7 @@ def frames(lead):
     writing all day, i like chess", "i was saying earlier, …", "just told jo, …", "let me tell you, …" (gene #172)."""
     for m in VERB.finditer(lead):
         verb = m.group().lower()
-        near = re.findall(r"[\w']+|[^\w\s]", lead[max(0, m.start() - 160):m.start()])[-5:]
+        near = TOKEN.findall(lead, max(0, m.start() - 64), m.start())[-5:]  # A subject is a few short words back.
         subject, crossed = None, 0
         for token in reversed(near):
             word = re.sub(r"'(?:d|ll|re|ve|s|m)$", '', token.lower())
@@ -129,18 +136,17 @@ def frames(lead):
             return True
         if verb in THIRD and subject not in FIRST:
             return True  # Someone else's, whoever it is: "claims that, honestly, …", "lol says …".
-        previous = near[-1].lower() if near else ''
-        after = lead[m.end():]
+        previous, after = near[-1].lower() if near else '', m.end()  # Matched in place: no copy per verb.
         if verb in PARTICIPLES and (previous in PASSIVE or re.search(r"'(?:s|re|m)$|^im$", previous)):
             return True  # "i was told …", "it's said …".
-        if verb in INFLECTED.split('|') and re.match(r"(?i)\s+(?:to\s+)?(?:me|us)\b", after):
+        if verb in FORMS and TOLD.match(lead, after):
             return True  # "told me, …", "kept telling me, …", "said to me …".
-        words = re.fullmatch(rf"(?i)\s+(?:(?!(?:{JOINS})\b)[\w']+\s+){{0,3}}", after)
+        words = INTRODUCES.fullmatch(lead, after)
         if verb.endswith('ing'):
             if words and subject not in FIRST:
                 return True  # A participle that introduces it: "jo's post, saying i like chess".
             continue  # What the member was doing: "been writing all day, …", "i keep saying …".
-        if words or re.fullmatch(rf"(?i)\W*(?:(?:{SAID})\W+)*", after):
+        if words or ASIDE_ONLY.fullmatch(lead, after):
             return True
     return False
 

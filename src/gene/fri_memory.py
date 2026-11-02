@@ -68,8 +68,15 @@ RETRACTED = re.compile(r"(?i)\b(?:jk|j/k|kidding|anymore|not really)\b|(?:^|\s)/
 BETWEEN = (r"all|always|still|keep|often|usually|sometimes|just|really|also|even|actually|literally|basically|totally|"
            r"only|kinda|lowkey|would|will|can|could|should|might|may|must|do|does|did|gonna|wanna|gotta")
 SPOKEN = r"say|tell|think|believe|assume|claim|insist|reckon|swear"
+# Fri and a friend may be someone's name as well as an interjection: before a report verb, they're someone else.
+NAMES = frozenset({'fri', 'bro', 'dude'})
+ASIDES = '|'.join(word for word in SAID.split('|') if word not in NAMES)  # "my mom lol would say".
 REPORT = re.compile(rf"(?i)\b(?:{INFLECTED}|{HEARSAY})\b|"
-                    rf"(?<![\w'])(?P<subject>[\w']+)\s+(?:(?:{BETWEEN})\s+){{0,3}}(?:{SPOKEN})\b")
+                    rf"(?<![\w'])(?P<subject>[\w']+)\s+(?:(?:{BETWEEN}|{ASIDES})\s+){{0,3}}(?:{SPOKEN})\b")
+# Main's subjects count wherever they stand ("i like chess they say"); any other only after a break in the claim, so its
+# own words never do: "i like chess, my mom lol would say" is a report, "i love jazz lol say what you want" isn't.
+PLURALS = frozenset({'they', 'people', 'everyone', 'everybody', 'folks', 'friends', 'ppl', 'others', "y'all"})
+BREAK = re.compile(r"(?i)[^\w\s']|\b(?:and|but|or|cuz|coz|because|as|while|since|though|plus|who|when)\b")
 # Before a bare report verb, words that make it no one else's report: the member ("i", "we"), whoever they speak to
 # ("if you ask me", "makes you think"), a describing "that" or "which", and words that start no clause of someone
 # else's ("needless to say", "never say never", "a say", "let me tell you", "lol say it").
@@ -89,7 +96,8 @@ PARTICIPLES = frozenset({'said', 'told', 'written', 'asked', 'texted', 'thought'
                          'insisted', 'reckoned', 'sworn', 'quoted'})
 # Words that aren't the member before a report verb, though OWN takes them after the claim: whoever the member speaks
 # to, and names an interjection may also be ("fri said …", "bro says …").
-SECOND = frozenset({'you', 'u', 'ya', 'your', 'yours', 'yourself', 'yourselves', 'fri', 'bro', 'dude'})
+SECOND = frozenset({'you', 'u', 'ya', 'your', 'yours', 'yourself', 'yourselves'}) | NAMES
+ASIDE_WORDS = frozenset(ASIDES.split('|'))
 FIRST = frozenset({'i', 'me', 'my', 'myself', 'im', 'ive', 'we', 'us', 'our', 'ourselves'})
 THIRD = frozenset(form for form in INFLECTED.split('|') if form.endswith('s'))  # "says", "claims": never the member.
 # A clause of the member's own that only sits before the claim ends at punctuation or one of these.
@@ -106,14 +114,14 @@ def frames(lead):
     writing all day, i like chess", "i was saying earlier, …", "just told jo, …", "let me tell you, …" (gene #172)."""
     for m in VERB.finditer(lead):
         verb = m.group().lower()
-        near = re.findall(r"[\w']+|[^\w\s]", lead[max(0, m.start() - 120):m.start()])[-4:]
+        near = re.findall(r"[\w']+|[^\w\s]", lead[max(0, m.start() - 160):m.start()])[-5:]
         subject, crossed = None, 0
         for token in reversed(near):
             word = re.sub(r"'(?:d|ll|re|ve|s|m)$", '', token.lower())
             if not re.match(r"[\w']", token):
                 break  # Punctuation: no subject within this clause.
-            if word in LEAD_BETWEEN and crossed < 3:
-                crossed += 1
+            if word not in SECOND and (word in LEAD_BETWEEN or word in ASIDE_WORDS) and crossed < 4:
+                crossed += 1  # "my mom was always saying", "my mom lol texted".
                 continue
             subject = word
             break
@@ -138,10 +146,10 @@ def frames(lead):
 
 
 def reported_by(subject):
-    """Whether a bare report verb after this word is someone else's: the word without its contraction ("they'd") isn't
-    one of OWN, and nor is it with its apostrophe dropped ("don't")."""
+    """Whether a bare report verb after this word is someone else's: the word without its contraction ("they'd") is a
+    name (NAMES), or isn't one of OWN, nor is it with its apostrophe dropped ("don't")."""
     word = re.sub(r"'(?:d|ll|re|ve|s|m)$", '', subject.lower())
-    return word not in OWN and word.replace("'", '') not in OWN
+    return word in NAMES or (word not in OWN and word.replace("'", '') not in OWN)
 
 
 # "a bot that tells jokes", "… which sometimes says it", "… that's always telling jokes", "… that keeps saying gm"
@@ -259,7 +267,9 @@ class Source:
                      if later < len(self.filled) else '')
         # A report anywhere in the claim, and right after the evidence any verb a word away, even "that says".
         spaced = re.sub(r'\s+', ' ', claim)
-        if (RETRACTED.search(claim) or any(reported_by(m['subject']) if m['subject'] else
+        broken = (BREAK.search(spaced) or re.search('$', spaced)).start()  # The claim's own words end here at most.
+        if (RETRACTED.search(claim) or any(reported_by(m['subject']) and (m.start() > broken or m['subject'].lower()
+                                                                          in PLURALS) if m['subject'] else
                                            not DESCRIBED.search(spaced[max(m.start() - 48, 0):m.start()])
                                            for m in REPORT.finditer(spaced))
                 or TAKEN_BACK.fullmatch(following) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest)):

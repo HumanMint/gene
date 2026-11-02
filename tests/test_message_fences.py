@@ -562,3 +562,122 @@ def test_a_claim_a_little_ahead_still_counts_as_running(world):
     batch(client, store)
     agent = set_claim_time(store, client, time.time()+30)
     assert agent.claim(manual=True) == {'blocked': 'A learning pass is already running.'}
+
+
+# gene #182: a fence written while the clock is set back still stops the batch in flight.
+
+def claim_at(store):
+    with store.connection() as db:
+        return json.loads(db.execute("SELECT value FROM agent_state WHERE key='learning_claim'").fetchone()[0])['at']
+
+
+def test_the_issues_repro_a_withdrawal_during_a_backward_clock_step_stops_the_batch(world, monkeypatch):
+    """Claim at T, the clock set to T-30, a message the batch read withdrawn, the finish at T+10. withdrawn_during()
+    counts only fences at or after the claim, so the note and the summary were kept. A fence dated before the claim in
+    flight invalidates it, whatever its message: nothing the batch read is kept."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    real = time.time
+    monkeypatch.setattr(time, 'time', lambda: claim['at']-30)
+    withdraw_saved(client, taken)
+    monkeypatch.setattr(time, 'time', lambda: claim['at']+10)
+    finish()
+    assert notes(store) == []
+    with store.connection() as db:
+        assert not db.execute('SELECT 1 FROM agent_summaries').fetchone()
+    monkeypatch.setattr(time, 'time', real)
+
+
+def test_an_older_controllers_fence_dated_before_the_claim_also_stops_the_batch(world):
+    """Its own insert (gene main 8aad087's statement), run against this database: the rule is a trigger."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    with closing(sqlite3.connect(store.path)) as raw, raw:
+        raw.execute('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted,user_id,revision) '
+                    'VALUES (?,?,?,?,?,?) ON CONFLICT(guild_id,message_id) DO UPDATE SET at=excluded.at',
+                    ('123', taken, claim['at']-30, 0, None, None))
+    finish()
+    assert notes(store) == []
+
+
+def test_a_fence_moved_back_before_the_claim_also_stops_the_batch(world, monkeypatch):
+    """A message fenced before the batch and withdrawn again while the clock is set back keeps its row, at the earlier
+    time: that refresh counts as a fence written now."""
+    client, store = world
+    old = source(age=50, channel='51')['id']
+    withdraw_saved(client, old, deleted=True)
+    _, finish, claim = batch(client, store)
+    monkeypatch.setattr(time, 'time', lambda: claim['at']-30)
+    withdraw_saved(client, old, deleted=True)
+    monkeypatch.undo()
+    finish()
+    assert notes(store) == []
+
+
+def test_a_clock_set_back_with_no_batch_in_flight_changes_nothing(world, monkeypatch):
+    """Guard: a fence dated before a claim made later, and an ordinary withdrawal during one, leave it learning as
+    withdrawn_during() decides."""
+    client, store = world
+    real = time.time
+    monkeypatch.setattr(time, 'time', lambda: real()-30)
+    withdraw_saved(client, source(age=300, channel='51')['id'], deleted=True)
+    monkeypatch.setattr(time, 'time', real)
+    taken, finish, _ = batch(client, store)
+    withdraw_saved(client, taken)  # At or after the claim: only this message is left out.
+    finish()
+    assert notes(store) == ['i play chess on weekends']
+
+
+# gene #183: an older controller's finish of a claim older than the fences' week keeps nothing.
+
+def aged(store, claim, days=8):
+    """The claim, and the fences written since it, moved back `days`: what a batch finishing that late depends on,
+    with nothing pruning meanwhile."""
+    with closing(sqlite3.connect(store.path)) as raw, raw:
+        raw.execute("UPDATE agent_state SET value=json_set(value,'$.at',json_extract(value,'$.at')-?) "
+                    "WHERE key='learning_claim'", (days*86400,))
+        raw.execute('UPDATE chat_message_fences SET at=at-? WHERE at>=?', (days*86400, claim['at']))
+
+
+def older_finish(store, claim, taken):
+    """Gene main 8aad087's finish, statement by statement where it matters: it saves the note (its withdrawn_during()
+    counts only fences inside their week), moves the cursor (whose write expires the fence), then clears the claim."""
+    from gene.fri_memory_store import save
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        save(db, '123', 'public:51', '20', ('hobbies', LIKE), time.time()-200, sources=[taken])
+        AgentStore.put(db, 'cursors', {'51': {'before': '100'}})
+        AgentStore.put(db, 'learning_claim', None)
+
+
+def test_the_issues_repro_an_older_finish_of_a_claim_past_the_fences_week_keeps_nothing(world):
+    client, store = world
+    taken, _, claim = batch(client, store)
+    withdraw_saved(client, taken)
+    aged(store, claim)
+    with pytest.raises(sqlite3.IntegrityError, match='fences'):
+        older_finish(store, claim, taken)
+    assert notes(store) == [] and claim_at(store) is not None  # All of it undone: the claim stands.
+
+
+def test_the_claim_an_older_finish_couldnt_complete_is_cleared_as_interrupted(world):
+    """The interruption cleanup, which reports the claim before clearing it, goes through: by this controller's
+    claim(), and by an older one's statements."""
+    client, store = world
+    taken, _, claim = batch(client, store)
+    withdraw_saved(client, taken)
+    aged(store, claim)
+    agent = AgentStore(store, client.settings)
+    assert 'interrupted' in agent.claim(manual=True)['blocked']
+    with store.connection() as db:
+        assert AgentStore.get(db, 'learning_claim') is None
+        assert db.execute('SELECT 1 FROM agent_reports WHERE id=?', (claim['id'],)).fetchone()
+
+
+def test_an_older_finish_inside_the_fences_week_completes_as_before(world):
+    """Guard: a claim younger than the fences' week clears as before, from any controller."""
+    client, store = world
+    taken, _, claim = batch(client, store)
+    older_finish(store, claim, source(age=100, channel='51')['id'])
+    with store.connection() as db:
+        assert AgentStore.get(db, 'learning_claim') is None

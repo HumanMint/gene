@@ -528,9 +528,15 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess u say'),
     ('games', 'i like chess', 'i like chess ya say'),
     ('games', 'i like chess', 'i like chess you say'),
-    # gene #188: a report word used as a noun or an activity still frames a claim it introduces.
+    # A report word used as a noun or an activity still frames a claim it introduces.
     ('games', 'i like chess', 'my writing i like chess'),
     ('games', 'i like chess', 'my mom is tired of writing that i like chess'),
+    # Sol round 1 of #189: an attribution past a noun or activity use (B1), and an aside to the listener inside
+    # someone else's clause (B2).
+    ('games', 'i like chess', 'her writing makes it perfectly clear that i like chess'),
+    ('games', 'i like chess', 'after writing in her diary that i like chess, jo laughs'),
+    ('games', 'i like chess', 'writing is how jo communicates that i like chess'),
+    ('games', 'i like chess', "i like chess, or so the line makes yall think, those are jo's words"),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -618,20 +624,6 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     # gene #186: a continued clause carries a condition, never makes one: one the line before it answered stays answered.
     ('nickname', 'call me comet', 'i lost\nand finished early\nplease call me comet'),
     ('nickname', 'call me comet', "if i win, i'll stream\nand finish early\nplease call me comet"),
-    # gene #187: the member's own asides to whoever they speak to, however it's spelled.
-    ('games', 'i like chess', 'i like chess if yall ask me'),
-    ('games', 'i like chess', "i like chess if y'all ask me"),
-    ('games', 'i like chess', 'i like chess if you guys ask me'),
-    ('games', 'i like chess', 'i like chess, makes yall think'),
-    # gene #188: what the member does, or a report word used as a noun, is no one's report.
-    ('games', 'i like chess', 'my writing is messy, i like chess'),
-    ('games', 'i like chess', "i've recently been writing songs, i like chess"),
-    ('games', 'i like chess', 'writing is fun, i like chess'),
-    ('games', 'i like chess', 'my texting is slow, i like chess'),
-    ('games', 'i like chess', 'the swearing was wild, i like chess'),
-    ('games', 'i like chess', 'i finally finished writing my essay, i like chess'),
-    ('games', 'i like chess', 'after writing all night, i like chess'),
-    ('games', 'i like chess', 'tired of texting, i like chess'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

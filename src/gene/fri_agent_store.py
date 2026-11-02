@@ -14,7 +14,16 @@ from .fri_memory import personal_note
 from .fri_memory_store import last_removal
 from .privacy import clean
 
-CLAIM_SECONDS = 600  # A learning pass's claim: one older is interrupted (see claim) and finishes nothing (see finish).
+CLAIM_SECONDS = 600  # A learning pass's claim: one older is interrupted when the next pass asks (see claim).
+# How late a claim's own finish is still taken: past any batch Fri runs (a model call alone may take ten minutes),
+# far inside a message fence's week, which withdrawn_during() counts on (gene #179).
+FINISH_SECONDS = 3600
+
+
+def claimed_at(claim):
+    """A claim's time, or None when what's stored isn't a finite number (a claim that can't be ordered)."""
+    value = claim.get('at')
+    return float(value) if type(value) in (int, float) and math.isfinite(value) else None
 
 DEFAULTS = {
     'enabled': False, 'learning_enabled': True, 'proactive': True, 'support_dms': True,
@@ -231,7 +240,7 @@ class AgentStore:
                 return blocked('The previous learning report still needs to reach the owner.')
             pending = self.get(db, 'learning_claim')
             if pending:
-                if now-pending['at'] < CLAIM_SECONDS:
+                if (at := claimed_at(pending)) is not None and now-at < CLAIM_SECONDS:
                     return blocked('A learning pass is already running.')
                 db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
                            (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; no automatic replay.'))
@@ -302,10 +311,10 @@ class AgentStore:
             claim = self.get(db, 'learning_claim')
             if not claim or claim['id'] != batch_id:
                 raise ValueError('Learning claim expired or already completed')
-            # Past its lifetime it's interrupted (see claim), and the fences it depends on may be past their week and
-            # count for nothing (withdrawn_during): nothing it read is kept, and its cursor stays, so the slice is read
-            # again (gene #179). So is one claimed after now (a clock set back), which their times can't be ordered against.
-            if not 0 <= now-claim.get('at', 0) < CLAIM_SECONDS:
+            # Too late, the fences it depends on may be past their week and count for nothing (withdrawn_during):
+            # nothing it read is kept, and its cursor stays, so the slice is read again (gene #179). So is one claimed
+            # after now (a clock set back), or whose time isn't a number, which fences can't be ordered against.
+            if (at := claimed_at(claim)) is None or not 0 <= now-at < FINISH_SECONDS:
                 raise ValueError('Learning claim expired or already completed')
             if not 0 <= scanned <= claim['limit'] or len(records) > scanned:
                 raise ValueError('Invalid learning batch size')

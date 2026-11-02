@@ -468,6 +468,11 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'you really really really really really said earlier, i like chess'),
     ('games', 'i like chess', 'fri really really really really really said earlier, i like chess'),
     ('games', 'i like chess', 'told my mom, i like chess'),
+    ('games', 'i like chess', 'just told jo, i like chess'),
+    ('games', 'i like chess', 'So just said jo, i like chess'),
+    ('games', 'i like chess', 'ya just said jo, i like chess'),
+    ('games', 'i like chess', 'bro just said jo, i like chess'),
+    ('games', 'i like chess', 'believe it, i like chess'),
     ('games', 'i like chess', 'my mom and i were saying, i like chess'),
     # After it: every bare report verb (B4), and whoever the member speaks to unless it's an aside of theirs.
     ('games', 'i like chess', 'i like chess, my friends write'),
@@ -542,7 +547,6 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     # report word in it.
     ('games', 'i like chess', 'been writing all day, i like chess'),
     ('games', 'i like chess', 'i was saying earlier, i like chess'),
-    ('games', 'i like chess', 'just told jo, i like chess'),
     ('games', 'i like chess', 'let me tell you, i like chess'),
     ('games', 'i like chess', 'my text was long, i like chess'),
     ('games', 'i like chess', 'stop swearing lol, i like chess'),

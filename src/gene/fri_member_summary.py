@@ -277,6 +277,7 @@ def expiry_triggers(db):
     noted = (f"INSERT OR REPLACE INTO agent_state(key,value) SELECT {key('s.guild_id', 's.user_id')},s.refreshed "
              "FROM fri_member_summaries s WHERE s.guild_id=NEW.guild_id AND s.user_id=NEW.user_id;")
     refreshed = f"UPDATE agent_state SET value=NEW.refreshed WHERE key={key('NEW.guild_id', 'NEW.user_id')};"
+    due = (f"EXISTS (SELECT 1 FROM agent_state a WHERE a.key>='{MIRROR}' AND a.key<'{MIRROR[:-1]};' AND {lapsed})")
     held = ("SELECT 1 FROM {table} d JOIN agent_state a ON a.key=" + key('d.guild_id', 'd.user_id') +
             " WHERE d.{column}=NEW.{item} AND " + lapsed)
     triggers = (
@@ -286,15 +287,18 @@ def expiry_triggers(db):
         ('summary_expiry_refreshed', 'AFTER UPDATE ON fri_member_summaries', refreshed),
         ('summary_expiry_gone', 'AFTER DELETE ON fri_member_summaries',
          f"DELETE FROM agent_state WHERE key={key('OLD.guild_id', 'OLD.user_id')};"),
+        # Only a move into `claimed` or `sending`: retirement keeps a `sending` item's state as it clears its words.
         ('summary_expired_post_held', "BEFORE UPDATE OF state ON fri_posts WHEN NEW.state IN ('claimed','sending') AND "
-         f"EXISTS ({held.format(table='fri_work_dependencies', column='work_id', item='work_id')})",
+         f"OLD.state IS NOT NEW.state AND EXISTS ({held.format(table='fri_work_dependencies', column='work_id', item='work_id')})",
          "SELECT RAISE(ABORT, 'A summary this post depends on has lapsed; do not send');"),
         ('summary_expired_reminder_held', "BEFORE UPDATE OF state ON fri_reminders WHEN NEW.state IN ('claimed','sending') "
-         f"AND EXISTS ({held.format(table='fri_reminder_dependencies', column='reminder_id', item='id')})",
+         f"AND OLD.state IS NOT NEW.state AND EXISTS ({held.format(table='fri_reminder_dependencies', column='reminder_id', item='id')})",
          "SELECT RAISE(ABORT, 'A summary this reminder depends on has lapsed; do not send');"),
         # The mirror's own writes aren't one of those: a summary lapses as time passes, with no write.
-        *((f'summaries_lapse{suffix}', event + (f" WHEN substr(NEW.key,1,{len(MIRROR)}) IS NOT '{MIRROR}'"
-                                                 if event.endswith(' agent_state') else ''), retire)
+        # Only once a mirrored summary has lapsed, found by a range of the mirror's own keys, so the frequent writes
+        # cost nothing more while every summary is current.
+        *((f'summaries_lapse{suffix}', event + (f" WHEN substr(NEW.key,1,{len(MIRROR)}) IS NOT '{MIRROR}' AND {due}"
+                                                 if event.endswith(' agent_state') else f' WHEN {due}'), retire)
           for suffix, event in FREQUENT))
     # Replaced in one transaction, as the others are, and the mirror written again from what depends on what now.
     began = not db.in_transaction
@@ -678,6 +682,8 @@ def purge(path):
             db.execute('DROP TABLE IF EXISTS fri_member_summary_calls')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_generations')
             db.execute('DELETE FROM agent_state WHERE key IN (?,?)', (CLAIM, NEXT))
+            # Nothing mirrored outlives the summaries (see expiry_triggers): their refresh times go with them.
+            db.execute('DELETE FROM agent_state WHERE substr(key,1,?)=?', (len(MIRROR), MIRROR))
     finally:
         db.close()
 

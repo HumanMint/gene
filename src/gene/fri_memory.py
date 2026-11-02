@@ -76,6 +76,8 @@ REPORT = re.compile(rf"(?i)\b(?:{INFLECTED}|{HEARSAY})\b|"
 # Main's subjects count wherever they stand ("i like chess they say"); any other only after a break in the claim, so its
 # own words never do: "i like chess, my mom lol would say" is a report, "i love jazz lol say what you want" isn't.
 PLURALS = frozenset({'they', 'people', 'everyone', 'everybody', 'folks', 'friends', 'ppl', 'others', "y'all"})
+# "who would think", "who'd say otherwise": a rhetorical question of the member's, not someone's report.
+RHETORICAL = re.compile(r"(?i)who(?:'d|\s+(?:would|could|might|will|can)\b)")
 BREAK = re.compile(r"(?i)[^\w\s']|\b(?:and|but|or|cuz|coz|because|as|while|since|though|plus|who|when)\b")
 # Before a bare report verb, words that make it no one else's report: the member ("i", "we"), whoever they speak to
 # ("if you ask me", "makes you think"), a describing "that" or "which", and words that start no clause of someone
@@ -274,8 +276,8 @@ class Source:
         # A report anywhere in the claim, and right after the evidence any verb a word away, even "that says".
         spaced = re.sub(r'\s+', ' ', claim)
         broken = (BREAK.search(spaced) or re.search('$', spaced)).start()  # The claim's own words end here at most.
-        if (RETRACTED.search(claim) or any(reported_by(m['subject']) and (m.start() > broken or m['subject'].lower()
-                                                                          in PLURALS) if m['subject'] else
+        if (RETRACTED.search(claim) or any(reported_by(m['subject']) and not RHETORICAL.match(m.group()) and (
+                                               m.start() > broken or m['subject'].lower() in PLURALS) if m['subject'] else
                                            not DESCRIBED.search(spaced[max(m.start() - 48, 0):m.start()])
                                            for m in REPORT.finditer(spaced))
                 or TAKEN_BACK.fullmatch(following) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest)):

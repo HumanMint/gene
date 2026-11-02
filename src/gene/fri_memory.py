@@ -74,9 +74,10 @@ REPORT = re.compile(
     r"usually|just|really|also)\s+)?(?:say|tell|think|believe|assume|claim|insist|reckon|swear)\b")
 # Beyond REPORT (gene #172), a report anywhere after the claim starts: any inflected form ("i like chess, my friend
 # said", "… they are swearing", "… or so she believes", "… according to my brother"), or a bare verb after its subject,
-# through up to three adverbs or auxiliaries ("… my parents say", "… the boys would say", "… my mom will tell you").
-# The subject is any noun phrase but the member's own (see OWN): "i like chess, i think" is their hedge. A subject
-# starts only where a word does, so each is tried once.
+# through any run of adverbs, auxiliaries or interjections ("… my parents say", "… the boys would say", "… my mom will
+# tell you", "… or so ya still always really just say", gene #187). The subject is any noun phrase but the member's own
+# (see OWN): "i like chess, i think" is their hedge. It's the word before the run, never one in it, so each run is
+# crossed once, from its subject, and none of its words is read as one.
 BETWEEN = (r"all|always|still|keep|often|usually|sometimes|just|really|also|even|actually|literally|basically|totally|"
            r"only|kinda|lowkey|would|will|can|could|should|might|may|must|do|does|did|gonna|wanna|gotta")
 SPOKEN = BARE  # Every bare form: "… my friends write", "… my parents text" (Sol round 1 of #178).
@@ -84,13 +85,17 @@ SPOKEN = BARE  # Every bare form: "… my friends write", "… my parents text" 
 NAMES = frozenset({'fri', 'bro', 'dude'})
 # Interjections that may sit between a subject and its verb ("my mom lol would say"); never "ya", which may be "you".
 ASIDES = '|'.join(word for word in SAID.split('|') if word not in NAMES | {'ya'})
+MODIFIER = rf"(?:{BETWEEN}|{ASIDES})"
 HEARD = re.compile(rf"(?i)\b(?:{INFLECTED}|{HEARSAY})\b|"
-                   rf"(?<![\w'])(?P<subject>[\w']+)\s+(?:(?:{BETWEEN}|{ASIDES})\s+){{0,3}}(?:{SPOKEN})\b")
+                   rf"(?<![\w'])(?!{MODIFIER}(?![\w']))(?P<subject>[\w']+)\s+(?:{MODIFIER}\s+)*+(?:{SPOKEN})\b")
 # Main's subjects count wherever they stand ("i like chess they say"); any other only after a break in the claim, so its
 # own words never do: "i like chess, my mom lol would say" is a report, "i love jazz lol say what you want" isn't.
-PLURALS = frozenset({'they', 'people', 'everyone', 'everybody', 'folks', 'friends', 'ppl', 'others', "y'all"})
+PLURALS = frozenset({'they', 'people', 'everyone', 'everybody', 'folks', 'friends', 'ppl', 'others', "y'all"} |
+                    # Whoever the member speaks to, however it's spelled, counts like y'all (gene #187).
+                    {'you', 'u', 'ya', 'yall', 'guys'})
 # The member's own asides to whoever they speak to, never a report: "… if you ask me", "…, makes you think".
-ASIDE_PHRASES = re.compile(r"(?i)\bif (?:you|u|ya) (?:ask|asked) me\b|\bmakes? (?:you|u|ya) (?:think|wonder)\b")
+YOU = r"(?:you guys|you|u|ya|yall|y'all)"  # Every spelling, in each place (gene #187).
+ASIDE_PHRASES = re.compile(rf"(?i)\bif {YOU} (?:ask|asked) me\b|\bmakes? {YOU} (?:think|wonder)\b")
 # After the claim, a report form in the member's own clause with something of its own after it: "…, ive written a
 # song", "…, im swearing at the lag" (S1). Not one that points back at the claim ("…, i said", "…, i told you so") or
 # is passive ("…, or so i was told").
@@ -128,9 +133,16 @@ ME_BETWEEN = frozenset({'was', 'were', 'am', 'are', 'have', 'had', 'been', 'keep
                         'tried', 'practice'})
 # Between a passive's helper and its participle: "i was just told", "or so i've recently been told".
 ADVERBS = frozenset({'just', 'really', 'also', 'already', 'always', 'still', 'even', 'actually', 'literally',
-                     'recently', 'once', 'often', 'never'})
-# A noun, not a verb, after these: "just a thought but …", "my text was long, …".
-NOUNS, OWN_NOUNS = frozenset({'thought', 'text', 'quote', 'claim', 'say'}), frozenset({'a', 'my'})
+                     'recently', 'once', 'often', 'never', 'finally', 'lately', 'usually', 'sometimes', 'mostly'})
+# A noun, not a verb, after these: "just a thought but …", "my text was long, …", and so is a gerund or a participle
+# used as one ("my writing is messy, …", "the swearing was wild, …", "my sworn enemy, …", gene #188).
+NOUNS = frozenset({'thought', 'text', 'quote', 'claim', 'say', 'texts', 'quotes', 'claims', 'written', 'sworn'})
+OWN_NOUNS = frozenset({'a', 'an', 'the', 'my', 'your', 'our', 'his', 'her', 'their', 'this', 'that', 'some'})
+# A gerund after these is an activity's name, not a report: "after writing all night, …", "tired of texting, …".
+PREPOSITIONS = frozenset({'after', 'before', 'from', 'about', 'at', 'with', 'for', 'of', 'in', 'on', 'into', 'by'})
+# A gerund that starts its clause before one of these is its subject: "writing is fun, …", "swearing makes it worse".
+COPULAS = frozenset({'is', 'was', 'are', 'were', "isn't", "wasn't", 'has', 'had', 'can', 'could', 'will', 'would',
+                     'might', 'should', 'makes', 'made', 'takes', 'took', 'gets', 'got', 'feels', 'felt', 'seems'})
 PASSIVE = frozenset({'was', 'were', 'been', 'be', 'is', 'are', 'am', 'being', 'get', 'got', 'gets', 'getting'})
 PARTICIPLES = frozenset({'said', 'told', 'written', 'asked', 'texted', 'thought', 'believed', 'assumed', 'claimed',
                          'insisted', 'reckoned', 'sworn', 'quoted'})
@@ -148,33 +160,39 @@ WORD = re.compile(r"[\w']+")
 TOKEN = re.compile(r"[\w']+|[^\w\s]")
 
 
-def own_clause(lead, m):
+def own_clause(lead, low, m):
     """Whether the clause a report verb before the claim stands in is positively the member's own: 'me' when it
     starts with them ("i was saying earlier, …", "lol i keep telling …", at most three helping words between), 'own'
     for a short list of theirs without an "i", in a clause that starts at punctuation or the sentence's start ("let
     me tell you, …", "believe me, …", "been writing all day, …", "stop swearing lol, …", "just a thought but …", "ask
     anyone, …"), else None: someone else's, or no one can tell, which keeps nothing ("said jo, …", "just said jo, …",
-    whose "just" may be a name, "my mom, as usual, said that, …", "May said earlier, …")."""
+    whose "just" may be a name, "my mom, as usual, said that, …", "May said earlier, …"). What the member does
+    counts, through adverbs ("i've recently been writing songs, …"), and so does a report word used as a noun ("my
+    writing is messy, …", "writing is fun, …", "after writing all night, …"), gene #188. `low` is `lead` lowercased,
+    once for every report verb in it (gene #188)."""
     verb, window = m.group().lower(), max(0, m.start() - 80)
     starts = list(STARTS.finditer(lead, window, m.start()))
     if not starts and window > 0:
         return None  # Its clause runs back past what's looked at.
-    words = WORD.findall(lead.lower(), starts[-1].end() if starts else 0, m.start())
+    words = WORD.findall(low, starts[-1].end() if starts else 0, m.start())
     joined = bool(starts) and WORD.fullmatch(starts[-1].group())  # After "but", "so" …, which may be a name.
     lead_in = next((n for n, word in enumerate(words) if not (word in ASIDE_WORDS or word in NAMES) or word == 'ya'),
                    len(words))
     if lead_in < len(words) and words[lead_in] in ME:
         del words[:lead_in]  # "lol i was saying", "bro i was saying". Before anything else, any of them may be a
         # name ("So just said …", "bro just said …"), and "ya" may be "you": no member there.
-    if words and words[0] in ME and len(words) <= 4 and all(word in ME_BETWEEN for word in words[1:]):
+    helping = [word for word in words[1:] if word not in ADVERBS]  # "i've recently been writing" (gene #188).
+    if words and words[0] in ME and len(helping) <= 3 and all(word in ME_BETWEEN for word in helping):
         return 'me'
     if joined:
         return None  # Without an "i", only a clause that starts at punctuation or the sentence's start.
-    tail = ' '.join(WORD.findall(lead.lower(), m.end(), m.end() + 24)[:3])
+    tail = ' '.join(WORD.findall(low, m.end(), m.end() + 24)[:3])
     if (words == ['let', 'me'] or (not words and verb == 'believe' and (tail == 'me' or tail == 'it or not')) or
             (not words and verb == 'ask' and tail in ('anyone', 'anybody')) or
             (verb.endswith('ing') and words in (['been'], ['just', 'been'], ['stop'])) or
-            (verb in NOUNS and 0 < len(words) <= 2 and words[-1] in OWN_NOUNS)):
+            ((verb in NOUNS or verb.endswith('ing')) and 0 < len(words) <= 2 and words[-1] in OWN_NOUNS) or
+            (verb.endswith('ing') and words and words[-1] in PREPOSITIONS) or
+            (verb.endswith('ing') and not words and tail.split(' ')[0] in COPULAS)):
         return 'own'
     return None
 
@@ -187,12 +205,13 @@ def frames(lead):
     only introduces it without an "i" (gene #172)."""
     if re.search(r'(?i)\baccording to\b', lead):
         return True  # Hearsay main's FRAMED doesn't name.
+    low = lead.lower()  # Once, not once for each report verb (gene #188).
     for m in VERB.finditer(lead):
-        own = own_clause(lead, m)
+        own = own_clause(lead, low, m)
         if own is None:
             return True
         verb, after = m.group().lower(), m.end()
-        before = [word for word in WORD.findall(lead.lower(), max(0, m.start() - 64), m.start()) if word not in ADVERBS]
+        before = [word for word in WORD.findall(low, max(0, m.start() - 64), m.start()) if word not in ADVERBS]
         previous = before[-1] if before else ''
         if verb in PARTICIPLES and (previous in PASSIVE or re.search(r"'(?:s|re|m)$|^im$", previous)):
             return True  # "i was told …", "i was just told …", "it's said …".
@@ -208,16 +227,16 @@ def frames(lead):
     return False
 
 
-def independent(text, m):
+def independent(text, low, m):
     """An inflected report form after the claim in the member's own clause, with something of its own after it (see
-    ME_CLAUSE)."""
+    ME_CLAUSE). `low` is `text` lowercased, once for every form in it (gene #188)."""
     if not ME_CLAUSE.search(text, max(0, m.start() - 60), m.start()):
         return False
     verb = m.group().lower()
-    before = [word for word in WORD.findall(text.lower(), max(0, m.start() - 48), m.start()) if word not in ADVERBS]
+    before = [word for word in WORD.findall(low, max(0, m.start() - 48), m.start()) if word not in ADVERBS]
     if verb in PARTICIPLES and before and (before[-1] in PASSIVE or re.search(r"'(?:s|re|m)$|^im$", before[-1])):
         return False  # "…, or so i was just told", "…, i'm told".
-    following = WORD.findall(text.lower(), m.end(), m.end() + 40)[:2]
+    following = WORD.findall(low, m.end(), m.end() + 40)[:2]
     if not following or following[0] in ASIDE_WORDS:
         return False
     if following[0] in BACKREF:  # Pointing back at the claim, unless an activity goes on: "ive written it down".
@@ -232,13 +251,22 @@ OPENS = re.compile(rf"(?i)(?:(?:{'|'.join(sorted(UNFINISHED))})\s+)*(?:unless|wh
                    r"provided|if)\b")
 
 
+# A clause that goes on from the one before it ("and finish the match early", "or tie") answers nothing: whether a
+# condition is open is up to the clause or line before it (gene #186).
+CONTINUES = frozenset({'and', 'or', 'nor', 'plus'})
+
+
 def unresolved(line):
     """Whether a line ends inside a condition (True), answers it or says something else (False), or has no clause
-    of its own words at all (None): only a courtesy, interjections or "then"."""
+    of its own words at all (None): only a courtesy, interjections, "then" or clauses that go on from the one before
+    ("if i win\nand finish the match early\n…", gene #186)."""
     for clause in reversed(re.split(r"[^\w\s']+", line)):
         words = WORD.findall(COURTESY.sub('', clause.strip(), count=1).lower())
         if any(word not in UNFINISHED for word in words):
-            return bool(OPENS.match(' '.join(words)))
+            opened = bool(OPENS.match(' '.join(words)))
+            first = next((word for word in words if word not in ASIDE_WORDS), '')
+            if opened or first not in CONTINUES:
+                return opened
     return None
 
 
@@ -248,9 +276,10 @@ def reported(spaced):
     after someone else's subject (main's plurals anywhere, any other past a break), short of the member's asides."""
     broken = (BREAK.search(spaced) or re.search('$', spaced)).start()  # The claim's own words end here at most.
     heard = ASIDE_PHRASES.sub(lambda aside: ' ' * len(aside.group()), spaced)  # Same places, asides blanked.
+    low = heard.lower()
     return any(reported_by(m['subject']) and not RHETORICAL.match(m.group()) and (
                    m.start() > broken or m['subject'].lower() in PLURALS) if m['subject'] else
-               not DESCRIBED.search(heard[max(m.start() - 48, 0):m.start()]) and not independent(heard, m)
+               not DESCRIBED.search(heard[max(m.start() - 48, 0):m.start()]) and not independent(heard, low, m)
                for m in HEARD.finditer(heard))
 
 

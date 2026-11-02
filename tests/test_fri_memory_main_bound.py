@@ -1,4 +1,4 @@
-"""Sol round 2 of #178: gene #172 and #173 only ever refuse more than main did. Main's validator as it was (8aad087),
+"""Sol round 2 of #178: gene #172 and #173 only ever refuse more than main did, and so do #186-#188. Main's validator as it was (8aad087),
 kept verbatim beside this test as a reference, must keep every note this one keeps: for the reviewed repros, and for
 generated and fuzzed messages."""
 import importlib.util
@@ -20,7 +20,7 @@ def reference():
 
 MAIN = reference()
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
-          ('music', 'my fav band is slowdive'), ('projects', 'im building a mod')]
+          ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
 
 def leaks(messages):
@@ -49,6 +49,13 @@ REVIEWED = [
     'just a thought but i like chess', 'i keep saying i like chess', 'i texted jo earlier, i like chess',
     'been thinking all day, i like chess', 'ask anyone, i like chess', 'i like chess, i told jo about it',
     'i like chess and i wrote a song', 'just told jo, i like chess', 'told my mom, i like chess',
+    # gene #186-#188: continued conditions, long modifier runs, second person, and the activities and nouns kept.
+    'if i win\nand finish the match early\nplease call me comet', 'if i win, and finish early\nplease call me comet',
+    'i lost\nand finished early\nplease call me comet', 'i like chess, or so ya still always really just say',
+    'i like chess yall say', 'i like chess you guys say', "i like chess if y'all ask me", 'i like chess, makes yall think',
+    "i like chess, makes y'all think", 'my writing is messy, i like chess', "i've recently been writing songs, i like chess",
+    'writing is fun, i like chess', 'the swearing was wild, i like chess', 'my mom writing that, i like chess',
+    'her writing says i like chess', 'my writing i like chess', 'i was recently told by jo, i like chess',
 ]
 
 
@@ -59,15 +66,20 @@ def test_no_reviewed_repro_is_kept_where_main_refuses_it():
 
 
 SUBJECTS = ['', 'i ', 'we ', 'my mom ', 'jo ', 'she ', 'they ', 'people ', 'you ', 'ya ', 'u ', 'fri ', 'bro ', 'May ',
-            'Will ', 'So ', 'Just ', 'who ', 'it ', 'lol ', 'MY MOM ', 'everyone ', 'the boys ']
-MODIFIERS = ['', 'was ', 'just ', 'really ', 'lol ', 'keeps ', 'has been ', 'was just ', 'really '*5, "i'm ", 'am ']
+            'Will ', 'So ', 'Just ', 'who ', 'it ', 'lol ', 'MY MOM ', 'everyone ', 'the boys ', 'yall ', "y'all ",
+            'you guys ', 'my ', 'the ', 'a ', "i've ", 'her ']
+MODIFIERS = ['', 'was ', 'just ', 'really ', 'lol ', 'keeps ', 'has been ', 'was just ', 'really '*5, "i'm ", 'am ',
+             'still always really just ', 'lol lol lol lol ', 'recently been ', 'finally ', 'is ', 'was recently ']
 VERBS = ['say', 'said', 'says', 'saying', 'told', 'tell', 'telling', 'quoted', 'quoting', 'quote', 'insist', 'insists',
          'swear', 'swearing', 'sworn', 'wrote', 'written', 'writing', 'texted', 'texting', 'text', 'asked', 'asking',
          'reckon', 'reckoning', 'claims', 'believe', 'thought', 'think', 'thinking', 'according to']
 OBJECTS = ['', 'me ', 'jo ', 'to me ', 'that ', 'it ', 'it down ', 'earlier ', 'by my mom ', 'a song ', 'all day ']
 SEPARATORS = [' ', ', ', ' lol ', ', honestly, ', ' and ', ' - ', ', so ', ' \U0001F602 ', '\n', ': ']
 TAILS = ['', ', i think', ', ive written a song', ', or so i was told', ', you say', ', ya say', ' if you ask me',
-         ', my parents say', ', who would think', ' whenever we play', ' if that makes sense', ', she has written']
+         ', my parents say', ', who would think', ' whenever we play', ' if that makes sense', ', she has written',
+         ', or so ya still always really just say', ' yall say', ' you guys say', ' if yall ask me', ' if you guys ask me',
+         ', makes yall think', ", makes y'all think", ', my mom lol lol lol lol would say', ' u say', ' is fun',
+         ' is messy']
 
 
 def generated(count, seed):
@@ -84,7 +96,8 @@ def generated(count, seed):
 WORDS = ['i', 'my', 'mom', 'jo', 'she', 'they', 'you', 'ya', 'we', 'said', 'say', 'says', 'told', 'quoted', 'writing',
          'written', 'texting', 'swearing', 'insists', 'was', 'just', 'really', 'lol', 'so', 'and', 'but', 'if', 'when',
          'whenever', 'win', 'play', 'please', 'then', "that's", 'ok', 'it', 'down', 'that', 'by', 'me', 'May', 'Will',
-         'according', 'to', 'who', 'would', 'think', 'not', 'jk']
+         'according', 'to', 'who', 'would', 'think', 'not', 'jk', 'or', 'yall', "y'all", 'u', 'guys', 'still', 'always',
+         'the', 'is', 'fun', 'messy', 'recently', 'been', 'finally', "i've", 'ask', 'makes', 'finish', 'early']
 MARKS = [' ', ' ', ' ', ', ', '\n', '. ', '? ', '! ', ' - ', ': ', ' (', ') ', ' "', '" ', ' \U0001F602 ']
 
 
@@ -99,6 +112,27 @@ def fuzzed(count, seed):
         if rng.random() < 0.1:
             text = text.upper().replace(evidence.upper(), evidence)
         yield category, evidence, text
+
+
+LINES = ['if i win', 'whenever we play', 'and finish the match early', 'or tie', 'and then', 'then', "if that's ok",
+         'i lost', "if i win, i'll stream", 'and', 'or so', 'lol', 'and if i lose', 'until further notice', 'and you',
+         'or stream, then', 'please']
+
+
+def condition_lines(count, seed):
+    """gene #186's shape: lines before a nickname that open, continue, cross or answer a condition."""
+    rng = random.Random(seed)
+    for _ in range(count):
+        evidence = rng.choice(['call me dan', 'call me comet', 'my nickname is dan'])
+        lines = [rng.choice(LINES) for _ in range(rng.randint(1, 4))]
+        ending = rng.choice(['\n', '\n', ',\n', '\n\n', ' lol\n'])
+        yield 'nickname', evidence, '\n'.join(lines) + ending + rng.choice(['', 'please ', 'pls ', 'and ']) + evidence
+
+
+def test_generated_condition_lines_are_never_kept_where_main_refuses_them():
+    messages = list(condition_lines(20000, 186))
+    assert sum(MAIN({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 2000  # Main keeps many.
+    assert not leaks(messages)
 
 
 def test_generated_reports_and_conditions_are_never_kept_where_main_refuses_them():

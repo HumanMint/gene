@@ -509,6 +509,25 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me dan', "if i win\nif that's ok\nplease call me dan"),
     ('nickname', 'call me dan', 'if i win, then\nplease call me dan'),
     ('games', 'i like chess', 'i like chess, or so ya say'),
+    # gene #186: a condition continued on the next line, or in the next clause, is still open.
+    ('nickname', 'call me comet', 'if i win\nand finish the match early\nplease call me comet'),
+    ('nickname', 'call me comet', 'if i win\nor finish the match early\nplease call me comet'),
+    ('nickname', 'call me comet', 'if i win, and finish early\nplease call me comet'),
+    ('nickname', 'call me comet', 'if i win\nand finish early\nand then\nplease call me comet'),
+    ('nickname', 'call me comet', 'if i win\nand finish early\nor tie\nplease call me comet'),
+    ('nickname', 'my nickname is comet', 'whenever we play\nor stream\nmy nickname is comet'),
+    # gene #187: someone else's subject however many modifiers sit before the verb, and whoever the member speaks to
+    # however it's spelled.
+    ('games', 'i like chess', 'i like chess, or so ya still always really just say'),
+    ('games', 'i like chess', 'i like chess, my mom lol lol lol lol would say'),
+    ('games', 'i like chess', 'i like chess, my parents still always really just say'),
+    ('games', 'i like chess', 'i like chess, or so u still always really just say'),
+    ('games', 'i like chess', "i like chess y'all always really just still say"),
+    ('games', 'i like chess', 'i like chess yall say'),
+    ('games', 'i like chess', 'i like chess you guys say'),
+    ('games', 'i like chess', 'i like chess u say'),
+    ('games', 'i like chess', 'i like chess ya say'),
+    ('games', 'i like chess', 'i like chess you say'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -593,6 +612,21 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, ive written it down'),
     ('nickname', 'call me dan', "if i win, i'll stream\nif that's ok\nplease call me dan"),
     ('nickname', 'call me dan', 'i lost when we played\nanyway please call me dan'),
+    # gene #186: a continued clause carries a condition, never makes one: one the line before it answered stays answered.
+    ('nickname', 'call me comet', 'i lost\nand finished early\nplease call me comet'),
+    ('nickname', 'call me comet', "if i win, i'll stream\nand finish early\nplease call me comet"),
+    # gene #187: the member's own asides to whoever they speak to, however it's spelled.
+    ('games', 'i like chess', 'i like chess if yall ask me'),
+    ('games', 'i like chess', "i like chess if y'all ask me"),
+    ('games', 'i like chess', 'i like chess if you guys ask me'),
+    ('games', 'i like chess', 'i like chess, makes yall think'),
+    # gene #188: what the member does, or a report word used as a noun, is no one's report.
+    ('games', 'i like chess', 'my writing is messy, i like chess'),
+    ('games', 'i like chess', "i've recently been writing songs, i like chess"),
+    ('games', 'i like chess', 'writing is fun, i like chess'),
+    ('games', 'i like chess', 'my texting is slow, i like chess'),
+    ('games', 'i like chess', 'the swearing was wild, i like chess'),
+    ('games', 'i like chess', 'i finally finished writing my essay, i like chess'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -679,7 +713,11 @@ def test_reports_and_conditions_are_read_in_one_pass():
     for pad in ('my parents always ', 'they would really ', "a'b'c'd'", 'people ', 'whenever we play, ',
                 'whenever you want, ', 'the boys keep swearing ', 'my mom lol was saying ', 'said, ', 'told me, ',
                 'my mom, as usual, said that, ', 'i was saying earlier, ', 'whenever we play\n', 'you say ',
-                "if that's ok\n", 'if i win, then\n'):
+                "if that's ok\n", 'if i win, then\n',
+                # gene #186-#188: continued conditions, long modifier runs, second person, activities and nouns.
+                'and finish the match early\n', 'if i win\nand ', 'or so ya still always really just ', 'lol ',
+                'my mom always ', 'yall ', 'you guys ', 'i writing, ', 'my writing is messy, ',
+                "i've recently been writing ", 'writing makes it fun, '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

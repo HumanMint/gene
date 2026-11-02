@@ -447,6 +447,8 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i swear i like chess'),
     ('games', 'i like chess', 'i reckon i like chess'),
     ('games', 'i like chess', 'i told jo i like chess'),
+    ('games', 'i like chess', "jo's post, saying i like chess"),
+    ('games', 'i like chess', 'fri said, honestly, the server is dead, i like chess'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None

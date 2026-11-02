@@ -572,7 +572,7 @@ def test_reports_and_conditions_are_read_in_one_pass():
             personal_note({'category': category, 'evidence': evidence}, text)
     # Every word may be a report's subject, an adverb between, or start a condition before a nickname; each is
     # looked at once, before the claims and after them.
-    for pad in ('my parents always ', 'they would really ', "a'b'c'd'", 'people ' 'whenever we play, ',
+    for pad in ('my parents always ', 'they would really ', "a'b'c'd'", 'people ', 'whenever we play, ',
                 'whenever you want, ', 'the boys keep swearing '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])

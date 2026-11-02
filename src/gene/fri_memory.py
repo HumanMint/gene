@@ -33,11 +33,16 @@ FILLER = re.compile(rf"(?i)(^\W*|\b(?:{STARTER})\W+|(?:^\W*|[^\w\s']\s*|\b(?:{ST
                     rf"if (?:i'm|im|i am) honest|if you ask me)\b|"
                     rf"(^\W*(?:(?:{SAID})\W+)*|\b(?:but|and)\W+(?:(?:{SAID})\W+)?|{ME})"
                     rf"(?:gotta|got to|have to|must|needless to) say\b")
+# One report vocabulary, every form, for both places a report can stand (gene #172). Before the claim any of them frames
+# it (FRAMED); after it starts, an inflected one is a report, and a bare one is after someone else (REPORT).
+BARE = r"say|tell|ask|write|text|think|believe|assume|claim|insist|reckon|swear|quote"
+INFLECTED = (r"says|said|saying|tells|told|telling|asks|asked|asking|writes|wrote|written|writing|texts|texted|texting|"
+             r"thinks|thought|thinking|believes|believed|believing|assumes|assumed|assuming|claims|claimed|claiming|"
+             r"insists|insisted|insisting|reckons|reckoned|reckoning|swears|swore|sworn|swearing|quotes|quoted|quoting")
+HEARSAY = r"according to|apparently|supposedly|allegedly"
 # Someone else's words, a supposition or a quotation: nothing after it in the sentence is the member's claim.
 FRAMED = re.compile(
-    r"(?i)\b(?:say|says|said|saying|tells?|told|telling|ask(?:s|ed)?|wr(?:ite|ites|ote)|text(?:s|ed)|goes|"
-    r"think(?:s|ing)?|thought|believe[sd]?|assume[sd]?|claim(?:s|ed)?|quot(?:e|es|ed|ing)|apparently|"
-    r"supposedly|allegedly|pretend\w*|imagine|suppose[sd]?|if|unless|whether|wish(?:es|ed)?|"
+    rf"(?i)\b(?:{BARE}|{INFLECTED}|{HEARSAY}|goes|pretend\w*|imagine|suppose[sd]?|if|unless|whether|wish(?:es|ed)?|"
     r"(?:am|is|are|was|were|be|been|im|'m|'s|'re)\s+(?:\w+\s+)?like)\b")
 # A denial anywhere earlier in the sentence, however many words sit between: "dont ever call me dan".
 NEGATED = re.compile(r"(?i)\b(?:not|never|no(?!\s*,)|nobody|noone|nothing|neither|nor|without|cannot|ain'?t|"
@@ -53,16 +58,33 @@ ASKING = re.compile(r"(?i)(?:^|\b(?:please|pls|plz|just|so|and|also|now|actually
 POLITE = re.compile(r"(?i)\W*(?:(?:lol|lmao|haha|ok|okay|hey|hi|yo|fri|so|also|and|bro|dude|btw)\W+)*"
                     r"(?:can|could|would|will) (?:you|u)(?: (?:please|pls|plz|just))*\W*")
 RETRACTED = re.compile(r"(?i)\b(?:jk|j/k|kidding|anymore|not really)\b|(?:^|\s)/s\b")
-# A report anywhere after the claim starts, inside the evidence or after it, in any form FRAMED knows before one:
-# "i like chess, my friend said", "… my friend keeps saying", "… or so she believes", "… people say". A bare verb
-# ("say", "think") counts after someone else's plural; after "i" it's their own hedge.
-REPORT = re.compile(
-    r"(?i)\b(?:says|said|saying|tells|told|telling|asks|asked|asking|writes|wrote|writing|texts|texted|texting|"
-    r"thinks|thought|thinking|believes|believed|believing|assumes|assumed|assuming|claims|claimed|claiming|"
-    r"insists|insisted|insisting|reckons|reckoned|swears|swore|sworn|quotes|quoted|quoting|according to|"
-    r"apparently|supposedly|allegedly)\b|"
-    r"\b(?:they|people|everyone|everybody|folks|friends|ppl|others|y'all)\s+(?:(?:all|always|still|keep|often|"
-    r"usually|just|really|also)\s+)?(?:say|tell|think|believe|assume|claim|insist|reckon|swear)\b")
+# A report anywhere after the claim starts, inside the evidence or after it: any inflected form ("i like chess, my friend
+# said", "… they are swearing", "… or so she believes", "… according to my brother"), or a bare verb after its subject,
+# through up to three adverbs or auxiliaries ("… my parents say", "… the boys would say", "… my mom will tell you").
+# The subject is any noun phrase but the member's own (see OWN): "i like chess, i think" is their hedge. A subject
+# starts only where a word does, so each is tried once.
+BETWEEN = (r"all|always|still|keep|often|usually|sometimes|just|really|also|even|actually|literally|basically|totally|"
+           r"only|kinda|lowkey|would|will|can|could|should|might|may|must|do|does|did|gonna|wanna|gotta")
+SPOKEN = r"say|tell|think|believe|assume|claim|insist|reckon|swear"
+REPORT = re.compile(rf"(?i)\b(?:{INFLECTED}|{HEARSAY})\b|"
+                    rf"(?<![\w'])(?P<subject>[\w']+)\s+(?:(?:{BETWEEN})\s+){{0,3}}(?:{SPOKEN})\b")
+# Before a bare report verb, words that make it no one else's report: the member ("i", "we"), whoever they speak to
+# ("if you ask me", "makes you think"), a describing "that" or "which", and words that start no clause of someone
+# else's ("needless to say", "never say never", "a say", "let me tell you", "lol say it").
+OWN = frozenset(
+    "i me my mine myself im ive we us our ours ourselves you u ya your yours yourself yourselves "
+    "that which a an the this his her its their to and or but nor not never no dont doesnt didnt cant cannot wont "
+    "wouldnt shouldnt couldnt aint isnt arent wasnt werent let lets please pls plz go come if as than then when "
+    f"{SAID.replace('|', ' ')} {BETWEEN.replace('|', ' ')}".split())
+
+
+def reported_by(subject):
+    """Whether a bare report verb after this word is someone else's: the word without its contraction ("they'd") isn't
+    one of OWN, and nor is it with its apostrophe dropped ("don't")."""
+    word = re.sub(r"'(?:d|ll|re|ve|s|m)$", '', subject.lower())
+    return word not in OWN and word.replace("'", '') not in OWN
+
+
 # "a bot that tells jokes", "… which sometimes says it", "… that's always telling jokes", "… that keeps saying gm"
 # only describe something.
 DESCRIBED = re.compile(r"(?i)\b(?:that|which)(?:'s|\s+(?:is|are|was|were))?\s+(?:(?:always|sometimes|often|usually|"
@@ -178,12 +200,15 @@ class Source:
                      if later < len(self.filled) else '')
         # A report anywhere in the claim, and right after the evidence any verb a word away, even "that says".
         spaced = re.sub(r'\s+', ' ', claim)
-        if (RETRACTED.search(claim) or any(not DESCRIBED.search(spaced[max(m.start() - 48, 0):m.start()]) for m in REPORT.finditer(spaced))
+        if (RETRACTED.search(claim) or any(reported_by(m['subject']) if m['subject'] else
+                                           not DESCRIBED.search(spaced[max(m.start() - 48, 0):m.start()])
+                                           for m in REPORT.finditer(spaced))
                 or TAKEN_BACK.fullmatch(following) or re.match(r'(?i)\W*(?:\w+\W+)?(?:said|says|asked|wrote|texted)\b', rest)):
-            return False  # "… jk", "… said no one ever", "… my friend said", "… . jk".
-        if (CONDITION.search(COURTESY.sub('', spaced, count=1))
-                and evidence.lower().startswith(('call me', 'my nickname'))):
-            return False  # "call me dan if i win", "my nickname is dan when i stream".
+            return False  # "… jk", "… said no one ever", "… my friend said", "… my parents say", "… . jk".
+        # A nickname's condition before it or after it starts, short of a whole courtesy clause (gene #173).
+        if (evidence.lower().startswith(('call me', 'my nickname'))
+                and any(CONDITION.search(COURTESY.sub('', part, count=1)) for part in (re.sub(r'\s+', ' ', lead), spaced))):
+            return False  # "call me dan if i win", "my nickname is dan when i stream", "whenever we play, call me dan".
         if call:
             return bool(ASKING.search(lead)) and not IDIOM.match(claim)
         words = re.findall(r"[\w']+", lead.lower())

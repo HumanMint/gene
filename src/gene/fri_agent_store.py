@@ -23,7 +23,13 @@ FINISH_SECONDS = 3600
 def claimed_at(claim):
     """A claim's time, or None when what's stored isn't a finite number (a claim that can't be ordered)."""
     value = claim.get('at')
-    return float(value) if type(value) in (int, float) and math.isfinite(value) else None
+    if type(value) not in (int, float):
+        return None
+    try:
+        value = float(value)  # An integer too large for a float raises here, and isfinite() would too.
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) else None
 
 DEFAULTS = {
     'enabled': False, 'learning_enabled': True, 'proactive': True, 'support_dms': True,
@@ -240,7 +246,9 @@ class AgentStore:
                 return blocked('The previous learning report still needs to reach the owner.')
             pending = self.get(db, 'learning_claim')
             if pending:
-                if (at := claimed_at(pending)) is not None and now-at < CLAIM_SECONDS:
+                # Running inside its ten minutes, either way of a small clock step; one dated further ahead (a clock
+                # that ran fast) or that can't be read is interrupted rather than held as running until then.
+                if (at := claimed_at(pending)) is not None and -CLAIM_SECONDS < now-at < CLAIM_SECONDS:
                     return blocked('A learning pass is already running.')
                 db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
                            (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; no automatic replay.'))

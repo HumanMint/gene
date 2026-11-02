@@ -447,3 +447,28 @@ def test_evicting_fences_from_before_a_batch_leaves_it_learning(world, monkeypat
     assert fenced(store) == 3
     finish()
     assert sorted(notes(store)) == sorted([LIKE, 'i play chess on weekends'])
+
+
+def test_an_older_controllers_eviction_also_stops_the_batch(world):
+    """The rule lives in a trigger replaced at start, so a controller rolled back to one that evicts fences by count
+    without knowing it still invalidates the batch: its own statement, run against this database."""
+    client, store = world
+    taken, finish, _ = batch(client, store)
+    withdraw_saved(client, taken)
+    with closing(sqlite3.connect(store.path)) as raw, raw:  # Gene main 8aad087's eviction, M's the only fence.
+        raw.execute('DELETE FROM chat_message_fences WHERE rowid IN (SELECT rowid FROM chat_message_fences '
+                    'ORDER BY at DESC, rowid DESC LIMIT -1 OFFSET ?)', (0,))
+    finish()
+    assert notes(store) == []
+
+
+def test_a_claim_with_nothing_dropped_since_learns_as_before(world):
+    """Guard: a fence dropped from before the claim, or none at all, leaves the batch learning."""
+    client, store = world
+    old = source(age=50, channel='51')['id']
+    withdraw_saved(client, old, deleted=True)
+    _, finish, _ = batch(client, store)
+    with store.connection() as db:
+        db.execute('DELETE FROM chat_message_fences WHERE message_id=?', (old,))
+    finish()
+    assert sorted(notes(store)) == sorted([LIKE, 'i play chess on weekends'])

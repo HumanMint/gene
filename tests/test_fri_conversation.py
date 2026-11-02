@@ -524,6 +524,11 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i keep saying i like chess'),
     ('games', 'i like chess', 'believe me, i like chess'),
     ('games', 'i like chess', 'just a thought but i like chess'),
+    # After the claim, its own words are no one's subject: an aside before a bare verb is still the member's.
+    ('music', 'i love jazz', 'i love jazz lol say what you want'),
+    ('music', 'i love jazz', 'i love jazz so tell me'),
+    ('music', 'i love jazz', 'i love jazz honestly just say it'),
+    ('games', 'i like chess', 'i like chess would say more but im tired'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

@@ -472,3 +472,36 @@ def test_a_claim_with_nothing_dropped_since_learns_as_before(world):
         db.execute('DELETE FROM chat_message_fences WHERE message_id=?', (old,))
     finish()
     assert sorted(notes(store)) == sorted([LIKE, 'i play chess on weekends'])
+
+
+def cursors(store, client):
+    with store.connection() as db:
+        return AgentStore(store, client.settings).get(db, 'cursors', {})
+
+
+@pytest.mark.parametrize('late', [601, 8*86400], ids=['past its lifetime', 'past the fences week'])
+def test_a_batch_finishing_after_its_claims_lifetime_learns_nothing(world, monkeypatch, late):
+    """gene #179: a batch claims M, M is withdrawn (fenced), and the same claim finishes more than a week later, with
+    nothing pruning the fences meanwhile. withdrawn_during() counts only fences inside their week, so the withdrawn
+    note was kept. A finish past the claim's lifetime, the ten minutes a claim holds, is refused: nothing it read is
+    kept and its cursor stays, so the slice is read again once the claim is cleared."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    withdraw_saved(client, taken)  # Edited while the batch reads it: fenced.
+    before = cursors(store, client)
+    real = time.time
+    monkeypatch.setattr(time, 'time', lambda: real()+late)
+    with pytest.raises(ValueError, match='expired'):
+        finish()
+    assert notes(store) == [] and cursors(store, client) == before
+
+
+def test_a_batch_finishing_inside_its_claims_lifetime_learns_as_before(world, monkeypatch):
+    """Guard: a finish inside the ten minutes keeps what it may, as before, and leaves out the withdrawn message."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    withdraw_saved(client, taken)
+    real = time.time
+    monkeypatch.setattr(time, 'time', lambda: real()+590)
+    finish()
+    assert notes(store) == ['i play chess on weekends']

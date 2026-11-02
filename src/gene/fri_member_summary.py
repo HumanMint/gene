@@ -204,6 +204,13 @@ def erasure_triggers(db):
     # (gene #168). Its health checks write nothing, so a controller that does none of those (no heartbeat and no
     # member talking to Fri) keeps them until one does, or this code starts; nothing reads them then.
     expire = (f"DELETE FROM chat_message_fences WHERE at<(julianday('now')-2440587.5)*86400.0-{WITHDRAWN_SECONDS};")
+    # A learning batch in flight depends on every message fence written since it was claimed (Store.withdrawn_during).
+    # Whatever drops one of those (count eviction at MESSAGE_FENCES, an erasure, an older controller's own eviction),
+    # the batch keeps nothing it read: its finish discards its findings and leaves its cursor, so it's read again
+    # (gene #163). Older fences, and deletions with no batch in flight, change nothing.
+    claimed = "(SELECT json_extract(value,'$.at') FROM agent_state WHERE key='learning_claim')"
+    learning = ("UPDATE agent_state SET value=json_set(value,'$.privacy_invalidated',json('true')) "
+                "WHERE key='learning_claim' AND json_type(value)='object';")
     triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),
                 ('privacy_revision_moved', 'AFTER UPDATE OF revision ON chat_revisions', body),
                 ('message_fences_expire', 'AFTER INSERT ON gene_runtime_health', expire),
@@ -214,7 +221,9 @@ def erasure_triggers(db):
                 ('message_fences_expire_state_moved', 'AFTER UPDATE ON agent_state', expire),
                 ('message_fences_expire_sessions', 'AFTER INSERT ON agent_sessions', expire),
                 ('message_fences_expire_sessions_moved', 'AFTER UPDATE ON agent_sessions', expire),
-                ('message_fences_expire_usage', 'AFTER INSERT ON chat_usage', expire))
+                ('message_fences_expire_usage', 'AFTER INSERT ON chat_usage', expire),
+                ('message_fence_dropped_while_learning',
+                 f'AFTER DELETE ON chat_message_fences WHEN OLD.at>={claimed}', learning))
     # Replaced, not kept if they exist, so a body changed since an earlier controller made them takes effect; all in
     # one transaction, so a start cut off between them, or an older controller starting meanwhile, never finds one
     # missing.

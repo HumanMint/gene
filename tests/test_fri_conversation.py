@@ -455,6 +455,31 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'bro was saying earlier, i like chess'),
     ('games', 'i like chess', 'i like chess, my mom lol would say'),
     ('games', 'i like chess', 'i like chess, fri would say'),
+    # Sol round 1 of #178: before the claim, a report word keeps the note only where its clause is positively the
+    # member's own. Inverted or parenthetical (B1), a name that reads as a word (B2), past the look back (B3).
+    ('games', 'i like chess', 'said jo, i like chess'),
+    ('games', 'i like chess', 'SAID JO, i like chess'),
+    ('games', 'i like chess', 'said jo \U0001F602 i like chess'),
+    ('games', 'i like chess', 'says kev, i like chess'),
+    ('games', 'i like chess', 'my mom, as usual, said that, i like chess'),
+    ('games', 'i like chess', 'May said earlier, i like chess'),
+    ('games', 'i like chess', 'Will said earlier, i like chess'),
+    ('games', 'i like chess', 'she really really really really really said earlier, i like chess'),
+    ('games', 'i like chess', 'you really really really really really said earlier, i like chess'),
+    ('games', 'i like chess', 'fri really really really really really said earlier, i like chess'),
+    ('games', 'i like chess', 'told my mom, i like chess'),
+    ('games', 'i like chess', 'my mom and i were saying, i like chess'),
+    # After it: every bare report verb (B4), and whoever the member speaks to unless it's an aside of theirs.
+    ('games', 'i like chess', 'i like chess, my friends write'),
+    ('games', 'i like chess', 'i like chess, my parents text'),
+    ('games', 'i like chess', 'i like chess, you say'),
+    ('games', 'i like chess', 'i like chess, or so i was told'),
+    ('games', 'i like chess', 'i like chess, i said'),
+    # A nickname's condition on the line before it (B5).
+    ('nickname', 'call me dan', 'whenever we play\nplease call me dan'),
+    ('nickname', 'call me dan', 'whenever we play,\ncall me dan'),
+    ('nickname', 'call me dan', 'whenever we play lol\n\nplease call me dan'),
+    ('nickname', 'my nickname is dan', 'until further notice\nmy nickname is dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -531,6 +556,19 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess would say more but im tired'),
     ('games', 'i like chess', 'i like chess, who would think'),
     ('games', 'i like chess', "i like chess, who'd say otherwise"),
+    # Sol round 1 of #178: the member's own clauses that survive the fail-closed lead check.
+    ('games', 'i like chess', 'fri i was saying earlier, i like chess'),
+    ('games', 'i like chess', 'lol i was telling jo about it and i like chess'),
+    ('games', 'i like chess', 'i texted jo earlier, i like chess'),
+    ('games', 'i like chess', 'been thinking all day, i like chess'),
+    ('games', 'i like chess', 'ask anyone, i like chess'),
+    # After the claim, a report form in the member's own independent clause (S1), and their asides to the listener.
+    ('games', 'i like chess', 'i like chess, ive written a song'),
+    ('games', 'i like chess', 'i like chess, im swearing at the lag'),
+    ('games', 'i like chess', 'i like chess if u ask me'),
+    # A courtesy clause on the line before a nickname only asks nicely.
+    ('nickname', 'call me dan', 'whenever you want\nplease call me dan'),
+    ('nickname', 'call me dan', 'i lost when we played\nanyway please call me dan'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

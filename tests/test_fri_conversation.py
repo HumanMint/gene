@@ -485,6 +485,30 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me dan', 'whenever we play,\ncall me dan'),
     ('nickname', 'call me dan', 'whenever we play lol\n\nplease call me dan'),
     ('nickname', 'my nickname is dan', 'until further notice\nmy nickname is dan'),
+    # Sol round 2 of #178: a note is kept only if main's rules keep it too. Main refuses every report word before the
+    # claim it knows, so these own clauses keep nothing here either.
+    ('games', 'i like chess', 'i was saying earlier, i like chess'),
+    ('games', 'i like chess', 'let me tell you, i like chess'),
+    ('games', 'i like chess', 'i keep saying i like chess'),
+    ('games', 'i like chess', 'believe me, i like chess'),
+    ('games', 'i like chess', 'just a thought but i like chess'),
+    ('games', 'i like chess', 'fri i was saying earlier, i like chess'),
+    ('games', 'i like chess', 'lol i was telling jo about it and i like chess'),
+    ('games', 'i like chess', 'i texted jo earlier, i like chess'),
+    ('games', 'i like chess', 'been thinking all day, i like chess'),
+    ('games', 'i like chess', 'ask anyone, i like chess'),
+    # First-person quotation (B1) and a passive past an adverb (B2), which main refuses.
+    ('games', 'i like chess', 'i am quoting my mom here, i like chess'),
+    ('games', 'i like chess', 'i like chess, i quoted my mom'),
+    ('games', 'i like chess', 'let me quote my mom, i like chess'),
+    ('games', 'i like chess', 'a quote from my mom, i like chess'),
+    ('games', 'i like chess', 'i was just told by my mom, i like chess'),
+    ('games', 'i like chess', 'i like chess, or so i was just told by jo'),
+    ('games', 'i like chess', 'i like chess, i\u2019m told by jo'),
+    # A condition carried across a courtesy-only line or an unfinished clause (B3), and "ya" as a subject (B4).
+    ('nickname', 'call me dan', "if i win\nif that's ok\nplease call me dan"),
+    ('nickname', 'call me dan', 'if i win, then\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, or so ya say'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -546,13 +570,8 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     # A clause of the member's own before the claim that does something else is no one else's report, even with a
     # report word in it.
     ('games', 'i like chess', 'been writing all day, i like chess'),
-    ('games', 'i like chess', 'i was saying earlier, i like chess'),
-    ('games', 'i like chess', 'let me tell you, i like chess'),
     ('games', 'i like chess', 'my text was long, i like chess'),
     ('games', 'i like chess', 'stop swearing lol, i like chess'),
-    ('games', 'i like chess', 'i keep saying i like chess'),
-    ('games', 'i like chess', 'believe me, i like chess'),
-    ('games', 'i like chess', 'just a thought but i like chess'),
     # After the claim, its own words are no one's subject: an aside before a bare verb is still the member's.
     ('music', 'i love jazz', 'i love jazz lol say what you want'),
     ('music', 'i love jazz', 'i love jazz so tell me'),
@@ -561,11 +580,6 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, who would think'),
     ('games', 'i like chess', "i like chess, who'd say otherwise"),
     # Sol round 1 of #178: the member's own clauses that survive the fail-closed lead check.
-    ('games', 'i like chess', 'fri i was saying earlier, i like chess'),
-    ('games', 'i like chess', 'lol i was telling jo about it and i like chess'),
-    ('games', 'i like chess', 'i texted jo earlier, i like chess'),
-    ('games', 'i like chess', 'been thinking all day, i like chess'),
-    ('games', 'i like chess', 'ask anyone, i like chess'),
     # After the claim, a report form in the member's own independent clause (S1), and their asides to the listener.
     ('games', 'i like chess', 'i like chess, ive written a song'),
     ('games', 'i like chess', 'i like chess, im swearing at the lag'),
@@ -573,6 +587,11 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     # A courtesy clause on the line before a nickname only asks nicely.
     ('nickname', 'call me dan', 'whenever you want\nplease call me dan'),
     ('nickname', 'call me dan', "if that's ok\nplease call me dan"),
+    # Sol round 2 of #178: what the member does, not what they report, which main keeps too.
+    ('games', 'i like chess', 'we are writing a song, i like chess'),
+    ('games', 'i like chess', 'i enjoy writing songs, i like chess'),
+    ('games', 'i like chess', 'i like chess, ive written it down'),
+    ('nickname', 'call me dan', "if i win, i'll stream\nif that's ok\nplease call me dan"),
     ('nickname', 'call me dan', 'i lost when we played\nanyway please call me dan'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):

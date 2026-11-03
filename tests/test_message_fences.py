@@ -744,6 +744,37 @@ def test_an_older_error_finish_still_clears_a_claim_holding_a_second_time(world,
     assert AgentStore(store, client.settings).claim(manual=True)['id'] != claim['id']
 
 
+def older_interruption(store, claim):
+    """Gene main 8aad087's claim() past a claim's ten minutes, statement by statement: it reports the claim under the
+    id it read, then clears it."""
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
+                   (claim['id'], time.time(), 'Learning pass interrupted.'))
+        AgentStore.put(db, 'learning_claim', None)
+
+
+@pytest.mark.parametrize('key', ['id', '\\u0069d'], ids=['repeated', 'escaped'])
+def test_an_older_interruption_clears_a_claim_holding_a_second_id(world, key):
+    """Round 4 of #192's review: SQLite reads a claim's first "id" and Python its last, written plainly or escaped. An
+    older controller interrupts a nine-day-old claim a fence's expiry reached under the id Python reads: the clear goes
+    through, and the next pass proceeds."""
+    client, store = world
+    _, _, claim = batch(client, store)
+    with store.connection() as db:
+        first = dict(AgentStore.get(db, 'learning_claim'), at=time.time()-9*86400)
+        db.execute("UPDATE agent_state SET value=? WHERE key='learning_claim'",
+                   (json.dumps(first)[:-1]+f',"{key}":"another-claim"}}',))
+    read = expire_a_fence(store)
+    assert read['id'] == 'another-claim'
+    older_interruption(store, read)
+    with store.connection() as db:
+        assert AgentStore.get(db, 'learning_claim') is None
+        assert db.execute("SELECT 1 FROM agent_reports WHERE id='another-claim'").fetchone()
+        db.execute('UPDATE agent_reports SET delivered=1')
+    assert AgentStore(store, client.settings).claim(manual=True)['id'] != claim['id']
+
+
 def test_an_older_finish_inside_the_fences_week_completes_as_before(world):
     """Guard: a claim younger than the fences' week clears as before, from any controller."""
     client, store = world

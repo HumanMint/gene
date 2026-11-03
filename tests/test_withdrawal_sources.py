@@ -402,7 +402,8 @@ def test_a_withdrawal_sent_before_an_erasure_writes_nothing_after_it(world):
     assert fences(store) == []
     with store.connection() as db:
         revision = db.execute("SELECT revision FROM chat_revisions WHERE user_id='20'").fetchone()[0]
-    said = learn(store, 'i play chess on weekends', age=5, revision=revision)[0]
+    time.sleep(0.01)  # Said after memory was on again (one from before it keeps nothing; HumanMint/fri#331).
+    said = learn(store, 'i play chess on weekends', revision=revision)[0]
     assert withdraw(client, said, revision=revision).json()['removed'] == 1  # Saved under the current one: as before.
     assert fences(store) == [said]
 

@@ -420,6 +420,7 @@ def unsplit(m):
     return ''.join(out)
 
 
+@functools.lru_cache(maxsize=32)  # A message's readings serve each of its notes (gene #203).
 def plainer(text, invisible):
     """gene #198's readings: apostrophes inside a word plain, a word split by emoji or characters showing nothing joined
     where it spells one these rules look for, other characters showing nothing as `invisible` ('' or ' '), each run of

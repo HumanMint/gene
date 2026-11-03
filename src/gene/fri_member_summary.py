@@ -236,7 +236,8 @@ def erasure_triggers(db):
     # (SQLite reads an integer too large for a float as infinity, so before every fence), isn't: an older controller's
     # claim() subtracts that time and raises before its interruption report, so its error finish is the claim's only
     # way out there. This controller refuses such a claim at its finish and interrupts it at its next claim (gene
-    # #180).
+    # #180). Nor is one holding more than one time, written plainly or escaped: SQLite reads the first and Python the
+    # last, which may be one it can't read.
     expired = ("UPDATE agent_state SET value=json_set(value,'$.fence_expired',json('true')) "
                "WHERE key='learning_claim' AND json_valid(value) AND json_type(value)='object' "
                f"AND OLD.at<(julianday('now')-2440587.5)*86400.0-{WITHDRAWN_SECONDS};")
@@ -244,6 +245,7 @@ def erasure_triggers(db):
                 "AND json_type(OLD.value)='object' AND json_type(OLD.value,'$.id')='text' "
                 "AND typeof(json_extract(OLD.value,'$.at')) IN ('integer','real') "
                 f"AND json_extract(OLD.value,'$.at') BETWEEN -{CLAIM_TIME_BOUND} AND {CLAIM_TIME_BOUND} "
+                "AND (SELECT count(*) FROM json_each(OLD.value) WHERE key='at')=1 "
                 "AND NOT EXISTS (SELECT 1 FROM agent_reports WHERE id=json_extract(OLD.value,'$.id')) "
                 "AND json_type(OLD.value,'$.fence_expired')='true'")
     triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),

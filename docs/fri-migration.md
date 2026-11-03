@@ -162,7 +162,8 @@ built from other members' messages.
     reported interrupted, so an older controller keeps nothing of it either, and the next pass interrupts
     it (gene #183). A claim whose time isn't a finite number (text, null, or one SQLite reads as
     infinity) is refused at this controller's finish and interrupted at its next claim; an older
-    controller's error finish still clears it, even once a fence's expiry marked it. A save still on
+    controller's error finish still clears it, even once a fence's expiry marked it. So does one
+    holding more than one time, since SQLite reads the first and Python the last. A save still on
     its way that answers a deleted message, or whose `drew_on` holds one, keeps nothing, and its check refuses with the 409
     above. A learning batch claimed before the fence keeps nothing from the message, edited or deleted;
     one claimed after reads it as it is now. An edit's fence stops nothing else. A save of the member's

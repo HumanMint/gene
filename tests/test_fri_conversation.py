@@ -550,6 +550,23 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, or so y\u2018all always really just still say'),
     ('games', 'i like chess', 'i like chess, y\u2018all say'),
     ('games', 'i like chess', 'i like chess, y\u02BCall say'),
+    # gene #198: the older symbols sent as emoji, text faces, invisible characters, apostrophes that are word characters,
+    # and emoji inside a word.
+    ('games', 'i like chess', 'i like chess, my mom \U000000A9\U0000FE0F would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U00002122 would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U00002194 would say'),
+    ('games', 'i like chess', 'i like chess, my mom :) would say'),
+    ('nickname', 'call me comet', 'if i win\nand finish \U00002049 early\nplease call me comet'),
+    ('games', 'i like chess', 'i like chess, my mom \U0000200B would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U00002060 would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U000000AD would say'),
+    ('games', 'i like chess', '\U0000200B> hello i like chess'),
+    ('nickname', 'call me dan', 'don\U0000200Bt ever please call me dan'),
+    ('games', 'i like chess', 'i like chess y\U000002BCall say'),
+    ('games', 'i like chess', 'i like chess y\U000002BBall say'),
+    ('games', 'i like chess', 'i like chess, my mom would sa\U0001F602y'),
+    ('games', 'i like chess', 'i like chess, my mom would s\U0001F602a\U0001F602y'),
+    ('games', 'i like chess', 'i like chess. just ki\U0001F602dding'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -648,6 +665,18 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('nickname', 'call me dan', 'pls call me dan \U0001F64F'),
     ('nickname', 'call me dan', 'whenever you want \U0001F60A\nplease call me dan'),
     ('nickname', 'call me dan', 'i lost \U0001F62D\nplease call me dan'),
+    # gene #199: an emoji before the member's own clause or a quote of theirs reads as the comma it stands for.
+    ('games', 'i like chess', 'i like chess \U0001F602 ive written a song'),
+    ('games', 'i like chess', 'i like chess \U0001F602 "checkmate" is my catchphrase'),
+    # gene #198: text faces, symbols and a word an emoji splits that the rules don't look for say nothing.
+    ('games', 'i like chess', 'i like chess :)'),
+    ('games', 'i like chess', 'i like chess xD'),
+    ('games', 'i like chess', 'i like chess <3'),
+    ('games', 'i like chess', "i like chess :) i'm so bad at it"),
+    ('games', 'i like chess', 'i like chess, my score: 5:30'),
+    ('games', 'i like chess', 'i like chess \U0001F602lol'),
+    ('games', 'i like chess', 'i like chess, the OUT_TAKE was fun'),
+    ('games', 'i like chess', 'i like chess \U00002764\U0000FE0F we should play'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -741,7 +770,9 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 "i've recently been writing ", 'writing makes it fun, ',
                 # gene #190: emoji and apostrophes spelled other ways, read a second time.
                 '\U0001F602 ', 'my mom \U0001F602 ', '<:kek:123456789012345678> ', 'y\u2018all ',
-                'and finish \U0001F602 early\n', '        \U0001F602', '\U0001F44D\U0001F3FD\U0000200D\U0001F602 '):
+                'and finish \U0001F602 early\n', '        \U0001F602', '\U0001F44D\U0001F3FD\U0000200D\U0001F602 ',
+                # gene #198, #199: invisible characters, text faces, a long word an emoji splits, an emoji before "i".
+                '\U0000200B\U00002060 ', ':) ', 'x' * 50 + '\U0001F602y ', 'sa\U0001F602y ', '\U0001F602 i '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

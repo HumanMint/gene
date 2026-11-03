@@ -324,6 +324,14 @@ class AgentStore:
             raise ValueError('Invalid summary output')
         if not isinstance(result.get('observations', []), list):
             raise ValueError('Invalid historical observations')
+        # Each proposed note is read against the words of every record it may come from, before the write lock is
+        # taken (gene #203); which record counts is decided inside, and a note it wasn't read against here is read
+        # there as before.
+        checked = {(index, row['text']): personal_note(candidate, row['text'])
+                   for index, candidate in enumerate(result.get('notes', [])[:5])
+                   if isinstance(candidate, dict) and isinstance(candidate.get('source_id'), str)
+                   for row in records
+                   if isinstance(row, dict) and row.get('id') == candidate['source_id'] and isinstance(row.get('text'), str)}
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             from .store import WITHDRAWN_SECONDS
@@ -371,11 +379,16 @@ class AgentStore:
                         and not self.store.withdrawn_during(db, self.settings.guild_id, [r['id']], claim['at'])):
                     accepted[r['id']] = r
             kept = []
-            for candidate in (result.get('notes', [])[:5] if mode != 'explore' else []):
+            for index, candidate in enumerate(result.get('notes', [])[:5] if mode != 'explore' else []):
                 if not isinstance(candidate, dict) or not isinstance(candidate.get('source_id'), str):
                     continue
                 r = accepted.get(candidate.get('source_id'))
-                note = personal_note(candidate, r['text']) if r else None
+                if not r:
+                    note = None
+                elif isinstance(r['text'], str) and (index, r['text']) in checked:
+                    note = checked[index, r['text']]
+                else:
+                    note = personal_note(candidate, r['text'])
                 if note:
                     from .fri_memory_store import save
                     if save(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'], note, r['at'],

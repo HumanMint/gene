@@ -1195,6 +1195,9 @@ class Store:
         if web_receipt:
             from .fri_research import ResearchReceipt
             web_receipt = ResearchReceipt.model_validate(web_receipt).model_dump()
+        # The notes it may keep are read from the message alone, before the write lock is taken, so a long message
+        # holds no other write up while it's read (gene #203). What the database says about them is checked inside.
+        checked = [personal_note(candidate, text) for candidate in list(notes)[:3]]
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
@@ -1253,8 +1256,7 @@ class Store:
                     return []
                 saying = [row['source']['id'] for row in burst if evidence in row['text']]
                 return [saying[-1] if saying else source.id]
-            for candidate in list(notes)[:3]:
-                note = personal_note(candidate, text)
+            for note in checked:
                 if not note:
                     continue
                 # What a member is working on stays where they said it, even in a turn that reaches the profile.

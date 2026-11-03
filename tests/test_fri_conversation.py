@@ -365,6 +365,239 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
 
 
+@pytest.mark.parametrize('category,evidence,text', [
+    # "have to say" is a report unless the member says it: an interjection or a comma after someone else
+    # doesn't make it a filler (gene #81 item 1).
+    ('games', 'i like chess', 'they lol have to say i like chess'),
+    ('games', 'i like chess', 'they so gotta say i like chess'),
+    ('games', 'i like chess', 'she yeah must say i like chess'),
+    ('games', 'i like chess', 'they lol honestly have to say i like chess'),
+    ('games', 'i like chess', 'they, honestly, have to say i like chess'),
+    ('games', 'i like chess', 'my mom, tbh, must say i like chess'),
+    ('games', 'i like chess', 'the boys, also, gotta say i like chess'),
+    ('games', 'i like chess', 'bob btw needless to say i like chess'),
+    ('projects', 'im building a mod', 'they lol have to say im building a mod'),
+    # A report or a nickname's condition counts wherever it sits after the claim starts, inside the evidence
+    # or after it (gene #81 item 2).
+    ('games', 'i like chess she said', 'i like chess she said'),
+    ('games', 'i like chess, my friend said', 'i like chess, my friend said'),
+    ('games', 'i like chess', 'i like chess, my friend said'),
+    ('games', 'i like chess', 'i like chess, she told me'),
+    ('games', 'i like chess', 'i like chess or so she claims'),
+    ('nickname', 'call me dan, bob said', 'call me dan, bob said'),
+    ('nickname', 'call me dan if i win', 'can you call me dan if i win?'),
+    ('nickname', 'call me dan if i win', 'call me dan if i win'),
+    ('nickname', 'call me dan', 'call me dan if i win'),
+    ('nickname', 'call me dan', 'call me dan when we play'),
+    ('nickname', 'call me dan unless i lose', 'pls call me dan unless i lose'),
+    ('nickname', 'call me dan', 'you can call me dan once i win'),
+    ('nickname', 'my nickname is dan', 'my nickname is dan when i stream'),
+    ('nickname', 'my nickname is dan if i win', 'my nickname is dan if i win'),
+    # Round 1 of #167's review. After "but" or "and" the subject may still be someone else's, so at most one
+    # interjection may sit before "have to say" there, as main had it; longer runs only start a sentence.
+    ('games', 'i like chess', 'my friends agree and also honestly have to say i like chess'),
+    ('games', 'i like chess', 'they disagree but also honestly gotta say i like chess'),
+    ('games', 'i like chess', 'they lost and lol honestly gotta say i like chess'),
+    # Every form of a report verb after the claim, as before it.
+    ('games', 'i like chess', 'i like chess, my friend keeps saying'),
+    ('games', 'i like chess', 'i like chess, or so my friend believes'),
+    ('games', 'i like chess, my friend keeps saying', 'i like chess, my friend keeps saying'),
+    ('games', 'i like chess', 'i like chess according to my brother'),
+    ('games', 'i like chess', 'i like chess, people say'),
+    ('games', 'i like chess', 'i like chess, apparently'),
+    ('music', 'i love jazz', 'i love jazz, she insists'),
+    # A courtesy is one only as a whole clause that ends the claim: "if you like chess" is a condition.
+    ('nickname', 'call me dan', 'call me dan if you like chess'),
+    ('nickname', 'my nickname is dan', 'my nickname is dan if you want to win'),
+    ('nickname', 'call me dan', 'call me dan whenever you want to beat me'),
+    # gene #172: one report vocabulary, every form, before the claim and after it starts.
+    ('games', 'i like chess', 'she insists i like chess'),
+    ('games', 'i like chess', 'my parents insisted i like chess'),
+    ('games', 'i like chess', 'my friend is writing that i like chess'),
+    ('games', 'i like chess', 'the boys keep swearing i like chess'),
+    ('games', 'i like chess', 'i like chess, they are swearing'),
+    ('games', 'i like chess', 'i like chess, she has written'),
+    ('games', 'i like chess', 'i like chess, they keep texting'),
+    # A bare report verb after someone else, any noun phrase, through an adverb or an auxiliary.
+    ('games', 'i like chess', 'i like chess, my parents say'),
+    ('games', 'i like chess', 'i like chess, my coworkers all think'),
+    ('games', 'i like chess', 'i like chess, the boys would say'),
+    ('games', 'i like chess', 'i like chess, my mom will tell you'),
+    ('music', 'i love jazz', 'i love jazz, my bandmates reckon'),
+    ('music', 'i love jazz', "i love jazz, they'd swear"),
+    ('projects', 'im building a bot', 'im building a bot which people say is cute'),
+    # gene #173: a condition before nickname evidence, as after it.
+    ('nickname', 'call me dan', 'whenever we play, please call me dan'),
+    ('nickname', 'call me dan', 'once i win, call me dan'),
+    ('nickname', 'call me dan', 'when we play, you can call me dan'),
+    ('nickname', 'my nickname is dan', 'until further notice my nickname is dan'),
+    # Before the claim, a report frames it as someone else's: their subject, hearsay, a passive or one told to the
+    # member, or one that introduces the claim, the member's own hedge included.
+    ('games', 'i like chess', 'my mom was saying, i like chess'),
+    ('games', 'i like chess', 'jo writes, i like chess'),
+    ('games', 'i like chess', 'my mom says that i like chess'),
+    ('games', 'i like chess', 'everyone keeps saying i like chess'),
+    ('games', 'i like chess', 'you said i like chess'),
+    ('games', 'i like chess', 'she told me, i like chess'),
+    ('games', 'i like chess', 'told me, i like chess'),
+    ('games', 'i like chess', 'kept telling me, i like chess'),
+    ('games', 'i like chess', 'i was told by my mom, i like chess'),
+    ("games", "i like chess", "it's said that i like chess"),
+    ('games', 'i like chess', 'according to my mom, i like chess'),
+    ('games', 'i like chess', 'i swear i like chess'),
+    ('games', 'i like chess', 'i reckon i like chess'),
+    ('games', 'i like chess', 'i told jo i like chess'),
+    ('games', 'i like chess', "jo's post, saying i like chess"),
+    ('games', 'i like chess', 'fri said, honestly, the server is dead, i like chess'),
+    ('games', 'i like chess', 'lol claims that, honestly, i like chess'),
+    ('games', 'i like chess', 'my mom lol was saying earlier, i like chess'),
+    ('games', 'i like chess', 'my mom lol texted jo, i like chess'),
+    ('games', 'i like chess', 'bro was saying earlier, i like chess'),
+    ('games', 'i like chess', 'i like chess, my mom lol would say'),
+    ('games', 'i like chess', 'i like chess, fri would say'),
+    # Sol round 1 of #178: before the claim, a report word keeps the note only where its clause is positively the
+    # member's own. Inverted or parenthetical (B1), a name that reads as a word (B2), past the look back (B3).
+    ('games', 'i like chess', 'said jo, i like chess'),
+    ('games', 'i like chess', 'SAID JO, i like chess'),
+    ('games', 'i like chess', 'said jo \U0001F602 i like chess'),
+    ('games', 'i like chess', 'says kev, i like chess'),
+    ('games', 'i like chess', 'my mom, as usual, said that, i like chess'),
+    ('games', 'i like chess', 'May said earlier, i like chess'),
+    ('games', 'i like chess', 'Will said earlier, i like chess'),
+    ('games', 'i like chess', 'she really really really really really said earlier, i like chess'),
+    ('games', 'i like chess', 'you really really really really really said earlier, i like chess'),
+    ('games', 'i like chess', 'fri really really really really really said earlier, i like chess'),
+    ('games', 'i like chess', 'told my mom, i like chess'),
+    ('games', 'i like chess', 'just told jo, i like chess'),
+    ('games', 'i like chess', 'So just said jo, i like chess'),
+    ('games', 'i like chess', 'ya just said jo, i like chess'),
+    ('games', 'i like chess', 'bro just said jo, i like chess'),
+    ('games', 'i like chess', 'believe it, i like chess'),
+    ('games', 'i like chess', 'my mom and i were saying, i like chess'),
+    # After it: every bare report verb (B4), and whoever the member speaks to unless it's an aside of theirs.
+    ('games', 'i like chess', 'i like chess, my friends write'),
+    ('games', 'i like chess', 'i like chess, my parents text'),
+    ('games', 'i like chess', 'i like chess, you say'),
+    ('games', 'i like chess', 'i like chess, or so i was told'),
+    ('games', 'i like chess', 'i like chess, i said'),
+    # A nickname's condition on the line before it (B5).
+    ('nickname', 'call me dan', 'whenever we play\nplease call me dan'),
+    ('nickname', 'call me dan', 'whenever we play,\ncall me dan'),
+    ('nickname', 'call me dan', 'whenever we play lol\n\nplease call me dan'),
+    ('nickname', 'my nickname is dan', 'until further notice\nmy nickname is dan'),
+    # Sol round 2 of #178: a note is kept only if main's rules keep it too. Main refuses every report word before the
+    # claim it knows, so these own clauses keep nothing here either.
+    ('games', 'i like chess', 'i was saying earlier, i like chess'),
+    ('games', 'i like chess', 'let me tell you, i like chess'),
+    ('games', 'i like chess', 'i keep saying i like chess'),
+    ('games', 'i like chess', 'believe me, i like chess'),
+    ('games', 'i like chess', 'just a thought but i like chess'),
+    ('games', 'i like chess', 'fri i was saying earlier, i like chess'),
+    ('games', 'i like chess', 'lol i was telling jo about it and i like chess'),
+    ('games', 'i like chess', 'i texted jo earlier, i like chess'),
+    ('games', 'i like chess', 'been thinking all day, i like chess'),
+    ('games', 'i like chess', 'ask anyone, i like chess'),
+    # First-person quotation (B1) and a passive past an adverb (B2), which main refuses.
+    ('games', 'i like chess', 'i am quoting my mom here, i like chess'),
+    ('games', 'i like chess', 'i like chess, i quoted my mom'),
+    ('games', 'i like chess', 'let me quote my mom, i like chess'),
+    ('games', 'i like chess', 'a quote from my mom, i like chess'),
+    ('games', 'i like chess', 'i was just told by my mom, i like chess'),
+    ('games', 'i like chess', 'i like chess, or so i was just told by jo'),
+    ('games', 'i like chess', 'i like chess, i\u2019m told by jo'),
+    # A condition carried across a courtesy-only line or an unfinished clause (B3), and "ya" as a subject (B4).
+    ('nickname', 'call me dan', "if i win\nif that's ok\nplease call me dan"),
+    ('nickname', 'call me dan', 'if i win, then\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, or so ya say'),
+])
+def test_the_evidence_boundary_hides_no_report(category, evidence, text):
+    assert personal_note({'category': category, 'evidence': evidence}, text) is None
+
+
+@pytest.mark.parametrize('category,evidence,text', [
+    # With nothing but interjections before it, or "i", "have to say" is still the member's own.
+    ('games', 'i like chess', 'lol honestly have to say i like chess'),
+    ('games', 'i like chess', 'ok so gotta say i like chess'),
+    ('games', 'i like chess', 'yeah, also, must say i like chess'),
+    ('games', 'i like chess', 'the server is dead but honestly gotta say i like chess'),
+    ('games', 'i like chess', 'lost again and lol gotta say i like chess'),
+    ('games', 'i like chess', 'i honestly have to say i like chess'),
+    ('games', 'i like chess', 'the server is dead, honestly not gonna lie, i like chess'),
+    # "i am" is a filler's subject like "i'm" (gene #81 item 3).
+    ('games', 'I like chess', 'I am not gonna lie, I like chess'),
+    ('games', 'i like chess', 'i am honestly not gonna lie, i like chess'),
+    ('games', 'i like chess', 'i am just not gonna lie, i like chess'),
+    ('games', 'i like chess', 'if i am honest, i like chess'),
+    # A condition only holds back a nickname; a taste with one is still the member's.
+    ('nickname', 'call me dan', 'call me dan from now on'),
+    ('nickname', 'call me dan, but not danny', 'call me dan, but not danny'),
+    ('nickname', 'call me dan but only here', 'call me dan but only here'),
+    ('nickname', 'call me dan', 'you can call me dan if you want'),
+    ('nickname', 'my nickname is dan', 'my nickname is dan if you want'),
+    ('nickname', "call me dan if that's ok", "call me dan if that's ok"),
+    ('games', "i like chess if it's blitz", "i like chess if it's blitz"),
+    # "that" or "which" before the verb describes a thing; it's no one's report.
+    ('projects', 'im building a bot that tells jokes', 'im building a bot that tells jokes'),
+    ('projects', 'im building a bot', 'im building a bot that tells jokes'),
+    ('games', 'i play a game which says it in the title', 'i play a game which says it in the title'),
+    # Round 1 of #167's review: a description may carry an everyday adverb or odd spacing, and a whole courtesy
+    # clause ending the claim only asks nicely.
+    ('projects', 'im building a bot', 'im building a bot that always tells jokes'),
+    ('projects', 'im building a bot', 'im building a bot which sometimes tells jokes'),
+    ('projects', 'im building a bot', 'im building a bot that\ttells jokes'),
+    ('projects', 'im building a bot', "im building a bot that's always telling jokes"),
+    ('nickname', 'call me dan', 'call me dan whenever you want'),
+    ('nickname', 'call me dan', 'call me dan if you feel like it'),
+    ('nickname', 'call me dan', 'call me dan if you want to'),
+    ('nickname', 'call me dan', 'call me dan if you want lol'),
+    ('nickname', 'call me dan', 'call me dan if that makes sense'),
+    ('projects', 'im building a bot', 'im building a bot that keeps saying gm'),
+    ('games', 'i like chess', 'they disagree but gotta say i like chess'),
+    # gene #172: the member's own hedge after the claim stays theirs, and so does an aside to them.
+    ('games', 'i like chess', 'i like chess, i think'),
+    ('games', 'i like chess', 'i like chess, i swear'),
+    ('games', 'i like chess', "i like chess, i'd say"),
+    ('games', 'i like chess', 'i like chess, i must say'),
+    ('games', 'i like chess', 'i like chess, we all think'),
+    ('games', 'i like chess', 'i like chess, needless to say'),
+    ('games', 'i like chess', 'i like chess if you ask me'),
+    ('games', 'i like chess', 'i like chess, makes you think'),
+    ('games', 'i like chess', 'i like chess, never say never'),
+    ('nickname', 'call me dan', 'call me dan, i insist'),
+    # gene #173: a whole courtesy clause before a nickname only asks nicely, as after it.
+    ('nickname', 'call me dan', 'whenever you want, please call me dan'),
+    ('nickname', 'call me dan', 'when you like, please call me dan'),
+    # A clause of the member's own before the claim that does something else is no one else's report, even with a
+    # report word in it.
+    ('games', 'i like chess', 'been writing all day, i like chess'),
+    ('games', 'i like chess', 'my text was long, i like chess'),
+    ('games', 'i like chess', 'stop swearing lol, i like chess'),
+    # After the claim, its own words are no one's subject: an aside before a bare verb is still the member's.
+    ('music', 'i love jazz', 'i love jazz lol say what you want'),
+    ('music', 'i love jazz', 'i love jazz so tell me'),
+    ('music', 'i love jazz', 'i love jazz honestly just say it'),
+    ('games', 'i like chess', 'i like chess would say more but im tired'),
+    ('games', 'i like chess', 'i like chess, who would think'),
+    ('games', 'i like chess', "i like chess, who'd say otherwise"),
+    # Sol round 1 of #178: the member's own clauses that survive the fail-closed lead check.
+    # After the claim, a report form in the member's own independent clause (S1), and their asides to the listener.
+    ('games', 'i like chess', 'i like chess, ive written a song'),
+    ('games', 'i like chess', 'i like chess, im swearing at the lag'),
+    ('games', 'i like chess', 'i like chess if u ask me'),
+    # A courtesy clause on the line before a nickname only asks nicely.
+    ('nickname', 'call me dan', 'whenever you want\nplease call me dan'),
+    ('nickname', 'call me dan', "if that's ok\nplease call me dan"),
+    # Sol round 2 of #178: what the member does, not what they report, which main keeps too.
+    ('games', 'i like chess', 'we are writing a song, i like chess'),
+    ('games', 'i like chess', 'i enjoy writing songs, i like chess'),
+    ('games', 'i like chess', 'i like chess, ive written it down'),
+    ('nickname', 'call me dan', "if i win, i'll stream\nif that's ok\nplease call me dan"),
+    ('nickname', 'call me dan', 'i lost when we played\nanyway please call me dan'),
+])
+def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
+    assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
+
+
 def fastest_reads(read, texts, runs=5):
     """Each text's fastest read in CPU time, taking turns so a slow spell on the runner hits them alike."""
     best = [float('inf')] * len(texts)
@@ -413,6 +646,42 @@ def test_a_punctuation_heavy_message_is_read_in_one_pass():
             personal_note({'category': 'games', 'evidence': evidence}, text)
     for pad in (',', ', ', ',!.,'):  # Before every occurrence, a run of separators for the filler check to cross.
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
+
+
+def test_a_long_tail_after_the_claim_is_read_in_one_pass():
+    def read(text):
+        for category, evidence in (('games', 'i like chess'), ('nickname', 'call me dan')):
+            personal_note({'category': category, 'evidence': evidence}, text)
+    # Each report word looks back a bounded way for a description; a courtesy is matched once, at the end.
+    for pad in ('that said ', 'which sometimes tells ', 'if you want lol ', "that's always telling "):
+        assert_linear(read, lambda length: 'i like chess call me dan ' + (pad * length)[:length])
+
+
+def test_a_long_run_of_interjections_is_read_in_one_pass():
+    body = 'i like chess i love go call me dan ' * 4
+
+    def read(text):
+        for category, evidence in (('games', 'i like chess'), ('music', 'i love go'), ('nickname', 'call me dan')):
+            personal_note({'category': category, 'evidence': evidence}, text)
+    # Each "but" or "and" starts a run of interjections that "have to say" may end; none is crossed twice.
+    for pad in ('but lol ', 'and and ', 'so so honestly ', 'they, honestly, ', 'but lol have to '):
+        assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
+
+
+def test_reports_and_conditions_are_read_in_one_pass():
+    body = 'i like chess i love go call me dan ' * 4
+
+    def read(text):
+        for category, evidence in (('games', 'i like chess'), ('music', 'i love go'), ('nickname', 'call me dan')):
+            personal_note({'category': category, 'evidence': evidence}, text)
+    # Every word may be a report's subject, an adverb between, or start a condition before a nickname; each is
+    # looked at once, before the claims and after them.
+    for pad in ('my parents always ', 'they would really ', "a'b'c'd'", 'people ', 'whenever we play, ',
+                'whenever you want, ', 'the boys keep swearing ', 'my mom lol was saying ', 'said, ', 'told me, ',
+                'my mom, as usual, said that, ', 'i was saying earlier, ', 'whenever we play\n', 'you say ',
+                "if that's ok\n", 'if i win, then\n'):
+        assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
+        assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
 
 def test_the_same_words_too_many_times_keep_nothing():

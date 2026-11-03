@@ -549,8 +549,8 @@ def test_a_stale_note_renewed_soon_after_the_withdrawn_message_stays(world, afte
 
 
 def test_a_deletion_whose_author_is_unknown_keeps_no_record(world):
-    """G2a: only another member's reply carried it. That reply retires now; nothing is kept that erasure couldn't
-    find."""
+    """G2a: only another member's reply carried it. That reply retires now, and no deletion record is kept: its author
+    is unknown. Only a fence by its ID alone, for a save still on its way (gene #149; see test_message_fences)."""
     client, store = world
     nearby = source(age=30, channel='51')['id']
     turn(store, 'what did they mean', drew_on=[nearby], age=20)
@@ -577,3 +577,18 @@ def test_a_deletion_record_goes_once_its_authors_revision_moved_at_start(world):
         store.advance_revision(db, '20')
     assert deletions(Store(store.path)) == [theirs]
     assert records(store) == [(theirs, '30', 0)]  # With its author's revision then.
+
+
+def test_an_older_controllers_privacy_change_drops_the_members_deletion_records_at_once(world):
+    """Delta review of the 2026-10-30 release: an older controller moves the author's privacy revision without knowing
+    this table. The database's trigger drops their deletion records then and there, as a start here would, and keeps
+    everyone else's."""
+    client, store = world
+    mine, _ = learn(store, LIKE, age=30)
+    theirs, _ = learn(store, 'i love trance', category='music', user='30', age=20)
+    withdraw(client, mine, deleted=True)
+    withdraw(client, theirs, deleted=True, user_id='30')
+    assert sorted(deletions(store)) == sorted([mine, theirs])
+    with store.connection() as db:  # The older controller's own statement for a privacy change.
+        db.execute("INSERT INTO chat_revisions VALUES ('20',1) ON CONFLICT(user_id) DO UPDATE SET revision=revision+1")
+    assert deletions(store) == [theirs]

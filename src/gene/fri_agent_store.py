@@ -14,6 +14,23 @@ from .fri_memory import personal_note
 from .fri_memory_store import last_removal
 from .privacy import clean
 
+CLAIM_SECONDS = 600  # A learning pass's claim: one older is interrupted when the next pass asks (see claim).
+# How late a claim's own finish is still taken: past any batch Fri runs (a model call alone may take ten minutes),
+# far inside a message fence's week, which withdrawn_during() counts on (gene #179).
+FINISH_SECONDS = 3600
+
+
+def claimed_at(claim):
+    """A claim's time, or None when what's stored isn't a finite number (a claim that can't be ordered)."""
+    value = claim.get('at')
+    if type(value) not in (int, float):
+        return None
+    try:
+        value = float(value)  # An integer too large for a float raises here, and isfinite() would too.
+    except OverflowError:
+        return None
+    return value if math.isfinite(value) else None
+
 DEFAULTS = {
     'enabled': False, 'learning_enabled': True, 'proactive': True, 'support_dms': True,
     'attention_model': 'gpt-6-luna', 'attention_effort': 'low',
@@ -229,7 +246,9 @@ class AgentStore:
                 return blocked('The previous learning report still needs to reach the owner.')
             pending = self.get(db, 'learning_claim')
             if pending:
-                if now-pending['at'] < 600:
+                # Running inside its ten minutes, either way of a small clock step; one dated further ahead (a clock
+                # that ran fast) or that can't be read is interrupted rather than held as running until then.
+                if (at := claimed_at(pending)) is not None and -CLAIM_SECONDS < now-at < CLAIM_SECONDS:
                     return blocked('A learning pass is already running.')
                 db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
                            (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; no automatic replay.'))
@@ -294,8 +313,16 @@ class AgentStore:
             raise ValueError('Invalid historical observations')
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
+            from .store import WITHDRAWN_SECONDS
+            # Fences past their week go first, so one the claim depends on invalidates it as it goes (gene #163).
+            db.execute('DELETE FROM chat_message_fences WHERE at<?', (now-WITHDRAWN_SECONDS,))
             claim = self.get(db, 'learning_claim')
             if not claim or claim['id'] != batch_id:
+                raise ValueError('Learning claim expired or already completed')
+            # Too late, the fences it depends on may be past their week and count for nothing (withdrawn_during):
+            # nothing it read is kept, and its cursor stays, so the slice is read again (gene #179). So is one claimed
+            # after now (a clock set back), or whose time isn't a number, which fences can't be ordered against.
+            if (at := claimed_at(claim)) is None or not 0 <= now-at < FINISH_SECONDS:
                 raise ValueError('Learning claim expired or already completed')
             if not 0 <= scanned <= claim['limit'] or len(records) > scanned:
                 raise ValueError('Invalid learning batch size')
@@ -323,11 +350,12 @@ class AgentStore:
                 revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (r['user_id'],)).fetchone()
                 profile = self.store._personal_context(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
                 # Words from before a removal teach nothing again: no note, observation or summary. Nor does a
-                # message withdrawn while this batch read it (gene #141).
+                # message withdrawn while this batch read it (gene #141), even one nothing stored held (gene #149).
                 cutoff = removed(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
                 if (profile['enabled'] and r.get('revision') == (revision[0] if revision else 0)
                         and (cutoff is None or r['at'] > cutoff)
-                        and not self.store.taken_back(db, self.settings.guild_id, r['user_id'], [r['id']])):
+                        and not self.store.taken_back(db, self.settings.guild_id, r['user_id'], [r['id']])
+                        and not self.store.withdrawn_during(db, self.settings.guild_id, [r['id']], claim['at'])):
                     accepted[r['id']] = r
             kept = []
             for candidate in (result.get('notes', [])[:5] if mode != 'explore' else []):

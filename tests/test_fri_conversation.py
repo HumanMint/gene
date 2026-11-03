@@ -599,8 +599,33 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom:P) would say'),
     ('games', 'i like chess', 'i like chess, my mom:D)) would say'),
     ('games', 'i like chess', 'i like chess, my mom;P( would say'),
-    # gene #201 item 6: past the ordinary fillers before the member's own clause, every cue but their own verb still
-    # counts on both sides of the face, as main reads them.
+    # Sol round 1 of #205: any face attached to a word, its whole trailing alphabet, square brackets included.
+    ('games', 'i like chess', 'i like chess, my mom:P] would say'),
+    ('games', 'i like chess', 'i like chess, my mom:D]] would say'),
+    ('games', 'i like chess', 'i like chess, my mom;P] would say'),
+    ('games', 'i like chess', 'i like chess, my mom:P[ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:P/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:P|* would say'),
+    ('games', 'i like chess', 'i like chess, my mom:-] would say'),
+    ('games', 'i like chess', 'i like chess, my mom:] would say'),
+    ('games', 'i like chess', 'i like chess, my mom;[ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:p) would say'),
+    ('games', 'i like chess', 'i like chess, my mom:o] would say'),
+    ('games', 'i like chess', 'i like chess, my mom:3] would say'),
+    # gene #201 item 6 stays open: past a ";" face and the ordinary fillers ("yeah", "also", "tbh"), every cue counts on
+    # both sides of the face, as main reads them, the member's own report verbs too (Sol round 1 of #205).
+    ('games', 'i like chess', 'i like chess ;P yeah i said her words verbatim'),
+    ('games', 'i like chess', 'i like chess ;P yeah i told a lie'),
+    ('games', 'i like chess', 'i like chess ;P yeah i said it. i was quoting jo'),
+    ('nickname', 'call me dan', 'call me dan ;P yeah i said that. only if i win'),
+    ('games', 'I like chess', 'I like chess ;P Yeah I said her words verbatim'),
+    ('games', 'I like chess', 'I like chess ;P YEAH I TOLD A LIE'),
+    ('games', 'i like chess', 'i like chess ;) also i told a lie \U0001F602'),
+    ('games', 'i like chess', 'i like chess ;P \U0001F602 yeah i told a lie'),
+    ('games', 'i like chess', 'i like chess ;D tbh i said it. i was quoting jo'),
+    ('games', 'i like chess', 'i like chess ;-) tbh, i said her words verbatim'),
+    ('nickname', 'call me dan', 'call me dan ;) tbh i said that. only if i win'),
+    ('nickname', 'call me dan', 'call me dan ;D also we said that. only if i win'),
     ('games', 'i like chess', 'i like chess ;P yeah we all know my mom says'),
     ('games', 'i like chess', 'my mom thinks ;P yeah i like chess'),
     ('games', 'i like chess', 'she said:\nlol ;P yeah i like chess'),
@@ -734,22 +759,16 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess ;P \U0001F602 i thought it would be boring'),
     ('games', 'i like chess', 'i like chess ;P lol i thought it would be boring'),
     ('games', 'i like chess', 'i like chess ;P but i thought it would be boring'),
-    # gene #201: the ordinary fillers there too ("yeah", "also", "tbh"), and a keycap, a time or a colon on its own.
-    ('games', 'i like chess', 'i like chess ;P yeah i thought it would be boring'),
-    ('games', 'i like chess', 'i like chess ;P also i thought it would be boring'),
-    ('games', 'i like chess', 'i like chess ;P tbh i thought it would be boring'),
-    ('games', 'i like chess', 'i like chess ;P yeah, i thought it would be boring'),
-    ('games', 'i like chess', 'i like chess ;P oh i thought it would be boring'),
-    ('games', 'i like chess', "i like chess ;) yea i was thinking it'd be boring"),
-    ('games', 'i like chess', "i like chess ;P yeah i'm thinking of joining a club"),
-    ('games', 'i like chess', 'i like chess ;P btw we said we would play later'),
-    ('games', 'i like chess', 'i like chess ;P yeah i said it before'),
+    # gene #201: a keycap on its own, a time, a link or a colon that isn't a face.
     ('games', 'i like chess', 'i like chess 1\uFE0F\u20E3'),
     ('games', 'i like chess', 'i like chess #\uFE0F\u20E3 lol'),
     ('games', 'i like chess', 'i like chess, my score: 5:30)'),
     ('games', 'i like chess', 'i like chess re:(x) lol'),
+    ('games', 'i like chess', 'i like chess, see https://example.com/ok lol'),
+    ('games', 'i like chess', 'i like chess, 3:2 in the final'),
     ('games', 'i like chess', 'i like chess :P)'),
     ('games', 'i like chess', 'i like chess, thanks:))'),
+    ('games', 'i like chess', 'i like chess, thanks:P]'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

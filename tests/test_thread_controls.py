@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
-from gene.fri_actions import Actions
-from gene.fri_agent import Agent
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_agent import Agent
 from tests.test_runtime_controls import runtime
 
 
@@ -79,7 +79,7 @@ def test_thread_control_handoff_and_runtime_scope(tmp_path, boundary):
             try:
                 with patch.object(discord.Thread, 'permissions_for', side_effect=lambda who: member_perms if who.id == 20 else bot_perms), \
                      patch.object(discord.Thread, 'fetch_message', new=AsyncMock(return_value=message)), \
-                     patch('gene.fri_actions.asyncio.sleep', new=AsyncMock()):
+                     patch('tests.legacy_fri.fri_actions.asyncio.sleep', new=AsyncMock()):
                     assert agent.allowed(thread)
                     assert 'gene_command' in await actions.available()
                     result = await actions.execute({'kind': 'gene_command', 'action': 'play', 'argument': 'Sad Machine'})

@@ -15,7 +15,7 @@ from cogs.gene.panel import (
     sessions,
     show_queue,
 )
-from gene.fri_panel import ApprovalView, ModelsView
+from tests.legacy_fri.fri_panel import ApprovalView, ModelsView
 
 
 def environment(*, ephemeral=False, message_id=5, interaction_id=789):

@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
 from gene.api import create_app
-from gene.fri_actions import Actions
-from gene.fri_agent import Agent
 from gene.fri_agent_store import AgentStore
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_agent import Agent
 from tests.test_api import headers
 from tests.test_fri_actions import harness
 from tests.test_fri_agent import setup_agent as setup_agent
@@ -78,7 +78,7 @@ def test_lab_harness_observes_only_selected_channel_and_uses_its_guild(monkeypat
         assert len(agent.recent[789]) == 1
         agent.respond.assert_not_awaited()
         message.content = 'fri what do you think?'
-        with patch('gene.fri_agent.asyncio.sleep', new=AsyncMock()):
+        with patch('tests.legacy_fri.fri_agent.asyncio.sleep', new=AsyncMock()):
             await agent.handle(message)
         agent.respond.assert_awaited_once()
         assert agent.allowed(lab)
@@ -123,7 +123,7 @@ def test_lab_reply_dispatch_preserves_actual_guild(monkeypatch, tmp_path):
     async def scenario():
         fri, agent, _, _ = harness(monkeypatch, tmp_path)
         agent.state['test_scope'] = {'guild_id': '999', 'channel_id': '789'}
-        from gene.fri_chat import ChatResult
+        from tests.legacy_fri.fri_chat import ChatResult
         fri.talk = AsyncMock(return_value=ChatResult(reply='yeah', draft='ignored draft', status='completed'))
         channel = SimpleNamespace(id=789)
         from unittest.mock import MagicMock

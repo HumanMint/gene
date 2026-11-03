@@ -8,8 +8,8 @@ import discord
 import pytest
 from redbot.core import commands
 
-from gene.fri_chat import ChatResult
-from gene.fri_notices import ReplyInProgress, WaitingNotices, notice_text
+from tests.legacy_fri.fri_chat import ChatResult
+from tests.legacy_fri.fri_notices import ReplyInProgress, WaitingNotices, notice_text
 from tests.test_fri_actions import harness
 
 
@@ -49,7 +49,7 @@ def test_wait_notice_is_deleted_only_after_completion(monkeypatch, tmp_path, out
             notice.delete.assert_not_awaited()
         first.reply.side_effect = delivered
         agent.acknowledge = AsyncMock(side_effect=delivered)
-        for path in ('gene.fri_workspace.show_preview', 'gene.fri_social.show_preview'):
+        for path in ('tests.legacy_fri.fri_workspace.show_preview', 'tests.legacy_fri.fri_social.show_preview'):
             monkeypatch.setattr(path, AsyncMock(side_effect=delivered))
         fri.talk = talk
         task = asyncio.create_task(agent.respond(first, 'dog or rat'))
@@ -125,7 +125,7 @@ def test_notice_casing_preserves_case_sensitive_literals():
 
 
 def test_panel_notice_is_lowercase_but_preview_stays_verbatim():
-    from gene.fri_panel import reply
+    from tests.legacy_fri.fri_panel import reply
     async def scenario():
         panels = SimpleNamespace(show=AsyncMock(), current_view=lambda _: None)
         cog = SimpleNamespace(private_panels=panels)

@@ -14,13 +14,20 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
-from gene.fri_chat import ChatResult
 from gene.fri_context import ChatSource
-from gene.fri_errors import ControllerRejected
-from gene.fri_social import SocialButton, component, deliver_one, execute, render, show_preview
 from gene.fri_social_store import Social, local_timestamp
-from gene.fri_workspace import send_once
 from gene.store import Store
+from tests.legacy_fri.fri_chat import ChatResult
+from tests.legacy_fri.fri_errors import ControllerRejected
+from tests.legacy_fri.fri_social import (
+    SocialButton,
+    component,
+    deliver_one,
+    execute,
+    render,
+    show_preview,
+)
+from tests.legacy_fri.fri_workspace import send_once
 from tests.test_fri_actions import harness
 
 DM = {'guild_id': '123', 'user_id': '10', 'channel_id': '456', 'conversation_id': 'private:999'}
@@ -222,7 +229,7 @@ def test_delivery_attempts_once_restarts_and_does_not_resurrect_erased_reminders
     async def scenario():
         fri, social, row = runtime(api, tmp_path)
         sender = AsyncMock(return_value={'id': '987'})
-        monkeypatch.setattr('gene.fri_social.send_once', sender)
+        monkeypatch.setattr('tests.legacy_fri.fri_social.send_once', sender)
         if failure == 'timeout':
             sender.side_effect = TimeoutError()
         if failure == 'departed':
@@ -441,7 +448,7 @@ def test_full_reminder_body_fits_confirm_preview_and_single_attempt_delivery(api
             return httpx.Response(200, json={'id': '987'})
         async def sender(f, post, **kwargs):
             return await send_once(f, post, transport=httpx.MockTransport(transport), **kwargs)
-        monkeypatch.setattr('gene.fri_social.send_once', sender)
+        monkeypatch.setattr('tests.legacy_fri.fri_social.send_once', sender)
         await deliver_one(fri)
         await deliver_one(fri)
         assert len(requests) == 1

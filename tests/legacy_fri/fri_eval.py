@@ -8,9 +8,10 @@ from pathlib import Path
 
 import httpx
 
+from gene.subscription import Subscription, private_json
+
 from .fri_chat import Chat
 from .fri_image_eval import cases as image_cases
-from .subscription import Subscription, private_json
 
 
 def source(user='101', name='Mint'):
@@ -45,7 +46,7 @@ def cases():
 
 
 def control_cases():
-    from .gene_controls import COMMANDS
+    from gene.gene_controls import COMMANDS
     controls = {'gene_command': {'commands': {k: v[2] for k, v in COMMANDS.items()}}}
     search = {'web_search': {'description': 'Search a short exact public topic from the current message.'}}
     research = {'query': 'Porter Robinson song that goes "she depends on you"',

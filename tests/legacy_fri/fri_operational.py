@@ -5,13 +5,14 @@ from dataclasses import dataclass
 import discord
 from redbot.core import commands
 
+from gene.fri_operation_store import command
+from gene.gene_controls import current_music_context, requested
+
 from .fri_actions import Actions
 from .fri_chat import ChatResult
 from .fri_errors import ControllerRejected
 from .fri_notices import notice_text
-from .fri_operation_store import command
 from .fri_outcomes import fallback, receipt, unrecorded
-from .gene_controls import current_music_context, requested
 
 MENU = ('music controls: `fri pause music`, `fri resume music`, `fri skip track`, `fri stop the music`, `fri volume 35`, '
         '`fri queue`, `fri now playing`. gene: `fri status`, `fri version`. '

@@ -10,10 +10,10 @@ import httpx
 import pytest
 from redbot.core import commands
 
-from gene.fri_actions import Actions
-from gene.fri_chat import Chat, ChatResult
-from gene.fri_images import attach, unchanged
 from gene.fri_social_store import Social
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_chat import Chat, ChatResult
+from tests.legacy_fri.fri_images import attach, unchanged
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
 from tests.test_fri_social import DM, api, confirmed, source  # noqa: F401
@@ -33,7 +33,7 @@ def test_explicit_image_question_is_same_model_call_and_images_are_untrusted(mon
         event, context = message(), dict(CONTEXT)
         event.content = caption
         loader = AsyncMock(return_value='data:image/png;base64,aGVsbG8=')
-        monkeypatch.setattr('gene.fri_images.load_image', loader)
+        monkeypatch.setattr('tests.legacy_fri.fri_images.load_image', loader)
         await attach(context, event, event.content)
         seen = []
         def handler(request):
@@ -59,7 +59,7 @@ def test_explicit_image_question_is_same_model_call_and_images_are_untrusted(mon
 def test_images_not_loaded_from_nonmessage_missing_or_unsupported_attachments(monkeypatch):
     async def scenario():
         loader = AsyncMock()
-        monkeypatch.setattr('gene.fri_images.load_image', loader)
+        monkeypatch.setattr('tests.legacy_fri.fri_images.load_image', loader)
         event = message()
         for ignored in (SimpleNamespace(attachments=event.attachments), Mock(spec=discord.Message, attachments=[])):
             context = {}
@@ -92,7 +92,7 @@ def test_image_removed_during_later_inference_blocks_stale_answer_and_later_acti
         event.attachments[0].url = 'https://cdn.discordapp.com/attachments/999/1/test.png'
         current = [event]
         dm.fetch_message = AsyncMock(side_effect=lambda _: current[0])
-        monkeypatch.setattr('gene.fri_images.load_image', AsyncMock(return_value='data:image/png;base64,aGVsbG8='))
+        monkeypatch.setattr('tests.legacy_fri.fri_images.load_image', AsyncMock(return_value='data:image/png;base64,aGVsbG8='))
         calls = []
         async def respond(text, context):
             calls.append(context)

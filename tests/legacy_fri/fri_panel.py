@@ -7,10 +7,11 @@ import logging
 import discord
 from redbot.core import commands
 
+from gene.panels import PrivatePanels, defer_panel
+from gene.subscription import SubscriptionError
+
 from .fri_notices import notice_text
 from .fri_requests import DraftView as DraftView
-from .panels import PrivatePanels, defer_panel
-from .subscription import SubscriptionError
 
 LOG = logging.getLogger('fri.panel')
 NO_MENTIONS = discord.AllowedMentions.none()

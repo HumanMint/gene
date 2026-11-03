@@ -2,8 +2,9 @@
 
 from enum import Enum
 
+from gene.privacy import clean
+
 from .fri_notices import notice_text
-from .privacy import clean
 
 
 class Outcome(str, Enum):

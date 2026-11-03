@@ -10,9 +10,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from gene.api import create_app
-from gene.fri_actions import Actions
-from gene.fri_agent import Agent
-from gene.fri_chat import Chat, ChatResult
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_agent import Agent
+from tests.legacy_fri.fri_chat import Chat, ChatResult
 from tests.test_api import actor, headers
 from tests.test_fri_agent import finish, record
 from tests.test_fri_agent import setup_agent as setup_agent

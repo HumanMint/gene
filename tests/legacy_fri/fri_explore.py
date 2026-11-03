@@ -6,8 +6,9 @@ import discord
 from discord.http import Route
 from redbot.core import commands
 
+from gene.privacy import clean
+
 from .fri_agent_model import STRING, obj
-from .privacy import clean
 
 PLAN = obj({'term': STRING, 'reason': STRING})
 FINDINGS = obj({'summary': STRING, 'notes': {'type': 'array', 'items': obj({

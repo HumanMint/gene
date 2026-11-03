@@ -814,7 +814,7 @@ prove a member said something. The voice should stay brief for casual check-ins
 and verify disputed attribution rather than arguing from uncertain memory.
 
 Never call `Fri.talk` with fabricated owner messages for a live smoke test. Run
-`docker exec gene-fri-1 python -m gene.fri_eval` for six isolated voice/attribution
+`docker exec fri-runtime-1 python -m fri.fri_eval` for six isolated voice/attribution
 cases using fictional members. This evaluator calls `Chat.respond` directly with
 empty server facts, disabled personal memory and no actions. It has no conversation,
 note, settings, learning or Discord-message write path; only anonymous usage is
@@ -867,7 +867,7 @@ Statuses use Discord's [custom activity state](https://docs.discord.com/develope
 The generator uses the existing subscription with [structured output](https://developers.openai.com/api/docs/guides/structured-outputs),
 local output validation, and no tools. No API key is needed. `fri-health.json` includes a
 status receipt; a sent gateway payload alone does not establish how every Discord client renders it.
-Use `python -m gene.fri_eval --suite pronouns` for isolated pronoun/voice checks.
+Use `python -m fri.fri_eval --suite pronouns` for isolated pronoun/voice checks.
 
 Set `FRI_CHANNEL_IDS` in both controller.env and fri.env to the explicit allowed
 channels. Set `FRI_HISTORY_CHANNEL_IDS` and `FRI_LEARNING_ROLE_ID` in controller.env.
@@ -1193,7 +1193,7 @@ actual result, distinguishing rejection, votes, enqueueing and confirmed complet
 
 `gene-health.json` reports `controls_running`; `/controls/catalog` (Fri credential)
 is fresh for 20 seconds after the last runtime poll. Deployment checks both readiness
-and the offered command catalog. `python -m gene.fri_eval --suite controls` tests model
+and the offered command catalog. `python -m fri.fri_eval --suite controls` tests model
 choices with fictional context and inert receipts: it never submits a Gene command,
 writes a member conversation, or sends a Discord message. Usage is recorded as evaluation.
 
@@ -1258,7 +1258,7 @@ With the standing repair policy enabled, the harness can submit the checked repo
 `/repairs`; an accepted receipt means verification was queued, not that a defect was
 confirmed or fixed. Current same-member, same-conversation repair receipts are available
 on follow-up diagnoses. Failed acknowledgements remain uncertain and never claim success.
-Run `python -m gene.fri_eval --suite diagnosis` for isolated model choices with
+Run `python -m fri.fri_eval --suite diagnosis` for isolated model choices with
 fictional reports and inert evidence. It never writes member conversations or commands.
 
 Fri's request draft has a **Review request** button in the current chat, including DMs.

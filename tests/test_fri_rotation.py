@@ -11,8 +11,8 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.fri_agent_store import AgentStore
-from gene.fri_explore import roster
 from gene.store import Store
+from tests.legacy_fri.fri_explore import roster
 from tests.test_api import headers
 from tests.test_fri_exploration import archive, finish, row
 from tests.test_fri_learning import learning as learning

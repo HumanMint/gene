@@ -6,11 +6,11 @@ import discord
 import pytest
 from redbot.core import commands
 
-from gene.fri_chat import ChatResult
-from gene.fri_errors import ControllerRejected
-from gene.fri_outcomes import fallback, receipt
-from gene.fri_runner import run
 from gene.store import Store
+from tests.legacy_fri.fri_chat import ChatResult
+from tests.legacy_fri.fri_errors import ControllerRejected
+from tests.legacy_fri.fri_outcomes import fallback, receipt
+from tests.legacy_fri.fri_runner import run
 from tests.test_api import headers
 from tests.test_fri_actions import harness
 from tests.test_fri_runtime import event

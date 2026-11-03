@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 import pytest
 from redbot.core import commands
 
-from gene.fri_chat import ChatResult
-from gene.fri_social import cancellation_requested, execute
 from gene.fri_social_store import Social
+from tests.legacy_fri.fri_chat import ChatResult
+from tests.legacy_fri.fri_social import cancellation_requested, execute
 from tests.test_fri_reply_capabilities import workflow
 from tests.test_fri_social import DM, api, confirmed  # noqa: F401
 

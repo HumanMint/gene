@@ -7,10 +7,10 @@ from fastapi.testclient import TestClient
 from redbot.core import commands
 
 from gene.api import create_app
-from gene.fri_actions import Actions
-from gene.fri_agent import BehaviorPreview
 from gene.fri_agent_store import DEFAULTS
-from gene.fri_chat import ChatResult
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_agent import BehaviorPreview
+from tests.legacy_fri.fri_chat import ChatResult
 from tests.test_api import headers
 from tests.test_fri_actions import harness
 from tests.test_fri_agent import setup_agent as setup_agent

@@ -1,5 +1,10 @@
 # Fri's agent workspace
 
+Historical design notes for the extracted companion. Current runtime behavior and
+operations are maintained in `HumanMint/fri`; live eval commands below run in that
+independent Fri installation, inside the production maintenance window. The old
+client remains only as the offline fixture `tests/legacy_fri/`.
+
 ## Images, personal reminders, and game nights
 
 Attach up to two PNG, JPEG, or WebP still images while talking to Fri. Informal
@@ -24,7 +29,7 @@ after the reply, error or preview is delivered, with a five-minute expiry as a
 fallback if delivery never finishes. Only Fri's own waiting notices are removed.
 Background attention rechecks ongoing and recently completed replies before speaking.
 
-`python -m gene.fri_eval --suite images` checks the selected subscription model with
+`python -m fri.fri_eval --suite images` checks the selected subscription model with
 synthetic color/shape images. It records usage without writing synthetic dialogue
 into a member's Discord conversation or saved chat history.
 
@@ -237,7 +242,7 @@ reaction delivery is not claimed by the history record. Normal retention, scope
 isolation and erasure apply. Meme attention has its own unchanged controls.
 
 `tests/test_fri_endings.py` covers the shortcut, pending-request fences, typed
-history, schema validation and Discord delivery checks. `python -m gene.fri_eval
+history, schema validation and Discord delivery checks. `python -m fri.fri_eval
 --suite endings` checks actual model choices on isolated fictional conversations,
 including a playful follow-up, closing acknowledgments, clarifications and distress.
 It writes only anonymous usage receipts, never Discord messages or member history.
@@ -274,7 +279,7 @@ scope, displayed when requested, and erased by the existing privacy controls.
 `tests/test_fri_continuity.py` exercises the question/answer path through Fri,
 the real controller and installed Red checks using offline Discord/model transports.
 It also tests scope, cancellation, edits, privacy, expiry, restart, duplicate
-delivery and bounded research recovery. `python -m gene.fri_eval --suite continuity`
+delivery and bounded research recovery. `python -m fri.fri_eval --suite continuity`
 checks actual model choices across turns and performs isolated live public research,
 with anonymous evaluation usage only. It cannot invoke Discord or write conversations.
 These checks do not prove audible playback or guarantee that every public question
@@ -283,7 +288,7 @@ has an accessible, current answer.
 `tests/test_fri_workspace.py` covers persistence, scope isolation, erase/revision
 fences, fresh owner approvals, stale draft versions, restart and ambiguous sends,
 revoked permissions, lost controller receipts and the bounded tool chain. Existing
-Gene controls and repair tests remain relevant. `python -m gene.fri_eval --suite
+Gene controls and repair tests remain relevant. `python -m fri.fri_eval --suite
 foundation` checks actual model choices using synthetic isolated cases: it cannot
 save conversations or post to Discord. Delivery tests use a fake Discord transport;
 they do not replace a member's real interaction with the new preview.

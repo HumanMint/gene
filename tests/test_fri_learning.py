@@ -12,9 +12,9 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
-from gene.fri_agent import Agent
 from gene.fri_agent_store import AgentStore, snowflake_floor
 from gene.store import Store
+from tests.legacy_fri.fri_agent import Agent
 from tests.test_api import headers
 
 
@@ -262,8 +262,8 @@ def test_old_claim_refund_cannot_credit_another_budget_day(learning):
 
 @pytest.mark.parametrize('failure', [False, True])
 def test_heartbeat_records_actual_tick_outcome(learning, failure, monkeypatch):
-    monkeypatch.setattr('gene.fri_workspace.deliver_one', AsyncMock())
-    monkeypatch.setattr('gene.fri_social.deliver_one', AsyncMock())
+    monkeypatch.setattr('tests.legacy_fri.fri_workspace.deliver_one', AsyncMock())
+    monkeypatch.setattr('tests.legacy_fri.fri_social.deliver_one', AsyncMock())
     clock, _, _, scheduler = learning
     async def scenario():
         fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456,

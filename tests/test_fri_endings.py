@@ -10,10 +10,10 @@ import discord
 import httpx
 import pytest
 
-from gene.fri_agent import Agent
-from gene.fri_chat import Chat, ChatResult
 from gene.fri_responses import quick_closure
 from gene.store import Conflict, Store
+from tests.legacy_fri.fri_agent import Agent
+from tests.legacy_fri.fri_chat import Chat, ChatResult
 from tests.test_api import headers
 from tests.test_fri_chat import response_event
 from tests.test_fri_continuity import arm, origin
@@ -189,7 +189,7 @@ def test_obvious_closing_avoids_model_and_records_typed_decision(monkeypatch):
 
 def delivery():
     fri = SimpleNamespace(guild_id=123, owner_id=10, workshop_id=456, user=SimpleNamespace(id=99))
-    from gene.fri_notices import WaitingNotices
+    from tests.legacy_fri.fri_notices import WaitingNotices
     fri.waiting_notices = WaitingNotices(set())
     agent = Agent(fri)
     agent.config['enabled'] = True

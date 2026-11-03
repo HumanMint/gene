@@ -6,7 +6,7 @@ import uuid
 import discord
 from redbot.core import commands
 
-from .fri_context import discord_source
+from gene.fri_context import discord_source
 
 NO_MENTIONS = discord.AllowedMentions.none()
 COMPONENT = re.compile(r'^fri:memory:(?:open|choose|remove|replace|edit):[a-f0-9]{32}$')

@@ -4,10 +4,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gene.fri_actions import Actions
 from gene.fri_research import ResearchReceipt
-from gene.fri_web import cite_reply
 from gene.store import Conflict, Store
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_web import cite_reply
 from tests.test_fri_actions import harness
 from tests.test_gene_controls import control_body
 
@@ -98,7 +98,7 @@ def test_source_followup_uses_saved_receipt_and_never_runs_another_search(monkey
         fri, agent, _, _ = harness(monkeypatch, tmp_path)
         actions = Actions(agent, 20, 1, True)
         actions.web_research = [RECEIPT]
-        with patch('gene.fri_actions.lookup', new=AsyncMock()) as search:
+        with patch('tests.legacy_fri.fri_actions.lookup', new=AsyncMock()) as search:
             assert 'web_sources' in await actions.available()
             result = await actions.execute({'kind': 'web_sources', 'query': ''})
             assert result['checked_at'] == RECEIPT['checked_at'] and result['sources'] == RECEIPT['sources']
@@ -117,7 +117,7 @@ def test_database_research_validation_has_no_model_or_auth_dependencies(tmp_path
     code = '''
 import sys
 from pathlib import Path
-for module in ('jwt', 'gene.subscription', 'gene.fri_chat', 'gene.fri_web'):
+for module in ('jwt', 'gene.subscription', 'tests.legacy_fri.fri_chat', 'tests.legacy_fri.fri_web'):
     sys.modules[module] = None
 from gene.store import Store
 store = Store(Path(sys.argv[1]))

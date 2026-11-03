@@ -16,20 +16,21 @@ import discord
 from discord.ext import tasks
 from redbot.core import commands
 
+from gene.fri_agent_store import DEFAULTS, RANGES
+from gene.fri_conversation import Bursts
+from gene.fri_memory import memory_intent
+from gene.fri_responses import REACTIONS
+from gene.previews import PagedPreview
+from gene.privacy import clean
+from gene.subscription import private_json
+
 from .fri_addressing import addressed_text
 from .fri_agent_model import ATTENTION, DIAGNOSIS, SETTINGS, SUMMARY, analyze
-from .fri_agent_store import DEFAULTS, RANGES
-from .fri_conversation import Bursts
 from .fri_errors import ControllerRejected
-from .fri_memory import memory_intent
 from .fri_notices import ReplyInProgress, notice_text
 from .fri_panel import DraftView
 from .fri_reports import report_message
-from .fri_responses import REACTIONS
 from .fri_usage import usage_requested
-from .previews import PagedPreview
-from .privacy import clean
-from .subscription import private_json
 
 LOG = logging.getLogger('fri.agent')
 NO_MENTIONS = discord.AllowedMentions.none()
@@ -592,7 +593,7 @@ class Agent:
             '\n\nRead-only assessment (gpt-6.1-sol, xhigh):\n'+result.get('summary', '')+
             '\n\nProposed repair:\n'+result['proposed_request'], 5500)
         if self.state.get('auto_repairs_enabled'):
-            from .fri_context import discord_source
+            from gene.fri_context import discord_source
             message = await source_channel.fetch_message(int(record['id']))
             if message.author.id != self.gene_id or message.webhook_id or not self.allowed(source_channel):
                 return

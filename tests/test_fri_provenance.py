@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock, patch
 import httpx
 import pytest
 
-from gene.fri_chat import Chat, ChatResult
 from gene.fri_context import ChatSource, discord_source
-from gene.fri_eval import evaluate
 from gene.store import Store
+from tests.legacy_fri.fri_chat import Chat, ChatResult
+from tests.legacy_fri.fri_eval import evaluate
 from tests.test_api import actor, headers
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
@@ -125,7 +125,7 @@ def test_runtime_uses_event_author_not_supplied_display_name_and_saves_source(mo
 
 
 def test_evaluation_has_no_actions_or_memory_and_only_records_usage(monkeypatch, tmp_path, capsys):
-    from gene import fri_eval
+    from tests.legacy_fri import fri_eval
     observed = []
     async def respond(text, context):
         observed.append(context)

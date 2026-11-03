@@ -5,9 +5,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gene.fri_agent_store import AgentStore
-from gene.fri_chat import ChatResult
-from gene.fri_usage import describe_usage, usage_requested
 from gene.store import Store
+from tests.legacy_fri.fri_chat import ChatResult
+from tests.legacy_fri.fri_usage import describe_usage, usage_requested
 from tests.test_fri_actions import harness
 from tests.test_fri_runtime import event
 
@@ -177,7 +177,7 @@ def test_mentioned_owner_report_uses_conversation_path_even_while_chat_is_paused
         message.webhook_id = None
         message.mentions = [fri.user]
         message.reference = None
-        with patch('gene.fri_agent.asyncio.sleep', new=AsyncMock()):
+        with patch('tests.legacy_fri.fri_agent.asyncio.sleep', new=AsyncMock()):
             await agent.handle(message)
         agent.respond.assert_awaited_once_with(message, 'show usage by model', False)
         assert not any(path == '/agent/state' for path, _ in calls)

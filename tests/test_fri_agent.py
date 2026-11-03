@@ -11,11 +11,11 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
-from gene.fri_agent import Agent, BehaviorPreview
-from gene.fri_agent_model import SUMMARY, analyze
 from gene.fri_agent_store import AgentStore
-from gene.fri_chat import Chat
 from gene.store import Store
+from tests.legacy_fri.fri_agent import Agent, BehaviorPreview
+from tests.legacy_fri.fri_agent_model import SUMMARY, analyze
+from tests.legacy_fri.fri_chat import Chat
 from tests.test_api import actor, headers
 from tests.test_fri_chat import response_event
 
@@ -234,7 +234,7 @@ def test_followups_work_without_name_but_dont_follow_someone_elses_reply():
         message = SimpleNamespace(id=1, guild=SimpleNamespace(id=123), channel=SimpleNamespace(id=456),
             author=SimpleNamespace(id=11, bot=False, display_name='friend'),
             content='just got off work', mentions=[], reference=None, webhook_id=None)
-        with patch('gene.fri_agent.asyncio.sleep', new=AsyncMock()):
+        with patch('tests.legacy_fri.fri_agent.asyncio.sleep', new=AsyncMock()):
             await agent.handle(message)
             agent.respond.assert_not_awaited()
             agent.active[(456, 11)] = time.time()+120
@@ -283,7 +283,7 @@ def test_member_error_text_cannot_trigger_gene_investigation():
 
 def test_history_search_cannot_quote_a_different_channel_publicly():
     async def scenario():
-        from gene.fri_actions import Actions
+        from tests.legacy_fri.fri_actions import Actions
         from tests.test_fri_runtime import event
 
         permissions = SimpleNamespace(view_channel=True, read_message_history=True)
@@ -385,7 +385,7 @@ def test_proactive_error_keeps_owner_fallback_for_definite_repair_rejection(outc
     from redbot.core import commands
 
     from gene.fri_context import ChatSource
-    from gene.fri_errors import ControllerRejected
+    from tests.legacy_fri.fri_errors import ControllerRejected
 
     async def scenario():
         channel=SimpleNamespace(id=456,guild=SimpleNamespace(id=123),parent_id=None)

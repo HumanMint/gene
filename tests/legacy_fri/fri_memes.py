@@ -11,11 +11,12 @@ import discord
 import httpx
 from redbot.core import commands
 
+from gene.privacy import clean
+from gene.private_files import private_json
+
 from .fri_agent_model import STRING, obj
 from .fri_chat import VOICE
 from .fri_meme_media import load_image, sources
-from .privacy import clean
-from .private_files import private_json
 
 EMOJIS = ('💩', '🤡', '🗿', '🫠', '🧂', '🍿', '👀', '🧠', '🪦', '🐐', '🐸', '🦆',
           '🐀', '🐒', '🍌', '🥔', '🍞', '🥚', '🧀', '🦀', '🐟', '🦴', '🪑', '🛒',

@@ -11,10 +11,10 @@ import httpx
 import pytest
 
 from gene.control_store import Controls
-from gene.fri_chat import Chat, ChatResult
 from gene.fri_context import discord_source
 from gene.fri_conversation import Bursts, burst_continuation, checked_burst, evidence, unchanged
 from gene.fri_responses import quick_closure
+from tests.legacy_fri.fri_chat import Chat, ChatResult
 from tests.test_api import headers
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
@@ -68,7 +68,7 @@ def test_split_command_reaches_real_red_checks_once_and_fences_replay(monkeypatc
             controls.finish(claim['id'], claim['lease'], result)
         burst = [(time.monotonic(), original, original.content), (time.monotonic(), message, message.content)]
         try:
-            with patch('gene.fri_actions.asyncio.sleep', new=deliver):
+            with patch('tests.legacy_fri.fri_actions.asyncio.sleep', new=deliver):
                 result = await fri.talk(123, message.channel.id, 20, message.content,
                     'private' if private else 'public', event=message, burst=burst)
             assert result.reply == 'queued it' and len(calls) == 1
@@ -311,7 +311,7 @@ def test_agent_coalesces_split_invitation_without_existing_active_window(monkeyp
         async def yield_once(_):
             await real_sleep(0)
         try:
-            with patch('gene.fri_agent.asyncio.sleep', new=yield_once):
+            with patch('tests.legacy_fri.fri_agent.asyncio.sleep', new=yield_once):
                 await asyncio.gather(agent.handle(first), agent.handle(last))
             agent.respond.assert_awaited_once()
             kwargs = agent.respond.await_args.kwargs

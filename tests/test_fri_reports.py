@@ -10,10 +10,16 @@ from fastapi.testclient import TestClient
 from redbot.core import commands
 
 from gene.api import create_app
-from gene.fri_agent import Agent
 from gene.fri_agent_store import AgentStore
-from gene.fri_reports import REPORT_ID, ReportButton, report_component, report_message, summary
 from gene.store import Store
+from tests.legacy_fri.fri_agent import Agent
+from tests.legacy_fri.fri_reports import (
+    REPORT_ID,
+    ReportButton,
+    report_component,
+    report_message,
+    summary,
+)
 from tests.test_api import headers
 from tests.test_fri_exploration import archive, assigned, finish, note, row
 from tests.test_fri_learning import learning as learning

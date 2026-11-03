@@ -9,10 +9,11 @@ import discord
 import httpx
 from redbot.core import commands
 
-from .fri_context import discord_source
+from gene.fri_context import discord_source
+from gene.privacy import clean
+from gene.subscription import private_json
+
 from .fri_errors import ControllerRejected
-from .privacy import clean
-from .subscription import private_json
 
 KINDS = {'work_list', 'work_read', 'work_save', 'channel_capabilities', 'prepare_post'}
 POST_ID = re.compile(r'^fri:post:(?P<post_id>[a-f0-9]{32}):(?P<decision>send|cancel)$')

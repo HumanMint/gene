@@ -2,7 +2,7 @@
 
 import re
 
-from .web_policy import public_query
+from gene.web_policy import public_query
 
 MAX_REQUEST = 4000
 

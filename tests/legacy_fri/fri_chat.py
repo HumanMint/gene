@@ -7,13 +7,14 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from gene.fri_memory import CATEGORIES
+from gene.fri_responses import KINDS, REACTIONS, acknowledgment_allowed, validate_response
+from gene.subscription import RESOURCE, SubscriptionError
+
 from .fri_history_search import HISTORY_ACTIONS
 from .fri_history_search import valid_action as valid_history_action
 from .fri_image_request import MAX_REQUEST
-from .fri_memory import CATEGORIES
-from .fri_responses import KINDS, REACTIONS, acknowledgment_allowed, validate_response
 from .fri_social import SOCIAL_ACTIONS
-from .subscription import RESOURCE, SubscriptionError
 
 VOICE = '''You are Fri, a Discord regular and Gene's chat companion. Gene handles the utilities.
 Your pronouns are they/them. If asked, answer briefly. When someone calls you she/he in a
@@ -426,13 +427,13 @@ class Chat:
                                 work = isinstance(action, dict) and action.get('kind') in WORK_ACTIONS
                                 expected = {'kind', *WORK_ACTIONS[action['kind']]} if work else ({'kind', 'action', 'argument'} if control else {'kind', parameter})
                                 if clarify:
-                                    from .fri_pending import Clarification
+                                    from gene.fri_pending import Clarification
                                     Clarification.model_validate({k: v for k, v in action.items() if k != 'kind'})
                                     expected = {'kind', 'goal', 'question', 'topic'}
                                     if action['goal'] not in context.get('actions', {}).get('clarify', {}).get('goals', []):
                                         raise ValueError('Unavailable clarification')
                                 if control:
-                                    from .gene_controls import arguments
+                                    from gene.gene_controls import arguments
                                     arguments(action.get('action'), action.get('argument'))
                                 if (not isinstance(action, dict) or set(action) != expected or
                                         action['kind'] not in context.get('actions', {}) or

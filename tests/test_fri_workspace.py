@@ -12,13 +12,19 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
-from gene.fri_chat import ChatResult
 from gene.fri_context import ChatSource
-from gene.fri_errors import ControllerRejected
-from gene.fri_runner import run
-from gene.fri_workspace import capabilities, deliver_one, execute, post_component, send_once
 from gene.fri_workspace_store import Workspace
 from gene.store import Conflict, Store
+from tests.legacy_fri.fri_chat import ChatResult
+from tests.legacy_fri.fri_errors import ControllerRejected
+from tests.legacy_fri.fri_runner import run
+from tests.legacy_fri.fri_workspace import (
+    capabilities,
+    deliver_one,
+    execute,
+    post_component,
+    send_once,
+)
 
 SCOPE = {'guild_id': '123', 'user_id': '10', 'channel_id': '456', 'conversation_id': 'private:999'}
 
@@ -175,8 +181,8 @@ def test_runtime_delivery_failures_do_not_duplicate(api, tmp_path, monkeypatch, 
         fri, work, post, original = discord_harness(api, tmp_path)
         async def sender(f, p):
             return await f.http.request(json={'content': p['body'], 'allowed_mentions': {'parse': []}, 'enforce_nonce': True, 'nonce': str(int(p['id'][:20],16))})
-        monkeypatch.setattr('gene.fri_workspace.send_once', sender)
-        monkeypatch.setattr('gene.fri_workspace.capabilities', AsyncMock(return_value={'777': {'one_off_post': failure != 'permission'}}))
+        monkeypatch.setattr('tests.legacy_fri.fri_workspace.send_once', sender)
+        monkeypatch.setattr('tests.legacy_fri.fri_workspace.capabilities', AsyncMock(return_value={'777': {'one_off_post': failure != 'permission'}}))
         if failure == 'deleted_source':
             original.edited_at = True
         if failure == 'timeout':

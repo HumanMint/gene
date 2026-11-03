@@ -13,9 +13,9 @@ import httpx
 import pytest
 from PIL import Image, PngImagePlugin
 
-from gene.fri_actions import Actions
-from gene.fri_chat import ChatResult
-from gene.fri_image_share import (
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_chat import ChatResult
+from tests.legacy_fri.fri_image_share import (
     API,
     MAX_BYTES,
     ImageShare,
@@ -300,7 +300,7 @@ def test_delivery_failure_is_truthful_and_never_retries_ambiguous_upload(mode):
                          ids=['short', 'full-brief', 'harness-brief', 'short-excerpt-keeps-details'])
 @pytest.mark.parametrize('fault', ['', 'final_model', 'recording', 'edit_before_send'])
 def test_complete_chat_tool_selection_persistence_and_upload(api, monkeypatch, tmp_path, fault, query, tool_query):  # noqa: F811
-    from gene.fri_chat import Chat
+    from tests.legacy_fri.fri_chat import Chat
     from tests.test_fri_chat import response_event
     async def scenario():
         client, call = api
@@ -388,9 +388,9 @@ def test_full_image_brief_blocks_private_content_after_safe_excerpt(monkeypatch,
 
 
 def test_image_brief_bounds_and_ordinary_web_limits_stay_separate():
-    from gene.fri_image_request import MAX_REQUEST, image_request, receipt_query
     from gene.fri_research import ResearchReceipt
     from gene.web_policy import public_query
+    from tests.legacy_fri.fri_image_request import MAX_REQUEST, image_request, receipt_query
     assert image_request('', DETAILED_QUERY) == DETAILED_QUERY
     assert image_request('private saved context', DETAILED_QUERY) == ''
     assert image_request('', 'a'*(MAX_REQUEST+1)) == ''

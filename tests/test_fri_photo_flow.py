@@ -11,9 +11,9 @@ import discord
 import httpx
 import pytest
 
-from gene.fri_actions import Actions
-from gene.fri_chat import Chat, ChatResult
-from gene.fri_notices import ReplyInProgress
+from tests.legacy_fri.fri_actions import Actions
+from tests.legacy_fri.fri_chat import Chat, ChatResult
+from tests.legacy_fri.fri_notices import ReplyInProgress
 from tests.test_fri_actions import harness
 from tests.test_fri_chat import response_event
 from tests.test_fri_images import message
@@ -49,7 +49,7 @@ def test_informal_caption_reaches_model_with_pixels_and_no_image_persistence(api
             event.channel.history = history
             event.channel.fetch_message = AsyncMock(side_effect=lambda identifier: upload if identifier == upload.id else event)
         uri = 'data:image/png;base64,aGVsbG8='
-        monkeypatch.setattr('gene.fri_images.load_image', AsyncMock(return_value=uri))
+        monkeypatch.setattr('tests.legacy_fri.fri_images.load_image', AsyncMock(return_value=uri))
         monkeypatch.setattr(Actions, 'available', AsyncMock(return_value={}))
         # Even an exact closing caption must not discard the newly supplied photo.
         prior = source(1, public=public).model_copy(update={'id': str(event.id-(10_000 << 22))})
@@ -78,7 +78,7 @@ def test_informal_caption_reaches_model_with_pixels_and_no_image_persistence(api
 
 @pytest.mark.parametrize('change', ['other_user', 'other_channel', 'old', 'future', 'captioned', 'webhook'])
 def test_previous_upload_does_not_borrow_unrelated_media(change):
-    from gene.fri_images import select_source
+    from tests.legacy_fri.fri_images import select_source
     async def scenario():
         event = message()
         event.id = int(source(60).id)
@@ -106,14 +106,14 @@ def test_previous_upload_does_not_borrow_unrelated_media(change):
 
 
 def test_separate_photo_removed_during_inference_invalidates_answer(monkeypatch):
-    from gene.fri_images import attach, unchanged
+    from tests.legacy_fri.fri_images import attach, unchanged
     async def scenario():
         event = message()
         upload = copy.copy(event)
         upload.id, upload.content = event.id-1, ''
         event.attachments = []
         context = {}
-        monkeypatch.setattr('gene.fri_images.load_image', AsyncMock(return_value='data:image/png;base64,aGVsbG8='))
+        monkeypatch.setattr('tests.legacy_fri.fri_images.load_image', AsyncMock(return_value='data:image/png;base64,aGVsbG8='))
         event.channel.fetch_message = AsyncMock(side_effect=lambda identifier: upload if identifier == upload.id else event)
         await attach(context, event, event.content, source=upload)
         assert await unchanged(context, event)
@@ -126,7 +126,7 @@ def test_separate_photo_removed_during_inference_invalidates_answer(monkeypatch)
 
 def test_proactive_reply_keeps_photos_out_of_background_inference(monkeypatch, tmp_path):
     async def scenario():
-        from gene.fri_chat import ChatResult
+        from tests.legacy_fri.fri_chat import ChatResult
         fri, agent, channels, _ = harness(monkeypatch, tmp_path)
         event = message()
         event.author.display_name = 'Member'

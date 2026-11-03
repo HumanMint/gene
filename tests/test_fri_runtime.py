@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 
-from gene.fri import Fri
+from tests.legacy_fri.fri import Fri
 
 
 def configured(monkeypatch):

@@ -5,8 +5,8 @@ import re
 import discord
 from redbot.core import commands
 
-from .previews import pages
-from .privacy import clean
+from gene.previews import pages
+from gene.privacy import clean
 
 NO_MENTIONS = discord.AllowedMentions.none()
 REPORT_ID = re.compile(r'^fri:learning:(?P<report_id>[a-f0-9]{32}):(?P<page>summary|[0-9]{1,2})$')

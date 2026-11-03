@@ -9,9 +9,9 @@ from fastapi.testclient import TestClient
 from gene.api import create_app
 from gene.config import Settings
 from gene.fri_memory_store import edit, entries
-from gene.fri_social import deliver_one
 from gene.fri_social_store import Social
 from gene.store import Conflict, Store
+from tests.legacy_fri.fri_social import deliver_one
 from tests.test_fri_social import DM, api, confirmed, due, future, reminder, runtime, source  # noqa: F401
 
 
@@ -177,7 +177,7 @@ def test_item_edit_during_real_delivery_retains_exact_confirmation_and_send_once
             return await real_api(method, path, body)
         fri.api = edit_during_delivery
         sender = AsyncMock(return_value={'id': '987'})
-        monkeypatch.setattr('gene.fri_social.send_once', sender)
+        monkeypatch.setattr('tests.legacy_fri.fri_social.send_once', sender)
         await deliver_one(fri)
         assert edited and sender.await_count == 1
         assert sender.await_args.kwargs['embed']['description'] == 'update the mods'

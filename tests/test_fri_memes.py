@@ -14,13 +14,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from gene.api import create_app
-from gene.fri import Fri
-from gene.fri_agent import Agent
-from gene.fri_agent_model import analyze
 from gene.fri_agent_store import AgentStore
-from gene.fri_chat import Chat
-from gene.fri_meme_media import MAX_BYTES, allowed_url, load_image, sources
-from gene.fri_memes import SCHEMA, Memes
+from tests.legacy_fri.fri import Fri
+from tests.legacy_fri.fri_agent import Agent
+from tests.legacy_fri.fri_agent_model import analyze
+from tests.legacy_fri.fri_chat import Chat
+from tests.legacy_fri.fri_meme_media import MAX_BYTES, allowed_url, load_image, sources
+from tests.legacy_fri.fri_memes import SCHEMA, Memes
 from tests.test_api import headers
 from tests.test_fri_chat import response_event
 from tests.test_fri_learning import learning as learning
@@ -64,7 +64,7 @@ def harness(learning, tmp_path, monkeypatch):
     agent.state = scheduler.state()
     agent.run = AsyncMock(return_value=({'reaction': '💀', 'confidence': 'high', 'observation': 'A joke'}, {}, 'completed'))
     agent.memes = Memes(agent)
-    monkeypatch.setattr('gene.fri_memes.load_image', AsyncMock(return_value=IMAGE))
+    monkeypatch.setattr('tests.legacy_fri.fri_memes.load_image', AsyncMock(return_value=IMAGE))
 
     def add(mid=100, at=None, **kwargs):
         message = SimpleNamespace(id=mid, channel=channel, author=SimpleNamespace(id=11, bot=False),

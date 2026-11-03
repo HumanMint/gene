@@ -182,7 +182,6 @@ FREQUENT = (('', 'AFTER INSERT ON gene_runtime_health'), ('_turns', 'AFTER INSER
             ('_sessions', 'AFTER INSERT ON agent_sessions'), ('_sessions_moved', 'AFTER UPDATE ON agent_sessions'),
             ('_usage', 'AFTER INSERT ON chat_usage'))
 MIRROR = 'summary_refreshed:'  # agent_state: a member something depends on, and when their summary was refreshed.
-CLAIM_TIME_BOUND = '1e18'  # Seconds either way of 1970: a claim time past it is no clock's, and infinity is past it.
 
 
 def erasure_triggers(db):
@@ -226,40 +225,15 @@ def erasure_triggers(db):
     # withdrawn_during() orders fences by time and would miss it, so the batch keeps nothing it read, whichever message
     # it names (gene #182). One dated at or after the claim is left to withdrawn_during(), message by message.
     # Whoever writes it, an older controller too.
-    # A fence a batch depended on that goes past its week can't stop that batch any more: an older controller's finish
-    # (one before gene #180) counts only fences inside their week, then expires the rest as it moves the cursor, after
-    # saving its notes (gene #183). So dropping one past its week, by the same clock the expiry above uses, also marks
-    # the claim, and clearing a marked claim from a completed finish (its report not yet written) aborts that finish
-    # whole: nothing it read is kept, and the claim stays for the next pass to interrupt, which reports it first and
-    # then clears it. This controller refuses it itself (see finish). Only a claim whose time is a finite number,
-    # inside bounds no real clock reaches, is aborted. One whose time can't be read, even one a fence's expiry marked
-    # (SQLite reads an integer too large for a float as infinity, so before every fence), isn't: an older controller's
-    # claim() subtracts that time and raises before its interruption report, so its error finish is the claim's only
-    # way out there. This controller refuses such a claim at its finish and interrupts it at its next claim (gene
-    # #180). Nor is one holding more than one time, written plainly or escaped: SQLite reads the first and Python the
-    # last, which may be one it can't read.
-    expired = ("UPDATE agent_state SET value=json_set(value,'$.fence_expired',json('true')) "
-               "WHERE key='learning_claim' AND json_valid(value) AND json_type(value)='object' "
-               f"AND OLD.at<(julianday('now')-2440587.5)*86400.0-{WITHDRAWN_SECONDS};")
-    finished = ("OLD.key='learning_claim' AND NEW.value='null' AND json_valid(OLD.value) "
-                "AND json_type(OLD.value)='object' AND json_type(OLD.value,'$.id')='text' "
-                "AND typeof(json_extract(OLD.value,'$.at')) IN ('integer','real') "
-                f"AND json_extract(OLD.value,'$.at') BETWEEN -{CLAIM_TIME_BOUND} AND {CLAIM_TIME_BOUND} "
-                "AND (SELECT count(*) FROM json_each(OLD.value) WHERE key='at')=1 "
-                "AND NOT EXISTS (SELECT 1 FROM agent_reports WHERE id=json_extract(OLD.value,'$.id')) "
-                "AND json_type(OLD.value,'$.fence_expired')='true'")
     triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),
                 ('privacy_revision_moved', 'AFTER UPDATE OF revision ON chat_revisions', body),
                 *((f'message_fences_expire{suffix}', event, expire) for suffix, event in FREQUENT),
                 ('message_fence_dropped_while_learning',
-                 f'AFTER DELETE ON chat_message_fences WHEN OLD.at>={claimed}', learning+expired),
+                 f'AFTER DELETE ON chat_message_fences WHEN OLD.at>={claimed}', learning),
                 ('message_fence_before_learning_claim',
                  f'AFTER INSERT ON chat_message_fences WHEN NEW.at<{claimed}', learning),
                 ('message_fence_moved_before_learning_claim',
-                 f'AFTER UPDATE OF at ON chat_message_fences WHEN NEW.at<{claimed}', learning),
-                ('learning_claim_finished_past_fences',
-                 f'BEFORE UPDATE OF value ON agent_state WHEN {finished}',
-                 "SELECT RAISE(ABORT, 'learning claim past a fence it depended on');"))
+                 f'AFTER UPDATE OF at ON chat_message_fences WHEN NEW.at<{claimed}', learning))
     # Replaced, not kept if they exist, so a body changed since an earlier controller made them takes effect; all in
     # one transaction, so a start cut off between them, or an older controller starting meanwhile, never finds one
     # missing.

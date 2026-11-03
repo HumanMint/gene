@@ -218,14 +218,22 @@ def erasure_triggers(db):
     # Whatever drops one of those (count eviction at MESSAGE_FENCES, an erasure, an older controller's own eviction),
     # the batch keeps nothing it read: its finish discards its findings and leaves its cursor, so it's read again
     # (gene #163). Older fences, and deletions with no batch in flight, change nothing.
-    claimed = "(SELECT json_extract(value,'$.at') FROM agent_state WHERE key='learning_claim')"
+    claimed = "(SELECT json_extract(value,'$.at') FROM agent_state WHERE key='learning_claim' AND json_valid(value))"
     learning = ("UPDATE agent_state SET value=json_set(value,'$.privacy_invalidated',json('true')) "
-                "WHERE key='learning_claim' AND json_type(value)='object';")
+                "WHERE key='learning_claim' AND json_valid(value) AND json_type(value)='object';")
+    # A fence dated before the batch in flight was written while the clock was set back, after the batch was claimed:
+    # withdrawn_during() orders fences by time and would miss it, so the batch keeps nothing it read, whichever message
+    # it names (gene #182). One dated at or after the claim is left to withdrawn_during(), message by message.
+    # Whoever writes it, an older controller too.
     triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),
                 ('privacy_revision_moved', 'AFTER UPDATE OF revision ON chat_revisions', body),
                 *((f'message_fences_expire{suffix}', event, expire) for suffix, event in FREQUENT),
                 ('message_fence_dropped_while_learning',
-                 f'AFTER DELETE ON chat_message_fences WHEN OLD.at>={claimed}', learning))
+                 f'AFTER DELETE ON chat_message_fences WHEN OLD.at>={claimed}', learning),
+                ('message_fence_before_learning_claim',
+                 f'AFTER INSERT ON chat_message_fences WHEN NEW.at<{claimed}', learning),
+                ('message_fence_moved_before_learning_claim',
+                 f'AFTER UPDATE OF at ON chat_message_fences WHEN NEW.at<{claimed}', learning))
     # Replaced, not kept if they exist, so a body changed since an earlier controller made them takes effect; all in
     # one transaction, so a start cut off between them, or an older controller starting meanwhile, never finds one
     # missing.

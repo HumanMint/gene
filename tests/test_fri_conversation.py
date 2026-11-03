@@ -544,12 +544,12 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me comet', 'if i win\nand finish \U0001F602 early\nor tie\nplease call me comet'),
     ('games', 'i like chess', 'i like chess, or so you \U0001F602 always really just still say'),
     ('games', 'i like chess', 'i like chess, my mom \U0001F602 would say'),
-    ('games', 'i like chess', 'i like chess, my mom ❤️ would say'),
-    ('games', 'i like chess', 'i like chess, my mom \U0001F468‍\U0001F469‍\U0001F467 would say'),
+    ('games', 'i like chess', 'i like chess, my mom \u2764\uFE0F would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U0001F468\u200D\U0001F469\u200D\U0001F467 would say'),
     ('games', 'i like chess', 'i like chess, my mom <:kek:123456789012345678> would say'),
-    ('games', 'i like chess', 'i like chess, or so y‘all always really just still say'),
-    ('games', 'i like chess', 'i like chess, y‘all say'),
-    ('games', 'i like chess', 'i like chess, yʼall say'),
+    ('games', 'i like chess', 'i like chess, or so y\u2018all always really just still say'),
+    ('games', 'i like chess', 'i like chess, y\u2018all say'),
+    ('games', 'i like chess', 'i like chess, y\u02BCall say'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -641,8 +641,8 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess \U0001F602'),
     ('games', 'i like chess', '\U0001F602 i like chess'),
     ('games', 'i like chess', 'i like chess <:kek:123456789012345678>'),
-    ('games', 'i like chess', 'i like chess ❤️ lol'),
-    ('games', 'i like chess', 'i like chess, y‘all'),
+    ('games', 'i like chess', 'i like chess \u2764\uFE0F lol'),
+    ('games', 'i like chess', 'i like chess, y\u2018all'),
     ('games', 'i like chess', 'i like chess, ive written a song \U0001F3B5'),
     ('music', 'i love jazz', 'i love jazz \U0001F602 say what you want'),
     ('nickname', 'call me dan', 'pls call me dan \U0001F64F'),
@@ -738,7 +738,10 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 # gene #186-#188: continued conditions, long modifier runs, second person, activities and nouns.
                 'and finish the match early\n', 'if i win\nand ', 'or so ya still always really just ', 'lol ',
                 'my mom always ', 'yall ', 'you guys ', 'i writing, ', 'my writing is messy, ',
-                "i've recently been writing ", 'writing makes it fun, '):
+                "i've recently been writing ", 'writing makes it fun, ',
+                # gene #190: emoji and apostrophes spelled other ways, read a second time.
+                '\U0001F602 ', 'my mom \U0001F602 ', '<:kek:123456789012345678> ', 'y\u2018all ',
+                'and finish \U0001F602 early\n', '        \U0001F602', '\U0001F44D\U0001F3FD\U0000200D\U0001F602 '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

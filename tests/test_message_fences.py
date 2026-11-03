@@ -677,6 +677,33 @@ def test_the_claim_an_older_finish_couldnt_complete_is_cleared_as_interrupted(wo
         assert db.execute('SELECT 1 FROM agent_reports WHERE id=?', (claim['id'],)).fetchone()
 
 
+def older_error_finish(store, claim):
+    """Gene main 8aad087's finish of a failed batch (no records, an error), statement by statement: it never reads the
+    claim's time, clears the claim, then writes its report."""
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        AgentStore.put(db, 'learning_claim', None)
+        db.execute('INSERT INTO agent_reports VALUES (?,?,?,0)',
+                   (claim['id'], time.time(), 'Learning pass\nIssue: discarded'))
+
+
+@pytest.mark.parametrize('value', ['bad', None])
+def test_an_older_error_finish_still_clears_a_claim_whose_time_cant_be_read(world, value):
+    """Round 1 of #192's review: an older controller's claim() subtracts the claim's time (8aad087, 34dbbb3), so one
+    it can't read raises there before the interruption report, and its error finish is that claim's only way out. The
+    finish clears it and reports it, and the next pass proceeds. This controller refuses such a claim at the finish and
+    interrupts it at the next claim (gene #180) itself."""
+    client, store = world
+    _, _, claim = batch(client, store)
+    agent = set_claim_time(store, client, value)
+    older_error_finish(store, claim)
+    with store.connection() as db:
+        assert AgentStore.get(db, 'learning_claim') is None
+        assert db.execute('SELECT 1 FROM agent_reports WHERE id=?', (claim['id'],)).fetchone()
+        db.execute('UPDATE agent_reports SET delivered=1')
+    assert agent.claim(manual=True)['id'] != claim['id']
+
+
 def test_an_older_finish_inside_the_fences_week_completes_as_before(world):
     """Guard: a claim younger than the fences' week clears as before, from any controller."""
     client, store = world

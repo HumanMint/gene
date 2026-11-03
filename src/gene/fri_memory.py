@@ -337,22 +337,68 @@ def personal_note(candidate, text):
     return candidate['category'], evidence
 
 
-# An emoji is no word, break or quote of the member's: Unicode ones with their skin tones, joiners and variation
-# selectors, keycaps with their digit, flags, and Discord's own `<:name:id>`. Inside a report or a condition one hid it
-# ("i like chess, my mom 😂 would say", "if i win\nand finish 😂 early\n…"), as did an apostrophe spelled another way
-# ("y‘all say") (gene #190).
-EMOJI = (r"(?:<a?:\w{1,32}:\d{1,21}>|[0-9#*]\uFE0F?\u20E3|[\U0001F000-\U0001FAFF\u2300-\u23FF\u2600-\u27BF"
-         r"\u2B00-\u2BFF\uFE0E\uFE0F\u200D\u20E3\U000E0020-\U000E007F])")
+# An emoji is no word, break or quote of the member's: Unicode ones with their skin tones and flags, keycaps with
+# their digit, the older symbols members send as emoji (©, ™, ‼, ⁉, arrows), the usual text faces (":)", ";P", "xD",
+# "<3") and Discord's own `<:name:id>`. Inside a report or a condition one hid it ("i like chess, my mom 😂 would say",
+# "if i win\nand finish 😂 early\n…"), as did an apostrophe spelled another way ("y‘all say") (gene #190, #198).
+PICTURE = (r"[\U0001F000-\U0001FAFF\u00A9\u00AE\u203C\u2049\u2122\u2139\u2194-\u2199\u21A9\u21AA\u2300-\u23FF"
+           r"\u24C2\u25AA\u25AB\u25B6\u25C0\u25FB-\u25FE\u2600-\u27BF\u2934\u2935\u2B00-\u2BFF\u3030\u303D\u3297"
+           r"\u3299]")
+# A face may run into the next word (":Pwhat", "<3who", "xDwho"); after a word only a plain one ("thanks:)"), so
+# "5:30", "re:(x)" and "https://" stay what they are.
+FACE = (r"(?<![\w:;=])[:;=][-'^]?(?:[)(\]\[/|*]+|[DPpOo3])|(?<=\w)[:;=][-'^]?(?:[)(]+|[DP])(?!\w)|<3+|"
+        r"(?<![^\W\d_])[xX][Dd]+|[xX][Dd]+(?!\w)|\^_?\^|-_-|(?<!\w)T_T(?!\w)")
+INWORD = rf"(?:<a?:\w{{1,32}}:\d{{1,21}}>|[0-9#*]\u20E3|{PICTURE})"  # What can stand inside a word; a face can't.
+EMOJI = rf"(?:{INWORD}|{FACE})"
 # A run of them with the spaces around it, matched only from the start of those spaces, so a long run of spaces is
 # crossed once.
 EMOJI_RUN = re.compile(rf"(?<![ \t])[ \t]*+{EMOJI}(?:[ \t]*+{EMOJI})*+[ \t]*+")
-APOSTROPHE = re.compile(r"(?<=\w)[\u2018\u201B\u2032\uFF07\u00B4](?=\w)")
+# Characters that show nothing: zero-width spaces and joiners, variation selectors, soft hyphens, direction marks, tags.
+# "don<U+200B>t", "my mom<U+2060> would say" and "<U+200B>> quote" hid what they split (gene #198).
+INVISIBLE = re.compile(r"[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E"
+                       r"\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\U0001D173-\U0001D17A\U000E0000-\U000E0FFF]")
+APOSTROPHE = re.compile(r"(?<=\w)[\u2018\u201B\u2032\uFF07\u00B4\u02BC\u02BB](?=\w)")
+# A word with emoji inside it ("sa😂y", "ki😂dding", "tol😂d😂Will") is read with each run of its pieces that spells a
+# word these rules look for joined again; its other emoji stay where they were (gene #198).
+# From a word's start only; a word these rules look for is never spelled from more than six pieces.
+SPLIT, EMOJI_ANY, PIECES = re.compile(rf"(?<![\w'])\w[\w']*(?:{INWORD}+[\w']+)+"), re.compile(rf"({INWORD}+)"), 6
+LOOKED_FOR = frozenset(
+    {word for rule in (FRAMED, REPORT, HEARD, NEGATED, ASKING, POLITE, RETRACTED, FILLER, COURTESY, TAKEN_BACK, CONDITION,
+                       OPENS, ASIDE_PHRASES, RHETORICAL, ME_CLAUSE, DESCRIBED, BREAK, STARTS, PRIOR, IDIOM, LIKES, DOING,
+                       INTRODUCES, POINTS_BACK, ASIDE_ONLY, TOLD)
+     for word in re.findall(r"[a-z]{2,}", rule.pattern)}
+    | ME | ME_BETWEEN | ADVERBS | NOUNS | PASSIVE | PARTICIPLES | ASIDE_WORDS | FORMS | OWN | UNFINISHED | CONTINUES
+    | BACKREF | ACTIVITY | PLURALS | NAMES | set(ASKED) | {'u', 'i', 'thats', 'its'})
+
+
+def unsplit(m):
+    pieces = EMOJI_ANY.split(m.group())  # Word, emoji, word, …
+    words, out, at = pieces[::2], [], 0
+    while at < len(words):
+        upto = next((end for end in range(min(len(words), at + PIECES), at + 1, -1)
+                     if ''.join(words[at:end]).lower().replace("'", '') in LOOKED_FOR), at + 1)
+        out.append(''.join(words[at:upto]))
+        if upto < len(words):
+            out.append(pieces[2 * upto - 1])  # The emoji between this piece and the next stays.
+        at = upto
+    return ''.join(out)
+
+
+# After an emoji, the member's own clause ("i thought it'd be boring") or a quote of theirs ('"checkmate" is my
+# catchphrase') starts, as it does after a comma (gene #199).
+OWN_NEXT = re.compile(r"(?i)(?:i|i'm|im|i've|ive|i'd|i'll|we|we're|we've|we'd|we'll)\b|[\"“”'‘’]")
 
 
 def plainly(text):
-    """The text with each run of emoji, and the spaces around it, as one space, and each apostrophe inside a word as a
-    plain one."""
-    return APOSTROPHE.sub("'", EMOJI_RUN.sub(' ', text))
+    """The text as these rules should read it: nothing invisible, each apostrophe inside a word a plain one, a word
+    split by emoji read whole when it's one they look for, each other run of emoji with the spaces around it one space,
+    or a comma where the member's own clause or a quote follows it on the same line, and no run of spaces."""
+    text = SPLIT.sub(unsplit, APOSTROPHE.sub("'", INVISIBLE.sub('', text)))
+
+    def gap(m):
+        inside = m.start() > 0 and text[m.start() - 1] != '\n'
+        return ', ' if inside and OWN_NEXT.match(text, m.end()) else ' '
+    return re.sub(r'[ \t]{2,}', ' ', EMOJI_RUN.sub(gap, text))
 
 
 def spots_of(text, evidence):

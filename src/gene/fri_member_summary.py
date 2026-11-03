@@ -230,16 +230,17 @@ def erasure_triggers(db):
     # saving its notes (gene #183). So dropping one past its week, by the same clock the expiry above uses, also marks
     # the claim, and clearing a marked claim from a completed finish (its report not yet written) aborts that finish
     # whole: nothing it read is kept, and the claim stays for the next pass to interrupt, which reports it first and
-    # then clears it. So does a claim whose time can't be read, which no fence can be ordered against. This controller
-    # refuses both itself (see finish).
+    # then clears it. This controller refuses it itself (see finish). A claim whose time can't be read isn't aborted:
+    # an older controller's claim() subtracts that time and raises before its interruption report, so its error
+    # finish is the claim's only way out there. This controller refuses such a claim at its finish and interrupts it
+    # at its next claim (gene #180).
     expired = ("UPDATE agent_state SET value=json_set(value,'$.fence_expired',json('true')) "
                "WHERE key='learning_claim' AND json_valid(value) AND json_type(value)='object' "
                f"AND OLD.at<(julianday('now')-2440587.5)*86400.0-{WITHDRAWN_SECONDS};")
     finished = ("OLD.key='learning_claim' AND NEW.value='null' AND json_valid(OLD.value) "
                 "AND json_type(OLD.value)='object' AND json_type(OLD.value,'$.id')='text' "
                 "AND NOT EXISTS (SELECT 1 FROM agent_reports WHERE id=json_extract(OLD.value,'$.id')) "
-                "AND (json_type(OLD.value,'$.at') NOT IN ('integer','real') "
-                "OR json_type(OLD.value,'$.fence_expired')='true')")
+                "AND json_type(OLD.value,'$.fence_expired')='true'")
     triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),
                 ('privacy_revision_moved', 'AFTER UPDATE OF revision ON chat_revisions', body),
                 *((f'message_fences_expire{suffix}', event, expire) for suffix, event in FREQUENT),

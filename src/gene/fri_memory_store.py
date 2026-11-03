@@ -97,6 +97,14 @@ def predates(db, guild, scope, user, source):
     return bool(source and cutoff is not None and source.timestamp().timestamp() <= cutoff)
 
 
+def before_erasure(db, user, source):
+    """A message sent before the member last turned memory off, answered after it (a queued one, once it's on again):
+    a turn saved from it keeps nothing, as one from before a removal doesn't (HumanMint/fri#331). Only a turn's own
+    message is held to it; the other cutoffs (see removed) are unchanged."""
+    at = erased(db, user)
+    return bool(source and at is not None and source.timestamp().timestamp() <= at)
+
+
 def last_removal(db, guild, user):
     """When the member last edited or removed any note, or turned memory off; Fri's own caches drop what they said
     before it, and so does learning (HumanMint/fri#321)."""

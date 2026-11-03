@@ -1219,10 +1219,11 @@ class Store:
             if source:
                 db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
                            (guild_id, channel_id, user_id, source.id))
-            # Words sent before the member removed a note seen here, answered after it (a queued message),
-            # can't bring it back: like memory off, the turn keeps nothing, and says so. Nor can a message of
-            # theirs withdrawn before this save landed (gene #90): its exchange went, and this would be it again.
-            from .fri_memory_store import predates
+            # Words sent before the member removed a note seen here, or before they last turned memory off, answered
+            # after it (a queued message), can't bring them back: like memory off, the turn keeps nothing, and says
+            # so (HumanMint/fri#331). Nor can a message of theirs withdrawn before this save landed (gene #90): its
+            # exchange went, and this would be it again.
+            from .fri_memory_store import before_erasure, predates
             first = ChatSource.model_validate(burst[0]['source']) if burst else source  # A burst's earliest.
             own = [*([source.id] if source else []), *(row['source']['id'] for row in burst)]
             fenced = self.taken_back(db, guild_id, user_id, own) or self.deleted_anywhere(db, guild_id, own)
@@ -1235,7 +1236,9 @@ class Store:
                 save_pending(db, guild_id, channel_id, user_id, revision, text, source,
                              None if stale else clarification, provenance if attributed else None)
             profile = self._personal_context(db, guild_id, channel_id, user_id)
-            if not profile['enabled'] or stale:
+            # One from before memory was last turned off keeps no exchange or note either; a question it asks is
+            # still pending, as for one saved while memory is off (HumanMint/fri#331).
+            if not profile['enabled'] or stale or before_erasure(db, user_id, first):
                 return {'ok': True, 'first_memory': False, 'kept': False}
             if web_receipt:
                 db.execute('INSERT INTO web_research(guild_id,user_id,channel_id,created,receipt) VALUES (?,?,?,?,?)',

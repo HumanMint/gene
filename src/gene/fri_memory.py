@@ -323,9 +323,11 @@ def personal_note(candidate, text):
         return None
     # Read once more with each run of emoji as a space and each apostrophe inside a word as a plain one, the evidence
     # too (gene #190), and twice more with symbols, text faces, characters that show nothing and in-word emoji read
-    # plainly (gene #198). Every reading must keep it, so each only ever refuses more.
+    # plainly (gene #198), and twice more as those, with what still hid a word in them read plainly first (gene #201).
+    # Every reading must keep it, so each only ever refuses more.
     readings = {(plainly(text), plainly(evidence).strip())}
-    readings |= {(plainer(text, invisible), plainer(evidence, invisible).strip()) for invisible in ('', ' ')}
+    readings |= {(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
+                 for said, note in ((text, evidence), (prepared(text), prepared(evidence)))}
     for plain, said in readings - {(text, evidence)}:
         found, source = spots_of(plain, said) if said else [], Source(plain)
         if not found or len(found) > MAX_SPOTS or not all(source.claims(at, said) for at in found):
@@ -393,9 +395,69 @@ LOOKED_FOR = frozenset(
     | ME | ME_BETWEEN | ADVERBS | NOUNS | PASSIVE | PARTICIPLES | ASIDE_WORDS | FORMS | OWN | UNFINISHED | CONTINUES
     | BACKREF | ACTIVITY | PLURALS | NAMES | set(ASKED) | {'u', 'i', 'thats', 'its'})
 PIECES = max(map(len, LOOKED_FOR))  # Even a word split at every letter ("k😂i😂d😂d😂i😂n😂g").
-# The member's own clause, past fillers, after which a run's text faces stay as typed (see plainer).
-OWN_NEXT = re.compile(r"(?i)(?:(?:lol|lmao|haha|but|and|so|tho|though|ok|okay|well|honestly|anyway)\W+)*+"
-                      r"(?:i|i'm|im|i've|ive|i'd|i'll|we|we're|we've|we'd|we'll)\b")
+# The member's own clause, past fillers, after which a run's text faces stay as typed (see plainer): one filler and what
+# follows it at a time, so a message's run of them is crossed once, not once from each run of symbols in it (gene #201).
+KEPT_FILLERS = r"lol|lmao|haha|but|and|so|tho|though|ok|okay|well|honestly|anyway"
+KEPT_FILLER = re.compile(rf"(?i)(?:{KEPT_FILLERS})\W+")
+# Past the ordinary fillers too ("yeah", "also", "tbh"), the member's own verb (see plainer, gene #201).
+ANY_FILLER = re.compile(rf"(?i)(?:{KEPT_FILLERS}|{ASIDES})\W+")
+OWN_START = re.compile(r"(?i)(?:i|i'm|im|i've|ive|i'd|i'll|we|we're|we've|we'd|we'll)\b")
+# Their verb: right after "i" or "we", past at most three helping words, and never a passive ("i was told") or a
+# quotation ("i quoted my mom"), which are someone else's words.
+SPEAKS = '|'.join(verb for verb in f'{BARE}|{INFLECTED}'.split('|') if not verb.startswith('quot'))
+OWN_VERB = re.compile(rf"(?i)(i|i'm|im|i've|ive|i'd|i'll|we|we're|we've|we'd|we'll)"
+                      rf"((?:\s+(?:{'|'.join(sorted(ME_BETWEEN))})){{0,3}})\s+({SPEAKS})\b")
+
+
+def past_fillers(text, at, filler, ends):
+    """Where the fillers from `at` end; `ends` keeps each place already crossed, for the message's other runs."""
+    crossed = []
+    while at not in ends:
+        step = filler.match(text, at)
+        if not step:
+            ends[at] = at
+            break
+        crossed.append(at)
+        at = step.end()
+    for place in crossed:
+        ends[place] = ends[at]
+    return ends[at]
+
+
+def own_verb(text, at):
+    """The span of the member's own verb starting their clause at `at`, if it may be read as no report: active and not
+    told to them."""
+    m = OWN_VERB.match(text, at)
+    if not m or TOLD.match(text, m.end()):
+        return None
+    words = [word for word in [m[1].lower()] + m[2].lower().split() if word not in ADVERBS]
+    if m[3].lower() in PARTICIPLES and (words[-1] in PASSIVE or re.search(r"'(?:s|re|m)$|^im$", words[-1])):
+        return None  # "i was told", "im told", "i've been told".
+    return m.span(3)
+
+
+# What may refuse a claim from after it in its sentence, or be one: a report, a condition, a retraction or a denial in
+# any form, "like" (which a report may span: "i'm saying like …"), and the start of a note.
+CUES = (VERB, FRAMED, CONDITION, RETRACTED, NEGATED, re.compile(rf"(?i)\b(?:{HEARSAY}|like)\b"),
+        re.compile(LIKES.pattern.replace('^', r'\b', 1)), re.compile(DOING.pattern.replace('^', r'\b', 1)))
+
+
+def alone(text, runs, verbs):
+    """The verbs with words of their own after them in their sentence ("i thought it'd be boring"), none of which any
+    rule reads as a report, a condition, a retraction or a denial, or starts a note ("i thought my mom would say", "i
+    said i love jazz"), read with every run of symbols as spaces, so no face ends a sentence early. Each is then the
+    only word in its sentence a rule could refuse an earlier claim there for, and it ends no sentence ("i said.")."""
+    spaced, last = [], 0
+    for m in runs:
+        spaced += [text[last:m.start()], ' ' * (m.end() - m.start())]
+        last = m.end()
+    spaced = ''.join(spaced) + text[last:]
+    stops = [m.start() for m in SENTENCE.finditer(spaced)] + [len(spaced)]
+    cues = sorted(m.start() for rule in CUES for m in rule.finditer(spaced)) + [len(spaced)]
+    words = [m.start() for m in WORD.finditer(spaced)] + [len(spaced)]
+    return {(start, end) for start, end in verbs
+            if words[bisect.bisect_left(words, end)] < (stop := stops[bisect.bisect_left(stops, end)])
+            and cues[bisect.bisect_left(cues, end)] >= stop}
 
 
 @functools.lru_cache(maxsize=4096)
@@ -426,13 +488,52 @@ def plainer(text, invisible):
     where it spells one these rules look for, other characters showing nothing as `invisible` ('' or ' '), each run of
     emoji, symbols and text faces with the spaces around it one space, and no run of spaces. Before the member's own
     clause, a run keeps its text faces as typed ("i like chess ;P 😂 i thought it'd be boring"): the ";" may end their
-    sentence, and leaving it adds no refusal, where removing it would refuse what #196 keeps."""
-    text = INVISIBLE.sub(invisible, SPLIT.sub(unsplit, APOSTROPHES.sub("'", text)))
+    sentence, and leaving it adds no refusal, where removing it would refuse what #196 keeps.
 
-    def gap(m):
-        faces = FACES.findall(m.group()) if OWN_NEXT.match(text, m.end()) else []
-        return f" {' '.join(faces)} " if faces else ' '
-    return re.sub(r'[ \t]{2,}', ' ', SYMBOL_RUN.sub(gap, text))
+    gene #201: past a ";" face and the ordinary fillers ("i like chess ;P yeah i thought it'd be boring"), the run goes
+    as any other, and only the member's own verb right after their "i" or "we" is read as a word no rule looks for:
+    what else stands on either side of the face still counts ("i like chess ;P yeah we all know my mom says", "my mom
+    thinks ;P yeah i like chess"). The fillers are crossed once for all the message's runs."""
+    text = INVISIBLE.sub(invisible, SPLIT.sub(unsplit, APOSTROPHES.sub("'", text)))
+    runs, kept, unsaid, ends = list(SYMBOL_RUN.finditer(text)), {}, set(), ({}, {})
+    for m in runs:
+        if not FACES.search(m.group()):
+            continue
+        if OWN_START.match(text, past_fillers(text, m.end(), KEPT_FILLER, ends[0])):
+            kept[m.start()] = FACES.findall(m.group())
+        elif ';' in m.group() and OWN_START.match(text, at := past_fillers(text, m.end(), ANY_FILLER, ends[1])):
+            if span := own_verb(text, at):
+                unsaid.add(span)
+    if unsaid:
+        unsaid = alone(text, runs, unsaid)
+    out, last = [], 0
+    for start, end in sorted(unsaid):  # The same length, so each run stays where it was.
+        out += [text[last:start], 'z' * (end - start)]
+        last = end
+    text = ''.join(out) + text[last:]
+    out, last = [], 0
+    for m in runs:
+        faces = kept.get(m.start())
+        out += [text[last:m.start()], f" {' '.join(faces)} " if faces else ' ']
+        last = m.end()
+    return re.sub(r'[ \t]{2,}', ' ', ''.join(out) + text[last:])
+
+
+# What those readings still let hide a word (gene #201): a keycap's variation selector, which they read as showing
+# nothing, so the keycap splits ("sa1️⃣y", "i1️⃣f"); an apostrophe beside an emoji or a character showing nothing,
+# which they leave as typed ("don<ZWSP>ʼt", "y😂‘all"); and an attached face's trailing brackets ("mom:P)"). The
+# message is read twice more with each of these plain first: main's readings stay as they are.
+SELECTED_KEYCAP = re.compile(r'(?<=[0-9#*])\uFE0F(?=\u20E3)')
+NEAR = rf"(?:\w|{PICTURE}|{SHOWS_NOTHING}|[>\u20E3])"
+STRAY = re.compile(rf"(?<={NEAR})[\u2018\u201B\u2032\uFF07\u00B4\u02BC\u02BB](?={NEAR}|<a?:)")
+BRACKETED = re.compile(r"(?<=\w)([:;=][-'^]?[DP])[)(]+(?!\w)")
+
+
+@functools.lru_cache(maxsize=32)
+def prepared(text):
+    """The text with each keycap's variation selector gone, each apostrophe beside a word, an emoji or a character
+    showing nothing plain, and an attached face's trailing brackets gone ("mom:P) would say" as "mom:P would say")."""
+    return BRACKETED.sub(r'\1', STRAY.sub("'", SELECTED_KEYCAP.sub('', text)))
 
 
 def spots_of(text, evidence):

@@ -658,7 +658,7 @@ def test_the_issues_repro_an_older_finish_of_a_claim_past_the_fences_week_keeps_
     taken, _, claim = batch(client, store)
     withdraw_saved(client, taken)
     aged(store, claim)
-    with pytest.raises(sqlite3.IntegrityError, match='fences'):
+    with pytest.raises(sqlite3.IntegrityError, match='fence it depended on'):
         older_finish(store, claim, taken)
     assert notes(store) == [] and claim_at(store) is not None  # All of it undone: the claim stands.
 

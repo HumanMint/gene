@@ -245,3 +245,25 @@ def test_planner_and_summary_usage_outbox_delivers_through_controller(learning, 
         assert not list((fri.data/'usage').glob('*.json'))
         assert {r['role'] for r in scheduler.usage()} == {'exploration_plan', 'summary'}
     asyncio.run(scenario())
+
+
+INTERRUPTED = {'blocked': 'The previous pass was interrupted. Its report is pending; its allowance remains reserved.'}
+
+
+@pytest.mark.parametrize('value', [None, 'oops', 10**400], ids=['null', 'text', 'huge integer'])
+def test_a_claim_time_that_cant_be_read_is_refused_by_target_not_crashed(learning, value):
+    """gene #184: with an unassigned exploration claim and a completed query for the member, target() compared the
+    claim's stored time unchecked and raised TypeError. It's refused like any claim it can't use, and the next pass
+    reports it interrupted, as claim() treats a claim whose time can't be read."""
+    clock, store, settings, scheduler = archive(learning)
+    claim = scheduler.claim()
+    with store.connection() as db:
+        db.execute('INSERT INTO fri_explore_queries(key,channel_id,user_id,term,depth,before_id,done,at,passes) '
+                   'VALUES (?,?,?,?,?,?,1,?,1)', (scheduler.exploration.query_key('1', '11', '', claim['depth']),
+                                                   '1', '11', '', claim['depth'], '0', clock[0]-30*86400))
+        stored = AgentStore.get(db, 'learning_claim')
+        stored['at'] = value
+        AgentStore.put(db, 'learning_claim', stored)
+    with pytest.raises(ValueError, match='No unassigned archive exploration claim'):
+        assigned(scheduler, claim)
+    assert scheduler.claim(manual=True) == INTERRUPTED

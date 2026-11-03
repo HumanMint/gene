@@ -537,6 +537,19 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'after writing in her diary that i like chess, jo laughs'),
     ('games', 'i like chess', 'writing is how jo communicates that i like chess'),
     ('games', 'i like chess', "i like chess, or so the line makes yall think, those are jo's words"),
+    # gene #190: an emoji, Unicode or Discord's own, or an apostrophe spelled another way inside a report or a
+    # condition hides nothing.
+    ('nickname', 'call me comet', 'if i win\nand finish \U0001F602 early\nplease call me comet'),
+    ('nickname', 'call me comet', "if i win\nand finish \U0001F602 early\nif that's ok\nplease call me comet"),
+    ('nickname', 'call me comet', 'if i win\nand finish \U0001F602 early\nor tie\nplease call me comet'),
+    ('games', 'i like chess', 'i like chess, or so you \U0001F602 always really just still say'),
+    ('games', 'i like chess', 'i like chess, my mom \U0001F602 would say'),
+    ('games', 'i like chess', 'i like chess, my mom \u2764\uFE0F would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U0001F468\u200D\U0001F469\u200D\U0001F467 would say'),
+    ('games', 'i like chess', 'i like chess, my mom <:kek:123456789012345678> would say'),
+    ('games', 'i like chess', 'i like chess, or so y\u2018all always really just still say'),
+    ('games', 'i like chess', 'i like chess, y\u2018all say'),
+    ('games', 'i like chess', 'i like chess, y\u02BCall say'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -624,6 +637,17 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     # gene #186: a continued clause carries a condition, never makes one: one the line before it answered stays answered.
     ('nickname', 'call me comet', 'i lost\nand finished early\nplease call me comet'),
     ('nickname', 'call me comet', "if i win, i'll stream\nand finish early\nplease call me comet"),
+    # gene #190: an emoji on its own is no report or condition, wherever it stands.
+    ('games', 'i like chess', 'i like chess \U0001F602'),
+    ('games', 'i like chess', '\U0001F602 i like chess'),
+    ('games', 'i like chess', 'i like chess <:kek:123456789012345678>'),
+    ('games', 'i like chess', 'i like chess \u2764\uFE0F lol'),
+    ('games', 'i like chess', 'i like chess, y\u2018all'),
+    ('games', 'i like chess', 'i like chess, ive written a song \U0001F3B5'),
+    ('music', 'i love jazz', 'i love jazz \U0001F602 say what you want'),
+    ('nickname', 'call me dan', 'pls call me dan \U0001F64F'),
+    ('nickname', 'call me dan', 'whenever you want \U0001F60A\nplease call me dan'),
+    ('nickname', 'call me dan', 'i lost \U0001F62D\nplease call me dan'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -714,7 +738,10 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 # gene #186-#188: continued conditions, long modifier runs, second person, activities and nouns.
                 'and finish the match early\n', 'if i win\nand ', 'or so ya still always really just ', 'lol ',
                 'my mom always ', 'yall ', 'you guys ', 'i writing, ', 'my writing is messy, ',
-                "i've recently been writing ", 'writing makes it fun, '):
+                "i've recently been writing ", 'writing makes it fun, ',
+                # gene #190: emoji and apostrophes spelled other ways, read a second time.
+                '\U0001F602 ', 'my mom \U0001F602 ', '<:kek:123456789012345678> ', 'y\u2018all ',
+                'and finish \U0001F602 early\n', '        \U0001F602', '\U0001F44D\U0001F3FD\U0000200D\U0001F602 '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

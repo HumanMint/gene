@@ -314,16 +314,19 @@ def personal_note(candidate, text):
     if clean(evidence, 180) != evidence or any(s in evidence for s in ('\n', '`', '<@', '://')):
         return None
     # Every place these words stand as whole words must be the member's own plain claim; any doubt keeps nothing.
-    spots, at = [], text.find(evidence)
-    while at >= 0 and len(spots) <= MAX_SPOTS:
-        if whole(text, at, evidence):
-            spots.append(at)
-        at = text.find(evidence, at + 1)
+    spots = spots_of(text, evidence)
     if not spots or len(spots) > MAX_SPOTS:
         return None
     source = Source(text)
     if not all(source.claims(at, evidence) for at in spots):
         return None
+    # Read once more with each run of emoji as a space and each apostrophe inside a word as a plain one, the evidence
+    # too (gene #190). Both readings must keep it, so this only ever refuses more.
+    plain, said = plainly(text), plainly(evidence).strip()
+    if plain != text or said != evidence:
+        found, source = spots_of(plain, said) if said else [], Source(plain)
+        if not found or len(found) > MAX_SPOTS or not all(source.claims(at, said) for at in found):
+            return None
     # What a member is doing is only ever a projects note, and a projects note only ever says what they're doing.
     if not (DOING if candidate['category'] == 'projects' else LIKES).match(evidence):
         return None
@@ -332,6 +335,34 @@ def personal_note(candidate, text):
                  r'politic\w*|religio\w*|sexual\w*|health|medical|permission|approv\w*|deploy|execute)\b', evidence):
         return None
     return candidate['category'], evidence
+
+
+# An emoji is no word, break or quote of the member's: Unicode ones with their skin tones, joiners and variation
+# selectors, keycaps with their digit, flags, and Discord's own `<:name:id>`. Inside a report or a condition one hid it
+# ("i like chess, my mom 😂 would say", "if i win\nand finish 😂 early\n…"), as did an apostrophe spelled another way
+# ("y‘all say") (gene #190).
+EMOJI = (r"(?:<a?:\w{1,32}:\d{1,21}>|[0-9#*]\uFE0F?\u20E3|[\U0001F000-\U0001FAFF\u2300-\u23FF\u2600-\u27BF"
+         r"\u2B00-\u2BFF\uFE0E\uFE0F\u200D\u20E3\U000E0020-\U000E007F])")
+# A run of them with the spaces around it, matched only from the start of those spaces, so a long run of spaces is
+# crossed once.
+EMOJI_RUN = re.compile(rf"(?<![ \t])[ \t]*+{EMOJI}(?:[ \t]*+{EMOJI})*+[ \t]*+")
+APOSTROPHE = re.compile(r"(?<=\w)[\u2018\u201B\u2032\uFF07\u00B4](?=\w)")
+
+
+def plainly(text):
+    """The text with each run of emoji, and the spaces around it, as one space, and each apostrophe inside a word as a
+    plain one."""
+    return APOSTROPHE.sub("'", EMOJI_RUN.sub(' ', text))
+
+
+def spots_of(text, evidence):
+    """Where the evidence stands as whole words, stopping once there are more than MAX_SPOTS."""
+    spots, at = [], text.find(evidence)
+    while at >= 0 and len(spots) <= MAX_SPOTS:
+        if whole(text, at, evidence):
+            spots.append(at)
+        at = text.find(evidence, at + 1)
+    return spots
 
 
 def whole(text, at, evidence):

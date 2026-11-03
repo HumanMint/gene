@@ -1,9 +1,11 @@
 """Sol round 2 of #178: gene #172 and #173 only ever refuse more than main did (8aad087). And Sol round 1 of #189: gene
-#186 and #187 only ever refuse more than #178 did (8f0ac36). Each validator, kept verbatim beside this test as a
-reference, must keep every note this one keeps: for the reviewed repros, and for generated and fuzzed messages."""
+#186 and #187 only ever refuse more than #178 did (8f0ac36). And gene #190 only ever refuses more than #189 did
+(7689069). Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the
+reviewed repros, and for generated and fuzzed messages, with and without emoji and apostrophes spelled other ways."""
 import importlib.util
 import itertools
 import random
+import re
 from pathlib import Path
 
 import pytest
@@ -22,7 +24,8 @@ def reference(sha):
 
 MAIN = reference('8aad087')  # Before #178.
 CURRENT = reference('8f0ac36')  # #178, before #189.
-BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT}
+PREVIOUS = reference('7689069')  # #189, before #190.
+BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -64,6 +67,10 @@ REVIEWED = [
     'her writing makes it perfectly clear that i like chess', 'after writing in her diary that i like chess, jo laughs',
     'writing is how jo communicates that i like chess',
     "i like chess, or so the line makes yall think, those are jo's words",
+    # gene #190: an emoji or an apostrophe spelled another way inside a report or a condition.
+    'if i win\nand finish \U0001F602 early\nplease call me comet', 'i like chess, my mom \U0001F602 would say',
+    'i like chess, or so you \U0001F602 always really just still say', 'i like chess, y\u2018all say',
+    'i like chess, my mom <:kek:123456789012345678> would say', 'i like chess, my mom \u2764\uFE0F would say',
 ]
 
 
@@ -176,7 +183,8 @@ def test_generated_reports_and_conditions_are_never_kept_where_a_bound_refuses_t
 @pytest.mark.parametrize('sha', BOUNDS)
 def test_generated_attributions_past_a_noun_or_activity_are_never_kept_where_a_bound_refuses_them(sha):
     messages = list(attributions(20000, 189))
-    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 1000  # Many kept.
+    # Many kept, by #189 too (836), which refuses most of these attributions already.
+    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 500
     assert not leaks(messages, BOUNDS[sha])
 
 
@@ -187,6 +195,35 @@ def test_fuzzed_messages_are_never_kept_where_a_bound_refuses_them(sha):
     assert not leaks(messages, BOUNDS[sha])
 
 
+SPRINKLES = ['\U0001F602', '\u2764\uFE0F', '\U0001F468\u200D\U0001F469\u200D\U0001F467', '<:kek:123456789012345678>',
+             '<a:dance:98765432109876543>', '\U0001F44D\U0001F3FD', '1\uFE0F\u20E3', '\U0001F1FA\U0001F1F8', '\u2B50']
+CURLY = ['\u2018', '\u201B', '\u2032', '\uFF07', '\u00B4', '\u2019']
+
+
+def sprinkled(messages, seed):
+    """gene #190's shape: each message with emoji standing in for spaces or added beside them, and its apostrophes
+    spelled other ways, so both readings are tried against every bound."""
+    rng = random.Random(seed)
+    for category, evidence, text in messages:
+        at = text.find(evidence)
+        head, tail = text[:at], text[at + len(evidence):]
+
+        def scatter(part):
+            part = re.sub(r"(?<=\w)'(?=\w)", lambda _: rng.choice(CURLY), part)
+            return re.sub(r' ', lambda _: rng.choice([' ', ' ', f' {rng.choice(SPRINKLES)} ', rng.choice(SPRINKLES)]),
+                          part)
+        yield category, evidence, scatter(head) + evidence + scatter(tail)
+
+
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_messages_with_emoji_and_other_apostrophes_are_never_kept_where_a_bound_refuses_them(sha):
+    messages = list(sprinkled(itertools.chain(generated(8000, 190), condition_lines(8000, 1900),
+                                              attributions(4000, 19000), fuzzed(8000, 190000)), 190))
+    assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 2000
+    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 2000
+    assert not leaks(messages, BOUNDS[sha])
+
+
 def test_the_bound_is_a_real_check():
     """A validator that keeps what a bound refuses fails it: neither reference is this module under another name."""
     assert MAIN is not personal_note and MAIN({'category': 'games', 'evidence': 'i like chess'},
@@ -194,4 +231,8 @@ def test_the_bound_is_a_real_check():
     assert CURRENT is not personal_note and CURRENT is not MAIN
     assert CURRENT({'category': 'games', 'evidence': 'i like chess'}, 'my writing is messy, i like chess') is None
     assert MAIN({'category': 'games', 'evidence': 'i like chess'}, 'my writing is messy, i like chess') is not None
+    assert PREVIOUS is not personal_note and PREVIOUS not in (MAIN, CURRENT)
+    hidden = 'i like chess, my mom \U0001F602 would say'
+    assert PREVIOUS({'category': 'games', 'evidence': 'i like chess'}, hidden) is not None
+    assert personal_note({'category': 'games', 'evidence': 'i like chess'}, hidden) is None
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))

@@ -182,6 +182,7 @@ FREQUENT = (('', 'AFTER INSERT ON gene_runtime_health'), ('_turns', 'AFTER INSER
             ('_sessions', 'AFTER INSERT ON agent_sessions'), ('_sessions_moved', 'AFTER UPDATE ON agent_sessions'),
             ('_usage', 'AFTER INSERT ON chat_usage'))
 MIRROR = 'summary_refreshed:'  # agent_state: a member something depends on, and when their summary was refreshed.
+CLAIM_TIME_BOUND = '1e18'  # Seconds either way of 1970: a claim time past it is no clock's, and infinity is past it.
 
 
 def erasure_triggers(db):
@@ -230,15 +231,19 @@ def erasure_triggers(db):
     # saving its notes (gene #183). So dropping one past its week, by the same clock the expiry above uses, also marks
     # the claim, and clearing a marked claim from a completed finish (its report not yet written) aborts that finish
     # whole: nothing it read is kept, and the claim stays for the next pass to interrupt, which reports it first and
-    # then clears it. This controller refuses it itself (see finish). A claim whose time can't be read isn't aborted:
-    # an older controller's claim() subtracts that time and raises before its interruption report, so its error
-    # finish is the claim's only way out there. This controller refuses such a claim at its finish and interrupts it
-    # at its next claim (gene #180).
+    # then clears it. This controller refuses it itself (see finish). Only a claim whose time is a finite number,
+    # inside bounds no real clock reaches, is aborted. One whose time can't be read, even one a fence's expiry marked
+    # (SQLite reads an integer too large for a float as infinity, so before every fence), isn't: an older controller's
+    # claim() subtracts that time and raises before its interruption report, so its error finish is the claim's only
+    # way out there. This controller refuses such a claim at its finish and interrupts it at its next claim (gene
+    # #180).
     expired = ("UPDATE agent_state SET value=json_set(value,'$.fence_expired',json('true')) "
                "WHERE key='learning_claim' AND json_valid(value) AND json_type(value)='object' "
                f"AND OLD.at<(julianday('now')-2440587.5)*86400.0-{WITHDRAWN_SECONDS};")
     finished = ("OLD.key='learning_claim' AND NEW.value='null' AND json_valid(OLD.value) "
                 "AND json_type(OLD.value)='object' AND json_type(OLD.value,'$.id')='text' "
+                "AND typeof(json_extract(OLD.value,'$.at')) IN ('integer','real') "
+                f"AND json_extract(OLD.value,'$.at') BETWEEN -{CLAIM_TIME_BOUND} AND {CLAIM_TIME_BOUND} "
                 "AND NOT EXISTS (SELECT 1 FROM agent_reports WHERE id=json_extract(OLD.value,'$.id')) "
                 "AND json_type(OLD.value,'$.fence_expired')='true'")
     triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),

@@ -131,6 +131,10 @@ class Exploration:
                 'ORDER BY at DESC LIMIT 20', (channel, user))]
             context['historical_topics'] = notes(db, channel, user)[:3]
             claim['exploration'] = context
+            # The member's privacy revision, read in this same transaction as the context above: Fri holds its
+            # planner request to it, so a removal landing after this answer is told apart (HumanMint/fri#304). An
+            # added field: an older Fri ignores it.
+            claim['target']['revision'] = self.agent.store._privacy_state(db, user)[0]
             self.agent.put(db, 'learning_claim', claim)
             return claim
 

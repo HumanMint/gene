@@ -1,7 +1,9 @@
 """Sol round 2 of #178: gene #172 and #173 only ever refuse more than main did (8aad087). And Sol round 1 of #189: gene
 #186 and #187 only ever refuse more than #178 did (8f0ac36). And gene #190 only ever refuses more than #189 did
-(7689069). Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the
-reviewed repros, and for generated and fuzzed messages, with and without emoji and apostrophes spelled other ways."""
+(7689069). And gene #198 only ever refuses more than #196 did (7e79220).
+Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the reviewed
+repros, and for generated and fuzzed messages, with and without emoji, symbols, invisible characters and apostrophes
+spelled other ways."""
 import importlib.util
 import itertools
 import random
@@ -25,7 +27,8 @@ def reference(sha):
 MAIN = reference('8aad087')  # Before #178.
 CURRENT = reference('8f0ac36')  # #178, before #189.
 PREVIOUS = reference('7689069')  # #189, before #190.
-BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS}
+LATEST = reference('7e79220')  # #196 (#190), before #198 and #199.
+BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -196,13 +199,18 @@ def test_fuzzed_messages_are_never_kept_where_a_bound_refuses_them(sha):
 
 
 SPRINKLES = ['\U0001F602', '\u2764\uFE0F', '\U0001F468\u200D\U0001F469\u200D\U0001F467', '<:kek:123456789012345678>',
-             '<a:dance:98765432109876543>', '\U0001F44D\U0001F3FD', '1\uFE0F\u20E3', '\U0001F1FA\U0001F1F8', '\u2B50']
-CURLY = ['\u2018', '\u201B', '\u2032', '\uFF07', '\u00B4', '\u2019']
+             '<a:dance:98765432109876543>', '\U0001F44D\U0001F3FD', '1\uFE0F\u20E3', '\U0001F1FA\U0001F1F8', '\u2B50',
+             # gene #198: older symbols, text faces.
+             '\U000000A9\U0000FE0F', '\U00002049', '\U00002122', '\U00002194', ':)', ';P', 'xD', '<3']
+CURLY = ['\u2018', '\u201B', '\u2032', '\uFF07', '\u00B4', '\u2019', '\U000002BC', '\U000002BB']
+# gene #198: what may sit inside a word, invisible or not.
+INSIDE = ['\U0000200B', '\U00002060', '\U000000AD', '\U0000200D', '\U0001F602']
 
 
 def sprinkled(messages, seed):
-    """gene #190's shape: each message with emoji standing in for spaces or added beside them, and its apostrophes
-    spelled other ways, so both readings are tried against every bound."""
+    """gene #190's and #198's shapes: each message with emoji standing in for spaces or added beside them, invisible
+    characters and emoji inside its words, and its apostrophes spelled other ways, so every reading is tried against
+    every bound."""
     rng = random.Random(seed)
     for category, evidence, text in messages:
         at = text.find(evidence)
@@ -210,6 +218,7 @@ def sprinkled(messages, seed):
 
         def scatter(part):
             part = re.sub(r"(?<=\w)'(?=\w)", lambda _: rng.choice(CURLY), part)
+            part = re.sub(r"(?<=\w)(?=\w)", lambda _: rng.choice(INSIDE) if rng.random() < 0.03 else '', part)
             return re.sub(r' ', lambda _: rng.choice([' ', ' ', f' {rng.choice(SPRINKLES)} ', rng.choice(SPRINKLES)]),
                           part)
         yield category, evidence, scatter(head) + evidence + scatter(tail)
@@ -235,4 +244,9 @@ def test_the_bound_is_a_real_check():
     hidden = 'i like chess, my mom \U0001F602 would say'
     assert PREVIOUS({'category': 'games', 'evidence': 'i like chess'}, hidden) is not None
     assert personal_note({'category': 'games', 'evidence': 'i like chess'}, hidden) is None
+    assert LATEST is not personal_note and LATEST not in (MAIN, CURRENT, PREVIOUS)
+    for hidden in ('i like chess, my mom :) would say', 'i like chess, my mom would sa\U0001F602y',
+                   'i like chess, my mom \U0000200B would say'):
+        assert LATEST({'category': 'games', 'evidence': 'i like chess'}, hidden) is not None
+        assert personal_note({'category': 'games', 'evidence': 'i like chess'}, hidden) is None
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))

@@ -1,6 +1,7 @@
 """Bounded personal notes, never permissions, shared server facts, or worker input."""
 
 import bisect
+import functools
 import re
 
 from .privacy import clean
@@ -365,20 +366,25 @@ def plainly(text):
 PICTURE = (r"[\U0001F000-\U0001FAFF\u00A9\u00AE\u203C\u2049\u2122\u2139\u2194-\u2199\u21A9\u21AA\u2300-\u23FF"
            r"\u24C2\u25AA\u25AB\u25B6\u25C0\u25FB-\u25FE\u2600-\u27BF\u2934\u2935\u2B00-\u2BFF\u3030\u303D\u3297"
            r"\u3299]")
-# A face may run into the next word (":Pwhat", "<3who", "xDwho"); after a word only a plain one ("thanks:)"), so
-# "5:30", "re:(x)" and "https://" stay what they are.
-FACE = (r"(?<![\w:;=])[:;=][-'^]?(?:[)(\]\[/|*]+|[DPpOo3])|(?<=\w)[:;=][-'^]?(?:[)(]+|[DP])(?!\w)|<3+|"
-        r"(?<![^\W\d_])[xX][Dd]+|[xX][Dd]+(?!\w)|\^_?\^|-_-|(?<!\w)T_T(?!\w)")
+# A face may run into the next word (":Pwhat", "<3who", "xDwho"), and takes its trailing brackets (":P)"); after a
+# word only a plain one ("thanks:)"), so "5:30", "re:(x)" and "https://" stay what they are. Matched atomically: its
+# alternatives overlap ("xD"), and nothing may try them again (Sol round 2 of #200).
+FACE = (r"(?>(?<![\w:;=])[:;=][-'^]?(?:[)(\]\[/|*]+|[DPpOo3][)(\]\[/|*]*)|(?<=\w)[:;=][-'^]?(?:[)(]+|[DP])(?!\w)|"
+        r"<3+|(?<![^\W\d_])[xX][Dd]+|[xX][Dd]+(?!\w)|\^_?\^|-_-|(?<!\w)T_T(?!\w))")
+FACES = re.compile(FACE)
 INWORD = rf"(?:<a?:\w{{1,32}}:\d{{1,21}}>|[0-9#*]\u20E3|{PICTURE})"  # What can stand inside a word; a face can't.
 SYMBOL = rf"(?:{INWORD}|{FACE})"
 SYMBOL_RUN = re.compile(rf"(?<![ \t])[ \t]*+{SYMBOL}(?:[ \t]*+{SYMBOL})*+[ \t]*+")
-FACES_ONLY = re.compile(rf"[ \t]*(?:{FACE})(?:[ \t]*(?:{FACE}))*[ \t]*")
-INVISIBLE = re.compile(r"[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E"
-                       r"\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\U0001D173-\U0001D17A\U000E0000-\U000E0FFF]")
+SHOWS_NOTHING = (r"[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E"
+                 r"\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\U0001D173-\U0001D17A\U000E0000-\U000E0FFF]")
+INVISIBLE = re.compile(SHOWS_NOTHING)
 APOSTROPHES = re.compile(r"(?<=\w)[\u2018\u201B\u2032\uFF07\u00B4\u02BC\u02BB](?=\w)")
-# In a word an emoji splits ("tol😂d😂Will"), each run of pieces that spells a word these rules look for is joined
-# again; its other emoji stay where they were. Matched from a word's start only.
-SPLIT, PIECES_OF = re.compile(rf"(?<![\w'])\w[\w']*(?:{INWORD}+[\w']+)+"), re.compile(rf"({INWORD}+)")
+# In a word that emoji or characters showing nothing split ("tol😂d😂Will", "would<ZWSP>sa😂y", "y😂’all"), each run of
+# pieces that spells a word these rules look for is joined again; what stood between the others stays. Matched from a
+# word's start only.
+SEPARATOR = rf"(?:{INWORD}|{SHOWS_NOTHING})"
+SPLIT = re.compile(rf"(?<![\w'’])\w[\w'’]*(?:{SEPARATOR}+[\w'’]+)+")
+PIECES_OF = re.compile(rf"({SEPARATOR}+)")
 LOOKED_FOR = frozenset(
     {word for rule in (FRAMED, REPORT, HEARD, NEGATED, ASKING, POLITE, RETRACTED, FILLER, COURTESY, TAKEN_BACK, CONDITION,
                        OPENS, ASIDE_PHRASES, RHETORICAL, ME_CLAUSE, DESCRIBED, BREAK, STARTS, PRIOR, IDIOM, LIKES, DOING,
@@ -387,33 +393,44 @@ LOOKED_FOR = frozenset(
     | ME | ME_BETWEEN | ADVERBS | NOUNS | PASSIVE | PARTICIPLES | ASIDE_WORDS | FORMS | OWN | UNFINISHED | CONTINUES
     | BACKREF | ACTIVITY | PLURALS | NAMES | set(ASKED) | {'u', 'i', 'thats', 'its'})
 PIECES = max(map(len, LOOKED_FOR))  # Even a word split at every letter ("k😂i😂d😂d😂i😂n😂g").
-# The member's own clause or a quote of theirs, after which a text face is left as typed (see plainer).
-OWN_NEXT = re.compile(r"(?i)(?:i|i'm|im|i've|ive|i'd|i'll|we|we're|we've|we'd|we'll)\b|[\"“”'‘’]")
+# The member's own clause, past fillers, after which a run's text faces stay as typed (see plainer).
+OWN_NEXT = re.compile(r"(?i)(?:(?:lol|lmao|haha|but|and|so|tho|though|ok|okay|well|honestly|anyway)\W+)*+"
+                      r"(?:i|i'm|im|i've|ive|i'd|i'll|we|we're|we've|we'd|we'll)\b")
+
+
+@functools.lru_cache(maxsize=4096)
+def looked_for(word):
+    """Whether these rules look for this word: the words their patterns and word lists spell, and every form of the
+    ones they match by pattern ("pretending", which a pattern spells as `pretend` and any ending, Sol round 2 of #200)."""
+    word = word.lower().replace('’', "'")
+    return (word in LOOKED_FOR or word.replace("'", '') in LOOKED_FOR
+            or any(rule.fullmatch(word) for rule in (FRAMED, VERB, NEGATED, CONDITION, RETRACTED, TAKEN_BACK)))
 
 
 def unsplit(m):
-    pieces = PIECES_OF.split(m.group())  # Word, emoji, word, …
+    pieces = PIECES_OF.split(m.group())  # Word, separator, word, …
     words, out, at = pieces[::2], [], 0
     while at < len(words):
         upto = next((end for end in range(min(len(words), at + PIECES), at + 1, -1)
-                     if ''.join(words[at:end]).lower().replace("'", '') in LOOKED_FOR), at + 1)
+                     if len(''.join(words[at:end])) <= PIECES and looked_for(''.join(words[at:end]))), at + 1)
         out.append(''.join(words[at:upto]))
         if upto < len(words):
-            out.append(pieces[2 * upto - 1])  # The emoji between this piece and the next stays.
+            out.append(pieces[2 * upto - 1])  # What stood between this piece and the next stays.
         at = upto
     return ''.join(out)
 
 
 def plainer(text, invisible):
-    """gene #198's readings: characters that show nothing as `invisible` ('' or ' '), apostrophes inside a word plain,
-    a word an emoji splits joined where it spells one these rules look for, each run of emoji, symbols and text faces
-    with the spaces around it one space, and no run of spaces. A run of text faces before the member's own clause or a
-    quote stays as typed ("i like chess ;P i thought it'd be boring"): it may be their punctuation, and leaving it adds
-    no refusal, where removing it would refuse what #196 keeps."""
-    text = SPLIT.sub(unsplit, APOSTROPHES.sub("'", INVISIBLE.sub(invisible, text)))
+    """gene #198's readings: apostrophes inside a word plain, a word split by emoji or characters showing nothing joined
+    where it spells one these rules look for, other characters showing nothing as `invisible` ('' or ' '), each run of
+    emoji, symbols and text faces with the spaces around it one space, and no run of spaces. Before the member's own
+    clause, a run keeps its text faces as typed ("i like chess ;P 😂 i thought it'd be boring"): the ";" may end their
+    sentence, and leaving it adds no refusal, where removing it would refuse what #196 keeps."""
+    text = INVISIBLE.sub(invisible, SPLIT.sub(unsplit, APOSTROPHES.sub("'", text)))
 
     def gap(m):
-        return m.group() if FACES_ONLY.fullmatch(m.group()) and OWN_NEXT.match(text, m.end()) else ' '
+        faces = FACES.findall(m.group()) if OWN_NEXT.match(text, m.end()) else []
+        return f" {' '.join(faces)} " if faces else ' '
     return re.sub(r'[ \t]{2,}', ' ', SYMBOL_RUN.sub(gap, text))
 
 

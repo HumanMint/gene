@@ -578,6 +578,13 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me dan', 'if i win\nand\U0000200Bfinish early\nplease call me dan'),
     ('games', 'i like chess', 'i like chess \U0001F602" - jo'),
     ('games', 'i like chess', 'i like chess \U0001F602\U0000201D - jo'),
+    # Sol round 2 of #200: a face's trailing bracket, a face before a closing quote, mixed invisible and emoji splits, a
+    # pattern-matched form, and an apostrophe right after an emoji.
+    ('games', 'i like chess', 'i like chess, my mom :P) would say'),
+    ('games', 'i like chess', 'i like chess ;P " - jo'),
+    ('games', 'i like chess', 'i like chess, my mom would\U0000200Bsa\U0001F602\U0000200By'),
+    ('games', 'i like chess', 'jo is pre\U0001F602tending i like chess'),
+    ('games', 'i like chess', 'i like chess, y\U0001F602\U00002019all say'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -687,6 +694,9 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess \U00002764\U0000FE0F we should play'),
     # A text face before the member's own clause stays as typed: ";" ends the sentence there, as main reads it.
     ('games', 'i like chess', 'i like chess ;P i thought it would be boring'),
+    ('games', 'i like chess', 'i like chess ;P \U0001F602 i thought it would be boring'),
+    ('games', 'i like chess', 'i like chess ;P lol i thought it would be boring'),
+    ('games', 'i like chess', 'i like chess ;P but i thought it would be boring'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -782,7 +792,9 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 '\U0001F602 ', 'my mom \U0001F602 ', '<:kek:123456789012345678> ', 'y\u2018all ',
                 'and finish \U0001F602 early\n', '        \U0001F602', '\U0001F44D\U0001F3FD\U0000200D\U0001F602 ',
                 # gene #198, #199: invisible characters, text faces, a long word an emoji splits, an emoji before "i".
-                '\U0000200B\U00002060 ', ':) ', 'x' * 50 + '\U0001F602y ', 'sa\U0001F602y ', '\U0001F602 i '):
+                '\U0000200B\U00002060 ', ':) ', 'x' * 50 + '\U0001F602y ', 'sa\U0001F602y ', '\U0001F602 i ',
+                # Sol round 2 of #200: faces whose alternatives overlap, before an emoji that ends no run of them.
+                'xD ', 'xD \U0001F602 ', ':P) ', 'would\U0000200Bsa\U0001F602\U0000200By '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

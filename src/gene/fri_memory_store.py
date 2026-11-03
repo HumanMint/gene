@@ -50,6 +50,10 @@ def initialize(db):
     db.execute('CREATE INDEX IF NOT EXISTS personal_notes_by_member ON personal_notes(guild_id,user_id)')
     db.execute('CREATE TABLE IF NOT EXISTS personal_note_removals (guild_id TEXT,channel_id TEXT,'
                'user_id TEXT,digest TEXT,at REAL,PRIMARY KEY(guild_id,channel_id,user_id,digest))')
+    # When the member last turned memory off, which erased everything else of theirs, removals included: their ID and
+    # a time, kept across turning it back on as a removal cutoff in every conversation (HumanMint/fri#321). An older
+    # controller never reads it.
+    db.execute('CREATE TABLE IF NOT EXISTS personal_erasures (user_id TEXT PRIMARY KEY,at REAL NOT NULL)')
 
 
 # A note's sources as recorded with its current time: anything else (none, or a time moved since) is unknown.
@@ -74,6 +78,19 @@ def removed(db, guild, scope, user):
                       'AND user_id=?', (guild, scope, SERVER, user)).fetchone()[0]
 
 
+def erased(db, user):
+    """When the member last turned memory off, or None (HumanMint/fri#321): what they said before it is learned
+    nowhere (see last_removal and AgentStore.finish)."""
+    row = db.execute('SELECT at FROM personal_erasures WHERE user_id=?', (user,)).fetchone()
+    return row[0] if row else None
+
+
+def learned_cutoff(db, guild, scope, user):
+    """What learning from history holds a member's words to: their latest removal seen here (see removed), or when
+    they last turned memory off, whichever is later. None when neither."""
+    return max((at for at in (removed(db, guild, scope, user), erased(db, user)) if at is not None), default=None)
+
+
 def predates(db, guild, scope, user, source):
     """A message sent before the member's latest removal seen here, answered after it: it keeps nothing."""
     cutoff = removed(db, guild, scope, user)
@@ -81,9 +98,11 @@ def predates(db, guild, scope, user, source):
 
 
 def last_removal(db, guild, user):
-    """When the member last edited or removed any note; Fri's own caches drop what they said before it."""
-    return db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND user_id=?',
-                      (guild, user)).fetchone()[0] or 0
+    """When the member last edited or removed any note, or turned memory off; Fri's own caches drop what they said
+    before it, and so does learning (HumanMint/fri#321)."""
+    cutoffs = [db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND user_id=?',
+                          (guild, user)).fetchone()[0], erased(db, user)]
+    return max((at for at in cutoffs if at is not None), default=0)
 
 
 def fences():

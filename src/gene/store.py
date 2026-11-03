@@ -1315,6 +1315,7 @@ class Store:
         wide = fences()
         db.execute(f'DELETE FROM personal_note_removals WHERE at<? AND (at<? OR digest NOT IN ({",".join("?"*len(wide))}))',
                    (time.time() - TTL, time.time() - HORIZON, *wide))
+        db.execute('DELETE FROM personal_erasures WHERE at<?', (time.time() - HORIZON,))  # Wordless, so as long.
         # A note learned while other members' words were in view goes when any of them changes their privacy.
         for note_id, provenance in db.execute("SELECT id,provenance FROM personal_notes WHERE guild_id=? AND "
                                               "user_id=? AND provenance<>'[]'", (guild_id, user_id)).fetchall():
@@ -1355,6 +1356,10 @@ class Store:
                 db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_note_removals WHERE user_id=?', (user_id,))
+                # Their removals went with the rest, so what's kept instead is when: no words, their ID and a time,
+                # a cutoff for everything they said before it once memory is on again (HumanMint/fri#321).
+                db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
+                           (user_id, time.time()))
                 # Their deletions first, while their fences still say which messages were theirs (gene #145).
                 db.execute('DELETE FROM chat_turn_deletions WHERE user_id=? OR EXISTS (SELECT 1 FROM chat_turn_withdrawals '
                            'w WHERE w.user_id=? AND w.guild_id=chat_turn_deletions.guild_id AND '

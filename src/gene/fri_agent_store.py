@@ -361,7 +361,7 @@ class AgentStore:
             if error:
                 result = {}  # Failed inference cannot produce derived memory or advance a cursor.
             accepted = {}
-            from .fri_memory_store import removed
+            from .fri_memory_store import learned_cutoff
             for r in records:
                 if (r.get('role_id') != claim['role_id'] or not claim['after'] <= r['at'] <= now or
                         (mode == 'explore' and (r['id'] not in scanned_ids or
@@ -370,9 +370,10 @@ class AgentStore:
                     continue
                 revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (r['user_id'],)).fetchone()
                 profile = self.store._personal_context(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
-                # Words from before a removal teach nothing again: no note, observation or summary. Nor does a
-                # message withdrawn while this batch read it (gene #141), even one nothing stored held (gene #149).
-                cutoff = removed(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
+                # Words from before a removal teach nothing again: no note, observation or summary, and nor do those
+                # from before memory was last turned off (HumanMint/fri#321). Nor does a message withdrawn while this
+                # batch read it (gene #141), even one nothing stored held (gene #149).
+                cutoff = learned_cutoff(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
                 if (profile['enabled'] and r.get('revision') == (revision[0] if revision else 0)
                         and (cutoff is None or r['at'] > cutoff)
                         and not self.store.taken_back(db, self.settings.guild_id, r['user_id'], [r['id']])

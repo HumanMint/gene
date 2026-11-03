@@ -1,7 +1,6 @@
 """Sol round 2 of #178: gene #172 and #173 only ever refuse more than main did (8aad087). And Sol round 1 of #189: gene
 #186 and #187 only ever refuse more than #178 did (8f0ac36). And gene #190 only ever refuses more than #189 did
-(7689069). And gene #198 and #199 keep nothing #196 (7e79220) refuses unless #196 keeps it read plainly (its own
-over-refusals of symbols, joiners and apostrophes, and of an emoji standing for a comma).
+(7689069). And gene #198 only ever refuses more than #196 did (7e79220).
 Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the reviewed
 repros, and for generated and fuzzed messages, with and without emoji, symbols, invisible characters and apostrophes
 spelled other ways."""
@@ -13,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from gene.fri_memory import personal_note, plainly
+from gene.fri_memory import personal_note
 
 
 def reference(sha):
@@ -30,30 +29,15 @@ CURRENT = reference('8f0ac36')  # #178, before #189.
 PREVIOUS = reference('7689069')  # #189, before #190.
 LATEST = reference('7e79220')  # #196 (#190), before #198 and #199.
 BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST}
-
-
-def reads_a_comma(text):
-    """gene #199: an emoji before the member's own clause or a quote reads as the comma it stands for."""
-    return plainly(text).count(',') > text.count(',')
-
-
-def plainly_kept(bound, category, evidence, text):
-    """Whether the bound keeps the message read plainly. #196 refused some messages main's rules keep once read that
-    way, splitting a word at a joiner or soft hyphen ("who wou<ZWJ>ld think"), or missing a symbol or an apostrophe in a
-    courtesy line ("if that＇s™ok"), or an emoji standing for a comma (gene #199). Those are the only notes this module
-    may keep that #196 refuses; every earlier bound holds for all of them."""
-    return bound({'category': category, 'evidence': plainly(evidence).strip()}, plainly(text)) is not None
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
 
 def leaks(messages, bound=MAIN):
-    """Each (category, evidence, text) this module keeps and the bound refuses (for #196, unless it keeps the message
-    read plainly)."""
+    """Each (category, evidence, text) this module keeps and the bound refuses."""
     return [(category, evidence, text) for category, evidence, text in messages
             if personal_note({'category': category, 'evidence': evidence}, text) is not None
-            and bound({'category': category, 'evidence': evidence}, text) is None
-            and not (bound is LATEST and plainly_kept(bound, category, evidence, text))]
+            and bound({'category': category, 'evidence': evidence}, text) is None]
 
 
 # Every leak the reviews found, and the shapes around them: none may be kept.
@@ -265,5 +249,4 @@ def test_the_bound_is_a_real_check():
                    'i like chess, my mom \U0000200B would say'):
         assert LATEST({'category': 'games', 'evidence': 'i like chess'}, hidden) is not None
         assert personal_note({'category': 'games', 'evidence': 'i like chess'}, hidden) is None
-    assert reads_a_comma('i like chess \U0001F602 ive written a song') and not reads_a_comma(hidden)
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))

@@ -567,6 +567,17 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom would sa\U0001F602y'),
     ('games', 'i like chess', 'i like chess, my mom would s\U0001F602a\U0001F602y'),
     ('games', 'i like chess', 'i like chess. just ki\U0001F602dding'),
+    ('games', 'i like chess', 'i like chess. just k\U0001F602i\U0001F602d\U0001F602d\U0001F602i\U0001F602n\U0001F602g'),
+    ('games', 'i like chess', 'i like chess, a\U0001F602c\U0001F602c\U0001F602o\U0001F602r\U0001F602d\U0001F602i\U0001F602n\U0001F602g to jo'),
+    ('games', 'i like chess', 'i like chess, my mom would\U0000200Bsay'),
+    # Sol round 1 of #200: a reading never adds a comma or joins words that something invisible kept apart.
+    ('nickname', 'call me dan', 'if i win \U0001F602 i guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i w\U0001F602i\U0001F602n\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom would\U0000200Dsay'),
+    ('nickname', 'call me dan', 'if i win\nand\U0000200Dfinish early\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win\nand\U0000200Bfinish early\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess \U0001F602" - jo'),
+    ('games', 'i like chess', 'i like chess \U0001F602\U0000201D - jo'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -665,9 +676,6 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('nickname', 'call me dan', 'pls call me dan \U0001F64F'),
     ('nickname', 'call me dan', 'whenever you want \U0001F60A\nplease call me dan'),
     ('nickname', 'call me dan', 'i lost \U0001F62D\nplease call me dan'),
-    # gene #199: an emoji before the member's own clause or a quote of theirs reads as the comma it stands for.
-    ('games', 'i like chess', 'i like chess \U0001F602 ive written a song'),
-    ('games', 'i like chess', 'i like chess \U0001F602 "checkmate" is my catchphrase'),
     # gene #198: text faces, symbols and a word an emoji splits that the rules don't look for say nothing.
     ('games', 'i like chess', 'i like chess :)'),
     ('games', 'i like chess', 'i like chess xD'),
@@ -677,6 +685,8 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess \U0001F602lol'),
     ('games', 'i like chess', 'i like chess, the OUT_TAKE was fun'),
     ('games', 'i like chess', 'i like chess \U00002764\U0000FE0F we should play'),
+    # A text face before the member's own clause stays as typed: ";" ends the sentence there, as main reads it.
+    ('games', 'i like chess', 'i like chess ;P i thought it would be boring'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

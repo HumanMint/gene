@@ -3,8 +3,41 @@ and no note (HumanMint/fri#331). Gene's other cutoffs, fresh turns and source-le
 
 import datetime as dt
 import time
+from dataclasses import replace
 
 import discord
+from fastapi.testclient import TestClient
+
+from gene.api import create_app
+from tests.test_api import headers
+from tests.test_fri_learning import learning as learning
+
+
+def test_the_profile_says_when_memory_was_last_turned_off_apart_from_removals(learning):
+    """Fri holds a queued message to the time memory was turned off before it asks the model (fri #331), but not to a
+    note's removal, which a queued message is still answered after and kept nowhere. So the profile says that time on
+    its own (`erased_at`), besides `removed_at`, which counts both. Nobody else's, and 0 for a member who never did.
+    The other fields are as before, and so is a history channel's narrower answer."""
+    clock, store, settings, _ = learning
+    client = TestClient(create_app(replace(settings, agent_history_channels='1,2,3')))  # 3: history, not chat.
+
+    def profile(user='11', channel='1'):
+        response = client.post('/agent/context', headers=headers('fri'),
+                               json={'guild_id': '123', 'user_id': user, 'channel_id': channel})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    before = profile()
+    assert before['erased_at'] == 0
+    store.personal_control('11', 'disable')
+    turned_off = time.time()
+    clock[0] += 60
+    store.personal_control('11', 'enable')
+    answer = profile()
+    assert answer['erased_at'] == answer['removed_at'] == turned_off and profile('14')['erased_at'] == 0
+    assert set(answer) == set(before)
+    # A history channel's narrower answer, for learning, which no ordinary reply reads, is as it was.
+    assert set(profile(channel='3')) == {'enabled', 'revision', 'removed_at'}
 
 
 def source(age=0, user='20'):

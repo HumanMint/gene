@@ -1,6 +1,8 @@
 """Sol round 2 of #178: gene #172 and #173 only ever refuse more than main did (8aad087). And Sol round 1 of #189: gene
 #186 and #187 only ever refuse more than #178 did (8f0ac36). And gene #190 only ever refuses more than #189 did
-(7689069). And gene #198 only ever refuses more than #196 did (7e79220).
+(7689069). And gene #198 only ever refuses more than #196 did (7e79220). And gene #201 only ever refuses more than
+#200 and #204 did (50008b5), short of the member's own verb past a face and an ordinary filler (see
+test_past_a_face_only_the_members_own_verb_is_read_differently).
 Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the reviewed
 repros, and for generated and fuzzed messages, with and without emoji, symbols, invisible characters and apostrophes
 spelled other ways."""
@@ -28,7 +30,8 @@ MAIN = reference('8aad087')  # Before #178.
 CURRENT = reference('8f0ac36')  # #178, before #189.
 PREVIOUS = reference('7689069')  # #189, before #190.
 LATEST = reference('7e79220')  # #196 (#190), before #198 and #199.
-BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST}
+NEWEST = reference('50008b5')  # #200 (#198, #199) and #204 (#203), before #201.
+BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -249,4 +252,42 @@ def test_the_bound_is_a_real_check():
                    'i like chess, my mom \U0000200B would say'):
         assert LATEST({'category': 'games', 'evidence': 'i like chess'}, hidden) is not None
         assert personal_note({'category': 'games', 'evidence': 'i like chess'}, hidden) is None
+    assert NEWEST is not personal_note and NEWEST not in (MAIN, CURRENT, PREVIOUS, LATEST)
+    for hidden in ('i like chess, my mom would sa1\uFE0F\u20E3y', 'i like chess y\u200B\u2018all say',
+                   'i like chess, my mom:P) would say'):
+        assert NEWEST({'category': 'games', 'evidence': 'i like chess'}, hidden) is not None
+        assert personal_note({'category': 'games', 'evidence': 'i like chess'}, hidden) is None
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))
+
+
+# gene #201 item 6, the one place this module keeps what 50008b5 refused: past a face that holds a ";" and an ordinary
+# filler ("yeah", "also", "tbh"), the member's own verb right after their "i" or "we" ("i like chess ;P yeah i thought
+# it would be boring"), which 50008b5 kept only after its own short list of fillers ("ok", "lol", "but"). Here the
+# face is read through, as 50008b5 read it there, and only that verb is read as one no rule looks for, so a report or
+# condition anywhere else still counts.
+OWN_VERB = re.compile(r"(?i)(;[-'^]?[DPpOo3)(\]\[/|*]+[^\w\n]*(?:(?:lol|lmao|haha|but|and|so|tho|though|ok|okay|well|"
+                      r"honestly|anyway|yeah|yea|also|tbh|btw|hey|yo|oh)\W+)+"
+                      r"(?:i|i'm|im|i've|ive|i'd|i'll|we|we're|we've|we'd|we'll)\s+(?:\w+\s+){0,3}?)"
+                      r"(says|said|saying|tells|told|telling|asks|asked|asking|writes|wrote|written|writing|texts|"
+                      r"texted|texting|thinks|thought|thinking|believes|believed|believing|assumes|assumed|assuming|"
+                      r"claims|claimed|claiming|insists|insisted|insisting|reckons|reckoned|reckoning|swears|swore|"
+                      r"sworn|swearing|quotes|quoted|quoting|say|tell|ask|write|text|think|believe|assume|claim|insist|"
+                      r"reckon|swear|quote)\b")
+
+
+def unspoken(text):
+    """The text with the member's own verb past a face and an ordinary filler as a word no rule looks for."""
+    return OWN_VERB.sub(lambda m: m.group(1) + 'z' * len(m.group(2)), text)
+
+
+def test_past_a_face_only_the_members_own_verb_is_read_differently():
+    """What this module keeps and 50008b5 refused, 50008b5 keeps with that verb unspoken: nothing else is read
+    differently. The reviewed and generated messages, with item 6's own shapes among them."""
+    shapes = [(c, e, re.sub(r'(?<=chess) ', lambda _: f' ;P {filler} i {verb} ', t, count=1))
+              for (c, e, t), filler, verb in zip(generated(4000, 201), itertools.cycle(['yeah', 'also', 'tbh', 'yea']),
+                                                  itertools.cycle(['thought', 'said', 'swear', 'was told', 'think']))]
+    messages = shapes + list(sprinkled(itertools.chain(generated(4000, 2010), fuzzed(4000, 20100)), 201))
+    differ = leaks(messages, NEWEST)
+    assert any(OWN_VERB.search(t) for _, _, t in differ)  # Item 6 is among them, so this checks something.
+    assert not [(c, e, t) for c, e, t in differ
+                if NEWEST({'category': c, 'evidence': unspoken(e)}, unspoken(t)) is None]

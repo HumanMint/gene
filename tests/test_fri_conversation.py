@@ -12,7 +12,7 @@ from gene.api import create_app
 from gene.config import Settings
 from gene.fri_addressing import addressed_text
 from gene.fri_chat import ChatResult
-from gene.fri_memory import memory_intent, personal_note
+from gene.fri_memory import memory_intent, personal_note, plainer
 from gene.store import Conflict, Store
 from tests.test_api import actor, headers
 from tests.test_fri_runtime import configured, event
@@ -585,6 +585,43 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom would\U0000200Bsa\U0001F602\U0000200By'),
     ('games', 'i like chess', 'jo is pre\U0001F602tending i like chess'),
     ('games', 'i like chess', 'i like chess, y\U0001F602\U00002019all say'),
+    # gene #201: a keycap with its variation selector inside a word, an apostrophe next to what a reading takes out, and
+    # an attached face's trailing brackets.
+    ('games', 'i like chess', 'i like chess, my mom would sa1\uFE0F\u20E3y'),
+    ('nickname', 'call me dan', 'i1\uFE0F\u20E3f i win\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess. just ki1\uFE0F\u20E3dding'),
+    ('games', 'i like chess', 'i like chess, my mom would s#\uFE0F\u20E3ay'),
+    ('nickname', 'call me dan', 'don\U0000200B\U000002BCt ever please call me dan'),
+    ('games', 'i like chess', 'i like chess y\U0000200B\u2018all say'),
+    ('games', 'i like chess', 'i like chess, y\U00002060\u00B4all say'),
+    ('nickname', 'call me dan', 'don\U0001F602\U000002BCt ever please call me dan'),
+    ('games', 'i like chess', 'i like chess y\U0001F602\u2018all say'),
+    ('games', 'i like chess', 'i like chess, my mom:P) would say'),
+    ('games', 'i like chess', 'i like chess, my mom:D)) would say'),
+    ('games', 'i like chess', 'i like chess, my mom;P( would say'),
+    # gene #201 item 6: past the ordinary fillers before the member's own clause, every cue but their own verb still
+    # counts on both sides of the face, as main reads them.
+    ('games', 'i like chess', 'i like chess ;P yeah we all know my mom says'),
+    ('games', 'i like chess', 'my mom thinks ;P yeah i like chess'),
+    ('games', 'i like chess', 'she said:\nlol ;P yeah i like chess'),
+    ('games', 'i like chess', 'i like chess ;P yeah i do. jk'),
+    ('games', 'i like chess', 'i like chess ;P yeah i said it. jk'),
+    ('games', 'i like chess', 'i like chess ;P yeah i was kidding'),
+    ('games', 'i like chess', 'i like chess ;P yeah i do?'),
+    ('games', 'i like chess', 'i like chess ;P yeah i was told'),
+    ('games', 'i like chess', "i like chess ;P tbh i've been told"),
+    ('games', 'i like chess', 'i like chess ;P also im told'),
+    ('games', 'i like chess', 'i like chess ;P yeah i thought my mom would say'),
+    ('games', 'i like chess', "i like chess ;P yeah i'm saying like my mom does"),
+    ('games', 'i like chess', 'i like chess ;P yeah we told them, as my mom says'),
+    ('games', 'i like chess', 'i like chess ;P yeah i quoted my mom'),
+    ('games', 'i like chess', 'i like chess ;P yeah im quoting my mom'),
+    ('music', 'i love jazz', 'lol ;P yeah i said i love jazz'),
+    ('music', 'i love jazz', 'lol ;P yeah i said \U0001F602 i love jazz'),
+    ('music', 'i love jazz', 'lol ;P yeah i said ;P yeah i love jazz'),
+    ('music', 'i love jazz', 'lol ;P yeah i said ;P. i love jazz'),
+    ('music', 'i love jazz', 'lol ;P yeah i said. i love jazz'),
+    ('nickname', 'call me dan', 'call me dan ;P yeah i mean when i win'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -697,16 +734,35 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess ;P \U0001F602 i thought it would be boring'),
     ('games', 'i like chess', 'i like chess ;P lol i thought it would be boring'),
     ('games', 'i like chess', 'i like chess ;P but i thought it would be boring'),
+    # gene #201: the ordinary fillers there too ("yeah", "also", "tbh"), and a keycap, a time or a colon on its own.
+    ('games', 'i like chess', 'i like chess ;P yeah i thought it would be boring'),
+    ('games', 'i like chess', 'i like chess ;P also i thought it would be boring'),
+    ('games', 'i like chess', 'i like chess ;P tbh i thought it would be boring'),
+    ('games', 'i like chess', 'i like chess ;P yeah, i thought it would be boring'),
+    ('games', 'i like chess', 'i like chess ;P oh i thought it would be boring'),
+    ('games', 'i like chess', "i like chess ;) yea i was thinking it'd be boring"),
+    ('games', 'i like chess', "i like chess ;P yeah i'm thinking of joining a club"),
+    ('games', 'i like chess', 'i like chess ;P btw we said we would play later'),
+    ('games', 'i like chess', 'i like chess ;P yeah i said it before'),
+    ('games', 'i like chess', 'i like chess 1\uFE0F\u20E3'),
+    ('games', 'i like chess', 'i like chess #\uFE0F\u20E3 lol'),
+    ('games', 'i like chess', 'i like chess, my score: 5:30)'),
+    ('games', 'i like chess', 'i like chess re:(x) lol'),
+    ('games', 'i like chess', 'i like chess :P)'),
+    ('games', 'i like chess', 'i like chess, thanks:))'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
 
 
 def fastest_reads(read, texts, runs=5):
-    """Each text's fastest read in CPU time, taking turns so a slow spell on the runner hits them alike."""
+    """Each text's fastest read in CPU time, taking turns so a slow spell on the runner hits them alike. Every read is
+    cold: a message's readings are cached for its other notes (gene #203), and a warm one would time nothing (gene
+    #201), so the cache is cleared first, outside the timer."""
     best = [float('inf')] * len(texts)
     for _ in range(runs):
         for i, text in enumerate(texts):
+            plainer.cache_clear()
             began = time.thread_time()  # Not the runner's other work.
             read(text)
             best[i] = min(best[i], time.thread_time() - began)
@@ -794,9 +850,32 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 # gene #198, #199: invisible characters, text faces, a long word an emoji splits, an emoji before "i".
                 '\U0000200B\U00002060 ', ':) ', 'x' * 50 + '\U0001F602y ', 'sa\U0001F602y ', '\U0001F602 i ',
                 # Sol round 2 of #200: faces whose alternatives overlap, before an emoji that ends no run of them.
-                'xD ', 'xD \U0001F602 ', ':P) ', 'would\U0000200Bsa\U0001F602\U0000200By '):
+                'xD ', 'xD \U0001F602 ', ':P) ', 'would\U0000200Bsa\U0001F602\U0000200By ',
+                # gene #201: fillers between emoji, each run's own clause looked for once, and the faces before one.
+                '\U0001F602ok ', '\U0001F602yeah ', ';P ok ', ';P yeah i said ', ';P tbh i ', 'mom:P) '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
+
+
+def test_a_run_of_fillers_between_symbols_is_crossed_once():
+    """gene #201 item 5: after each run of symbols, the member's own clause is looked for past the fillers, which may
+    run to the message's end ("😂ok 😂ok …"); each is crossed once for all the runs, not once from each."""
+    for pad in ('\U0001F602ok ', ':) ok ', ':)ok ', ';) ok \U0001F602', ';P yeah \U0001F602'):
+        assert_linear(lambda text: personal_note({'category': 'games', 'evidence': 'i like chess'}, text),
+                      lambda length: ('i like chess ' + pad * length)[:length])
+
+
+def test_a_messages_readings_serve_each_of_its_notes():
+    """gene #203: a message is read once for all its notes; only each note's own evidence is read again. The timed reads
+    above are cold, so this is checked here (gene #201)."""
+    text = 'i like chess \U0001F602 i love jazz'
+    plainer.cache_clear()
+    assert personal_note({'category': 'games', 'evidence': 'i like chess'}, text) == ('games', 'i like chess')
+    first = plainer.cache_info()
+    assert personal_note({'category': 'music', 'evidence': 'i love jazz'}, text) == ('music', 'i love jazz')
+    second = plainer.cache_info()
+    assert second.misses - first.misses == 2  # The evidence's own two; nothing of the message is read again.
+    assert second.hits - first.hits >= 2
 
 
 def test_the_same_words_too_many_times_keep_nothing():

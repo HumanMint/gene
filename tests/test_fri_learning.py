@@ -277,3 +277,38 @@ def test_heartbeat_records_actual_tick_outcome(learning, failure, monkeypatch):
         assert agent.heartbeat_status == ('deferred' if failure else 'ok')
         assert agent.attend.await_count == (0 if failure else 1)
     asyncio.run(scenario())
+
+
+INTERRUPTED = {'blocked': 'The previous pass was interrupted. Its report is pending; its allowance remains reserved.'}
+
+
+@pytest.mark.parametrize('manual', [True, False], ids=['owner-requested', 'automatic'])
+def test_a_claim_made_while_the_clock_ran_fast_is_interrupted_once_it_is_corrected(learning, manual):
+    """gene #185: the clock runs two hours fast, a pass is claimed, and the clock is corrected. The claim's derived
+    deadlines (five minutes for an owner-requested pass, the cadence for the next) were set from the fast clock, so
+    claim() returned the cooldown, or nothing, before it reached the check that interrupts a claim dated far ahead,
+    for two hours. It's interrupted at once, and those deadlines come back by the same step."""
+    clock, store, settings, agent = learning
+    start = clock[0]
+    clock[0] = start+7200
+    claim = agent.claim(manual=True)
+    cooldown, cadence = value(store, 'manual_learning_after')-claim['at'], value(store, 'next_learning')-claim['at']
+    clock[0] = start  # Corrected.
+    assert agent.claim(manual=manual) == (INTERRUPTED if manual else None)
+    assert value(store, 'learning_claim') is None
+    with store.connection() as db:
+        assert db.execute('SELECT 1 FROM agent_reports WHERE id=?', (claim['id'],)).fetchone()
+    assert value(store, 'manual_learning_after') == start+cooldown
+    assert value(store, 'next_learning') == start+cadence
+
+
+def test_a_claim_inside_its_ten_minutes_keeps_the_cooldown_and_cadence(learning):
+    """Guard: a pass claimed now, and one a small clock step ahead, keeps its deadlines and reads as before."""
+    clock, store, settings, agent = learning
+    claim = agent.claim(manual=True)
+    deadlines = value(store, 'manual_learning_after'), value(store, 'next_learning')
+    clock[0] -= 30
+    assert agent.claim(manual=True) == {'blocked': 'An owner-requested pass can run at most once every five minutes.'}
+    assert agent.claim() is None
+    assert (value(store, 'manual_learning_after'), value(store, 'next_learning')) == deadlines
+    assert value(store, 'learning_claim')['id'] == claim['id']

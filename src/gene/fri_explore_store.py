@@ -79,7 +79,10 @@ class Exploration:
         with self.agent.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             claim = self.agent.get(db, 'learning_claim')
-            if (not claim or claim['id'] != batch_id or claim['mode'] != 'explore'
+            from .fri_agent_store import claimed_at
+            # One whose time can't be read can't be ordered against a query's refresh: refused like any claim it can't
+            # use, and the next pass interrupts it (gene #184).
+            if (not claim or claim['id'] != batch_id or claim['mode'] != 'explore' or claimed_at(claim) is None
                     or claim.get('privacy_invalidated') or claim.get('target') or claim.get('plan')):
                 raise ValueError('No unassigned archive exploration claim')
             if (not 1 <= len(members) <= 200 or len({m['user_id'] for m in members}) != len(members)
@@ -105,7 +108,7 @@ class Exploration:
                 q = db.execute('SELECT done,at FROM fri_explore_queries WHERE key=?', (key,)).fetchone()
                 if not q or not q['done']:
                     unread.append(channel)
-                elif q['at']+REFRESH_SECONDS <= claim['at']:
+                elif q['at']+REFRESH_SECONDS <= claimed_at(claim):
                     refresh[channel] = q['at']
             available = unread or list(refresh)
             if not channels:

@@ -687,15 +687,33 @@ def older_error_finish(store, claim):
                    (claim['id'], time.time(), 'Learning pass\nIssue: discarded'))
 
 
-@pytest.mark.parametrize('value', ['bad', None])
-def test_an_older_error_finish_still_clears_a_claim_whose_time_cant_be_read(world, value):
-    """Round 1 of #192's review: an older controller's claim() subtracts the claim's time (8aad087, 34dbbb3), so one
-    it can't read raises there before the interruption report, and its error finish is that claim's only way out. The
-    finish clears it and reports it, and the next pass proceeds. This controller refuses such a claim at the finish and
-    interrupts it at the next claim (gene #180) itself."""
+def expire_a_fence(store):
+    """A fence dated eight days ago, then a frequent write, which expires it: dropping a fence dated since the claim,
+    as SQLite compares them, marks the claim fence_expired."""
+    with store.connection() as db:
+        db.execute('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted,user_id,revision) '
+                   'VALUES (?,?,?,1,?,?)', ('123', '424242', time.time()-8*86400, '20', 0))
+    with store.connection() as db:
+        AgentStore.put(db, 'fence_probe', 1)
+    with store.connection() as db:
+        return AgentStore.get(db, 'learning_claim')
+
+
+@pytest.mark.parametrize('expired', [False, True], ids=['', 'fence expired'])
+@pytest.mark.parametrize('value', [-(10**400), 10**400, float('nan'), 'bad', None], ids=lambda v: repr(v)[:8])
+def test_an_older_error_finish_still_clears_a_claim_whose_time_cant_be_read(world, value, expired):
+    """Rounds 1 and 2 of #192's review: an older controller's claim() subtracts the claim's time (8aad087, 34dbbb3),
+    so one it can't read raises there (TypeError, OverflowError) before the interruption report, and its error finish
+    is that claim's only way out. The finish clears it and reports it, and the next pass proceeds, even once a fence
+    expiry marked it: SQLite reads -(10**400) as minus infinity, before every fence. This controller refuses such a
+    claim at the finish and interrupts it at the next claim (gene #180) itself."""
     client, store = world
     _, _, claim = batch(client, store)
     agent = set_claim_time(store, client, value)
+    if expired:
+        marked = expire_a_fence(store)
+        if value == -(10**400):
+            assert marked['fence_expired'] is True  # The review's repro.
     older_error_finish(store, claim)
     with store.connection() as db:
         assert AgentStore.get(db, 'learning_claim') is None

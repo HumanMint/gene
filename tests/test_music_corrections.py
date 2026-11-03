@@ -466,6 +466,16 @@ FIX = 'not the one, i meant join us for a bite'
     ("wrong song, Stand By 'Me ' No More", 'Stand By Me No More', True),
     ('wrong song, "Not Now by ‘ Me & My ’", i said "Not Now"', 'Not Now by Me & My', True),
     ('wrong song, "Not Now by \'Me \' and You", not now', 'Not Now by Me and You', False),
+    # Round 5 of #165's review: an artist read as no word at all (punctuation before its first word, or an empty
+    # quote) isn't one, so the title isn't over past it and main's decision stands.
+    ('wrong song, Stand By ‘…Me’, No More', 'Stand By Me No More', True),
+    ('wrong song, Stand By ‘—Me’, No More', 'Stand By Me No More', True),
+    ('wrong song, Stand By ‘...Me’, No More', 'Stand By Me No More', True),
+    ('wrong song, Stand By ‘ … Me’, No More', 'Stand By Me No More', True),
+    ('wrong song, Stand By "", Me, No More', 'Stand By Me No More', True),
+    ("wrong song, Stand By '', Me, No More", 'Stand By Me No More', True),
+    ('wrong song, Stand By “”, Me, No More', 'Stand By Me No More', True),
+    ('wrong song, Glad You Came by ‘…The Wanted’, not now', 'Glad You Came The Wanted not now', True),
 ])
 def test_correction_needs_the_words_and_the_song_in_their_own_message(text, argument, expected):
     assert correction(text, argument) is expected

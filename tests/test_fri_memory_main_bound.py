@@ -1,6 +1,7 @@
 """Sol round 2 of #178: gene #172 and #173 only ever refuse more than main did (8aad087). And Sol round 1 of #189: gene
 #186 and #187 only ever refuse more than #178 did (8f0ac36). And gene #190 only ever refuses more than #189 did
-(7689069). And gene #198 only ever refuses more than #196 did (7e79220).
+(7689069). And gene #198 only ever refuses more than #196 did (7e79220). And gene #201 only ever refuses more than
+#200 and #204 did (50008b5).
 Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the reviewed
 repros, and for generated and fuzzed messages, with and without emoji, symbols, invisible characters and apostrophes
 spelled other ways."""
@@ -28,7 +29,8 @@ MAIN = reference('8aad087')  # Before #178.
 CURRENT = reference('8f0ac36')  # #178, before #189.
 PREVIOUS = reference('7689069')  # #189, before #190.
 LATEST = reference('7e79220')  # #196 (#190), before #198 and #199.
-BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST}
+NEWEST = reference('50008b5')  # #200 (#198, #199) and #204 (#203), before #201.
+BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -248,5 +250,10 @@ def test_the_bound_is_a_real_check():
     for hidden in ('i like chess, my mom :) would say', 'i like chess, my mom would sa\U0001F602y',
                    'i like chess, my mom \U0000200B would say'):
         assert LATEST({'category': 'games', 'evidence': 'i like chess'}, hidden) is not None
+        assert personal_note({'category': 'games', 'evidence': 'i like chess'}, hidden) is None
+    assert NEWEST is not personal_note and NEWEST not in (MAIN, CURRENT, PREVIOUS, LATEST)
+    for hidden in ('i like chess, my mom would sa1\uFE0F\u20E3y', 'i like chess y\u200B\u2018all say',
+                   'i like chess, my mom:P) would say', 'i like chess, my mom:P] would say'):
+        assert NEWEST({'category': 'games', 'evidence': 'i like chess'}, hidden) is not None
         assert personal_note({'category': 'games', 'evidence': 'i like chess'}, hidden) is None
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))

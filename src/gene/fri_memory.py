@@ -323,9 +323,11 @@ def personal_note(candidate, text):
         return None
     # Read once more with each run of emoji as a space and each apostrophe inside a word as a plain one, the evidence
     # too (gene #190), and twice more with symbols, text faces, characters that show nothing and in-word emoji read
-    # plainly (gene #198). Every reading must keep it, so each only ever refuses more.
+    # plainly (gene #198), and twice more as those, with what still hid a word in them read plainly first (gene #201).
+    # Every reading must keep it, so each only ever refuses more.
     readings = {(plainly(text), plainly(evidence).strip())}
-    readings |= {(plainer(text, invisible), plainer(evidence, invisible).strip()) for invisible in ('', ' ')}
+    readings |= {(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
+                 for said, note in ((text, evidence), (prepared(text), prepared(evidence)))}
     for plain, said in readings - {(text, evidence)}:
         found, source = spots_of(plain, said) if said else [], Source(plain)
         if not found or len(found) > MAX_SPOTS or not all(source.claims(at, said) for at in found):
@@ -393,9 +395,25 @@ LOOKED_FOR = frozenset(
     | ME | ME_BETWEEN | ADVERBS | NOUNS | PASSIVE | PARTICIPLES | ASIDE_WORDS | FORMS | OWN | UNFINISHED | CONTINUES
     | BACKREF | ACTIVITY | PLURALS | NAMES | set(ASKED) | {'u', 'i', 'thats', 'its'})
 PIECES = max(map(len, LOOKED_FOR))  # Even a word split at every letter ("k😂i😂d😂d😂i😂n😂g").
-# The member's own clause, past fillers, after which a run's text faces stay as typed (see plainer).
-OWN_NEXT = re.compile(r"(?i)(?:(?:lol|lmao|haha|but|and|so|tho|though|ok|okay|well|honestly|anyway)\W+)*+"
-                      r"(?:i|i'm|im|i've|ive|i'd|i'll|we|we're|we've|we'd|we'll)\b")
+# The member's own clause, past fillers, after which a run's text faces stay as typed (see plainer): one filler and what
+# follows it at a time, so a message's run of them is crossed once, not once from each run of symbols in it (gene #201).
+KEPT_FILLER = re.compile(r"(?i)(?:lol|lmao|haha|but|and|so|tho|though|ok|okay|well|honestly|anyway)\W+")
+OWN_START = re.compile(r"(?i)(?:i|i'm|im|i've|ive|i'd|i'll|we|we're|we've|we'd|we'll)\b")
+
+
+def past_fillers(text, at, filler, ends):
+    """Where the fillers from `at` end; `ends` keeps each place already crossed, for the message's other runs."""
+    crossed = []
+    while at not in ends:
+        step = filler.match(text, at)
+        if not step:
+            ends[at] = at
+            break
+        crossed.append(at)
+        at = step.end()
+    for place in crossed:
+        ends[place] = ends[at]
+    return ends[at]
 
 
 @functools.lru_cache(maxsize=4096)
@@ -426,13 +444,39 @@ def plainer(text, invisible):
     where it spells one these rules look for, other characters showing nothing as `invisible` ('' or ' '), each run of
     emoji, symbols and text faces with the spaces around it one space, and no run of spaces. Before the member's own
     clause, a run keeps its text faces as typed ("i like chess ;P 😂 i thought it'd be boring"): the ";" may end their
-    sentence, and leaving it adds no refusal, where removing it would refuse what #196 keeps."""
+    sentence, and leaving it adds no refusal, where removing it would refuse what #196 keeps. The fillers are crossed
+    once for all the message's runs, and a run without a face is a space whatever follows it (gene #201)."""
     text = INVISIBLE.sub(invisible, SPLIT.sub(unsplit, APOSTROPHES.sub("'", text)))
+    runs, kept, ends = list(SYMBOL_RUN.finditer(text)), {}, {}
+    for m in runs:
+        if FACES.search(m.group()) and OWN_START.match(text, past_fillers(text, m.end(), KEPT_FILLER, ends)):
+            kept[m.start()] = FACES.findall(m.group())
+    out, last = [], 0
+    for m in runs:
+        faces = kept.get(m.start())
+        out += [text[last:m.start()], f" {' '.join(faces)} " if faces else ' ']
+        last = m.end()
+    return re.sub(r'[ \t]{2,}', ' ', ''.join(out) + text[last:])
 
-    def gap(m):
-        faces = FACES.findall(m.group()) if OWN_NEXT.match(text, m.end()) else []
-        return f" {' '.join(faces)} " if faces else ' '
-    return re.sub(r'[ \t]{2,}', ' ', SYMBOL_RUN.sub(gap, text))
+
+# What those readings still let hide a word (gene #201): a keycap's variation selector, which they read as showing
+# nothing, so the keycap splits ("sa1️⃣y", "i1️⃣f"); an apostrophe beside an emoji or a character showing nothing,
+# which they leave as typed ("don<ZWSP>ʼt", "y😂‘all"); and a face attached to a word, which they take only as
+# ":)" or ":P" ("mom:P) would say", "mom:P] would say", "mom:] would say", "mom:p) would say", Sol round 1 of #205).
+# The message is read twice more with each of these plain first: main's readings stay as they are.
+SELECTED_KEYCAP = re.compile(r'(?<=[0-9#*])\uFE0F(?=\u20E3)')
+NEAR = rf"(?:\w|{PICTURE}|{SHOWS_NOTHING}|[>\u20E3])"
+STRAY = re.compile(rf"(?<={NEAR})[\u2018\u201B\u2032\uFF07\u00B4\u02BC\u02BB](?={NEAR}|<a?:)")
+# Any face FACE knows, after a word: a letter of one and any trailing brackets, slashes, bars and stars, or only
+# brackets, bars and stars, so "https://", "5:30" and "re:(x)" stay what they are.
+ATTACHED = re.compile(r"(?<=\w)[:;=][-'^]?(?:[DPpOo3][)(\]\[/|*]*|[)(\]\[|*]+)(?!\w)")
+
+
+@functools.lru_cache(maxsize=32)
+def prepared(text):
+    """The text with each keycap's variation selector gone, each apostrophe beside a word, an emoji or a character
+    showing nothing plain, and each face attached to a word a space ("mom:P] would say" as "mom  would say")."""
+    return ATTACHED.sub(' ', STRAY.sub("'", SELECTED_KEYCAP.sub('', text)))
 
 
 def spots_of(text, evidence):

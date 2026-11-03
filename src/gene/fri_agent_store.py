@@ -237,6 +237,23 @@ class AgentStore:
 
             if not c['enabled'] or not c['learning_enabled']:
                 return blocked('Learning is paused. Changing that still needs an owner settings preview.')
+            pending = self.get(db, 'learning_claim')
+
+            def interrupted():
+                db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
+                           (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; no automatic replay.'))
+                self.put(db, 'learning_claim', None)
+                return blocked('The previous pass was interrupted. Its report is pending; its allowance remains reserved.')
+            if pending and (at := claimed_at(pending)) is not None and at-now >= CLAIM_SECONDS:
+                # Dated further ahead than a small clock step: claimed while the clock ran fast, which has been
+                # corrected since. What that claim set from the fast clock (the owner's five minutes, the next pass's
+                # cadence) would hide it until then, so those come back by the same step, and it's interrupted now
+                # (gene #185).
+                for key in ('manual_learning_after', 'next_learning'):
+                    deadline = self.get(db, key, 0)
+                    if type(deadline) in (int, float) and deadline >= at:
+                        self.put(db, key, deadline-(at-now))
+                return interrupted()
             if manual and now < self.get(db, 'manual_learning_after', 0):
                 return blocked('An owner-requested pass can run at most once every five minutes.')
             if not manual and now < self.get(db, 'next_learning', 0):
@@ -244,16 +261,12 @@ class AgentStore:
             # A report outage pauses learning, so the owner does not lose visibility.
             if db.execute('SELECT 1 FROM agent_reports WHERE delivered=0').fetchone():
                 return blocked('The previous learning report still needs to reach the owner.')
-            pending = self.get(db, 'learning_claim')
             if pending:
-                # Running inside its ten minutes, either way of a small clock step; one dated further ahead (a clock
-                # that ran fast) or that can't be read is interrupted rather than held as running until then.
+                # Running inside its ten minutes, either way of a small clock step; one that can't be read is
+                # interrupted rather than held as running (one dated further ahead went above).
                 if (at := claimed_at(pending)) is not None and -CLAIM_SECONDS < now-at < CLAIM_SECONDS:
                     return blocked('A learning pass is already running.')
-                db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
-                           (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; no automatic replay.'))
-                self.put(db, 'learning_claim', None)
-                return blocked('The previous pass was interrupted. Its report is pending; its allowance remains reserved.')
+                return interrupted()
             day = int((now-self.get(db, 'started', now))//86400)
             budget = self.get(db, 'budget', {'day': day, 'used': 0})
             if budget['day'] != day:

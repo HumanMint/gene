@@ -81,6 +81,13 @@ A rollback never restores a DB snapshot: the old release runs on the migrated DB
 
 `7d6e36a` has the first two features, so a rollback to it runs only the member-summary purge. Don't run `gene.provenance_downgrade` either: every release since `f667001` has turn provenance, and it would discard member continuity they support.
 
+**Learning across a rollback: one release back is supported, and nothing older than v1.0.4.** The script rolls back only to the release that was live before the batch, so after a release on top of v1.0.5 (`4ffd668`) that's v1.0.5, and two back is v1.0.4 (`8f0ac36`). Both refuse a learning finish more than an hour after its claim (gene #180) and drop a note from a message withdrawn while its batch read it (gene #149), however the database was written. Older releases don't, and no trigger makes them, so a rollback that far keeps such a note:
+- **v1.0.3 (`8aad087`) and older (gene #183):** a finish of a claim more than a week old keeps a note whose fence is past its week but not yet pruned. That's possible only between the fence's week ending and the next of the frequent writes that prune it (Gene's heartbeat every few seconds, a saved turn, an agent-state write), which also invalidate the claim.
+- **v1.0.2 (`34dbbb3`) and older (gene #195):** its finish doesn't consult message fences, it writes none itself, and its notes name no messages, so any batch it runs keeps a note from a message withdrawn while the batch read it.
+- **What triggers can't do here.** A trigger invalidating the batch in flight on every fence would also throw away the current release's batches, which drop only the fenced message's note, each time a member edits during one. A trigger deleting notes by message can't see v1.0.2's.
+
+To roll back further than v1.0.4 anyway, turn learning off first (`learning_enabled`, which every release's claim checks), and wait until no batch is in flight (the agent state's `learning_claim` is empty) before starting the older release.
+
 Data an older release would keep serving after its own change to what the data depends on needs no downgrade step when the database can act for it: triggers it runs itself. gene #160's retire what names a member when their privacy revision moves, and gene #147's retire replies, drafts and reminders depending on a member summary the moment it goes, so a rollback to a release that has member summaries but not their dependencies (`34dbbb3`, say) runs none. gene #176's refuse a post or reminder about to be claimed or sent while a member summary it depends on has lapsed with nothing pruning it, and retire what depends on that summary at the next of the frequent writes every controller makes, for a release that never checks either.
 
 ## Offline tests

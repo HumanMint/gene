@@ -70,6 +70,21 @@ def initialize(db):
         CREATE TABLE IF NOT EXISTS fri_member_summary_sources (
             guild_id TEXT NOT NULL, user_id TEXT NOT NULL, through REAL NOT NULL, messages TEXT NOT NULL,
             PRIMARY KEY(guild_id, user_id));
+        -- It goes with its summary however the summary goes: forget me, clearing chats, erasure, expiry, or a
+        -- controller rolled back to one that doesn't know this table deleting or rewriting the summary as it always
+        -- did. Triggers live in the database, so they fire for that one too (Sol round 1 of #210).
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_sources_deleted AFTER DELETE ON fri_member_summaries BEGIN
+            DELETE FROM fri_member_summary_sources WHERE guild_id=OLD.guild_id AND user_id=OLD.user_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_sources_replaced AFTER UPDATE ON fri_member_summaries
+        WHEN NEW.through IS NOT OLD.through OR NEW.body IS NOT OLD.body BEGIN
+            DELETE FROM fri_member_summary_sources WHERE guild_id=OLD.guild_id AND user_id=OLD.user_id
+                AND through IS NOT NEW.through;
+        END;
+        -- One left from before these, or kept by a database restored without them: swept at start.
+        DELETE FROM fri_member_summary_sources WHERE NOT EXISTS (SELECT 1 FROM fri_member_summaries s
+            WHERE s.guild_id=fri_member_summary_sources.guild_id AND s.user_id=fri_member_summary_sources.user_id
+            AND s.through=fri_member_summary_sources.through);
     ''')
 
 

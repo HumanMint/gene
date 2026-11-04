@@ -76,3 +76,57 @@ def test_a_fresh_message_and_a_source_less_save_after_it_are_kept(store):
     assert store.save_chat('123', 'public:456', '20', 2, 'and lofi', 'noted', 'model', 'high').get('kept') is not False
     turns, notes = kept(store)
     assert turns == ['i love jazz', 'and lofi'] and notes == ['i love jazz']
+
+
+def test_a_queued_request_from_before_the_erasure_leaves_no_question_pending(store):
+    """fri #337: after memory went off and on again, a queued music request from before it was saved with Fri's
+    question. It kept no exchange, but the request and the question stayed pending, and the member's next turn sent
+    them to the model. Nothing of it is pending now; a request sent after the erasure still leaves its question."""
+    asked = {'goal': 'play', 'topic': '', 'question': 'which song?'}
+
+    def ask(source):
+        return store.save_chat('123', 'public:456', '20', 2, 'fri play music', 'which song?', 'model', 'high',
+                               source=source, provenance=[], clarification=asked)
+
+    queued = source(age=30)
+    store.personal_control('20', 'disable')
+    store.personal_control('20', 'enable')
+    assert ask(queued)['kept'] is False
+    assert store.chat_context('123', 'public:456', '20')['pending'] is None
+    time.sleep(0.01)  # Snowflakes count milliseconds.
+    ask(source())
+    assert store.chat_context('123', 'public:456', '20')['pending']['question'] == 'which song?'
+
+
+def test_with_memory_still_off_a_queued_requests_question_is_pending_as_before(store):
+    """Only memory back on holds a queued request's question back: while it's off, the question is pending as any is
+    then, so the member's answer can still finish the request."""
+    queued = source(age=30)
+    store.personal_control('20', 'disable')
+    store.save_chat('123', 'public:456', '20', 1, 'fri play music', 'which song?', 'model', 'high', source=queued,
+                    provenance=[], clarification={'goal': 'play', 'topic': '', 'question': 'which song?'})
+    assert store.chat_context('123', 'public:456', '20')['pending']['question'] == 'which song?'
+
+
+def test_a_pending_question_an_older_controller_kept_from_before_the_erasure_isnt_read(store):
+    """fri #337's round 1: a controller before this one saved a queued request's question after memory went off and
+    on again. That row outlives the upgrade, and within its five minutes the request and the question reached the
+    model. Reading it now holds it to the member's erasure: it's cleared. With memory still off, one is read as
+    before, so their answer can still finish the request."""
+    from gene.fri_context import ChatSource
+    from gene.fri_pending import save as save_pending
+
+    asked = {'goal': 'play', 'topic': '', 'question': 'which song?'}
+    queued = source(age=30)
+    store.personal_control('20', 'disable')
+    store.personal_control('20', 'enable')
+    with store.connection() as db:  # As the older controller saved it.
+        save_pending(db, '123', 'public:456', '20', 2, 'fri play music', ChatSource.model_validate(queued), asked, [])
+    assert store.chat_context('123', 'public:456', '20')['pending'] is None
+    with store.connection() as db:
+        assert db.execute('SELECT count(*) FROM chat_pending').fetchone()[0] == 0
+    store.personal_control('20', 'disable')
+    with store.connection() as db:
+        save_pending(db, '123', 'public:456', '20', 3, 'fri play music', ChatSource.model_validate(source(age=30)),
+                     asked, [])
+    assert store.chat_context('123', 'public:456', '20')['pending']['question'] == 'which song?'

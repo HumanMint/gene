@@ -66,11 +66,25 @@ def read(db, guild, conversation, user, revision):
     if not row:
         return None
     body = json.loads(row['body'])
-    # A question shaped by another member's words goes when their privacy changes.
-    if not _current(db, body.get('provenance', [])):
+    # A question shaped by another member's words goes when their privacy changes. So does one from a request sent
+    # before the member last turned memory off, once it's on again: an older controller saved those (HumanMint/fri#337),
+    # and save_chat now leaves none. While memory is still off, it's read as before, so their answer can finish it.
+    if not _current(db, body.get('provenance', [])) or _erased_since(db, user, body):
         clear(db, guild, conversation, user)
         return None
     return body
+
+
+def _erased_since(db, user, body):
+    from .fri_memory_store import before_erasure
+    enabled = db.execute('SELECT enabled FROM personal_preferences WHERE user_id=?', (user,)).fetchone()
+    if enabled is not None and not enabled[0]:
+        return False
+    try:
+        source = ChatSource.model_validate(body['source'])
+    except (KeyError, TypeError, ValueError):
+        return True  # Nothing to date it by: it can't be shown to be from after.
+    return before_erasure(db, user, source)
 
 
 def clear(db, guild, conversation, user):

@@ -1,7 +1,7 @@
 """Sol round 2 of #178: gene #172 and #173 only ever refuse more than main did (8aad087). And Sol round 1 of #189: gene
 #186 and #187 only ever refuse more than #178 did (8f0ac36). And gene #190 only ever refuses more than #189 did
 (7689069). And gene #198 only ever refuses more than #196 did (7e79220). And gene #201 only ever refuses more than
-#200 and #204 did (50008b5).
+#200 and #204 did (50008b5). And gene #207 and #201's item 4 only ever refuse more than #205 did (b1d4b88).
 Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the reviewed
 repros, and for generated and fuzzed messages, with and without emoji, symbols, invisible characters and apostrophes
 spelled other ways."""
@@ -30,7 +30,9 @@ CURRENT = reference('8f0ac36')  # #178, before #189.
 PREVIOUS = reference('7689069')  # #189, before #190.
 LATEST = reference('7e79220')  # #196 (#190), before #198 and #199.
 NEWEST = reference('50008b5')  # #200 (#198, #199) and #204 (#203), before #201.
-BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST}
+STACKED = reference('b1d4b88')  # #205 (#201), before #207.
+BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST,
+          'b1d4b88': STACKED}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -235,6 +237,46 @@ def test_messages_with_emoji_and_other_apostrophes_are_never_kept_where_a_bound_
     assert not leaks(messages, BOUNDS[sha])
 
 
+# gene #207's shapes: obfuscations stacked in one place. What shows nothing inside a face or a keycap, keycaps inside a
+# word and around its apostrophe, slash faces attached to a word, and (#201 item 4) faces before an aside of the
+# member's.
+STACKS = ['\U0000200B', '\U00002060', '\U0000FE0F', '\U0000200B\U0000FE0F', '']
+ATTACHED_FACES = [':P]', ':P)', ':/', ':-/', ';/', '=/', ':D', ';P']
+KEPT_FACES = [';P', ':P', ';)', ':D', ';-)']
+ASIDES_AFTER = ['i guess', 'i swear', 'we all know', 'i mean', 'lol i guess', 'i think', 'i thought', 'yeah i guess']
+
+
+def stacked(messages, seed):
+    rng = random.Random(seed)
+
+    def keycap():
+        return (rng.choice('0123456789#*') + rng.choice(['', '\U0000FE0F']) + rng.choice(STACKS) + '\U000020E3')
+
+    def attached():
+        face = rng.choice(ATTACHED_FACES)
+        return face[0] + rng.choice(STACKS) + face[1:] + ' '
+
+    def stack(part):
+        part = re.sub(r"(?<=\w)'(?=\w)", lambda _: rng.choice(
+            ["'", f'{keycap()}\U000002BC{keycap()}', f'{keycap()}\U00002019', '\U000002BC']), part)
+        part = re.sub(r"(?<=\w)(?=\w)", lambda _: keycap() if rng.random() < 0.04 else '', part)
+        return re.sub(r'(?<=\w) ', lambda _: rng.choice(
+            [' ', ' ', ' ', attached(), f' {rng.choice(KEPT_FACES)} {rng.choice(ASIDES_AFTER)} ']), part)
+
+    for category, evidence, text in messages:
+        at = text.find(evidence)
+        yield category, evidence, stack(text[:at]) + evidence + stack(text[at + len(evidence):])
+
+
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_messages_with_stacked_obfuscations_are_never_kept_where_a_bound_refuses_them(sha):
+    messages = list(stacked(itertools.chain(generated(6000, 207), condition_lines(6000, 2070),
+                                            fuzzed(6000, 20700)), 207))
+    assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 1500
+    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
+    assert not leaks(messages, BOUNDS[sha])
+
+
 def test_the_bound_is_a_real_check():
     """A validator that keeps what a bound refuses fails it: neither reference is this module under another name."""
     assert MAIN is not personal_note and MAIN({'category': 'games', 'evidence': 'i like chess'},
@@ -256,4 +298,13 @@ def test_the_bound_is_a_real_check():
                    'i like chess, my mom:P) would say', 'i like chess, my mom:P] would say'):
         assert NEWEST({'category': 'games', 'evidence': 'i like chess'}, hidden) is not None
         assert personal_note({'category': 'games', 'evidence': 'i like chess'}, hidden) is None
+    assert STACKED is not personal_note and STACKED not in (MAIN, CURRENT, PREVIOUS, LATEST, NEWEST)
+    for category, evidence, hidden in (
+            ('games', 'i like chess', 'i like chess, my mom:\U0000200BP] would say'),
+            ('games', 'i like chess', 'i like chess, my mom would sa1\U0000FE0F\U0000200B\U000020E3y'),
+            ('games', 'i like chess', 'i like chess, my mom:/ would say'),
+            ('nickname', 'call me dan', 'don1\U0000FE0F\U000020E3\U000002BC1\U0000FE0F\U000020E3t ever please call me dan'),
+            ('nickname', 'call me dan', 'if i win ;P i guess\nplease call me dan')):
+        assert STACKED({'category': category, 'evidence': evidence}, hidden) is not None
+        assert personal_note({'category': category, 'evidence': evidence}, hidden) is None
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))

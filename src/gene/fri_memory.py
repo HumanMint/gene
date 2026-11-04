@@ -323,12 +323,18 @@ def personal_note(candidate, text):
         return None
     # Read once more with each run of emoji as a space and each apostrophe inside a word as a plain one, the evidence
     # too (gene #190), and twice more with symbols, text faces, characters that show nothing and in-word emoji read
-    # plainly (gene #198), and twice more as those, with what still hid a word in them read plainly first (gene #201).
-    # Every reading must keep it, so each only ever refuses more.
-    readings = {(plainly(text), plainly(evidence).strip())}
-    readings |= {(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
-                 for said, note in ((text, evidence), (prepared(text), prepared(evidence)))}
-    for plain, said in readings - {(text, evidence)}:
+    # plainly (gene #198), and twice more as those, with what still hid a word in them read plainly first (gene #201),
+    # and four times more with what's stacked read plainly first, two of them with a face before an aside dropped (gene
+    # #207). Every reading must keep it, so each only ever refuses more. They're read in this order, each once: which one
+    # refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
+    # time grow faster than its length (the linearity check, on this change's first CI run).
+    readings = [(plainly(text), plainly(evidence).strip())]
+    readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
+                 for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
+    for invisible in ('', ' '):
+        said, note = plainer(composed(text, invisible), invisible), plainer(composed(evidence, invisible), invisible)
+        readings += [(said, note.strip()), (asides_joined(said), asides_joined(note).strip())]
+    for plain, said in dict.fromkeys(reading for reading in readings if reading != (text, evidence)):
         found, source = spots_of(plain, said) if said else [], Source(plain)
         if not found or len(found) > MAX_SPOTS or not all(source.claims(at, said) for at in found):
             return None
@@ -477,6 +483,48 @@ def prepared(text):
     """The text with each keycap's variation selector gone, each apostrophe beside a word, an emoji or a character
     showing nothing plain, and each face attached to a word a space ("mom:P] would say" as "mom  would say")."""
     return ATTACHED.sub(' ', STRAY.sub("'", SELECTED_KEYCAP.sub('', text)))
+
+
+# What those still let hide a word (gene #207): obfuscations stacked in one place. A character showing nothing inside a
+# face or a keycap ("mom:<ZWSP>P] would say", "sa1<VS><ZWSP><keycap>y"), which they recognize before it's gone; a
+# keycap's digit, which a split word's letters take, so the keycap splits nothing ("don1️⃣ʼ1️⃣t"); and a slash face
+# attached to a word ("mom:/ would say"). And #201's item 4: a face kept before the member's own clause (see plainer)
+# ends nothing when that clause is only an aside ("if i win ;P i guess", "my mom ;P i swear would say"). The message
+# is read four times more, with these read plainly first: main's readings stay as they are.
+SELECTORS = re.compile(r'[\U0000FE00-\U0000FE0F]')  # Never a space: they only pick how the character before shows.
+KEYCAP = re.compile(r'[0-9#*]\U000020E3')
+WHOLE_KEYCAP = '\U0001F51F'  # A keycap of its own, which no word's letters take (see SPLIT).
+# A slash face after a word, never a link's "://" or a path's ":/x" (see ATTACHED).
+SLASHED = re.compile(r"(?<=\w)[:;=]-?/(?![/\w])")
+# The member's aside after a kept face: "i guess", "i swear", "we all know", "i mean".
+OWN_ASIDE = re.compile(r"(?i)(?:i|we)\s+(?:(?:all|just|really|kinda|lowkey|honestly|also)\s+)?"
+                       r"(?:guess|swear|mean|know|bet|suppose|think|figure|admit|promise)\b")
+KEPT_FACES = re.compile(rf"(?<= )(?:{FACE} )+")
+
+
+@functools.lru_cache(maxsize=32)
+def composed(text, invisible):
+    """The text with variation selectors gone, other characters showing nothing as `invisible` ('' or ' '), each
+    keycap whole, then prepared, and each slash face attached to a word a space."""
+    unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', text))
+    return SLASHED.sub(' ', prepared(KEYCAP.sub(WHOLE_KEYCAP, unseen)))
+
+
+@functools.lru_cache(maxsize=32)
+def asides_joined(text):
+    """A reading (see plainer) with each run of faces it kept dropped where the member's clause after it, past fillers,
+    is only an aside, and the aside too, as ASIDE_PHRASES blanks the member's others: what's around them reads as one
+    clause ("if i win lol \\nplease call me dan", "my mom would say"). The fillers are crossed once for all the
+    message's runs."""
+    ends, out, last = {}, [], 0
+    for m in KEPT_FACES.finditer(text):
+        if m.start() < last:
+            continue
+        at = past_fillers(text, m.end(), KEPT_FILLER, ends)
+        if aside := OWN_ASIDE.match(text, at):
+            out += [text[last:m.start()], text[m.end():at]]
+            last = aside.end()
+    return ''.join(out) + text[last:]
 
 
 def spots_of(text, evidence):

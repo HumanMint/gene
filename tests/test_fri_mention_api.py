@@ -342,3 +342,14 @@ def test_a_mention_saves_fingerprint_is_the_one_an_older_controller_kept(h):
         assert post(h, '/chat/turn', {**payload, 'summary_dependencies': dependencies}).status_code == 200
     for drawn in ([], ['12345']):  # Nor the messages it carried (gene #141).
         assert post(h, '/chat/turn', {**payload, 'drew_on': drawn}).status_code == 200
+
+
+def test_nearby_authors_profiles_say_when_they_last_erased_or_removed_a_note(h):
+    """A ping's nearby posts and its reply target are held to their authors' last erasure or note removal, as the live
+    view is (HumanMint/fri#337): so each author's profile says that time (`removed_at`), 0 for one who never did."""
+    h.store.personal_control('21', 'disable')
+    turned_off = time.time()
+    h.store.personal_control('21', 'enable')
+    _, scope, _ = invited(h)
+    profiles = post(h, '/chat/mentions/profiles', {**scope, 'evidence': [source(user='21')]}).json()['profiles']
+    assert profiles['21']['removed_at'] == pytest.approx(turned_off, abs=1) and profiles['20']['removed_at'] == 0

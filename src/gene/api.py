@@ -220,6 +220,8 @@ class SavedWithdrawal(BaseModel):
     guild_id: str = Field(pattern=r'^[0-9]{1,25}$')
     message_ids: list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]] = Field(min_length=1, max_length=10)
     deleted: bool = False  # As above: all of them deleted.
+    # When Discord says they were edited (epoch seconds): only what was saved before goes (HumanMint/fri#358).
+    edited_at: float | None = Field(default=None, gt=0, allow_inf_nan=False)
 
 
 class ResearchStart(ChatScope):
@@ -547,7 +549,7 @@ def create_app(settings: Settings | None = None):
     def chat_turn_withdraw_saved(body: SavedWithdrawal):
         if body.guild_id != settings.guild_id and not (settings.test_guild_id and body.guild_id == settings.test_guild_id):
             raise HTTPException(403, 'Use Fri in a configured server')
-        return store.withdraw_saved(body.guild_id, body.message_ids, deleted=body.deleted)
+        return store.withdraw_saved(body.guild_id, body.message_ids, deleted=body.deleted, edited_at=body.edited_at)
 
     @app.post('/chat/messages/sources', dependencies=[auth('fri')])
     def chat_message_sources(body: MessageSources):

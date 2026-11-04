@@ -14,7 +14,8 @@ OPTIONAL = ('reply-checks', 'member-profiles', 'requester-notices',
             'withdrawal-sources',
             'saved-dependencies',
             'learning-withdrawals',
-            'summary-sources', 'summary-rechecks')  # Advertised; a controller without them is still compatible.
+            'summary-sources', 'summary-rechecks',
+            'withdrawal-edit-times')  # Advertised; a controller without them is still compatible.
 
 
 def contract():

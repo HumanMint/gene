@@ -24,6 +24,7 @@ LOOP_UNDERWAY_SECONDS = 3 * 3600  # A game night stays visible while it's probab
 # A withdrawn message's fence: as long as a saved exchange is kept, far longer than any turn holding it still runs.
 WITHDRAWN_SECONDS = 7 * 86400
 MESSAGE_FENCES = 100000  # Fences by message ID alone kept at most, the oldest going first (gene #149).
+EDIT_SKEW = 5  # Seconds Discord's clock and this one may differ by, when an edit is placed against a save (fri #358).
 WITHDRAWN = 'That message was edited or deleted while Fri was replying.'
 SUMMARY_CHANGED = 'What Fri remembered about you changed while it was replying. Ask again for a fresh reply.'
 DEPENDENCY_CHANGED = 'Something Fri said earlier changed while it was replying. Ask again for a fresh reply.'
@@ -1524,7 +1525,7 @@ class Store:
             db.execute(f'DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND {CURRENT} AND instr(sources,?)>0',
                        (guild, user, json.dumps(str(message))))
 
-    def withdraw_saved(self, guild_id, message_ids, *, deleted=False):
+    def withdraw_saved(self, guild_id, message_ids, *, deleted=False, edited_at=None):
         """Messages edited or deleted that Fri can't place: it knows only the exchanges it saved since it started, so
         one saved before a restart, say, would keep its old words until it expires (fri #174). Each saved exchange
         holding one goes as withdraw_turn takes it, under the member and conversation it was saved with. So does a note
@@ -1533,8 +1534,43 @@ class Store:
         nobody their summary: Fri asks about every edit and delete it can't place, and an unrelated one shouldn't. A
         deletion of one still keeps a fence by its ID, and so does an edit while a learning batch reads (gene #149; see
         _fence). Only a call that finds something, a deletion, or an edit during a learning batch takes the write lock;
-        the rest read."""
-        ids = json.dumps(sorted(set(message_ids)))
+        the rest read.
+
+        edited_at: when Discord says they were edited (HumanMint/fri#358). Only what was certainly saved before that
+        goes: a pin or an embed refresh repeats an earlier edit's time, and what was learned since is of what the message
+        says now. A message with something saved too close to the edit to tell which came first (EDIT_SKEW), or saved
+        both before and after it, keeps everything, as it may hold the very version saved: the answer names it as
+        unsure, for Fri to keep it out of use instead. A deletion takes everything, whatever its time."""
+        timed, every = edited_at is not None and not deleted, sorted(set(message_ids))
+        ids, unsure = json.dumps(every), []
+
+        def saves(db, message):  # When each exchange and note holding it was saved.
+            from .fri_memory_store import CURRENT
+            turns = db.execute(
+                "SELECT at FROM chat_turns t WHERE t.guild_id=? AND (json_extract(NULLIF(t.source,''),'$.id')=? OR "
+                "EXISTS (SELECT 1 FROM json_each(t.burst) b WHERE json_extract(b.value,'$.source.id')=?))",
+                (guild_id, message, message)).fetchall()
+            notes = db.execute(f'SELECT at FROM personal_notes WHERE guild_id=? AND {CURRENT} AND instr(sources,?)>0',
+                               (guild_id, json.dumps(message))).fetchall()
+            return [row[0] for row in turns+notes]
+
+        def sort_out(db):
+            """The messages to withdraw (as JSON), and those an edit's time can't be placed against (see above). One
+            whose every save came after the edit is neither: nothing of it goes."""
+            if not timed:
+                return json.dumps(every), []
+            taken, unsure = [], []
+            for message in every:
+                times = saves(db, message)
+                if all(at < edited_at-EDIT_SKEW for at in times):
+                    taken.append(message)
+                elif not all(at > edited_at+EDIT_SKEW for at in times):
+                    unsure.append(message)
+            return json.dumps(taken), unsure
+
+        def answer(removed):
+            return {'ok': True, 'removed': removed, **({'unsure': unsure} if timed else {})}
+
         def held(db):
             return db.execute(
                 "SELECT DISTINCT t.channel_id,t.user_id,m.value FROM chat_turns t, json_each(?) m WHERE t.guild_id=? "
@@ -1546,9 +1582,11 @@ class Store:
                 f'SELECT DISTINCT user_id FROM personal_notes WHERE guild_id=? AND {CURRENT} AND '
                 'instr(sources,?)>0 ORDER BY user_id', (guild_id, json.dumps(message)))]
         with self.connection() as db:
+            ids, unsure = sort_out(db)
             if not (deleted or self._learning(db) is not None or held(db) or noted(db)):
-                return {'ok': True, 'removed': 0}
+                return answer(0)
             db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
+            ids, unsure = sort_out(db)
             holding = held(db)
             removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted)
                           for conversation, user, message in holding)
@@ -1562,9 +1600,8 @@ class Store:
             if deleted:  # Whose a message only replies carried is isn't known here: they retire now.
                 self._retire_drawn(db, guild_id, json.loads(ids))
             if deleted or self._learning(db) is not None:
-                self._fence(db, guild_id, [message for message in json.loads(ids) if message not in placed], deleted,
-                            now)
-            return {'ok': True, 'removed': removed}
+                self._fence(db, guild_id, [message for message in every if message not in placed], deleted, now)
+            return answer(removed)
 
     @staticmethod
     def _fence(db, guild_id, messages, deleted, now):

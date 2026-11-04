@@ -325,14 +325,16 @@ def personal_note(candidate, text):
     # too (gene #190), and twice more with symbols, text faces, characters that show nothing and in-word emoji read
     # plainly (gene #198), and twice more as those, with what still hid a word in them read plainly first (gene #201),
     # and four times more with what's stacked read plainly first, two of them with a face before an aside dropped (gene
-    # #207). Every reading must keep it, so each only ever refuses more.
-    readings = {(plainly(text), plainly(evidence).strip())}
-    readings |= {(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
-                 for said, note in ((text, evidence), (prepared(text), prepared(evidence)))}
+    # #207). Every reading must keep it, so each only ever refuses more. They're read in this order, each once: which one
+    # refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
+    # time grow faster than its length (the linearity check, on this change's first CI run).
+    readings = [(plainly(text), plainly(evidence).strip())]
+    readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
+                 for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
     for invisible in ('', ' '):
         said, note = plainer(composed(text, invisible), invisible), plainer(composed(evidence, invisible), invisible)
-        readings |= {(said, note.strip()), (asides_joined(said), asides_joined(note).strip())}
-    for plain, said in readings - {(text, evidence)}:
+        readings += [(said, note.strip()), (asides_joined(said), asides_joined(note).strip())]
+    for plain, said in dict.fromkeys(reading for reading in readings if reading != (text, evidence)):
         found, source = spots_of(plain, said) if said else [], Source(plain)
         if not found or len(found) > MAX_SPOTS or not all(source.claims(at, said) for at in found):
             return None

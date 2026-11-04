@@ -153,3 +153,17 @@ def test_gene_forgetme_is_dated_by_its_command_message(gene):
     control(gene, 'enable', now + 0.2, -2)
     assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=0.01)
     assert saved(gene, now - 0.5) == {'ok': True, 'first_memory': False, 'kept': False}
+
+
+def test_an_older_controllers_erasure_after_one_with_a_discord_time_is_on_gene_s_clock(gene):
+    """Rolled back, an older controller stamps a later erasure in its own table and never touches the Discord times.
+    Forward again, that earlier Discord time isn't this erasure's: the cutoff is Gene's stamp, as the older one's."""
+    now = REAL()
+    control(gene, 'disable', now - 30, 0)
+    store = gene.app.state.store
+    with store.connection() as db:  # As an older controller's disable writes it.
+        db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
+                   ('20', now))
+    assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=0.001)
+    control(gene, 'enable', now + 0.2, 0)
+    assert saved(gene, now - 10) == {'ok': True, 'first_memory': False, 'kept': False}

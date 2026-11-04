@@ -710,6 +710,10 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
                                 'erin and frank and grace and heidi and ivan and judy and mallory and oscar and peggy '
                                 'and nina ;P i know my opponent is good\nplease call me dan'),  # 179 characters on.
     ('nickname', 'call me dan', 'call me dan ;P i hope you win when we play'),
+    # #211's reading of the hedges stays beside the wider one, never replaced by it: here #211's keeps the face before
+    # "i reckon", which hedges the claim, where the wider reading alone would drop both faces and keep it.
+    ('games', 'i like chess', 'please ;) i reckon :P i mean i like chess'),
+    ('games', 'i like chess', ":P i'd say so ;P i bet i like chess"),
     # gene #212 item 3: shorthand format controls show nothing too, inside a face or a keycap.
     ('games', 'i like chess', 'i like chess, my mom:\U0001BCA0P] would say'),
     ('games', 'i like chess', 'i like chess, my mom would sa1\U0000FE0F\U0001BCA1\U000020E3y'),

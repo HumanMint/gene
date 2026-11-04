@@ -309,7 +309,9 @@ def asided(messages, seed):
         return re.sub(r'(?<=\w) ', lambda _: rng.choice(
             [' ', ' ', ' ', (lambda face: face[0] + hidden() + face[1:])(rng.choice(SLASH_FACES)) + ' ',
              ' ' + rng.choice(SLASH_FACES) + ' ',
-             f' {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} {rng.choice(HEDGE_RESTS)} '.replace('  ', ' ')]), part)
+             f' {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} {rng.choice(HEDGE_RESTS)} '.replace('  ', ' '),
+             # Two runs in a row, where #211's reading and the wider one drop different faces (both are read).
+             f' {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} ']), part)
 
     for category, evidence, text in messages:
         at = text.find(evidence)

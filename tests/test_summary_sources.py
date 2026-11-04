@@ -85,5 +85,23 @@ def test_a_summary_built_without_the_earlier_one_names_only_its_own(store, tmp_p
     assert offered(agent)['previous']['messages'] == sources(store)[2:4]
 
 
+def test_past_what_fri_checks_in_one_build_what_a_summary_drew_on_isnt_known(store, tmp_path, monkeypatch):
+    """A chain of summaries each carried on names ever more: past DRAWN_MOST, none, so Fri doesn't carry it on."""
+    import gene.fri_member_summary as summaries
+    monkeypatch.setattr(summaries, 'DRAWN_MOST', 3)
+    agent = background(store, tmp_path)
+    chat(store, 'raid tonight?')
+    chat(store, 'what build for the raid', 'public:2')
+    build(agent)
+    chat(store, 'the raid went well', ago=5400)
+    chat(store, 'next raid friday', ago=5400)
+    tomorrow(store)
+    build(agent, text='they raid on fridays')  # Carried on: four messages, past three.
+    chat(store, 'raid recap', ago=4000)
+    chat(store, 'raid recap two', ago=4000)
+    tomorrow(store)
+    assert offered(agent)['previous']['messages'] is None
+
+
 def test_the_controller_says_it_names_them():
     assert 'summary-sources' in contract()['capabilities']

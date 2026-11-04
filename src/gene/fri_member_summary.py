@@ -30,6 +30,7 @@ DAY = 86400
 SETTLE = 3600  # Built once the member's latest exchange is an hour old, so a day's one call covers the chat.
 NEW = 2  # Exchanges since the last build before another is worth a call.
 EXCHANGES = 24  # The newest a build reads.
+DRAWN_MOST = 100  # The most messages a summary names as drawn on (see finish); past that, not known.
 DAILY = 50  # Builds a day across the server, however many members are active.
 CLAIM_TIMEOUT = 600
 SKEW = 300  # Seconds a Discord message's time may run ahead of the controller's clock.
@@ -667,6 +668,8 @@ def finish(agent, claim_id, summary, status, conversations, previous):
         drawn = record.get('messages')
         if drawn is not None and earlier is not None:
             drawn = None if earlier.get('messages') is None else [*earlier['messages'], *drawn]
+        if drawn is not None and len(drawn) > DRAWN_MOST:
+            drawn = None  # Past what Fri checks in one build: not carried on, so a chain of them starts again.
         if drawn is None:
             db.execute('DELETE FROM fri_member_summary_sources WHERE guild_id=? AND user_id=?',
                        (agent.settings.guild_id, record['user_id']))

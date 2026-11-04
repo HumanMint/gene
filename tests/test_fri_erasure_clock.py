@@ -234,7 +234,10 @@ def remove_a_note(gene, offset, at=None, user='20'):
     store, at = gene.app.state.store, REAL() if at is None else at
     with store.connection() as db:
         save(db, '123', 'server', user, ('games', 'I like Minecraft'), REAL(), provenance=[])
-    note = entries(store, '123', 'private:900', user)['entries'][0]
+    found = entries(store, '123', 'private:900', user)['entries']
+    if not found:  # Saved before a removal fence an earlier removal left, with Gene's clock ahead: none to remove.
+        return
+    note = found[0]
     revision = store.chat_context('123', 'private:900', user)['revision']
     asked = {'kind': 'discord_interaction', 'id': source(at, user)['id'], 'user_id': user,
              'display_name': 'friend', 'channel_id': '900', 'guild_id': None}

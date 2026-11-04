@@ -806,6 +806,7 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     # gene #207: a slash that's a path or a link, a keycap on its own or after a word, and what shows nothing inside
     # a word that spells nothing the rules look for.
     ('games', 'i like chess', 'i like chess, saves go in c:/games/chess'),
+    ('games', 'i like chess', 'i like chess, my saves are in d:/text/chess'),
     ('games', 'i like chess', 'i like chess, see http://example.com/a:/b lol'),
     ('games', 'i like chess', 'i like chess:/'),
     ('games', 'i like chess', 'i like chess :/ honestly'),

@@ -96,28 +96,30 @@ SKEW = 60
 
 
 def record_erasure(db, user, at, discord_at=None):
-    """Gene's stamp of the member's erasure, and the Discord time of the message or interaction that asked for it when
-    there is one (see erased_on_discord). Without one, none stays from an earlier erasure."""
+    """Gene's stamp of the member's erasure, and its cutoff on Discord's clock (see erased_on_discord): the Discord time
+    of the message or interaction that asked, within SKEW of Gene's stamp, or Gene's stamp without one. Never earlier
+    than the cutoff so far: a request that arrives late, after a newer erasure (or after an outage), can't move it
+    back and admit what was said before that one (Sol round 1 of #213)."""
+    so_far = erased_on_discord(db, user)
+    cutoff = at if discord_at is None else min(max(discord_at, at - SKEW), at + SKEW)
     db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
                 (user, at))
-    if discord_at is None:
-        db.execute('DELETE FROM personal_erasure_times WHERE user_id=?', (user,))
-    else:
-        db.execute('INSERT INTO personal_erasure_times VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET '
-                   'at=excluded.at,discord_at=excluded.discord_at', (user, at, discord_at))
+    db.execute('INSERT INTO personal_erasure_times VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET '
+               'at=excluded.at,discord_at=excluded.discord_at', (user, at, max(cutoff, so_far or 0)))
 
 
 def erased_on_discord(db, user):
     """When the member last turned memory off, on Discord's clock (HumanMint/fri#337): what's compared with a message's
-    snowflake. The Discord time of the message or interaction that asked, when one was recorded with this same
-    erasure, within SKEW of Gene's stamp; otherwise Gene's stamp, as before (see erased). None when never."""
+    snowflake. The cutoff recorded with this same erasure (see record_erasure); otherwise Gene's stamp, as before (see
+    erased), never earlier than one recorded with an earlier erasure: an older controller's, after a rollback, writes
+    its stamp alone. None when never."""
     at = erased(db, user)
     if at is None:
         return None
     row = db.execute('SELECT at,discord_at FROM personal_erasure_times WHERE user_id=?', (user,)).fetchone()
-    if not row or row[0] != at:
-        return at  # None recorded, or one from an earlier erasure, which would admit what was said since.
-    return min(max(row[1], at - SKEW), at + SKEW)
+    if not row:
+        return at
+    return row[1] if row[0] == at else max(at, row[1])
 
 
 def learned_cutoff(db, guild, scope, user):

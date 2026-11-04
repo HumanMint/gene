@@ -212,3 +212,16 @@ def test_a_message_gene_knows_is_someone_elses_never_dates_an_erasure(gene, rout
                          json={'guild_id': '123', 'user_id': '20', 'source_id': theirs['id']}).status_code == 200
     assert not profile(gene)['enabled']
     assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=1)
+
+
+def test_an_older_controllers_later_erasure_never_moves_the_cutoff_earlier(gene):
+    """With Gene's clock behind, an erasure's cutoff is after Gene's stamp. Rolled back, an older controller stamps a
+    later erasure, still before that cutoff: forward again, the cutoff stays."""
+    now = REAL()
+    control(gene, 'disable', now, -5)
+    store = gene.app.state.store
+    with store.connection() as db:  # As an older controller's disable writes it, a second after the first, on Gene's clock.
+        db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
+                   ('20', now - 4))
+    asked = discord.utils.snowflake_time(int(source(now)['id'])).timestamp()
+    assert profile(gene)['erased_at_discord'] == pytest.approx(asked, abs=0.002)

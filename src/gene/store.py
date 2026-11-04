@@ -700,6 +700,27 @@ class Store:
             db.execute('DELETE FROM memories WHERE id=? AND guild_id=?', (memory_id, guild_id))
             self._audit(db, actor, 'forget', memory_id)
 
+    # Where the controller records who wrote a message by its ID: a saved turn's own message, a fenced or deleted one with
+    # its author, a pending question's, a ping's grant and a research permit, each made for that message's author.
+    MESSAGE_AUTHORS = (("SELECT user_id FROM chat_turns WHERE json_extract(NULLIF(source,''),'$.id')=?"),
+                       'SELECT user_id FROM chat_message_fences WHERE message_id=? AND user_id IS NOT NULL',
+                       'SELECT user_id FROM chat_turn_deletions WHERE message_id=? AND user_id IS NOT NULL',
+                       'SELECT user_id FROM chat_pending WHERE source_id=?',
+                       'SELECT user_id FROM mention_grants WHERE source_id=?',
+                       'SELECT user_id FROM web_requests WHERE source_id=?')
+
+    def someone_elses(self, message_id, user_id):
+        """Whether the controller has this message recorded as another member's (see MESSAGE_AUTHORS): then it never
+        dates an erasure of this one's (Sol round 1 of #213)."""
+        with self.connection() as db:
+            for query in self.MESSAGE_AUTHORS:
+                try:
+                    if any(str(row[0]) != str(user_id) for row in db.execute(query, (str(message_id),))):
+                        return True
+                except sqlite3.OperationalError:  # A table this store never set up.
+                    continue
+        return False
+
     def erase_user(self, user_id, discord_at=None):
         self.personal_control(user_id, 'disable', discord_at)
         with self.connection() as db:
@@ -1322,6 +1343,7 @@ class Store:
         db.execute(f'DELETE FROM personal_note_removals WHERE at<? AND (at<? OR digest NOT IN ({",".join("?"*len(wide))}))',
                    (time.time() - TTL, time.time() - HORIZON, *wide))
         db.execute('DELETE FROM personal_erasures WHERE at<?', (time.time() - HORIZON,))  # Wordless, so as long.
+        db.execute('DELETE FROM personal_erasure_times WHERE at<?', (time.time() - HORIZON,))  # And its Discord time.
         # A note learned while other members' words were in view goes when any of them changes their privacy.
         for note_id, provenance in db.execute("SELECT id,provenance FROM personal_notes WHERE guild_id=? AND "
                                               "user_id=? AND provenance<>'[]'", (guild_id, user_id)).fetchall():

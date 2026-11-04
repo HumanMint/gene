@@ -249,3 +249,64 @@ def test_the_purge_takes_the_recheck_record_too(store, tmp_path):
 
 def test_the_controller_offers_rechecks():
     assert 'summary-rechecks' in contract()['capabilities']
+
+
+# Sol round 1 of #214.
+
+def replaced(store, text='mostly raids and builds'):
+    """The member's own Edit summary, in My memory."""
+    from gene.fri_member_summary import edit
+    from tests.test_member_summaries import private_source
+    revision = store.chat_context('123', 'private:9', '20')['revision']
+    edit(store, '123', 'private:9', '20', revision, private_source(), 'replace', text)
+
+
+@pytest.mark.parametrize('fresh', [False, True], ids=['a recheck', "fri's first claim after it starts"])
+def test_b1_a_summary_the_member_wrote_draws_on_no_message_and_survives_a_recheck(store, tmp_path, fresh):
+    """B1: Edit summary wrote the member's own words with no record of what it drew on, so the next recheck took it for
+    one whose sources aren't known and dropped it for good. It draws on no message: nothing to check, so it shows."""
+    from gene.store import Store
+    agent = background(store, tmp_path)
+    built(store, agent)
+    replaced(store)
+    assert recheck(agent, fresh=fresh) == {'summaries': []}
+    assert shown(store)['text'] == 'mostly raids and builds'
+    Store(store.path)  # Started again: what it draws on is still known.
+    assert recheck(agent) == {'summaries': []} and shown(store)['text'] == 'mostly raids and builds'
+
+
+def test_b1_one_an_older_controller_wrote_for_the_member_survives_too(store, tmp_path):
+    """Written by a controller from before sources were recorded: no record, but it names no conversation it came from,
+    as only the member's own words don't, so it's theirs, not a summary whose sources are unknown."""
+    agent = background(store, tmp_path)
+    built(store, agent)
+    replaced(store)
+    with store.connection() as db:
+        db.execute('DELETE FROM fri_member_summary_sources')
+    assert recheck(agent) == {'summaries': []} and shown(store)['text'] == 'mostly raids and builds'
+
+
+def test_b1_the_next_build_carries_the_members_words_on(store, tmp_path):
+    agent = background(store, tmp_path)
+    built(store, agent)
+    replaced(store)
+    chat(store, 'the raid went well', ago=5400)
+    chat(store, 'next raid friday', ago=5400)
+    tomorrow(store)
+    offer = offered(agent)
+    assert offer['previous'] == {'text': 'mostly raids and builds', 'origins': [], 'messages': []}
+
+
+def test_s1_a_withdrawal_recorded_while_fri_read_takes_the_summary_whatever_fri_answers(store, tmp_path):
+    """S1: one of its messages was taken back after the claim, while Fri was still reading; Fri's ok, from reads made
+    before that, never shows it again."""
+    agent = background(store, tmp_path)
+    built(store, agent)
+    item = recheck(agent)['summaries'][0]
+    with store.connection() as db:
+        db.execute("DELETE FROM chat_turns WHERE user_id='20'")  # Aged out: nothing holds it but the summary.
+    store.withdraw_saved('123', [item['messages'][0]['id']], deleted=True)
+    rechecked(agent, item['id'], 'ok')
+    assert shown(store) is None
+    with store.connection() as db:
+        assert not db.execute('SELECT count(*) FROM fri_member_summaries').fetchone()[0]

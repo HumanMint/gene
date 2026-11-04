@@ -139,6 +139,16 @@ def test_one_whose_message_the_controller_knows_was_taken_back_is_dropped_as_it_
     assert shown(store) is None
 
 
+def test_a_message_taken_back_before_its_exchange_was_saved_leaves_the_summary(store, tmp_path):
+    """An edit Fri answered again under the same ID: the summary drew on what it says now, so it stays and is offered."""
+    agent = background(store, tmp_path)
+    built(store, agent)
+    first = sources(store)[0]
+    with store.connection() as db:
+        db.execute("INSERT INTO chat_turn_withdrawals VALUES ('123','20',?,?)", (first['id'], first['saved_at']-60))
+    assert len(recheck(agent)['summaries']) == 1 and shown(store)
+
+
 def test_each_claim_reads_a_bounded_number_of_messages(store, tmp_path, monkeypatch):
     import gene.fri_member_summary as summaries
     monkeypatch.setattr(summaries, 'READS', 3)
@@ -162,7 +172,8 @@ def test_a_recheck_of_a_summary_replaced_since_changes_nothing(store, tmp_path):
     finish(agent, offer['id'], 'they raid on fridays', 'completed',
            sorted({row['conversation_id'] for row in offer['exchanges']}), True,
            [m for row in offer['exchanges'] for m in row['messages']])
-    rechecked(agent, item['id'], 'changed')
+    with pytest.raises(ValueError, match='expired'):
+        rechecked(agent, item['id'], 'changed')
     assert shown(store)['text'] == 'they raid on fridays'
 
 

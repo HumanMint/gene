@@ -96,3 +96,13 @@ def test_a_queued_request_from_before_the_erasure_leaves_no_question_pending(sto
     time.sleep(0.01)  # Snowflakes count milliseconds.
     ask(source())
     assert store.chat_context('123', 'public:456', '20')['pending']['question'] == 'which song?'
+
+
+def test_with_memory_still_off_a_queued_requests_question_is_pending_as_before(store):
+    """Only memory back on holds a queued request's question back: while it's off, the question is pending as any is
+    then, so the member's answer can still finish the request."""
+    queued = source(age=30)
+    store.personal_control('20', 'disable')
+    store.save_chat('123', 'public:456', '20', 1, 'fri play music', 'which song?', 'model', 'high', source=queued,
+                    provenance=[], clarification={'goal': 'play', 'topic': '', 'question': 'which song?'})
+    assert store.chat_context('123', 'public:456', '20')['pending']['question'] == 'which song?'

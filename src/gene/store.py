@@ -1231,14 +1231,15 @@ class Store:
             # it keeps nothing, though the member's own message stands, so it settles what was pending as usual.
             stale = (fenced or self.deleted_anywhere(db, guild_id, drew_on) or
                      predates(db, guild_id, channel_id, user_id, first))
-            # One from before memory was last turned off keeps no exchange or note either (HumanMint/fri#331), and
-            # leaves no question pending: that would carry its words to the member's next turn (HumanMint/fri#337).
-            # One saved while memory is off still does, as before.
+            # One from before memory was last turned off keeps no exchange or note either (HumanMint/fri#331), and,
+            # with memory on again, leaves no question pending: that would carry its words to the member's next turn
+            # (HumanMint/fri#337). While memory is still off, its question is pending as any turn's is then, as before.
             erased = before_erasure(db, user_id, first)
+            back_on = erased and self._privacy_state(db, user_id)[1]  # Memory on again since.
             # A withdrawn message's late save leaves what's pending as it is: a newer turn may have left a question.
             if response_kind == 'reply' and not fenced:
                 save_pending(db, guild_id, channel_id, user_id, revision, text, source,
-                             None if stale or erased else clarification, provenance if attributed else None)
+                             None if stale or back_on else clarification, provenance if attributed else None)
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             if not profile['enabled'] or stale or erased:
                 return {'ok': True, 'first_memory': False, 'kept': False}

@@ -2,8 +2,8 @@
 #186 and #187 only ever refuse more than #178 did (8f0ac36). And gene #190 only ever refuses more than #189 did
 (7689069). And gene #198 only ever refuses more than #196 did (7e79220). And gene #201 only ever refuses more than
 #200 and #204 did (50008b5). And gene #207 and #201's item 4 only ever refuse more than #205 did (b1d4b88). And gene
-#212's items 1-3 only ever refuse more than #211 did (ba5a0a6); its item 4 keeps again only what #205 kept, where a face
-stands before a hedge of the member's.
+#212's items 1-3 only ever refuse more than #211 did (ba5a0a6, the same validator as 1d59371), with no exemption: its
+item 4 stays open (Sol round 1 of #217).
 Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the reviewed
 repros, and for generated and fuzzed messages, with and without emoji, symbols, invisible characters and apostrophes
 spelled other ways."""
@@ -38,22 +38,13 @@ BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': L
           'b1d4b88': STACKED, 'ba5a0a6': ASIDED}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
-# gene #212 item 4: a text face, past fillers, before a hedge of the member's ("i", "we"). Past one that opens a
-# clause of its own, #211 refused what #205 kept; that, and only that, may be kept again.
-HEDGED = re.compile(r"(?i)(?:[:;=][-'^]?[DPpOo3)(\]\[/|*\\]+|xD+|<3+)\s+(?:(?:lol|lmao|haha|but|and|so|tho|though|"
-                    r"ok|okay|well|honestly|anyway|yeah)\W+)*(?:i|we|i'd|we'd)\b")
 
 
 def leaks(messages, bound=MAIN):
-    """Each (category, evidence, text) this module keeps and the bound refuses. Against #211, not one #205 keeps
-    past a face before a hedge of the member's (see HEDGED)."""
-    found = [(category, evidence, text) for category, evidence, text in messages
-             if personal_note({'category': category, 'evidence': evidence}, text) is not None
-             and bound({'category': category, 'evidence': evidence}, text) is None]
-    if bound is ASIDED:
-        found = [(category, evidence, text) for category, evidence, text in found
-                 if not (HEDGED.search(text) and STACKED({'category': category, 'evidence': evidence}, text))]
-    return found
+    """Each (category, evidence, text) this module keeps and the bound refuses."""
+    return [(category, evidence, text) for category, evidence, text in messages
+            if personal_note({'category': category, 'evidence': evidence}, text) is not None
+            and bound({'category': category, 'evidence': evidence}, text) is None]
 
 
 # Every leak the reviews found, and the shapes around them: none may be kept.
@@ -289,16 +280,20 @@ def test_messages_with_stacked_obfuscations_are_never_kept_where_a_bound_refuses
     assert not leaks(messages, BOUNDS[sha])
 
 
-# gene #212's shapes: slash faces with a nose, a trailing bracket or a backslash; shorthand format controls inside
-# faces, keycaps and words; and faces before a hedge of the member's from a wider vocabulary, past a run of modifiers,
-# with what its own clause says after it: nothing, the rest of an interrupted clause, a condition, a report, taking it
-# back, or something of its own.
-SLASH_FACES = [':^/', ':/)', ':\\', ':-\\', ';\\)', ":'/]", '=/(']
-HIDDEN = ['\U0001BCA0', '\U0001BCA1', '\U0001BCA2', '\U0001BCA3', '\U0000200B', '']
+# gene #212's shapes: slash faces with a nose, a trailing bracket or a backslash, attached or alone, with a space inside;
+# shorthand and annotation controls inside faces, keycaps and words; and faces before a hedge of the member's from a
+# wider vocabulary, past a run of modifiers, with what its clause says after it: nothing, the rest of an interrupted
+# clause, a condition, a report, taking it back, or what looks like a clause of its own (Sol round 1 of #217).
+SLASH_FACES = [':^/', ':/)', ':\\', ':-\\', ';\\)', ":'/]", '=/(', ':/ )', ':~/', ':~\\', ';-/ ]']
+HIDDEN = ['\U0001BCA0', '\U0001BCA1', '\U0001BCA2', '\U0001BCA3', chr(0xFFF9), chr(0xFFFA), chr(0xFFFB), '\U0000200B',
+          '']
 HEDGES = ['i believe', 'i really honestly guess', 'i reckon', "i'd say", 'i know', 'we all know', 'i guess', 'i think',
-          'i do honestly think', 'lol i suppose']
+          'i do honestly think', 'lol i suppose', 'i absolutely believe', 'i strongly think', 'i certainly hope',
+          'i hope']
 HEDGE_RESTS = ['', 'would say', 'when i win', 'if i win', 'my mom says', 'my mom says so', "i'm kidding", 'jk',
-               'my opponent is kidding', 'its fun', 'when the game starts', 'my friends are better']
+               'my opponent is kidding', 'its fun', 'when the game starts', 'my friends are better',
+               'my mom is saying those exact words', 'that is only if i win', "it's not really true",
+               'you win when we play', 'my opponent is good']
 
 
 def asided(messages, seed):
@@ -313,6 +308,7 @@ def asided(messages, seed):
                       if rng.random() < 0.02 else '', part)
         return re.sub(r'(?<=\w) ', lambda _: rng.choice(
             [' ', ' ', ' ', (lambda face: face[0] + hidden() + face[1:])(rng.choice(SLASH_FACES)) + ' ',
+             ' ' + rng.choice(SLASH_FACES) + ' ',
              f' {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} {rng.choice(HEDGE_RESTS)} '.replace('  ', ' ')]), part)
 
     for category, evidence, text in messages:
@@ -367,12 +363,15 @@ def test_the_bound_is_a_real_check():
             ('games', 'i like chess', 'i like chess, my mom:\U0001BCA0P] would say')):
         assert ASIDED({'category': category, 'evidence': evidence}, hidden) is not None
         assert personal_note({'category': category, 'evidence': evidence}, hidden) is None
-    for category, evidence, kept in (('nickname', 'call me dan', 'call me dan ;P i know when the game starts'),
-                                     ('games', 'i like chess', 'i like chess ;P i think my opponent is kidding')):
-        assert ASIDED({'category': category, 'evidence': evidence}, kept) is None  # #211 item 4's over-refusal.
-        assert STACKED({'category': category, 'evidence': evidence}, kept) is not None
-        assert personal_note({'category': category, 'evidence': evidence}, kept) is not None
-        assert not leaks([(category, evidence, kept)], ASIDED)  # Allowed past ASIDED: HEDGED, and #205 keeps it.
+    for category, evidence, hidden in (  # Pre-existing in #211, found in Sol round 1 of #217 (B5-B7).
+            ('games', 'i like chess', 'i like chess, my mom :-\\ would say'),
+            ('games', 'i like chess', 'i like chess, my mom:/ ) would say'),
+            ('games', 'i like chess', 'i like chess, my mom:~/ would say'),
+            ('nickname', 'call me dan', 'if i win ;P i absolutely believe\nplease call me dan'),
+            ('games', 'i like chess', 'i like chess, my mom would' + chr(0xFFF9) + 'say'),
+            ('games', 'i like chess', 'i like chess, my mom would sa' + chr(0xFFFA) + 'y')):
+        assert ASIDED({'category': category, 'evidence': evidence}, hidden) is not None
+        assert personal_note({'category': category, 'evidence': evidence}, hidden) is None
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))
 
 

@@ -85,7 +85,28 @@ def initialize(db):
         DELETE FROM fri_member_summary_sources WHERE NOT EXISTS (SELECT 1 FROM fri_member_summaries s
             WHERE s.guild_id=fri_member_summary_sources.guild_id AND s.user_id=fri_member_summary_sources.user_id
             AND s.through=fri_member_summary_sources.through);
+        -- A build in flight's claim names the member's messages, where each was said and when it was saved, and a
+        -- rebuild's the earlier summary's too (HumanMint/fri#333). Any privacy change of theirs (forget me, memory
+        -- off or on, cleared chats, an edit) moves their revision, which spends the claim, as finish then keeps
+        -- nothing: it goes in that change's own transaction, by this controller or a rolled-back one, which runs these
+        -- too and doesn't know these names, so never replaces them (Sol round 2 of #210).
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_claim_revised AFTER INSERT ON chat_revisions BEGIN
+            DELETE FROM agent_state WHERE key='member_summary_claim' AND json_valid(value)
+                AND json_extract(value,'$.user_id')=NEW.user_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_claim_revision_moved AFTER UPDATE OF revision ON chat_revisions
+        BEGIN
+            DELETE FROM agent_state WHERE key='member_summary_claim' AND json_valid(value)
+                AND json_extract(value,'$.user_id')=NEW.user_id;
+        END;
     ''')
+    # One whose member's privacy changed without those (a controller from before them, a database restored without
+    # them), or one past its time, which no build finishes now: swept at start, whatever it names.
+    db.execute("DELETE FROM agent_state WHERE key=? AND json_valid(value) AND json_type(value)='object' AND ("
+               "json_extract(value,'$.revision') IS NOT coalesce((SELECT revision FROM chat_revisions r WHERE "
+               "r.user_id=json_extract(agent_state.value,'$.user_id')),0) OR EXISTS (SELECT 1 FROM personal_preferences p "
+               "WHERE p.user_id=json_extract(agent_state.value,'$.user_id') AND NOT p.enabled) OR "
+               "coalesce(json_extract(value,'$.at'),0)<=?)", (CLAIM, time.time()-CLAIM_TIMEOUT))
 
 
 def advance(db, guild, user, covered=False):
@@ -584,7 +605,11 @@ def claim(agent):
         if not config['enabled'] or not config['learning_enabled']:
             return None
         pending = agent.get(db, CLAIM)
-        if (pending and now-pending['at'] < CLAIM_TIMEOUT) or now < agent.get(db, NEXT, 0):
+        if pending and now-pending['at'] < CLAIM_TIMEOUT:
+            return None
+        if pending:  # Past its time, so spent: what it names goes now, whoever is due (Sol round 2 of #210).
+            agent.put(db, CLAIM, None)
+        if now < agent.get(db, NEXT, 0):
             return None
         prune(db, now)
         if db.execute('SELECT count(*) FROM fri_member_summary_calls').fetchone()[0] >= DAILY:
@@ -756,6 +781,8 @@ def purge(path):
             db.execute('DROP TABLE IF EXISTS fri_member_summary_calls')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_generations')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_sources')
+            for name in ('fri_member_summary_claim_revised', 'fri_member_summary_claim_revision_moved'):
+                db.execute(f'DROP TRIGGER IF EXISTS {name}')  # Nothing left for them to clear.
             db.execute('DELETE FROM agent_state WHERE key IN (?,?)', (CLAIM, NEXT))
             # Nothing mirrored outlives the summaries (see expiry_triggers): their refresh times go with them.
             db.execute('DELETE FROM agent_state WHERE substr(key,1,?)=?', (len(MIRROR), MIRROR))

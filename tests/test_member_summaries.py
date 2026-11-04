@@ -154,7 +154,10 @@ def test_a_stale_build_cannot_overwrite_a_newer_erase(store, tmp_path, change):
     offer = offered(agent)
     {'clear': lambda: store.clear_chats('20'), 'forget': lambda: store.personal_control('20', 'disable'),
      'other': lambda: store.personal_control('30', 'disable')}[change]()
-    with pytest.raises(Conflict, match='Nothing was kept'):
+    # The member's own change takes the claim at once, with what it named (Sol round 2 of #210): the finish is refused
+    # as expired. Another's is found as the finish checks who it drew on.
+    with pytest.raises(Conflict if change == 'other' else ValueError,
+                       match='Nothing was kept' if change == 'other' else 'expired'):
         finish(agent, offer['id'], 'they said hello', 'completed', ['public:1'], False)
     assert rows(store) == 0
     with store.connection() as db:
@@ -312,10 +315,10 @@ def test_claim_and_finish_over_the_api(controls_api):  # noqa: F811
     chat(store, 'and again')
     offer = client.post('/agent/member-summary/claim', headers=headers('fri')).json()
     assert client.post('/agent/member-summary/claim', headers=headers('runtime')).status_code == 401
-    store.clear_chats('20')
+    store.clear_chats('20')  # Their change takes the claim (Sol round 2 of #210): refused as expired, nothing kept.
     stale = client.post(f"/agent/member-summary/{offer['id']}/finish", headers=headers('fri'), json={
         'summary': 'they said hello', 'status': 'completed', 'conversations': ['public:1']})
-    assert stale.status_code == 409 and rows(store) == 0
+    assert stale.status_code == 400 and 'expired' in stale.json()['detail'] and rows(store) == 0
     assert client.post('/agent/member-summary/nope/finish', headers=headers('fri'), json={
         'status': 'completed'}).status_code == 400
 

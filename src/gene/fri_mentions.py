@@ -241,12 +241,16 @@ def register(app, store, settings, auth):
                 raise HTTPException(403, 'Mention privacy evidence is limited to 25 nearby authors')
             if row['turn_hash'] and users-set(tracked)-{body.user_id}:
                 raise HTTPException(403, 'Completed mention context cannot add new authors')
+            from .fri_memory_store import last_removal
             result = {}
             for user in users:
                 profile = store._personal_context(db, body.guild_id, body.conversation_id, user)
                 revision = _revision(db, user)
                 tracked[user] = revision
-                result[user] = {'enabled': profile['enabled'], 'revision': revision}
+                # And when they last turned memory off or removed a note: Fri leaves out a post of theirs from before
+                # it, as the live view does (HumanMint/fri#337).
+                result[user] = {'enabled': profile['enabled'], 'revision': revision,
+                                'removed_at': last_removal(db, body.guild_id, user)}
             db.execute('UPDATE mention_grants SET profiles=? WHERE token=?',
                        (json.dumps(tracked, sort_keys=True), body.mention_grant))
             return {'profiles': result}

@@ -694,6 +694,10 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess ;P i guess my mom says so'),
     ('games', 'i like chess', "i like chess ;P i guess i'm kidding"),
     ('games', 'i like chess', 'i like chess ;P i think jk'),
+    ('games', 'i like chess', 'i like chess, my mom ;P i know she would say'),
+    # ... and an aside with a clause of its own still sits inside a condition before it, or splits one in two.
+    ('nickname', 'call me dan', 'if i win ;P i know my opponent is good\nplease call me dan'),
+    ('nickname', 'call me comet', 'until further :D we all know notice\n\ncall me comet'),
     # gene #212 item 3: shorthand format controls show nothing too, inside a face or a keycap.
     ('games', 'i like chess', 'i like chess, my mom:\U0001BCA0P] would say'),
     ('games', 'i like chess', 'i like chess, my mom would sa1\U0000FE0F\U0001BCA1\U000020E3y'),

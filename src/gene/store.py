@@ -700,8 +700,8 @@ class Store:
             db.execute('DELETE FROM memories WHERE id=? AND guild_id=?', (memory_id, guild_id))
             self._audit(db, actor, 'forget', memory_id)
 
-    def erase_user(self, user_id):
-        self.personal_control(user_id, 'disable')
+    def erase_user(self, user_id, discord_at=None):
+        self.personal_control(user_id, 'disable', discord_at)
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self._erase_jobs(db, db.execute('SELECT id,proposal FROM jobs WHERE user_id=?', (user_id,)).fetchall(),
@@ -1345,7 +1345,9 @@ class Store:
                               "channel_id=? AND user_id=? AND (? OR provenance IS NULL OR provenance='[]') "
                               'ORDER BY at DESC LIMIT ?', (guild_id, scope, user_id, profiles, limit(scope)))]}
 
-    def personal_control(self, user_id, action):
+    def personal_control(self, user_id, action, discord_at=None):
+        """`discord_at`: when the Discord message or interaction that asked was sent, on Discord's clock, if known: an
+        erasure's cutoff for the member's words is that, not Gene's own stamp (HumanMint/fri#337)."""
         if action not in ('disable', 'enable'):
             raise ValueError('Invalid memory control')
         with self.connection() as db:
@@ -1363,9 +1365,10 @@ class Store:
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_note_removals WHERE user_id=?', (user_id,))
                 # Their removals went with the rest, so what's kept instead is when: no words, their ID and a time,
-                # a cutoff for everything they said before it once memory is on again (HumanMint/fri#321).
-                db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
-                           (user_id, time.time()))
+                # a cutoff for everything they said before it once memory is on again (HumanMint/fri#321), with when
+                # they asked on Discord's clock, if known (HumanMint/fri#337).
+                from .fri_memory_store import record_erasure
+                record_erasure(db, user_id, time.time(), discord_at)
                 # Their deletions first, while their fences still say which messages were theirs (gene #145).
                 db.execute('DELETE FROM chat_turn_deletions WHERE user_id=? OR EXISTS (SELECT 1 FROM chat_turn_withdrawals '
                            'w WHERE w.user_id=? AND w.guild_id=chat_turn_deletions.guild_id AND '

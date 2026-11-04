@@ -317,6 +317,23 @@ class AgentStore:
             self.put(db, 'next_learning', next_learning)
             return {**claim, 'used_today': budget['used'], 'daily_limit': c['history_daily_messages']}
 
+    def withdrawn(self, batch_id, messages):
+        """Of the messages a learning pass is about to send its model (each {'id', 'user_id'}), those its finish would
+        refuse as withdrawn: its author's own message taken back, one withdrawn by its ID alone since the claim, or one
+        deleted, within the week. So a withdrawal only Gene knows about never reaches the model either
+        (HumanMint/fri#335). Asked under the pass's claim, as its finish is, and refused where that would be."""
+        now = time.time()
+        guild = self.settings.guild_id
+        with self.store.connection() as db:
+            claim = self.get(db, 'learning_claim')
+            if (not claim or claim['id'] != batch_id or (at := claimed_at(claim)) is None
+                    or not 0 <= now-at < FINISH_SECONDS):
+                raise ValueError('Learning claim expired or already completed')
+            return sorted({message['id'] for message in messages
+                           if self.store.taken_back(db, guild, message['user_id'], [message['id']])
+                           or self.store.withdrawn_during(db, guild, [message['id']], at)
+                           or self.store.deleted_anywhere(db, guild, [message['id']])}, key=int)
+
     def finish(self, batch_id, records, result, scanned, before, done, counters, error='', oldest=None, newest=None, newest_id=None,
                scanned_ids=()):
         now = time.time()

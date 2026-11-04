@@ -72,6 +72,16 @@ class Checked(BaseModel):
     message_ids: list[str] = Field(max_length=25)
 
 
+class HeldMessage(BaseModel):
+    id: str = Field(pattern=r'^\d{1,25}$')
+    user_id: str = Field(pattern=r'^\d{1,25}$')
+
+
+class Held(BaseModel):
+    """The messages a learning pass is about to send its model, each with its author, as many as its finish takes."""
+    messages: list[HeldMessage] = Field(max_length=40)
+
+
 class Finish(BaseModel):
     records: list[LearningRecord] = Field(max_length=40)
     result: dict
@@ -166,6 +176,12 @@ def register(app, store, settings, auth, actor):
     @app.post('/agent/learning/{batch_id}/checked', dependencies=[auth('fri')])
     def checked(batch_id: str, body: Checked):
         return agent.exploration.checked(batch_id, body.message_ids)
+
+    @app.post('/agent/learning/{batch_id}/withdrawn', dependencies=[auth('fri')])
+    def withdrawn(batch_id: str, body: Held):
+        """Of the messages a learning pass is about to send, those its finish would refuse as withdrawn, so they're
+        left out of its model request too (HumanMint/fri#335)."""
+        return {'withdrawn': agent.withdrawn(batch_id, [message.model_dump() for message in body.messages])}
 
     @app.get('/agent/reports', dependencies=[auth('fri')])
     def reports():

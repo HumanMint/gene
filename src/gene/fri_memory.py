@@ -311,9 +311,11 @@ def readings_of(text, evidence):
     (gene #190), and twice more with symbols, text faces, characters that show nothing and in-word emoji read plainly
     (gene #198), and twice more as those, with what still hid a word in them read plainly first (gene #201), and four
     times more with what's stacked read plainly first, two of them with a face before an aside dropped (gene #207), and
-    four times more with #212's faces and controls read plainly first. In this order, each once: which one refuses first
-    decides how much is read, and a set's order, which changes with the text, made a longer message's time grow faster
-    than its length (#211's first CI run)."""
+    eight times more (gene #212): those four with a face before a hedge from a wider vocabulary dropped too, and four
+    with #212's faces and controls read plainly first. Every reading #211 had is still here, as it was, so each of
+    #212's only ever refuses more. In this order, each once: which one refuses first decides how much is read, and a
+    set's order, which changes with the text, made a longer message's time grow faster than its length (#211's first
+    CI run)."""
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
@@ -321,7 +323,8 @@ def readings_of(text, evidence):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
-            readings += [(said, note.strip()), (asides_joined(said), asides_joined(note).strip())]
+            readings += [(said, note.strip()), (asides_joined(said), asides_joined(note).strip()),
+                         (asides_joined(said, HEDGE), asides_joined(note, HEDGE).strip())]
     return list(dict.fromkeys(reading for reading in readings if reading != (text, evidence)))
 
 
@@ -503,42 +506,17 @@ KEYCAP = re.compile(r'[0-9#*]\U000020E3')
 WHOLE_KEYCAP = '\U0001F51F'  # A keycap of its own, which no word's letters take (see SPLIT).
 # A slash face after a word, never a link's "://" or a path's ":/x" (see ATTACHED).
 SLASHED = re.compile(r"(?<=\w)[:;=]-?/(?![/\w])")
-# The member's hedge after a kept face: "i guess", "i swear", "we all know", "i mean", and (gene #212) the other
-# ordinary ones ("i believe", "i reckon", "i'd say") past any run of modifiers ("i really honestly guess").
+# The member's aside after a kept face: "i guess", "i swear", "we all know", "i mean".
+OWN_ASIDE = re.compile(r"(?i)(?:i|we)\s+(?:(?:all|just|really|kinda|lowkey|honestly|also)\s+)?"
+                       r"(?:guess|swear|mean|know|bet|suppose|think|figure|admit|promise)\b")
+# And (gene #212) the other ordinary hedges ("i believe", "i reckon", "i'd say"), past any run of modifiers ("i really
+# honestly guess", "i absolutely believe"). A reading of its own, beside OWN_ASIDE's, which stays as it was.
 HEDGE_MODIFIERS = (r"all|just|really|kinda|sorta|lowkey|honestly|also|actually|literally|totally|truly|personally|"
-                   r"still|do|did|would")
-OWN_ASIDE = re.compile(rf"(?i)(?:i|we|i'd|we'd)\s+(?:(?:{HEDGE_MODIFIERS})\s+)*+"
-                       r"(?P<verb>guess|swear|mean|know|bet|suppose|think|figure|admit|promise|believe|reckon|assume|"
-                       r"imagine|hope|presume|gather|expect|suspect|say)\b")
+                   r"still|do|did|would|absolutely|strongly|certainly")
+HEDGE = re.compile(rf"(?i)(?:i|we|i'd|we'd)\s+(?:(?:{HEDGE_MODIFIERS})\s+)*+"
+                   r"(?:guess|swear|mean|know|bet|suppose|think|figure|admit|promise|believe|reckon|assume|imagine|"
+                   r"hope|presume|gather|expect|suspect|say)\b")
 KEPT_FACES = re.compile(rf"(?<= )(?:{FACE} )+")
-# Whether a hedge after a kept face is only an aside (gene #212 item 4). It isn't when what follows it is provably a
-# clause of its own: someone or something else with a finite verb ("my opponent is kidding", "it's the best game"), or
-# what the member knows ("i know when the game starts"). Then the face ends the claim, as main reads it, unless that
-# clause reports the claim ("my mom is saying so"), or the face sits in an open condition ("if i win ;P i know my
-# opponent is good"). Anything else after a hedge (nothing, the rest of an interrupted clause, a condition, the
-# member's own words) leaves it an aside. Each is looked at up to REST characters, its clause's end or the next face.
-SUBJECTS = frozenset("my his her their our your the a an it that this he she they you u there everyone everybody "
-                     "nobody someone somebody people".split())
-CONTRACTED = frozenset("it's its that's thats he's she's they're you're there's theres".split())
-FINITE = frozenset("is are was were isn't aren't wasn't weren't has have had hasn't haven't does do did doesn't don't "
-                   "didn't can can't could couldn't will won't would wouldn't should shouldn't might must".split())
-WH = frozenset({'when', 'where', 'what', 'who', 'why', 'how', 'whether', 'which'})
-OBJECT_HEDGES = frozenset({'know'})  # "i know when the game starts": what follows is what they know.
-CLAUSE_END = re.compile(r"[^\w\s']|\n")
-HEARSAID = re.compile(rf"(?i)\b(?:{HEARSAY})\b")
-REST = 160
-
-
-def about_the_claim(rest, verb):
-    """Whether a hedge (`verb` its verb), with the rest of its clause after it, is only an aside of the claim's: not
-    when the rest is provably a clause of its own (see above) that reports nothing back."""
-    low = rest.lower()
-    words = WORD.findall(low)
-    own = bool(words) and (words[0] in CONTRACTED or (verb in OBJECT_HEDGES and words[0] in WH and len(words) > 2) or
-                           (words[0] in SUBJECTS and any(word in FINITE for word in words[1:4])))
-    return not own or bool(HEARSAID.search(low)) or any(
-        not (after := WORD.findall(low, m.end())[:1]) or after[0] in ASIDE_WORDS or after[0] in BACKREF
-        for m in VERB.finditer(low))
 
 
 @functools.lru_cache(maxsize=32)
@@ -549,46 +527,38 @@ def composed(text, invisible):
     return SLASHED.sub(' ', prepared(KEYCAP.sub(WHOLE_KEYCAP, unseen)))
 
 
-@functools.lru_cache(maxsize=32)
-def asides_joined(text):
+@functools.lru_cache(maxsize=64)
+def asides_joined(text, aside=OWN_ASIDE):
     """A reading (see plainer) with each run of faces it kept dropped where the member's clause after it, past fillers,
-    is only an aside (see about_the_claim), and the aside's hedge too, as ASIDE_PHRASES blanks the member's others:
-    what's around them reads as one clause ("if i win lol \\nplease call me dan", "my mom would say"). A hedge that
-    opens a clause of its own keeps its face, where main's reading ends the claim (gene #212 item 4). The fillers are
-    crossed once for all the message's runs."""
+    is only an aside, and the aside too, as ASIDE_PHRASES blanks the member's others: what's around them reads as one
+    clause ("if i win lol \\nplease call me dan", "my mom would say"). The fillers are crossed once for all the
+    message's runs. `aside`: OWN_ASIDE, or HEDGE's wider vocabulary (gene #212), read as well, never instead."""
     ends, out, last = {}, [], 0
-    runs = list(KEPT_FACES.finditer(text))
-    clause_ends = [m.end() for m in CLAUSE_END.finditer(text)]
-    for n, m in enumerate(runs):
+    for m in KEPT_FACES.finditer(text):
         if m.start() < last:
             continue
         at = past_fillers(text, m.end(), KEPT_FILLER, ends)
-        if not (aside := OWN_ASIDE.match(text, at)):
-            continue
-        stop = min(runs[n + 1].start() if n + 1 < len(runs) else len(text), aside.end() + REST)
-        end = CLAUSE_END.search(text, aside.end(), stop)
-        k = bisect.bisect_right(clause_ends, m.start()) - 1
-        begin = max(clause_ends[k] if k >= 0 else 0, m.start() - REST)
-        if (CONDITION.search(text, begin, m.start()) or
-                about_the_claim(text[aside.end():end.start() if end else stop], aside['verb'].lower())):
+        if found := aside.match(text, at):
             out += [text[last:m.start()], text[m.end():at]]
-            last = aside.end()
+            last = found.end()
     return ''.join(out) + text[last:]
 
 
 # What #211's readings still let hide a word (gene #212): a slash face with a nose, a trailing bracket or a backslash
-# ("mom:^/ would say", "mom:/) would say", "mom:\ would say"), never a link's "://" or a path's ":/x" or ":\x"; and the
-# shorthand format controls, which show nothing either ("mom:<U+1BCA0>P] would say"). The message is read twice more,
-# with these read plainly first: #211's readings stay as they are.
-SHORTHAND = re.compile(r'[\U0001BCA0-\U0001BCA3]')
-SLASH_FACE = re.compile(r"(?<=\w)[:;=][-'^]?[/\\][)(\]\[|*]*(?![/\\\w])")
+# ("mom:^/ would say", "mom:/) would say", "mom:\ would say"), a "~" nose or a space before its brackets ("mom:~/ would
+# say", "mom:/ ) would say"), attached to a word or standing alone ("mom :-\ would say"), never a link's "://" or a
+# path's ":/x" or ":\x"; and the format controls that show nothing either, shorthand's and interlinear annotation's
+# ("mom:<U+1BCA0>P] would say", "would<U+FFF9>say"). The message is read twice more, with these read plainly first:
+# #211's readings stay as they are.
+CONTROLS = re.compile(r'[\U0001BCA0-\U0001BCA3\U0000FFF9-\U0000FFFB]')
+SLASH_FACE = re.compile(r"(?<![:;=])[:;=][-'^~]?[/\\](?:[ \t]*+[)(\]\[|*]+)?(?![/\\\w])")
 
 
 @functools.lru_cache(maxsize=32)
 def restacked(text, invisible):
-    """composed's reading (see there), with the shorthand format controls as `invisible` too, and each slash face
-    attached to a word a space, both first."""
-    unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', SHORTHAND.sub(invisible, text)))
+    """composed's reading (see there), with those format controls as `invisible` too, and each slash face a space,
+    both first."""
+    unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text)))
     return composed(SLASH_FACE.sub(' ', unseen), invisible)
 
 

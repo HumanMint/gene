@@ -624,7 +624,7 @@ def claim(agent):
         return None
 
 
-def finish(agent, claim_id, summary, status, conversations, previous):
+def finish(agent, claim_id, summary, status, conversations, previous, messages=None):
     """Keep a finished build, only if no one it draws on, the member included, changed anything since the claim.
 
     conversations: those Fri still found everyone could read and sent to the model; previous: whether it
@@ -662,10 +662,13 @@ def finish(agent, claim_id, summary, status, conversations, previous):
                    (agent.settings.guild_id, record['user_id'], text, record['revision'],
                     json.dumps([{'user_id': u, 'revision': r} for u, r in sorted(provenance)]), json.dumps(origins),
                     now, record['through']))
-        # What it drew on: the messages of the conversations Fri sent, and the earlier summary's where it was sent too.
-        # Unknown for either (a claim from before this, or an earlier summary whose own aren't known): none kept, so
-        # the next claim says they aren't known (HumanMint/fri#333).
+        # What it drew on: the messages Fri says it sent of those the claim named (all those of the conversations it
+        # sent, from a Fri that doesn't say), and the earlier summary's where it was sent too. Unknown for either (a
+        # claim from before this, or an earlier summary whose own aren't known): none kept, so the next claim says
+        # they aren't known (HumanMint/fri#333).
         drawn = record.get('messages')
+        if drawn is not None and messages is not None:
+            drawn = [m for m in drawn if m['id'] in set(messages)]
         if drawn is not None and earlier is not None:
             drawn = None if earlier.get('messages') is None else [*earlier['messages'], *drawn]
         if drawn is not None and len(drawn) > DRAWN_MOST:
@@ -750,6 +753,8 @@ class Finish(BaseModel):
     status: str = Field(pattern=r'^(completed|failed|incomplete|interrupted|invalid_output|skipped)$')
     conversations: list[str] = Field(default_factory=list, max_length=EXCHANGES)
     previous: bool = False
+    # The messages Fri sent, of those the claim named (HumanMint/fri#333); None from a Fri that doesn't say.
+    messages: list[str] | None = Field(default=None, max_length=EXCHANGES*10+DRAWN_MOST)
 
 
 def register(app, agent, auth):
@@ -761,7 +766,8 @@ def register(app, agent, auth):
     def finish_summary(claim_id: str, body: Finish):
         if not re.fullmatch(r'[a-f0-9]{32}', claim_id):
             raise ValueError('That summary build expired')
-        return finish(agent, claim_id, body.summary, body.status, body.conversations, body.previous)
+        return finish(agent, claim_id, body.summary, body.status, body.conversations, body.previous,
+                      body.messages)
 
 
 def main(argv=None):

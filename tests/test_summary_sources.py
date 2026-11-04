@@ -103,5 +103,21 @@ def test_past_what_fri_checks_in_one_build_what_a_summary_drew_on_isnt_known(sto
     assert offered(agent)['previous']['messages'] is None
 
 
+def test_only_the_messages_fri_sent_are_named_as_drawn_on(store, tmp_path):
+    """Fri left an exchange out (one of its messages gone in Discord): the summary names only what Fri sent."""
+    agent = background(store, tmp_path)
+    chat(store, 'raid tonight?')
+    chat(store, 'what build for the raid')
+    chat(store, 'and the boss')
+    first = sources(store)
+    offer = offered(agent)
+    sent = [first[0]['id'], first[2]['id']]
+    assert finish(agent, offer['id'], 'they raid', 'completed', ['public:1'], False, sent) == {'kept': True}
+    chat(store, 'the raid went well', ago=5400)
+    chat(store, 'next raid friday', ago=5400)
+    tomorrow(store)
+    assert [m['id'] for m in offered(agent)['previous']['messages']] == sent
+
+
 def test_the_controller_says_it_names_them():
     assert 'summary-sources' in contract()['capabilities']

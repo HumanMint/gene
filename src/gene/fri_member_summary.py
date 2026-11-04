@@ -30,6 +30,7 @@ DAY = 86400
 SETTLE = 3600  # Built once the member's latest exchange is an hour old, so a day's one call covers the chat.
 NEW = 2  # Exchanges since the last build before another is worth a call.
 EXCHANGES = 24  # The newest a build reads.
+DRAWN_MOST = 100  # The most messages a summary names as drawn on (see finish); past that, not known.
 DAILY = 50  # Builds a day across the server, however many members are active.
 CLAIM_TIMEOUT = 600
 SKEW = 300  # Seconds a Discord message's time may run ahead of the controller's clock.
@@ -63,7 +64,49 @@ def initialize(db):
         CREATE TABLE IF NOT EXISTS fri_member_summary_generations (
             guild_id TEXT NOT NULL, user_id TEXT NOT NULL, generation INTEGER NOT NULL,
             PRIMARY KEY(guild_id, user_id));
+        -- The Discord messages a member's summary drew on, each with where it was said and when its exchange was
+        -- saved, for the summary whose `through` it names (HumanMint/fri#333). Its own table, so an older controller
+        -- that writes the summary row as it always has still can; one it wrote has none that match, so they're unknown.
+        CREATE TABLE IF NOT EXISTS fri_member_summary_sources (
+            guild_id TEXT NOT NULL, user_id TEXT NOT NULL, through REAL NOT NULL, messages TEXT NOT NULL,
+            PRIMARY KEY(guild_id, user_id));
+        -- It goes with its summary however the summary goes: forget me, clearing chats, erasure, expiry, or a
+        -- controller rolled back to one that doesn't know this table deleting or rewriting the summary as it always
+        -- did. Triggers live in the database, so they fire for that one too (Sol round 1 of #210).
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_sources_deleted AFTER DELETE ON fri_member_summaries BEGIN
+            DELETE FROM fri_member_summary_sources WHERE guild_id=OLD.guild_id AND user_id=OLD.user_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_sources_replaced AFTER UPDATE ON fri_member_summaries
+        WHEN NEW.through IS NOT OLD.through OR NEW.body IS NOT OLD.body BEGIN
+            DELETE FROM fri_member_summary_sources WHERE guild_id=OLD.guild_id AND user_id=OLD.user_id
+                AND through IS NOT NEW.through;
+        END;
+        -- One left from before these, or kept by a database restored without them: swept at start.
+        DELETE FROM fri_member_summary_sources WHERE NOT EXISTS (SELECT 1 FROM fri_member_summaries s
+            WHERE s.guild_id=fri_member_summary_sources.guild_id AND s.user_id=fri_member_summary_sources.user_id
+            AND s.through=fri_member_summary_sources.through);
+        -- A build in flight's claim names the member's messages, where each was said and when it was saved, and a
+        -- rebuild's the earlier summary's too (HumanMint/fri#333). Any privacy change of theirs (forget me, memory
+        -- off or on, cleared chats, an edit) moves their revision, which spends the claim, as finish then keeps
+        -- nothing: it goes in that change's own transaction, by this controller or a rolled-back one, which runs these
+        -- too and doesn't know these names, so never replaces them (Sol round 2 of #210).
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_claim_revised AFTER INSERT ON chat_revisions BEGIN
+            DELETE FROM agent_state WHERE key='member_summary_claim' AND json_valid(value)
+                AND json_extract(value,'$.user_id')=NEW.user_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_claim_revision_moved AFTER UPDATE OF revision ON chat_revisions
+        BEGIN
+            DELETE FROM agent_state WHERE key='member_summary_claim' AND json_valid(value)
+                AND json_extract(value,'$.user_id')=NEW.user_id;
+        END;
     ''')
+    # One whose member's privacy changed without those (a controller from before them, a database restored without
+    # them), or one past its time, which no build finishes now: swept at start, whatever it names.
+    db.execute("DELETE FROM agent_state WHERE key=? AND json_valid(value) AND json_type(value)='object' AND ("
+               "json_extract(value,'$.revision') IS NOT coalesce((SELECT revision FROM chat_revisions r WHERE "
+               "r.user_id=json_extract(agent_state.value,'$.user_id')),0) OR EXISTS (SELECT 1 FROM personal_preferences p "
+               "WHERE p.user_id=json_extract(agent_state.value,'$.user_id') AND NOT p.enabled) OR "
+               "coalesce(json_extract(value,'$.at'),0)<=?)", (CLAIM, time.time()-CLAIM_TIMEOUT))
 
 
 def advance(db, guild, user, covered=False):
@@ -438,7 +481,23 @@ def keep(db, guild, user):
 
 def drop(db, guild, user):
     db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+    db.execute('DELETE FROM fri_member_summary_sources WHERE guild_id=? AND user_id=?', (guild, user))
     advance(db, guild, user)
+
+
+def drew_on(db, guild, user, through):
+    """The messages the member's summary built through `through` drew on (see fri_member_summary_sources), or None
+    where that isn't known."""
+    row = db.execute('SELECT through,messages FROM fri_member_summary_sources WHERE guild_id=? AND user_id=?',
+                     (guild, user)).fetchone()
+    return json.loads(row['messages']) if row and row['through'] == through else None
+
+
+def messages_of(turn):
+    """The Discord messages an exchange answered: its own and its burst's, by ID."""
+    source = json.loads(turn['source']) if turn.get('source') else {}
+    ids = [source.get('id'), *((row.get('source') or {}).get('id') for row in json.loads(turn.get('burst') or '[]'))]
+    return [str(i) for i in ids if i and str(i).isdigit()]
 
 
 def prune(db, now=None):
@@ -546,7 +605,11 @@ def claim(agent):
         if not config['enabled'] or not config['learning_enabled']:
             return None
         pending = agent.get(db, CLAIM)
-        if (pending and now-pending['at'] < CLAIM_TIMEOUT) or now < agent.get(db, NEXT, 0):
+        if pending and now-pending['at'] < CLAIM_TIMEOUT:
+            return None
+        if pending:  # Past its time, so spent: what it names goes now, whoever is due (Sol round 2 of #210).
+            agent.put(db, CLAIM, None)
+        if now < agent.get(db, NEXT, 0):
             return None
         prune(db, now)
         if db.execute('SELECT count(*) FROM fri_member_summary_calls').fetchone()[0] >= DAILY:
@@ -566,7 +629,7 @@ def claim(agent):
             previous = read(db, guild, user)
             # Only words said since the member's latest privacy change: one invalidates what came before.
             turns = [dict(row) for row in db.execute(
-                f'SELECT id,channel_id,input,provenance,at FROM chat_turns WHERE {READABLE} AND at>? '
+                f'SELECT id,channel_id,input,provenance,at,source,burst FROM chat_turns WHERE {READABLE} AND at>? '
                 'AND speaker_revision=? ORDER BY at DESC, id DESC LIMIT ?',
                 (guild, user, previous['through'] if previous else 0, revision, EXCHANGES))][::-1]
             turns = agent.store._current_turns(db, turns)
@@ -579,20 +642,29 @@ def claim(agent):
             shown = view(previous)
             db.execute('INSERT INTO fri_member_summary_calls VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
                        (user, now))  # Every call counts, whatever happens to it.
+            # Each exchange's messages, and those the earlier summary drew on (None if not known), named in the claim
+            # for Fri to check against Discord before any of it is sent or carried on (HumanMint/fri#333).
+            messages = [{'id': message, 'conversation_id': turn['channel_id'], 'saved_at': turn['at']}
+                        for turn in turns for message in messages_of(turn)]
+            earlier = drew_on(db, guild, user, previous['through']) if shown else None
             record = {'id': uuid.uuid4().hex, 'at': now, 'user_id': user, 'revision': revision,
                       'through': max(turn['at'] for turn in turns),
                       'sources': {c: sorted(map(list, s)) for c, s in sources.items()},
-                      'previous': {k: shown[k] for k in ('provenance', 'origins')} if shown else None}
+                      'previous': {k: shown[k] for k in ('provenance', 'origins')} if shown else None,
+                      'messages': messages}
+            if record['previous'] is not None:
+                record['previous']['messages'] = earlier
             agent.put(db, CLAIM, record)
             return {'id': record['id'], 'model': config['summary_model'], 'effort': config['summary_effort'],
-                    'previous': {'text': shown['text'], 'origins': shown['origins']} if shown else None,
-                    'exchanges': [{'conversation_id': turn['channel_id'], 'message': neutral(turn['input'])}
-                                  for turn in turns]}
+                    'previous': {'text': shown['text'], 'origins': shown['origins'], 'messages': earlier}
+                    if shown else None,
+                    'exchanges': [{'conversation_id': turn['channel_id'], 'message': neutral(turn['input']),
+                                   'messages': messages_of(turn), 'saved_at': turn['at']} for turn in turns]}
         agent.put(db, NEXT, now+IDLE)
         return None
 
 
-def finish(agent, claim_id, summary, status, conversations, previous):
+def finish(agent, claim_id, summary, status, conversations, previous, messages=None):
     """Keep a finished build, only if no one it draws on, the member included, changed anything since the claim.
 
     conversations: those Fri still found everyone could read and sent to the model; previous: whether it
@@ -630,6 +702,25 @@ def finish(agent, claim_id, summary, status, conversations, previous):
                    (agent.settings.guild_id, record['user_id'], text, record['revision'],
                     json.dumps([{'user_id': u, 'revision': r} for u, r in sorted(provenance)]), json.dumps(origins),
                     now, record['through']))
+        # What it drew on: the messages Fri says it sent of those the claim named (all those of the conversations it
+        # sent, from a Fri that doesn't say), and the earlier summary's where it was sent too. Unknown for either (a
+        # claim from before this, or an earlier summary whose own aren't known): none kept, so the next claim says
+        # they aren't known (HumanMint/fri#333).
+        drawn = record.get('messages')
+        if drawn is not None and messages is not None:
+            drawn = [m for m in drawn if m['id'] in set(messages)]
+        if drawn is not None and earlier is not None:
+            drawn = None if earlier.get('messages') is None else [*earlier['messages'], *drawn]
+        if drawn is not None and len(drawn) > DRAWN_MOST:
+            drawn = None  # Past what Fri checks in one build: not carried on, so a chain of them starts again.
+        if drawn is None:
+            db.execute('DELETE FROM fri_member_summary_sources WHERE guild_id=? AND user_id=?',
+                       (agent.settings.guild_id, record['user_id']))
+        else:
+            kept_messages = [m for m in drawn if m['conversation_id'] in origins]
+            db.execute('INSERT INTO fri_member_summary_sources VALUES (?,?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE '
+                       'SET through=excluded.through,messages=excluded.messages',
+                       (agent.settings.guild_id, record['user_id'], record['through'], json.dumps(kept_messages)))
         return {'kept': bool(text)}
 
 
@@ -689,6 +780,9 @@ def purge(path):
             db.execute('DROP TABLE IF EXISTS fri_member_summaries')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_calls')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_generations')
+            db.execute('DROP TABLE IF EXISTS fri_member_summary_sources')
+            for name in ('fri_member_summary_claim_revised', 'fri_member_summary_claim_revision_moved'):
+                db.execute(f'DROP TRIGGER IF EXISTS {name}')  # Nothing left for them to clear.
             db.execute('DELETE FROM agent_state WHERE key IN (?,?)', (CLAIM, NEXT))
             # Nothing mirrored outlives the summaries (see expiry_triggers): their refresh times go with them.
             db.execute('DELETE FROM agent_state WHERE substr(key,1,?)=?', (len(MIRROR), MIRROR))
@@ -701,6 +795,8 @@ class Finish(BaseModel):
     status: str = Field(pattern=r'^(completed|failed|incomplete|interrupted|invalid_output|skipped)$')
     conversations: list[str] = Field(default_factory=list, max_length=EXCHANGES)
     previous: bool = False
+    # The messages Fri sent, of those the claim named (HumanMint/fri#333); None from a Fri that doesn't say.
+    messages: list[str] | None = Field(default=None, max_length=EXCHANGES*10+DRAWN_MOST)
 
 
 def register(app, agent, auth):
@@ -712,7 +808,8 @@ def register(app, agent, auth):
     def finish_summary(claim_id: str, body: Finish):
         if not re.fullmatch(r'[a-f0-9]{32}', claim_id):
             raise ValueError('That summary build expired')
-        return finish(agent, claim_id, body.summary, body.status, body.conversations, body.previous)
+        return finish(agent, claim_id, body.summary, body.status, body.conversations, body.previous,
+                      body.messages)
 
 
 def main(argv=None):

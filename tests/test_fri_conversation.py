@@ -851,6 +851,7 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess ;P i guess my friends are better'),
     ('games', 'i like chess', "i like chess ;P i believe it's the best game"),
     ('games', 'i like chess', 'i like chess ;P i really honestly guess its fun'),
+    ('games', 'i like chess', "i like chess ;P i think he's kidding"),
     # gene #212 item 1: a backslash that's a path, a slash that's a link.
     ('games', 'i like chess', 'i like chess, saves are in c:\\games\\chess'),
     ('games', 'i like chess', 'i like chess, see https://example.com/x:\\y lol'),

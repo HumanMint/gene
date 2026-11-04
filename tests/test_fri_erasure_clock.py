@@ -167,3 +167,48 @@ def test_an_older_controllers_erasure_after_one_with_a_discord_time_is_on_gene_s
     assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=0.001)
     control(gene, 'enable', now + 0.2, 0)
     assert saved(gene, now - 10) == {'ok': True, 'first_memory': False, 'kept': False}
+
+
+@pytest.mark.parametrize('offset', [-2, 0, 2])
+@pytest.mark.parametrize('delayed', [30, 600])
+def test_a_delayed_erasure_never_moves_the_cutoff_earlier(gene, offset, delayed):
+    """Sol round 1 of #213, B1: an erasure the member asked for at T-10 is carried out; then one they'd asked for
+    earlier, dated T-30 (or T-600, after an outage), arrives late. The cutoff moved back to that earlier time (for
+    T-600, the minute before Gene's stamp), so their message from T-10.5, before the first erasure, was kept again. A
+    cutoff never moves earlier: it's the latest of every erasure's, whatever order they arrive in."""
+    now = REAL()
+    control(gene, 'disable', now - 10, offset)
+    control(gene, 'disable', now - delayed, offset)
+    control(gene, 'enable', now + 0.2, offset)
+    asked = discord.utils.snowflake_time(int(source(now - 10)['id'])).timestamp()
+    assert profile(gene)['erased_at_discord'] == pytest.approx(asked, abs=0.002)
+    assert saved(gene, now - 10.5, revision=3) == {'ok': True, 'first_memory': False, 'kept': False}
+
+
+def test_an_erasure_with_no_discord_time_never_moves_the_cutoff_earlier_either(gene):
+    """With Gene's clock behind, an erasure dated by the member's message has a cutoff after Gene's own stamp. One
+    after it without a Discord time (Red's data deletion) keeps that later cutoff, never Gene's earlier stamp."""
+    now = REAL()
+    control(gene, 'disable', now, -5)
+    with gene_clock(-5):
+        assert gene.post('/privacy/erase', headers=headers('fri'), json={'guild_id': '123', 'user_id': '20'}).status_code == 200
+    control(gene, 'enable', now + 0.2, -5)
+    asked = discord.utils.snowflake_time(int(source(now)['id'])).timestamp()
+    assert profile(gene)['erased_at_discord'] == pytest.approx(asked, abs=0.002)
+    assert saved(gene, now - 0.5, revision=3) == {'ok': True, 'first_memory': False, 'kept': False}
+
+
+@pytest.mark.parametrize('route', ['control', 'erase'])
+def test_a_message_gene_knows_is_someone_elses_never_dates_an_erasure(gene, route):
+    """Sol round 1 of #213, S1: a control naming a message Gene has saved as another member's is carried out, on Gene's
+    own stamp, never that message's time."""
+    now = REAL()
+    theirs = source(now - 30, user='30')
+    gene.app.state.store.save_chat('123', 'public:456', '30', 0, 'hey fri', 'hey', 'model', 'high', source=theirs)
+    if route == 'control':
+        control(gene, 'disable', now, 0, source={**theirs, 'user_id': '20'})
+    else:
+        assert gene.post('/privacy/erase', headers=headers('runtime'),
+                         json={'guild_id': '123', 'user_id': '20', 'source_id': theirs['id']}).status_code == 200
+    assert not profile(gene)['enabled']
+    assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=1)

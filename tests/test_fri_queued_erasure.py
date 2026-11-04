@@ -76,3 +76,23 @@ def test_a_fresh_message_and_a_source_less_save_after_it_are_kept(store):
     assert store.save_chat('123', 'public:456', '20', 2, 'and lofi', 'noted', 'model', 'high').get('kept') is not False
     turns, notes = kept(store)
     assert turns == ['i love jazz', 'and lofi'] and notes == ['i love jazz']
+
+
+def test_a_queued_request_from_before_the_erasure_leaves_no_question_pending(store):
+    """fri #337: after memory went off and on again, a queued music request from before it was saved with Fri's
+    question. It kept no exchange, but the request and the question stayed pending, and the member's next turn sent
+    them to the model. Nothing of it is pending now; a request sent after the erasure still leaves its question."""
+    asked = {'goal': 'play', 'topic': '', 'question': 'which song?'}
+
+    def ask(source):
+        return store.save_chat('123', 'public:456', '20', 2, 'fri play music', 'which song?', 'model', 'high',
+                               source=source, provenance=[], clarification=asked)
+
+    queued = source(age=30)
+    store.personal_control('20', 'disable')
+    store.personal_control('20', 'enable')
+    assert ask(queued)['kept'] is False
+    assert store.chat_context('123', 'public:456', '20')['pending'] is None
+    time.sleep(0.01)  # Snowflakes count milliseconds.
+    ask(source())
+    assert store.chat_context('123', 'public:456', '20')['pending']['question'] == 'which song?'

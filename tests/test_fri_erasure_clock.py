@@ -225,3 +225,96 @@ def test_an_older_controllers_later_erasure_never_moves_the_cutoff_earlier(gene)
                    ('20', now - 4))
     asked = discord.utils.snowflake_time(int(source(now)['id'])).timestamp()
     assert profile(gene)['erased_at_discord'] == pytest.approx(asked, abs=0.002)
+
+
+def remove_a_note(gene, offset, at=None, user='20'):
+    """The member removes a saved note through My memory at `at` on Discord's clock (now if None), with Gene's clock
+    `offset` seconds off Discord's while it carries it out then."""
+    from gene.fri_memory_store import edit, entries, save
+    store, at = gene.app.state.store, REAL() if at is None else at
+    with store.connection() as db:
+        save(db, '123', 'server', user, ('games', 'I like Minecraft'), REAL(), provenance=[])
+    note = entries(store, '123', 'private:900', user)['entries'][0]
+    revision = store.chat_context('123', 'private:900', user)['revision']
+    asked = {'kind': 'discord_interaction', 'id': source(at, user)['id'], 'user_id': user,
+             'display_name': 'friend', 'channel_id': '900', 'guild_id': None}
+    with gene_clock(offset + at - REAL()):
+        edit(store, '123', 'private:900', user, note['id'], revision, asked, 'remove')
+
+
+@pytest.mark.parametrize('offset', [-2, 0, 2])
+@pytest.mark.parametrize('route', ['control', 'erase'])
+@pytest.mark.parametrize('delayed', [30, 600])
+def test_a_delayed_erasure_never_drops_a_newer_note_removals_cutoff(gene, offset, route, delayed):
+    """Sol round 2 of #213, B2: the member removed a note at T-10, so nothing they said before then is kept again.
+    At T, an older erasure of theirs, asked for at T-30 (or T-600), was carried out: it deleted the removal's record
+    and kept only its own earlier cutoff, so once memory was on again their message from T-20 was kept, with its
+    preference. An erasure keeps every cutoff in force: the latest of its own, an earlier erasure's and the member's
+    removals."""
+    now = REAL()
+    remove_a_note(gene, offset, at=now - 10)
+    removal = now - 10 + offset
+    if route == 'control':
+        control(gene, 'disable', now - delayed, offset)
+    else:
+        with gene_clock(offset):
+            assert gene.post('/privacy/erase', headers=headers('runtime'),
+                             json={'guild_id': '123', 'user_id': '20',
+                                   'source_id': source(now - delayed)['id']}).status_code == 200
+    control(gene, 'enable', now + 0.2, offset)
+    answer = profile(gene)
+    assert answer['erased_at_discord'] >= removal - 0.01 and answer['removed_at_discord'] >= removal - 0.01
+    assert saved(gene, now - 20, revision=answer['revision']) == {'ok': True, 'first_memory': False, 'kept': False}
+
+
+def cutoffs(gene, user='20'):
+    from gene.fri_memory_store import learned_cutoff
+    answer = profile(gene, user)
+    with gene.app.state.store.connection() as db:
+        learned = learned_cutoff(db, '123', 'public:456', user) or 0
+    return {key: answer[key] for key in ('erased_at', 'removed_at', 'erased_at_discord', 'removed_at_discord')} | {
+        'learned': learned}
+
+
+@pytest.mark.parametrize('seed', range(12))
+def test_no_sequence_of_erasures_removals_and_reenables_lowers_a_cutoff(tmp_path, seed):
+    """Sol round 2 of #213: whatever order erasures (by either route, dated by a Discord time or not, delayed or
+    not), note removals and re-enables come in, with Gene's clock anywhere within five seconds of Discord's, no
+    cutoff a reader uses ever goes back: erased_at and removed_at, both on Discord's clock, and learning's."""
+    import random
+    rng = random.Random(seed)
+    settings = Settings(tmp_path/'invariant.db', '123', '10', 'runtime-'+'x'*32, 'worker-'+'x'*32, 'deploy-'+'x'*32,
+                        workshop_channel_id='456', fri_token='fri-'+'x'*32, agent_channels='1,456',
+                        agent_history_channels='1')
+    gene = TestClient(create_app(settings))
+    last = cutoffs(gene)
+    for _ in range(10):
+        offset, op = rng.uniform(-5, 5), rng.choice(['control', 'erase', 'erase plain', 'remove', 'enable'])
+        now = REAL()
+        if op == 'control':
+            control(gene, 'disable', now - rng.choice([0, 1, 10, 30, 90, 600]), offset)
+        elif op.startswith('erase'):
+            body = {'guild_id': '123', 'user_id': '20'}
+            if op == 'erase':
+                body['source_id'] = source(now - rng.choice([0, 10, 600]))['id']
+            with gene_clock(offset):
+                assert gene.post('/privacy/erase', headers=headers('runtime'), json=body).status_code == 200
+        elif op == 'remove':
+            if profile(gene)['enabled']:
+                remove_a_note(gene, offset)
+        else:
+            control(gene, 'enable', now, offset)
+        current = cutoffs(gene)
+        assert all(current[key] >= last[key] for key in current), (op, offset, last, current)
+        last = current
+
+
+def test_a_burst_message_gene_knows_is_someone_elses_never_dates_an_erasure(gene):
+    """Sol round 2 of #213, S1: a burst's earlier message, saved with another member's turn, is theirs too."""
+    now = REAL()
+    first, last = source(now - 30, user='30'), source(now - 29, user='30')
+    gene.app.state.store.save_chat('123', 'public:456', '30', 0, 'hey fri', 'hey', 'model', 'high', source=last,
+                                   burst=[{'source': first, 'text': 'so'}, {'source': last, 'text': 'hey fri'}])
+    control(gene, 'disable', now, 0, source={**first, 'user_id': '20'})
+    assert not profile(gene)['enabled']
+    assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=1)

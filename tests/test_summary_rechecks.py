@@ -290,6 +290,9 @@ def test_b1_the_next_build_carries_the_members_words_on(store, tmp_path):
     agent = background(store, tmp_path)
     built(store, agent)
     replaced(store)
+    with store.connection() as db:  # Edited two hours ago, so what they said since has settled.
+        db.execute('UPDATE fri_member_summaries SET through=through-7200, refreshed=refreshed-7200')
+        db.execute('UPDATE fri_member_summary_sources SET through=through-7200')
     chat(store, 'the raid went well', ago=5400)
     chat(store, 'next raid friday', ago=5400)
     tomorrow(store)

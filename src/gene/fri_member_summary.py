@@ -514,6 +514,14 @@ def drew_on(db, guild, user, through):
     return json.loads(row['messages']) if row and row['through'] == through else None
 
 
+def drawn(db, guild, user, summary):
+    """What a summary row drew on (see drew_on), or None if that isn't known. One that names no conversation it came
+    from is the member's own words, from Edit summary in My memory (see edit), an older controller's included, as a
+    build always names at least one: it drew on no message (Sol round 1 of #214)."""
+    found = drew_on(db, guild, user, summary['through'])
+    return [] if found is None and not json.loads(summary['origins']) else found
+
+
 def messages_of(turn):
     """The Discord messages an exchange answered: its own and its burst's, by ID."""
     source = json.loads(turn['source']) if turn.get('source') else {}
@@ -679,7 +687,7 @@ def claim(agent):
             # for Fri to check against Discord before any of it is sent or carried on (HumanMint/fri#333).
             messages = [{'id': message, 'conversation_id': turn['channel_id'], 'saved_at': turn['at']}
                         for turn in turns for message in messages_of(turn)]
-            earlier = drew_on(db, guild, user, previous['through']) if shown else None
+            earlier = drawn(db, guild, user, previous) if shown else None
             record = {'id': uuid.uuid4().hex, 'at': now, 'user_id': user, 'revision': revision,
                       'through': max(turn['at'] for turn in turns),
                       'sources': {c: sorted(map(list, s)) for c, s in sources.items()},
@@ -806,9 +814,14 @@ def recheck(agent, fresh=False):
             row = kept(db, guild, user)
             if row is None:
                 continue  # Lapsed, and gone.
-            messages = drew_on(db, guild, user, row['through'])
+            messages = drawn(db, guild, user, row)
             if messages is None or taken_back(db, guild, messages):
                 drop(db, guild, user)
+                continue
+            if not messages:  # The member's own words: nothing to read again, so checked now, and shown.
+                db.execute('INSERT INTO fri_member_summary_rechecks(guild_id,user_id,through,checked,held) VALUES '
+                           "(?,?,?,?,0) ON CONFLICT(guild_id, user_id) DO UPDATE SET through=excluded.through,"
+                           "checked=excluded.checked,held=0,claim='',claimed=0", (guild, user, row['through'], now))
                 continue
             if offered and reads+len(messages) > READS:
                 break
@@ -826,7 +839,9 @@ def rechecked(agent, recheck_id, status):
     isn't due again for RECHECK. unchecked: Discord couldn't say (a message unreadable now, a request failing, or a
     withdrawal of one still waiting in Fri's queue): held back until a later recheck says ok. changed: one is gone, or
     edited since its exchange was saved, and Fri has withdrawn it as it does: the summary goes now, as a withdrawal of
-    it would take it. A recheck of a summary replaced since is refused as expired: the new one stands."""
+    it would take it. A recheck of a summary replaced since is refused as expired: the new one stands. An ok rests on
+    reads made since the claim, so one of its messages the controller has since recorded as taken back takes the
+    summary all the same (Sol round 1 of #214)."""
     now = time.time()
     with agent.store.connection() as db:
         db.execute('BEGIN IMMEDIATE')
@@ -835,6 +850,11 @@ def rechecked(agent, recheck_id, status):
                          (guild, recheck_id)).fetchone()
         if row is None:
             raise ValueError('That summary recheck expired')
+        if status == 'ok':
+            summary = kept(db, guild, row['user_id'])
+            messages = drawn(db, guild, row['user_id'], summary) if summary else None
+            if messages is None or taken_back(db, guild, messages):
+                status = 'changed'
         if status == 'changed':
             drop(db, guild, row['user_id'])
         else:
@@ -880,6 +900,9 @@ def edit(store, guild, conversation, user, revision, source, action, text=''):
             now = time.time()
             db.execute("INSERT INTO fri_member_summaries VALUES (?,?,?,?,'[]','[]',?,?)",
                        (guild, user, text, store._privacy_state(db, user)[0], now, now))
+            # Their own words draw on no message: known, and empty, so a recheck keeps them (Sol round 1 of #214).
+            db.execute("INSERT INTO fri_member_summary_sources VALUES (?,?,?,'[]') ON CONFLICT(guild_id, user_id) "
+                       'DO UPDATE SET through=excluded.through,messages=excluded.messages', (guild, user, now))
     return entries(store, guild, conversation, user, summaries=True)
 
 

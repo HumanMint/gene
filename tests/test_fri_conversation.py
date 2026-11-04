@@ -673,6 +673,32 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me dan', 'don1\U000020E3\U000002BC1\U000020E3t ever please call me dan'),
     ('nickname', 'call me dan', 'don1\U0000FE0F\U000020E3\U000020191\U0000FE0F\U000020E3t ever please call me dan'),
     ('games', 'i like chess', 'i like chess, my mom would s2\U0000FE0F\U000020E3a3\U0000FE0F\U000020E3y'),
+    # gene #212 item 1: slash faces with a nose, a trailing bracket or a backslash, attached to a word.
+    ('games', 'i like chess', 'i like chess, my mom:^/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:/) would say'),
+    ('games', 'i like chess', 'i like chess, my mom:\\ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:-\\ would say'),
+    ('games', 'i like chess', 'i like chess, my mom;\\) would say'),
+    ('games', 'i like chess', 'i like chess, my mom:\'/] would say'),
+    # gene #212 item 2: asides past the listed hedges, and past a run of modifiers.
+    ('nickname', 'call me dan', 'if i win ;P i believe\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i really honestly guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i reckon\nplease call me dan'),
+    ('nickname', 'call me dan', "if i win ;P i'd say\nplease call me dan"),
+    ('games', 'i like chess', 'i like chess, my mom ;P i believe would say'),
+    ('games', 'i like chess', 'i like chess ;P i do honestly think my mom says'),
+    # ... and what an aside's own clause says that's about the claim: a condition on it, a report of it, or taking it
+    # back in the member's own words.
+    ('nickname', 'call me dan', 'call me dan ;P i guess when i win'),
+    ('nickname', 'call me dan', 'call me dan ;P i think if i win'),
+    ('games', 'i like chess', 'i like chess ;P i guess my mom says so'),
+    ('games', 'i like chess', "i like chess ;P i guess i'm kidding"),
+    ('games', 'i like chess', 'i like chess ;P i think jk'),
+    # gene #212 item 3: shorthand format controls show nothing too, inside a face or a keycap.
+    ('games', 'i like chess', 'i like chess, my mom:\U0001BCA0P] would say'),
+    ('games', 'i like chess', 'i like chess, my mom would sa1\U0000FE0F\U0001BCA1\U000020E3y'),
+    ('games', 'i like chess', 'i like chess, my mom would\U0001BCA2say'),
+    ('nickname', 'call me dan', 'don\U0001BCA3t ever please call me dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -814,6 +840,16 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, team1\U0000FE0F\U000020E3 rocks'),
     ('games', 'i like chess', 'i like chess, it\U0000200Bs fun'),
     ('games', 'i like chess', 'i like chess, my mom would sa1\U0000FE0F\U000020E3ve it'),
+    # gene #212 item 4: a hedge that opens a clause of its own, which says nothing about the claim, ends it as main
+    # reads it: what someone else is doing, or what the member knows.
+    ('nickname', 'call me dan', 'call me dan ;P i know when the game starts'),
+    ('games', 'i like chess', 'i like chess ;P i think my opponent is kidding'),
+    ('games', 'i like chess', 'i like chess ;P i guess my friends are better'),
+    ('games', 'i like chess', "i like chess ;P i believe it's the best game"),
+    ('games', 'i like chess', 'i like chess ;P i really honestly guess its fun'),
+    # gene #212 item 1: a backslash that's a path, a slash that's a link.
+    ('games', 'i like chess', 'i like chess, saves are in c:\\games\\chess'),
+    ('games', 'i like chess', 'i like chess, see https://example.com/x:\\y lol'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -921,7 +957,12 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 # slash faces, and faces before an aside, each read once more.
                 'mom:\U0000200BP] ', 'sa1\U0000FE0F\U0000200B\U000020E3y ',
                 'don1\U0000FE0F\U000020E3\U000002BC1\U0000FE0F\U000020E3t ', 'a1\U0000FE0F\U000020E3', 'mom:/ ',
-                ':-/ ', ';P i guess ', ';P lol i guess ', ';P lol ', ':P\U0000200B '):
+                ':-/ ', ';P i guess ', ';P lol i guess ', ';P lol ', ':P\U0000200B ',
+                # gene #212: slash faces with a nose, a bracket or a backslash, shorthand format controls, and hedges
+                # past a run of modifiers, with what each one's clause says after it.
+                'mom:^/ ', 'mom:/) ', 'mom:\\ ', 'mom:\U0001BCA0P] ', 'sa1\U0000FE0F\U0001BCA1\U000020E3y ',
+                ';P i really honestly guess ', ';P i really really really ', ';P i know when ', ';P i think my mom says ',
+                ";P i guess i'm kidding ", ';P i guess my opponent is ', ';P i believe would '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
@@ -930,7 +971,8 @@ def test_a_run_of_fillers_between_symbols_is_crossed_once():
     """gene #201 item 5: after each run of symbols, the member's own clause is looked for past the fillers, which may
     run to the message's end ("😂ok 😂ok …"); each is crossed once for all the runs, not once from each."""
     for pad in ('\U0001F602ok ', ':) ok ', ':)ok ', ';) ok \U0001F602', ';P yeah \U0001F602',
-                ';P lol ', ';P i guess ', ';P lol i ', ';P we all '):  # gene #201 item 4: each aside looked for once.
+                ';P lol ', ';P i guess ', ';P lol i ', ';P we all ',  # gene #201 item 4: each aside looked for once.
+                ';P i do honestly think ', ';P lol i suppose ', ';P i know when '):  # gene #212: and its clause once.
         assert_linear(lambda text: personal_note({'category': 'games', 'evidence': 'i like chess'}, text),
                       lambda length: ('i like chess ' + pad * length)[:length])
 

@@ -95,17 +95,20 @@ def erased(db, user):
 SKEW = 60
 
 
-def record_erasure(db, user, at, discord_at=None):
+def record_erasure(db, user, at, discord_at=None, removals=None):
     """Gene's stamp of the member's erasure, and its cutoff on Discord's clock (see erased_on_discord): the Discord time
-    of the message or interaction that asked, within SKEW of Gene's stamp, or Gene's stamp without one. Never earlier
-    than the cutoff so far: a request that arrives late, after a newer erasure (or after an outage), can't move it
-    back and admit what was said before that one (Sol round 1 of #213)."""
-    so_far = erased_on_discord(db, user)
+    of the message or interaction that asked, within SKEW of Gene's stamp, or Gene's stamp without one. Neither is ever
+    earlier than a cutoff already in force: an earlier erasure's (Sol round 1 of #213), or `removals`, the latest of
+    the member's note removals, which the erasure deletes (Sol round 2). A request that arrives late, after a newer
+    erasure or removal, or after an outage, can't move a cutoff back and admit what was said before it; nor can
+    Gene's clock stepping back."""
+    in_force = max(erased_on_discord(db, user) or 0, removals or 0)
+    at = max(at, erased(db, user) or 0, removals or 0)
     cutoff = at if discord_at is None else min(max(discord_at, at - SKEW), at + SKEW)
     db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
                 (user, at))
     db.execute('INSERT INTO personal_erasure_times VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET '
-               'at=excluded.at,discord_at=excluded.discord_at', (user, at, max(cutoff, so_far or 0)))
+               'at=excluded.at,discord_at=excluded.discord_at', (user, at, max(cutoff, in_force)))
 
 
 def erased_on_discord(db, user):
@@ -293,9 +296,9 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
             raise ValueError('Say what you’re doing, such as I’m working on a mod.'
                              if row['category'] == 'projects' else
                              'Use a short first-person preference, such as I like chess.')
-        for fence in fences():  # See removed().
+        for fence in fences():  # See removed(). Never earlier than it was, even with Gene's clock stepped back.
             db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
-                'user_id,digest) DO UPDATE SET at=excluded.at', (guild, scope, user, fence, time.time()))
+                'user_id,digest) DO UPDATE SET at=max(at,excluded.at)', (guild, scope, user, fence, time.time()))
         db.execute('DELETE FROM personal_notes WHERE id=?', (identifier,))
         # Other excerpts of the same words go with it, under any category: one containing the other, as two
         # excerpts of one message do. For a profile note, in every conversation, which it reached.

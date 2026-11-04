@@ -703,6 +703,9 @@ class Store:
     # Where the controller records who wrote a message by its ID: a saved turn's own message, a fenced or deleted one with
     # its author, a pending question's, a ping's grant and a research permit, each made for that message's author.
     MESSAGE_AUTHORS = (("SELECT user_id FROM chat_turns WHERE json_extract(NULLIF(source,''),'$.id')=?"),
+                       # And a burst's earlier messages, the same member's (Sol round 2 of #213).
+                       ("SELECT user_id FROM chat_turns WHERE EXISTS (SELECT 1 FROM json_each(chat_turns.burst) b "
+                        "WHERE json_extract(b.value,'$.source.id')=?)"),
                        'SELECT user_id FROM chat_message_fences WHERE message_id=? AND user_id IS NOT NULL',
                        'SELECT user_id FROM chat_turn_deletions WHERE message_id=? AND user_id IS NOT NULL',
                        'SELECT user_id FROM chat_pending WHERE source_id=?',
@@ -1385,12 +1388,16 @@ class Store:
                 erase_social(db, user_id)
                 db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
+                # Their removals' latest cutoff first, which the erasure's keeps (Sol round 2 of #213): a request that
+                # arrives late, dated before a removal, mustn't let what was said before that removal back.
+                removals = db.execute('SELECT max(at) FROM personal_note_removals WHERE user_id=?',
+                                      (user_id,)).fetchone()[0]
                 db.execute('DELETE FROM personal_note_removals WHERE user_id=?', (user_id,))
                 # Their removals went with the rest, so what's kept instead is when: no words, their ID and a time,
                 # a cutoff for everything they said before it once memory is on again (HumanMint/fri#321), with when
                 # they asked on Discord's clock, if known (HumanMint/fri#337).
                 from .fri_memory_store import record_erasure
-                record_erasure(db, user_id, time.time(), discord_at)
+                record_erasure(db, user_id, time.time(), discord_at, removals)
                 # Their deletions first, while their fences still say which messages were theirs (gene #145).
                 db.execute('DELETE FROM chat_turn_deletions WHERE user_id=? OR EXISTS (SELECT 1 FROM chat_turn_withdrawals '
                            'w WHERE w.user_id=? AND w.guild_id=chat_turn_deletions.guild_id AND '

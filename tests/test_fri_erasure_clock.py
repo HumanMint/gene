@@ -23,7 +23,7 @@ REAL = time.time
 def gene(tmp_path):
     settings = Settings(tmp_path/'clock.db', '123', '10', 'runtime-'+'x'*32, 'worker-'+'x'*32, 'deploy-'+'x'*32,
                         workshop_channel_id='456', fri_token='fri-'+'x'*32, agent_channels='1,456',
-                        agent_history_channels='1')
+                        agent_history_channels='1,3')  # 3: history, not chat.
     return TestClient(create_app(settings))
 
 
@@ -96,7 +96,7 @@ def test_the_profile_says_the_cutoffs_on_discords_clock_beside_gene_s_own(gene):
     asked = discord.utils.snowflake_time(int(source(now)['id'])).timestamp()
     assert answer['erased_at_discord'] == answer['removed_at_discord'] == pytest.approx(asked, abs=0.002)
     assert answer['erased_at'] == pytest.approx(now - 2, abs=1)
-    assert set(profile(gene, channel='1')) == {'enabled', 'revision', 'removed_at'}
+    assert set(profile(gene, channel='3')) == {'enabled', 'revision', 'removed_at'}
 
 
 def test_an_erasure_with_no_discord_event_keeps_gene_s_clock(gene):
@@ -122,7 +122,7 @@ def test_a_discord_time_from_an_earlier_erasure_is_never_used_for_a_later_one(ge
         assert gene.post('/privacy/erase', headers=headers('fri'), json={'guild_id': '123', 'user_id': '20'}).status_code == 200
     control(gene, 'enable', now + 0.2, 0)
     assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=1)
-    assert saved(gene, now - 10) == {'ok': True, 'first_memory': False, 'kept': False}
+    assert saved(gene, now - 10, revision=3) == {'ok': True, 'first_memory': False, 'kept': False}
 
 
 def test_a_discord_time_far_from_gene_s_is_held_to_a_minute_before_it(gene):
@@ -142,3 +142,14 @@ def test_a_source_that_is_not_the_members_still_erases_on_gene_s_clock(gene):
     control(gene, 'disable', now, -2, source=source(now + 30, user='21'))
     assert not profile(gene)['enabled']
     assert profile(gene)['erased_at_discord'] == pytest.approx(now - 2, abs=1)
+
+
+def test_gene_forgetme_is_dated_by_its_command_message(gene):
+    """Red's "gene forgetme true" is a Discord message too: its ID dates the erasure on Discord's clock (item 4)."""
+    now = REAL()
+    with gene_clock(-2):
+        assert gene.post('/privacy/erase', headers=headers('runtime'),
+                         json={'guild_id': '123', 'user_id': '20', 'source_id': source(now)['id']}).status_code == 200
+    control(gene, 'enable', now + 0.2, -2)
+    assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=0.01)
+    assert saved(gene, now - 0.5) == {'ok': True, 'first_memory': False, 'kept': False}

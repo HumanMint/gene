@@ -321,3 +321,14 @@ def test_a_burst_message_gene_knows_is_someone_elses_never_dates_an_erasure(gene
     control(gene, 'disable', now, 0, source={**first, 'user_id': '20'})
     assert not profile(gene)['enabled']
     assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=1)
+
+
+def test_a_later_removal_with_gene_s_clock_stepped_back_never_moves_a_cutoff_earlier(gene):
+    """A note removal's fence keeps its later time: one after it, with Gene's clock stepped back three seconds, would
+    otherwise move removed_at, on both clocks, and learning's cutoff back."""
+    remove_a_note(gene, -1)
+    before = cutoffs(gene)
+    time.sleep(0.01)
+    remove_a_note(gene, -4)
+    after = cutoffs(gene)
+    assert before['removed_at'] > 0 and all(after[key] >= before[key] for key in after), (before, after)

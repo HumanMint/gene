@@ -647,6 +647,32 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('music', 'i love jazz', 'lol ;P yeah i said ;P. i love jazz'),
     ('music', 'i love jazz', 'lol ;P yeah i said. i love jazz'),
     ('nickname', 'call me dan', 'call me dan ;P yeah i mean when i win'),
+    # gene #201 item 4: a face kept before the member's own clause ends nothing when that clause is only an aside.
+    ('nickname', 'call me dan', 'if i win ;P i guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win :P i guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P lol i guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'whenever we play ;D i swear\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom ;P i swear would say'),
+    ('games', 'i like chess', 'i like chess ;P we all know my mom says'),
+    ('games', 'i like chess', 'i like chess ;) i mean my friends say'),
+    ('games', 'I like chess', 'I like chess ;P I guess my mom says'),
+    # gene #207 item 1: what shows nothing inside a face or a keycap, read after it's gone.
+    ('games', 'i like chess', 'i like chess, my mom:\U0000200BP] would say'),
+    ('games', 'i like chess', 'i like chess, my mom:\U00002060P) would say'),
+    ('games', 'i like chess', 'i like chess, my mom would sa1\U0000FE0F\U0000200B\U000020E3y'),
+    ('games', 'i like chess', 'i like chess, my mom would sa1\U0000200B\U0000FE0F\U000020E3y'),
+    ('games', 'i like chess', 'i like chess. just ki#\U0000FE0F\U00002060\U000020E3dding'),
+    ('games', 'i like chess', 'i like chess, my mom would\U0000200Bsa1\U0000FE0F\U000020E3y'),
+    # gene #207 item 2: a slash face attached to a word.
+    ('games', 'i like chess', 'i like chess, my mom:/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:-/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom;/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom=/ would say'),
+    # gene #207 item 3: whole keycaps, not their digits, split a word.
+    ('nickname', 'call me dan', 'don1\U0000FE0F\U000020E3\U000002BC1\U0000FE0F\U000020E3t ever please call me dan'),
+    ('nickname', 'call me dan', 'don1\U000020E3\U000002BC1\U000020E3t ever please call me dan'),
+    ('nickname', 'call me dan', 'don1\U0000FE0F\U000020E3\U000020191\U0000FE0F\U000020E3t ever please call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom would s2\U0000FE0F\U000020E3a3\U0000FE0F\U000020E3y'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -769,6 +795,24 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess :P)'),
     ('games', 'i like chess', 'i like chess, thanks:))'),
     ('games', 'i like chess', 'i like chess, thanks:P]'),
+    # gene #201 item 4: a face before an aside of the member's that reports nothing or opens nothing keeps the note.
+    ('games', 'i like chess', 'i like chess ;P i guess its fun'),
+    ('games', 'i like chess', 'i like chess ;P i swear'),
+    ('games', 'i like chess', 'i like chess ;P i know its nerdy'),
+    ('games', 'i like chess', 'i like chess ;P i think its fun'),
+    ('games', 'i like chess', 'i like chess ;P we all know it'),
+    ('games', 'i like chess', 'i like chess ;P lol i mean it'),
+    ('nickname', 'call me dan', 'i won ;P i guess\nplease call me dan'),
+    # gene #207: a slash that's a path or a link, a keycap on its own or after a word, and what shows nothing inside
+    # a word that spells nothing the rules look for.
+    ('games', 'i like chess', 'i like chess, saves go in c:/games/chess'),
+    ('games', 'i like chess', 'i like chess, see http://example.com/a:/b lol'),
+    ('games', 'i like chess', 'i like chess:/'),
+    ('games', 'i like chess', 'i like chess :/ honestly'),
+    ('games', 'i like chess', 'i like chess 1\U0000FE0F\U000020E3 2\U0000FE0F\U000020E3 3\U0000FE0F\U000020E3'),
+    ('games', 'i like chess', 'i like chess, team1\U0000FE0F\U000020E3 rocks'),
+    ('games', 'i like chess', 'i like chess, it\U0000200Bs fun'),
+    ('games', 'i like chess', 'i like chess, my mom would sa1\U0000FE0F\U000020E3ve it'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -871,7 +915,12 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 # Sol round 2 of #200: faces whose alternatives overlap, before an emoji that ends no run of them.
                 'xD ', 'xD \U0001F602 ', ':P) ', 'would\U0000200Bsa\U0001F602\U0000200By ',
                 # gene #201: fillers between emoji, each run's own clause looked for once, and the faces before one.
-                '\U0001F602ok ', '\U0001F602yeah ', ';P ok ', ';P yeah i said ', ';P tbh i ', 'mom:P) '):
+                '\U0001F602ok ', '\U0001F602yeah ', ';P ok ', ';P yeah i said ', ';P tbh i ', 'mom:P) ',
+                # gene #207 and #201 item 4: stacked faces and keycaps, keycaps around an apostrophe and in a long word,
+                # slash faces, and faces before an aside, each read once more.
+                'mom:\U0000200BP] ', 'sa1\U0000FE0F\U0000200B\U000020E3y ',
+                'don1\U0000FE0F\U000020E3\U000002BC1\U0000FE0F\U000020E3t ', 'a1\U0000FE0F\U000020E3', 'mom:/ ',
+                ':-/ ', ';P i guess ', ';P lol i guess ', ';P lol ', ':P\U0000200B '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
@@ -879,7 +928,8 @@ def test_reports_and_conditions_are_read_in_one_pass():
 def test_a_run_of_fillers_between_symbols_is_crossed_once():
     """gene #201 item 5: after each run of symbols, the member's own clause is looked for past the fillers, which may
     run to the message's end ("😂ok 😂ok …"); each is crossed once for all the runs, not once from each."""
-    for pad in ('\U0001F602ok ', ':) ok ', ':)ok ', ';) ok \U0001F602', ';P yeah \U0001F602'):
+    for pad in ('\U0001F602ok ', ':) ok ', ':)ok ', ';) ok \U0001F602', ';P yeah \U0001F602',
+                ';P lol ', ';P i guess ', ';P lol i ', ';P we all '):  # gene #201 item 4: each aside looked for once.
         assert_linear(lambda text: personal_note({'category': 'games', 'evidence': 'i like chess'}, text),
                       lambda length: ('i like chess ' + pad * length)[:length])
 

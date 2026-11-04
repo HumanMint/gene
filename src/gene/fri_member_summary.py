@@ -517,9 +517,20 @@ def drew_on(db, guild, user, through):
 def drawn(db, guild, user, summary):
     """What a summary row drew on (see drew_on), or None if that isn't known. One that names no conversation it came
     from is the member's own words, from Edit summary in My memory (see edit), an older controller's included, as a
-    build always names at least one: it drew on no message (Sol round 1 of #214)."""
-    found = drew_on(db, guild, user, summary['through'])
-    return [] if found is None and not json.loads(summary['origins']) else found
+    build always names at least one: it drew on no message (Sol round 1 of #214). One that does came from messages, so
+    if it names none, they aren't known (HumanMint/fri#357)."""
+    if not json.loads(summary['origins']):
+        return []
+    return drew_on(db, guild, user, summary['through']) or None
+
+
+def identified(turn):
+    """Whether every message an exchange answered can be named: its own and each of its burst's, a Discord message
+    with an ID. One that can't goes into no build, as nothing could read it again (HumanMint/fri#357)."""
+    rows = [json.loads(turn['source']) if turn.get('source') else {},
+            *((row or {}).get('source') or {} for row in json.loads(turn.get('burst') or '[]'))]
+    return all(isinstance(row, dict) and row.get('kind') == 'discord_message' and str(row.get('id', '')).isdigit()
+               for row in rows)
 
 
 def messages_of(turn):
@@ -673,7 +684,7 @@ def claim(agent):
                 f'SELECT id,channel_id,input,provenance,at,source,burst FROM chat_turns WHERE {READABLE} AND at>? '
                 'AND speaker_revision=? ORDER BY at DESC, id DESC LIMIT ?',
                 (guild, user, previous['through'] if previous else 0, revision, EXCHANGES))][::-1]
-            turns = agent.store._current_turns(db, turns)
+            turns = [turn for turn in agent.store._current_turns(db, turns) if identified(turn)]
             if len(turns) < NEW:
                 continue
             sources = {}

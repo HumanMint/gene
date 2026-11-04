@@ -313,3 +313,72 @@ def test_s1_a_withdrawal_recorded_while_fri_read_takes_the_summary_whatever_fri_
     assert shown(store) is None
     with store.connection() as db:
         assert not db.execute('SELECT count(*) FROM fri_member_summaries').fetchone()[0]
+
+
+# HumanMint/fri#357 item 1.
+
+def unidentified(store, *texts, burst=False):
+    """Those exchanges of member 20's saved with no Discord message to name: saved without a source, or, with burst,
+    with a burst row before their own message that has no ID."""
+    with store.connection() as db:
+        for text in texts:
+            if burst:
+                db.execute('UPDATE chat_turns SET burst=? WHERE input=?',
+                           (json.dumps([{'text': 'the first half of it', 'source': {}}]), text))
+            else:
+                db.execute("UPDATE chat_turns SET source='' WHERE input=?", (text,))
+
+
+def kept_through_a_recheck(store, agent):
+    """Build what's offered, as a Fri that names what it sent, then recheck: the summary shown afterwards, if any."""
+    offer = offered(agent)
+    if offer:
+        finish(agent, offer['id'], 'they planned a raid', 'completed',
+               sorted({row['conversation_id'] for row in offer['exchanges']}), False,
+               [m for row in offer['exchanges'] for m in row['messages']])
+        for item in recheck(agent)['summaries']:
+            rechecked(agent, item['id'], 'ok')
+    return offer, shown(store)
+
+
+def test_357_the_repro_exchanges_with_no_message_to_name_never_make_a_summary_that_skips_its_recheck(store, tmp_path):
+    """The issue: two eligible exchanges whose messages have no IDs were built into a summary that named no message.
+    A recheck then had nothing to read, marked it checked, and it showed, though its messages could be deleted where Fri
+    never heard of it. Nothing is built from words whose message can't be named."""
+    agent = background(store, tmp_path)
+    chat(store, 'raid tonight?')
+    chat(store, 'what build for the raid', 'public:2')
+    unidentified(store, 'raid tonight?', 'what build for the raid')
+    offer, summary = kept_through_a_recheck(store, agent)
+    assert summary is None and offer is None
+
+
+@pytest.mark.parametrize('missing', ['its source', 'a burst row'])
+def test_357_only_the_exchanges_whose_messages_are_named_go_into_a_build(store, tmp_path, missing):
+    """Even partly: an exchange with one message it can't name stays out, and the rest are built and named."""
+    agent = background(store, tmp_path)
+    chat(store, 'raid tonight?')
+    chat(store, 'what build for the raid', 'public:2')
+    chat(store, 'my secret plan for friday')
+    unidentified(store, 'my secret plan for friday', burst=missing == 'a burst row')
+    offer, summary = kept_through_a_recheck(store, agent)
+    assert [row['message'] for row in offer['exchanges']] == ['raid tonight?', 'what build for the raid']
+    assert summary and len(sources_recorded(store)) == 2
+
+
+def sources_recorded(store):
+    with store.connection() as db:
+        return json.loads(db.execute('SELECT messages FROM fri_member_summary_sources').fetchone()[0])
+
+
+def test_357_a_model_written_summary_recorded_as_naming_no_message_is_dropped_at_the_next_recheck(store, tmp_path):
+    """One already kept that way, before this: it came from a conversation, so it drew on messages; none named means
+    they aren't known, and it goes as one whose sources aren't known does. A member's own words still stay."""
+    agent = background(store, tmp_path)
+    built(store, agent)
+    with store.connection() as db:
+        db.execute("UPDATE fri_member_summary_sources SET messages='[]'")
+    assert recheck(agent) == {'summaries': []}
+    assert shown(store) is None
+    with store.connection() as db:
+        assert not db.execute('SELECT count(*) FROM fri_member_summaries').fetchone()[0]

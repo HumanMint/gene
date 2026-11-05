@@ -316,14 +316,15 @@ def readings_of(text, evidence):
     dropped, and twice more with slash faces with whitespace inside them read plainly first; and (gene #226) twice more
     with Unicode space separators read as a space and line breaks next to a face bridged; and (gene #231) twice more
     with line breaks inside a report continuation joined too; and (gene #236) twice more with report verbs outside the
-    vocabulary read as "say" and chained auxiliaries joined. Every reading #211, #217, #225, #229 and #235 had is still
+    vocabulary read as "say" where they report something (gene #242) and chained auxiliaries joined; and (gene #239)
+    twice more with passive reports read as "was told". Every reading #211, #217, #225, #229 and #235 had is still
     here, as it was, so each added one only ever refuses more. In this order, each once: which one
     refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
     time grow faster than its length (#211's first CI run)."""
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for transform in (composed, restacked, spaced, bridged, rejoined, widened):
+    for transform in (composed, restacked, spaced, bridged, rejoined, widened, passive):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
@@ -695,34 +696,64 @@ WORDS_BEFORE = 8
 # A letter the pattern matches in another case, as the ASCII letter it matches: dotted and dotless "i", the long "s",
 # the Kelvin sign. Lowercased, they stayed as they were, and the verb was no key (Sol round 1 of #238, B1).
 ASCII_CASES = {0x130: 'i', 0x131: 'i', 0x17F: 's', 0x212A: 'k'}
-# A verb with something of its own after it reports that, not the claim ("they announced the tournament", "she
-# complained about lag", "he pointed out a bug", "she replied to my message"): left as typed (Sol round 1 of #238, S3).
-# It reports the claim only where what follows is nothing of its own: the clause's end, "so" or "that", the claim's own
-# start, a modifier, or "it" or "this", the person told ("me", "to everyone"), with nothing else after them.
-AFTER_A_REPORT = FIRST_PERSON | frozenset('so that my too once again before earlier already yesterday today lately '
-                                          'always never often sometimes ever still also just even and but or then '
-                                          'lol lmao lmfao haha tho though fr ngl'.split())
-POINTERS = frozenset({'it', 'this'})
+# What follows a wider report verb decides what it reports (Sol round 1 of #238, S3; gene #242). Nothing of its own (the
+# clause's end, a modifier, "so", or "it", "this" or "that" with nothing after them, the person told first or not:
+# "warned me", "complained to me"): what came before it, the claim (BACK). A clause of its own, after "that" or not, the
+# person told first or not ("announced i ...", "mentioned my nickname is ...", "complained to me that ..."): that clause
+# (CLAUSE), which reread starts a sentence of its own for. Anything else is something of its own, never the claim: an
+# object ("my score", "that rule", "it to everyone"), a preposition ("about lag"). That leaves it as typed.
+BACK, CLAUSE = 'back', 'clause'
+MODIFIERS_AFTER = frozenset('too once again before earlier already yesterday today lately always never often sometimes '
+                            'ever still also just even lol lmao lmfao haha tho though fr ngl'.split())
+CLAUSE_ENDS = frozenset('and but or then'.split())
+POINTING = frozenset({'it', 'this', 'that', 'so'})
+SUBJECTS_AFTER = FIRST_PERSON | frozenset("you u he she they it's its there's theres".split())
+COPULAS = frozenset("is was are were isn't wasn't aren't weren't isnt wasnt arent werent".split())
 RECIPIENTS = frozenset("me us him her them everyone everybody yall y'all you u people".split())
 NEXT_WORD = re.compile(r"\s*+([\w']+)")
+FOLLOWING = 6  # Words read after a verb at most.
+# The comma (or semicolon) a report's own clause, its subject and auxiliaries, starts after, on the same line.
+CLAUSE_AFTER_COMMA = re.compile(r"[,;](?=[ \t]*+(?:[\w']+[ \t]++){1,5}$)")
 
 
-def reports_the_claim(text, at):
-    """Whether what follows a report verb ending at `at` leaves it reporting the claim (see AFTER_A_REPORT). At most a
-    few words are read, so a long run of them is never read again from each verb before it."""
-    word = NEXT_WORD.match(text, at)
-    for _ in range(4):
-        if word is None:
-            return True  # The clause ends: punctuation, a face, the message's end.
-        found = word.group(1).lower()
-        if found == 'to':
-            word = NEXT_WORD.match(text, word.end())
-            if word is None or word.group(1).lower() not in RECIPIENTS:
-                return False
-        elif found not in POINTERS and found not in RECIPIENTS:
-            return found in AFTER_A_REPORT or (found.endswith('ly') and found.isalpha())
-        word = NEXT_WORD.match(text, word.end())
-    return True
+def reports_what(text, at):
+    """What the report verb ending at `at` reports (see BACK and CLAUSE), or None. At most FOLLOWING words are read, so
+    a long run of them is never read again from each verb before it; a run that long counts as the clause's end."""
+    words, end = [], at
+    while len(words) < FOLLOWING and (word := NEXT_WORD.match(text, end)):
+        words.append(word.group(1).lower())
+        end = word.end()
+    i = 0
+
+    def past_modifiers(i):
+        while i < len(words) and (words[i] in MODIFIERS_AFTER or (words[i].endswith('ly') and words[i].isalpha())):
+            i += 1
+        return i
+
+    def ends(i):
+        return i == len(words) or words[i] in CLAUSE_ENDS
+    i = past_modifiers(i)
+    if ends(i):
+        return BACK
+    told = words[i] in RECIPIENTS or (words[i] == 'to' and i+1 < len(words) and words[i+1] in RECIPIENTS)
+    if told:
+        i = past_modifiers(i + (2 if words[i] == 'to' else 1))
+        if ends(i):
+            return BACK
+    if words[i] in POINTING:
+        pointer, i = words[i], past_modifiers(i+1)
+        if ends(i):
+            return BACK
+        return CLAUSE if pointer == 'that' and opens_clause(words, i) else None
+    return CLAUSE if opens_clause(words, i) else None
+
+
+def opens_clause(words, i):
+    """Whether words[i:] start a clause: a subject ("i", "she", "it's"), or "my" and a copula soon after ("my nickname
+    is"), not an object ("my score")."""
+    if words[i] == 'my':
+        return any(word in COPULAS or word.endswith("'s") for word in words[i+1:i+4])
+    return words[i] in SUBJECTS_AFTER
 
 
 def members_own(text, at, participle):
@@ -740,26 +771,69 @@ def members_own(text, at, participle):
     return False
 
 
-def reworded(m):
-    """A report verb outside the vocabulary, as the same form of "say", unless its subject is the member's own or it
-    has something of its own after it; one it doesn't know after all, as typed: never an error."""
-    found = RUNS_OF_SPACE.sub(' ', m.group().translate(ASCII_CASES).lower())
-    say = SAY_PHRASES.get(found) or SAID_AS.get(found)
-    if say is None or not reports_the_claim(m.string, m.end()) or members_own(m.string, m.start(), say == 'said'):
-        return m.group()
-    return say
+def reread(text):
+    """Each report verb outside the vocabulary as the same form of "say" where it reports something (see reports_what),
+    unless its subject is the member's own (see members_own); one it doesn't know after all, as typed: never an error.
+    One that reports its own clause after a comma starts a sentence there, the comma read as a full stop, so the report
+    is that clause's, never the words before the comma (gene #242)."""
+    edits = []
+    for m in REPORTED_TOO.finditer(text):
+        found = RUNS_OF_SPACE.sub(' ', m.group().translate(ASCII_CASES).lower())
+        say = SAY_PHRASES.get(found) or SAID_AS.get(found)
+        if say is None or (kind := reports_what(text, m.end())) is None or members_own(text, m.start(), say == 'said'):
+            continue
+        if kind == CLAUSE and (comma := CLAUSE_AFTER_COMMA.search(text, max(0, m.start()-80), m.start())):
+            edits.append((comma.start(), comma.end(), '.'))
+        edits.append((m.start(), m.end(), say))
+    out, last = [], 0
+    for start, end, new in sorted(edits):
+        if start >= last:  # A comma two reports share is read once.
+            out += [text[last:start], new]
+            last = end
+    return ''.join(out) + text[last:]
 
 
 @functools.lru_cache(maxsize=32)
 def widened(text, invisible):
-    """rejoined's reading (see there), with each report verb outside the vocabulary the same form of "say", and each
-    run of auxiliaries and modifiers before a report verb joined, both first."""
+    """rejoined's reading (see there), with each report verb outside the vocabulary the same form of "say" where it
+    reports something (see reread), and each run of auxiliaries and modifiers before a report verb joined, both first."""
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
-    unseen = chained(REPORTED_TOO.sub(reworded, unseen))
+    unseen = chained(reread(unseen))
     unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
     unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
     return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
 
+
+
+# And (gene #239) a passive report: "i was told that ...", "i've been informed that ...", "i was reminded that ...". Someone
+# else supplied the claim, whoever the subject is, so #238's first-person exception never applies. The report rules
+# know "told" after "was"; "informed", "reminded", "notified", "assured", "advised" and "warned" are read as it, with the
+# auxiliaries and modifiers before them as "was", whatever their apostrophes, in a reading of its own; widened's stays
+# as it was. Not where what follows is something else they were told about, or to do ("reminded of the rules",
+# "advised to rest").
+PASSIVE_VERBS = r"informed|reminded|notified|assured|advised|warned|told"
+PASSIVE_REPORT = re.compile(rf"(?i)(?:\b(?:was|were|been|be|being|is|are|am|got|get|gets|getting|im)\b"
+                            rf"|['{chr(0x2019)}{chr(0x2018)}{chr(0x2BC)}](?:m|re|s)\b)(?:\s++(?:been|being)\b)?+"
+                            rf"(?:\s++(?:{RUN_MODIFIERS})\b)*+\s++(?:{PASSIVE_VERBS})\b")
+TOLD_OF = frozenset('to of about on for against with in at into over from'.split())
+
+
+def told_so(m):
+    """A passive report as "was told", unless something else follows it (see TOLD_OF)."""
+    after = NEXT_WORD.match(m.string, m.end())
+    if after and after.group(1).lower() in TOLD_OF:
+        return m.group()
+    return ('' if m.group()[0].isalpha() else ' ') + 'was told'
+
+
+@functools.lru_cache(maxsize=32)
+def passive(text, invisible):
+    """rejoined's reading (see there), with each passive report as "was told" first (see PASSIVE_REPORT)."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = PASSIVE_REPORT.sub(told_so, unseen)
+    unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
+    unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
+    return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
 
 def spots_of(text, evidence):
     """Where the evidence stands as whole words, stopping once there are more than MAX_SPOTS."""

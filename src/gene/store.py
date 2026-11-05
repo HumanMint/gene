@@ -722,12 +722,17 @@ class Store:
         """Whether the controller has this message recorded as another member's (see MESSAGE_AUTHORS): then it never
         dates an erasure of this one's (Sol round 1 of #213)."""
         with self.connection() as db:
-            for query in self.MESSAGE_AUTHORS:
-                try:
-                    if any(str(row[0]) != str(user_id) for row in db.execute(query, (str(message_id),))):
-                        return True
-                except sqlite3.OperationalError:  # A table this store never set up.
-                    continue
+            return self.someone_elses_in(db, message_id, user_id)
+
+    @classmethod
+    def someone_elses_in(cls, db, message_id, user_id):
+        """someone_elses, read in a transaction already open: a memory edit's (HumanMint/gene#223)."""
+        for query in cls.MESSAGE_AUTHORS:
+            try:
+                if any(str(row[0]) != str(user_id) for row in db.execute(query, (str(message_id),))):
+                    return True
+            except sqlite3.OperationalError:  # A table this store never set up.
+                continue
         return False
 
     def erase_user(self, user_id, discord_at=None):

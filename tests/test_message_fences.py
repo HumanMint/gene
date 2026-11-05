@@ -130,26 +130,31 @@ def test_an_edit_leaves_the_rerun_that_answers_it_as_it_reads_now(world):
     finish()
 
 
-def test_an_edit_leaves_other_members_replies_that_carry_it(world):
-    """Only a deletion retires a reply that carried the message (gene #150)."""
+def test_an_edit_keeps_a_late_save_of_another_members_reply_that_carried_it(world):
+    """gene #246: a reply whose turn began before the edit, its save landing after it, keeps nothing, as one after a
+    deletion doesn't (gene #150 left it, as it left the replies already saved)."""
     client, store = world
     nearby = source(age=30, channel='51')['id']
     _, finish, _ = batch(client, store)
     withdraw_saved(client, nearby)
-    assert reply(store, drew_on=[nearby]).get('kept', True) is True and replies(store) == ['about that: '+MARKER]
+    assert reply(store, drew_on=[nearby])['kept'] is False and replies(store) == []
     finish()
 
 
-def test_an_edit_with_no_learning_batch_in_flight_keeps_nothing(world):
-    """Nothing could still learn from its old words, so nothing is kept for it, even beside one whose exchange goes."""
+def test_an_edit_nothing_places_is_fenced_by_its_id_alone(world):
+    """gene #246: with no learning batch in flight too, an edit nothing places leaves a fence by its ID, naming nobody,
+    kept as a deletion's is, so a reply saved late from a turn that read it before keeps nothing. One whose exchange
+    goes is fenced under its author instead (chat_turn_withdrawals), as before."""
     client, store = world
-    withdraw_saved(client, source(age=30, channel='51')['id'])
-    assert fences(store) == []
+    nearby = source(age=30, channel='51')['id']
+    withdraw_saved(client, nearby)
+    assert fences(store) == [(nearby, 0, None, None)]
     said = source(age=20, channel='51')
     store.save_chat('123', 'public:51', '20', 0, 'explain '+MARKER, 'okay', 'model', 'high', source=said,
                     provenance=[])
-    assert withdraw_saved(client, said['id'], source(age=10, channel='51')['id']).json()['removed'] == 1
-    assert fences(store) == []
+    other = source(age=10, channel='51')['id']
+    assert withdraw_saved(client, said['id'], other).json()['removed'] == 1
+    assert fences(store) == sorted([(nearby, 0, None, None), (other, 0, None, None)])
 
 
 def test_a_batch_claimed_after_a_fence_learns_from_the_message_as_it_reads_now(world, monkeypatch):

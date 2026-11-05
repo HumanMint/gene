@@ -911,17 +911,27 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i was reminded on monday that i like chess'),
     ('games', 'i like chess', 'i was reminded of it on monday that i like chess'),
     ('games', 'i like chess', 'i was advised by email to say i like chess'),
-    # gene #254 items 1 and 2: a longer object, or a perception, with the claim after it in its clause, or the next
-    # line carrying it on, or a pointer back at it.
+    # gene #254 items 1 and 2: a longer object, or a perception, with the claim after it in its clause, or a pointer
+    # back at it.
     ('games', 'i like chess', 'i was informed via a short letter that i like chess'),
     ('games', 'i like chess', 'i was assured a refund for the ticket and that i like chess'),
-    ('games', 'i like chess', 'i was informed via email\nthat i like chess'),
     ('games', 'i like chess', 'i heard birds say i like chess'),
     ('games', 'i like chess', 'i heard the new album yesterday so i like chess'),
     ('games', 'i like chess', 'i like chess, i heard\nlol'),
     ('games', 'i like chess', 'i like chess, i heard it'),
     ('games', 'i like chess', 'i like chess, i heard so from my mom'),
     ('games', 'i like chess', 'i heard from my mom that i like chess'),
+    # gene #254's mutation witnesses: where or from whom it was heard, an aside, "about" alone, a claim with a verb of
+    # its own, a source, a preposition alone, a clause a colon carries on, and letters read as ASCII ones.
+    ('games', 'i like chess', 'i like chess, i heard from my mom'),
+    ('nickname', 'my nickname is dan', 'she heard on monday, my nickname is dan'),
+    ('games', 'i like chess', 'i heard lol, i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard about'),
+    ('nickname', 'my nickname is dan', 'i was informed my nickname is dan'),
+    ('games', 'i like chess', 'i was informed by my mom, i like chess'),
+    ('games', 'i like chess', 'i like chess, i was reminded of'),
+    ('games', 'i like chess', 'i was informed via a short letter: i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard ' + chr(0x131) + 't'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1153,6 +1163,9 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i was reminded of the rules for the game, i like chess'),
     # gene #254 item 4: a time that ends the clause is still an object of its own.
     ('games', 'i like chess', 'i was reminded on monday, i like chess'),
+    # And a line break ends one, as main keeps it.
+    ('games', 'i like chess', 'i hear birds\nok i like chess'),
+    ('games', 'i like chess', 'i like chess\ni was reminded of the rules\nok'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -1290,8 +1303,8 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 "i've heard that ", 'heard heard ', 'was advised yesterday ', 'yesterday yesterday ', 'a refund, ',
                 'via email ', 'i hear you, ', 'i' + chr(0xFF07) + 'm informed ',
                 # gene #254: perceptions and longer objects in one long clause, each verb's read once for all of them.
-                'i hear birds ', 'was informed via a short letter ', 'was reminded on monday ', 'heard the album ',
-                'a refund for the ticket ', 'heard\n', 'via email\n'):
+                'i hear birds ', 'was informed via a short letter ', 'was reminded on monday, ',
+                'was reminded on monday that ', 'heard the album ', 'a refund for the ticket ', 'heard\n', 'via email\n'):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

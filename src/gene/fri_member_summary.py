@@ -129,7 +129,20 @@ def initialize(db):
         DELETE FROM fri_member_summary_rechecks WHERE NOT EXISTS (SELECT 1 FROM fri_member_summaries s
             WHERE s.guild_id=fri_member_summary_rechecks.guild_id AND s.user_id=fri_member_summary_rechecks.user_id
             AND s.through=fri_member_summary_rechecks.through);
+        -- Saved work and reminders that drew on their writer's own summary (HumanMint/fri#355, Sol round 1's B3):
+        -- kept out of use while that summary is held back (see held_writes), but never retired when it goes, as the
+        -- writer asked for them (gene #112), so they're kept apart from the dependencies, which retire. kind: the
+        -- dependency table's name (see WRITES).
+        CREATE TABLE IF NOT EXISTS fri_own_summary_writes (
+            kind TEXT NOT NULL, item TEXT NOT NULL, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
+            PRIMARY KEY(kind, item));
     ''')
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for name, table, kind in (('fri_own_summary_writes_work_gone', 'fri_work', 'fri_work_dependencies'),
+                              ('fri_own_summary_writes_reminder_gone', 'fri_reminders', 'fri_reminder_dependencies')):
+        if table in tables:  # Gone with what they name, whichever controller deletes it.
+            db.execute(f"CREATE TRIGGER IF NOT EXISTS {name} AFTER DELETE ON {table} BEGIN DELETE FROM "
+                       f"fri_own_summary_writes WHERE kind='{kind}' AND item=OLD.id; END")
     # One whose member's privacy changed without those (a controller from before them, a database restored without
     # them), or one past its time, which no build finishes now: swept at start, whatever it names.
     db.execute("DELETE FROM agent_state WHERE key=? AND json_valid(value) AND json_type(value)='object' AND ("
@@ -195,14 +208,21 @@ def writes(db):
     return [(table, key) for table, key in WRITES if table in present]
 
 
-def depend_write(db, table, item, scope, dependencies):
+def depend_write(db, table, item, scope, dependencies, own=False):
     """A tool's write of the model's words keeps the summaries its turn may repeat through Fri's earlier replies, with
     their generations, so it's retired once one goes (see retire_writes), as a saved reply is (fri #216). Each goes on
     record (see keep), and so is that member's privacy revision now, which a start checks (see settle). Not the writer's
     own: work and reminders drawn on that stay, as they asked for them (gene #112). A draft edited again keeps what it
-    had, as the edit may still hold those words."""
+    had, as the edit may still hold those words.
+
+    own: the turn drew on the writer's own summary (its summary_generation). That, or one of their own among the
+    summaries it may repeat, is recorded apart (fri_own_summary_writes), so the write is held while that summary is
+    held back (see held_writes), and still never retired for it (HumanMint/fri#355, Sol round 1's B3)."""
     from .store import Store
     key = dict(WRITES)[table]
+    if own or any(row['user_id'] == scope['user_id'] for row in dependencies):
+        db.execute('INSERT INTO fri_own_summary_writes VALUES (?,?,?,?) ON CONFLICT(kind, item) DO NOTHING',
+                   (table, item, scope['guild_id'], scope['user_id']))
     for user, number in sorted({(row['user_id'], row['generation']) for row in dependencies}):
         if user == scope['user_id']:
             continue
@@ -248,8 +268,8 @@ def current_writes(db, table, items, args=(), held_back=True):
         db.commit()
         db.execute('BEGIN IMMEDIATE')
     if held_back and held_writes(db, table, items, args):
-        from .store import Conflict
-        raise Conflict(HELD_WRITE)
+        from .store import Held
+        raise Held(HELD_WRITE)
     return went
 
 
@@ -649,12 +669,17 @@ def holding(db, guild, drew):
 def held_writes(db, table, items, args=()):
     """Of saved work or reminders (items: SQL selecting their IDs), those depending on a summary held back (see held):
     left out of lists and deliveries, and refused when asked for by themselves (see current_writes), until it checks
-    out. table: of WRITES."""
+    out. Their writer's own summary counts too (see depend_write's own). table: of WRITES."""
     if table not in {name for name, _ in writes(db)}:
         return set()
     key = dict(WRITES)[table]
-    return {row[0] for row in db.execute(f'SELECT DISTINCT d.{key} FROM {table} d WHERE d.{key} IN ({items}) AND '
+    held = {row[0] for row in db.execute(f'SELECT DISTINCT d.{key} FROM {table} d WHERE d.{key} IN ({items}) AND '
                                          + HOLDING.format(guild='d.guild_id', user='d.user_id'), args)}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fri_own_summary_writes'").fetchone():
+        held |= {row[0] for row in db.execute(
+            f'SELECT o.item FROM fri_own_summary_writes o WHERE o.kind=? AND o.item IN ({items}) AND '
+            + HOLDING.format(guild='o.guild_id', user='o.user_id'), (table, *args))}
+    return held
 
 
 def lapsed(db, guild, user):
@@ -972,8 +997,10 @@ def purge(path):
             db.execute('DROP TABLE IF EXISTS fri_member_summary_generations')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_sources')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_rechecks')
-            for name in ('fri_member_summary_claim_revised', 'fri_member_summary_claim_revision_moved'):
+            for name in ('fri_member_summary_claim_revised', 'fri_member_summary_claim_revision_moved',
+                         'fri_own_summary_writes_work_gone', 'fri_own_summary_writes_reminder_gone'):
                 db.execute(f'DROP TRIGGER IF EXISTS {name}')  # Nothing left for them to clear.
+            db.execute('DROP TABLE IF EXISTS fri_own_summary_writes')  # Nothing is held without summaries.
             db.execute('DELETE FROM agent_state WHERE key IN (?,?)', (CLAIM, NEXT))
             # Nothing mirrored outlives the summaries (see expiry_triggers): their refresh times go with them.
             db.execute('DELETE FROM agent_state WHERE substr(key,1,?)=?', (len(MIRROR), MIRROR))

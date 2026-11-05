@@ -53,6 +53,12 @@ class Conflict(ValueError):
     pass
 
 
+class Held(Conflict):
+    """Refused for now, not for good: what was asked for depends on a member summary held back until its messages are
+    read again (HumanMint/fri#355), and is given or sent once that checks out. The API answers 423, apart from a
+    conflict's 409, so Fri can tell the two apart (a delivery isn't recorded as failed)."""
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
@@ -1009,9 +1015,10 @@ class Store:
                     continue  # Includes the original speaker: never relabel an old reply.
                 # And the summaries it drew on, for a turn answering it to depend on in turn (fri #193). Any other
                 # answer stays as it was. One drawn on a summary held back until it's read again isn't verbatim
-                # meanwhile, so Fri neither repeats it nor answers it as said (HumanMint/fri#355).
+                # meanwhile, so Fri neither repeats it nor answers it as said (HumanMint/fri#355), and it says it's
+                # held, not retired, so Fri keeps its copy for when that checks out (Sol round 1's S1).
                 if summaries(row) and holding(db, guild_id, summaries(row)):
-                    found[message_id] = {'verbatim': False, 'provenance': sources}
+                    found[message_id] = {'verbatim': False, 'held': True, 'provenance': sources}
                     continue
                 found[message_id] = {'verbatim': bool(row['verbatim']), 'provenance': sources,
                                      **({'summaries': summaries(row)} if summaries(row) else {})}

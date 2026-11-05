@@ -13,7 +13,7 @@ from .fri_conversation import SourceText
 from .fri_pending import Clarification
 from .fri_protocol import PROTOCOL, contract
 from .fri_research import ResearchReceipt
-from .store import Conflict, Store
+from .store import Conflict, Held, Store
 
 
 class Actor(BaseModel):
@@ -336,6 +336,11 @@ def create_app(settings: Settings | None = None):
     async def conflict_handler(_, exc):
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=409, content={'detail': str(exc)})
+
+    @app.exception_handler(Held)
+    async def held_handler(_, exc):  # For now, not for good (HumanMint/fri#355): see Held.
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=423, content={'detail': str(exc)})
 
     @app.exception_handler(KeyError)
     async def missing_handler(_, exc):

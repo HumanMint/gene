@@ -7,10 +7,10 @@ import time
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .fri_member_summary import current_writes, held_writes
+from .fri_member_summary import HELD_WRITE, current_writes, held_writes
 from .fri_workspace_store import Workspace
 from .privacy import redact
-from .store import LOOP_SETTLED_SECONDS
+from .store import LOOP_SETTLED_SECONDS, Held
 
 ACTIVE = ('pending', 'scheduled', 'claimed', 'sending')
 REMINDERS = 'fri_reminder_dependencies'
@@ -160,7 +160,8 @@ class Social:
             item, now = uuid.uuid4().hex, time.time()
             db.execute('INSERT INTO fri_reminders(id,guild_id,user_id,dm_id,body,local_time,timezone,due,state,revision,source_id,payload,created,expires) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
                        (item, scope['guild_id'], scope['user_id'], source.channel_id, body, local_time, timezone, due, 'pending', revision, source.id, payload, now, due+7*86400))
-            depend_write(db, 'fri_reminder_dependencies', item, scope, summary_dependencies)
+            depend_write(db, 'fri_reminder_dependencies', item, scope, summary_dependencies,
+                         own=summary_generation is not None)
             return self.reminder_row(db, item)
 
     def reminder_list(self, scope):
@@ -242,10 +243,16 @@ class Social:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
-            current_writes(db, REMINDERS, 'SELECT ?', (item,))
+            current_writes(db, REMINDERS, 'SELECT ?', (item,), held_back=False)
             row = self.reminder_row(db, item)
             if row['state'] != 'claimed' or row['lease'] != lease:
                 raise ValueError('Reminder delivery is no longer authorized.')
+            if held_writes(db, REMINDERS, 'SELECT ?', (item,)):
+                # A summary it depends on was held back after the claim. Nothing was sent: it's scheduled again, with
+                # no lease, and goes once that checks out; the answer says it's held, not refused (HumanMint/fri#355).
+                db.execute("UPDATE fri_reminders SET state='scheduled',lease='',lease_until=0 WHERE id=?", (item,))
+                db.commit()
+                raise Held(HELD_WRITE)
             Workspace.revision(db, row['user_id'], row['revision'])
             db.execute("UPDATE fri_reminders SET state='sending',lease_until=? WHERE id=?", (time.time()+120, item))
             return {**row, 'state': 'sending'}

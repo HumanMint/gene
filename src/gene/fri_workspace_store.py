@@ -9,7 +9,7 @@ import json
 import time
 import uuid
 
-from .fri_member_summary import current_writes, held_writes
+from .fri_member_summary import HELD_WRITE, current_writes, held_writes
 from .privacy import redact
 
 WORK = 'fri_work_dependencies'
@@ -155,7 +155,8 @@ class Workspace:
                     (work_id, scope['guild_id'], scope['user_id'], scope['conversation_id'], title, body,
                      state, revision, now, now, now+30*86400))
             if scope['conversation_id'].startswith('private:'):  # In a channel it's the member's own words, as above.
-                depend_write(db, 'fri_work_dependencies', work_id, scope, summary_dependencies)
+                depend_write(db, 'fri_work_dependencies', work_id, scope, summary_dependencies,
+                             own=summary_generation is not None)
             db.execute('INSERT INTO fri_work_events VALUES (?,?,?)', (source.id, work_id, payload))
             return self.get(db, work_id, scope)
 
@@ -249,10 +250,18 @@ class Workspace:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
-            current_writes(db, WORK, 'SELECT work_id FROM fri_posts WHERE id=?', (post_id,))
+            draft = ('SELECT work_id FROM fri_posts WHERE id=?', (post_id,))
+            current_writes(db, WORK, *draft, held_back=False)
             row = db.execute('SELECT * FROM fri_posts WHERE id=?', (post_id,)).fetchone()
             if not row or row['state'] != 'claimed' or row['lease'] != lease:
                 raise ValueError('Delivery grant unavailable; do not send')
+            if held_writes(db, WORK, *draft):
+                # Its draft's summary was held back after the claim. Nothing was sent: it's authorized again, with no
+                # lease, and goes once that checks out; the answer says it's held, not refused (HumanMint/fri#355).
+                from .store import Held
+                db.execute("UPDATE fri_posts SET state='authorized',lease='' WHERE id=?", (post_id,))
+                db.commit()
+                raise Held(HELD_WRITE)
             self.revision(db, row['user_id'], row['revision'])
             db.execute("UPDATE fri_posts SET state='sending' WHERE id=?", (post_id,))
             return dict(row)

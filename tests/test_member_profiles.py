@@ -7,6 +7,7 @@ import time
 import pytest
 
 from gene.fri_agent_store import RANGES
+from gene.fri_channel_withdrawal import TRIGGER_NAMES as CHANNEL_TRIGGERS
 from gene.fri_memory import TTL
 from gene.fri_memory_store import HORIZON, digest, edit, entries, fences, removed, save
 from gene.fri_protocol import compatible, contract
@@ -406,6 +407,8 @@ def test_existing_database_gains_profile_columns_without_moving_anything(tmp_pat
     path = tmp_path/'old.sqlite3'
     Store(path)
     with sqlite3.connect(path) as db:
+        for trigger in CHANNEL_TRIGGERS:  # A database from before profiles has none (HumanMint/fri#358).
+            db.execute(f'DROP TRIGGER {trigger}')
         db.execute('ALTER TABLE personal_notes DROP COLUMN origin')
         db.execute('ALTER TABLE chat_turns DROP COLUMN audience')
         db.execute("INSERT INTO personal_notes(guild_id,channel_id,user_id,category,evidence,at) "
@@ -645,6 +648,8 @@ def test_a_downgrade_never_upgrades_an_older_database(tmp_path, capsys):
     path = tmp_path/'old.sqlite3'
     Store(path)
     with sqlite3.connect(path) as db:
+        for trigger in CHANNEL_TRIGGERS:  # A database from before profiles has none (HumanMint/fri#358).
+            db.execute(f'DROP TRIGGER {trigger}')
         db.execute('ALTER TABLE personal_notes DROP COLUMN origin')
         db.execute('ALTER TABLE chat_turns DROP COLUMN audience')
         schema = db.execute('SELECT group_concat(sql) FROM sqlite_master').fetchone()[0]

@@ -773,6 +773,20 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me dan', 'if i win ;P\n' + chr(0xA0) + 'i probably think\nplease call me dan'),
     ('games', 'i like chess', 'i like chess, my mom\n;P' + chr(0xA0) + 'i swear would say'),
     ('games', 'i like chess', 'i like chess, my mom ;P' + chr(0x3000) + '\nwould say'),
+    # gene #231 item 3: a line break inside the report itself, between an auxiliary (or a modifier) and its verb,
+    # after a face or with none.
+    ('games', 'i like chess', 'i like chess, my mom :- /\nwould\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\r\nwould\r\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\n\nwould\n\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom ;P\nwould\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom\n:- / would\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\nwould really\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\nwould\nsay so'),
+    ('games', 'i like chess', 'i like chess, my mom would\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\ndid\ntell me'),
+    ('games', 'i like chess', 'i like chess, my mom would' + chr(0x2028) + 'say'),
+    # gene #231 item 1: what only spaced refuses (it keeps the no-break space, so "have to say" is no filler there).
+    ('games', 'i like chess', 'have' + chr(0xA0) + 'to say ;- / i like chess'),
     ('nickname', 'call me dan', 'if i win :)' + chr(0x2007) + chr(0x205F) + '\ni guess\nplease call me dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
@@ -939,6 +953,12 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('nickname', 'call me dan', 'please call me dan ;P\nok?'),
     ('games', 'i like chess', 'i like chess :P\ni think its fun'),
     ('games', 'i like chess', 'i like chess :)\nto be fair'),
+    # gene #231: a line break between an auxiliary and a word that isn't a report verb stays one.
+    ('games', 'i like chess', 'i like chess\nwould play more if i had time'),
+    ('games', 'i like chess', 'i like chess, i would\nsay its my favorite'),
+    ('games', 'i like chess', 'i like chess, would\nyou play?'),
+    ('nickname', 'call me dan', 'call me dan, would\nyou mind?'),
+    ('games', 'i like chess', 'i like chess, can\nyou tell'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -1058,7 +1078,9 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 'mom :- / ', ': - / ', ':- / ) ', ';P i probably seriously think ', ';P i deeply ', 'family ',
                 # gene #226: space separators inside a face, and line breaks next to one.
                 ':-' + chr(0xA0) + '/ ', ':' + chr(0x3000) + '- / ', ';P\ni guess ', 'mom :- /\n', '\n:- / ', ' \n \n',
-                ':-\n/ ', chr(0xA0) + ' '):
+                ':-\n/ ', chr(0xA0) + ' ',
+                # gene #231: line breaks inside a report continuation, and runs of auxiliaries and modifiers.
+                'would\nsay ', 'mom :- /\nwould\n', 'would really\n', 'would would ', 'would really really '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
@@ -1095,6 +1117,17 @@ def test_the_same_words_too_many_times_keep_nothing():
     assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
     assert personal_note(note, 'i like chess. ' * 9) is None
     assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
+
+
+@pytest.mark.parametrize('text', ['i like chess, my mom :- /\nwould\nsay', 'i like chess, my mom would\nsay',
+                                  'i like chess, my mom :- /\r\nwould\r\nsay'])
+def test_231s_shapes_keep_no_note_when_saved_and_read_again(store, text):
+    """gene #231 item 3: each of these was kept by Store.save_chat(), server-wide too, and there again once read;
+    nothing is now."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': 'games', 'evidence': 'i like chess'}])
+    assert not saved['first_memory']
+    assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
 
 
 @pytest.mark.parametrize('category, evidence, text', [

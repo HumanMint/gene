@@ -314,14 +314,15 @@ def readings_of(text, evidence):
     eight times more (gene #212): those four with a face before a hedge from a wider vocabulary dropped too, and four
     with #212's faces and controls read plainly first; and (gene #221) with a face before a hedge past any modifier
     dropped, and twice more with slash faces with whitespace inside them read plainly first; and (gene #226) twice more
-    with Unicode space separators read as a space and line breaks next to a face bridged. Every reading #211, #217 and
-    #225 had is still here, as it was, so each added one only ever refuses more. In this order, each once: which one
+    with Unicode space separators read as a space and line breaks next to a face bridged; and (gene #231) twice more
+    with line breaks inside a report continuation joined too. Every reading #211, #217, #225 and #229 had is still
+    here, as it was, so each added one only ever refuses more. In this order, each once: which one
     refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
     time grow faster than its length (#211's first CI run)."""
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for transform in (composed, restacked, spaced, bridged):
+    for transform in (composed, restacked, spaced, bridged, rejoined):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
@@ -611,6 +612,26 @@ def bridged(text, invisible):
     space where the clause goes on after it, and each slash face a space, any whitespace inside it included: one
     reading for both of #226's items, which a reading of item 2's alone never told apart."""
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
+    return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
+
+
+# And (gene #231 item 3) a line break inside the report itself, between an auxiliary (and any modifiers) and its verb
+# ("mom :- /<LF>would<LF>say", "mom would<LF>say", "did<LF>tell me"): it reads as one report, in a reading of its own;
+# bridged's stays as it was. Only a recognized report continuation: an auxiliary, any modifiers that aren't one, then a
+# report verb, so each run of modifiers is crossed once, up to the next auxiliary.
+AUXILIARIES = r"would|will|could|should|might|must|may|can|does|did|do|has|have|had"
+REPORT_RUN = re.compile(rf"(?i)\b(?:{AUXILIARIES})(?:\s++(?!(?:{AUXILIARIES})\b)"
+                        rf"(?:{HEDGE_MODIFIERS}|{MORE_MODIFIERS}|[^\W\d_]+ly)\b)*+\s++(?:{BARE}|{INFLECTED})\b")
+RUNS_OF_SPACE = re.compile(r'\s+')
+
+
+@functools.lru_cache(maxsize=32)
+def rejoined(text, invisible):
+    """bridged's reading (see there), with the whitespace inside each report continuation, line breaks included, one
+    space first."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
     unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
     return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
 

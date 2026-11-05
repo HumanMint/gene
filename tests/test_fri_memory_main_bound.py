@@ -5,6 +5,7 @@
 #212's items 1-3 only ever refuse more than #211 did (ba5a0a6, the same validator as 1d59371), with no exemption: its
 item 4 stays open (Sol round 1 of #217). And gene #221's F1 and F2 only ever refuse more than #217 did (7914787),
 with no exemption. And gene #226's items 2 and 3 only ever refuse more than #225 did (a5bdada), with no exemption.
+And gene #231 only ever refuses more than #229 did (3bddd69), with no exemption.
 Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the reviewed
 repros, and for generated and fuzzed messages, with and without emoji, symbols, invisible characters and apostrophes
 spelled other ways."""
@@ -37,8 +38,9 @@ STACKED = reference('b1d4b88')  # #205 (#201), before #207.
 ASIDED = reference('ba5a0a6')  # #211 (#207, #201 item 4), before #212.
 HEDGED = reference('7914787')  # #217 (#212 items 1-3), before #221.
 MODIFIED = reference('a5bdada')  # #225 (#221 F1, F2), before #226.
+BRIDGED = reference('3bddd69')  # #229 (#226 items 2, 3), before #231.
 BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST,
-          'b1d4b88': STACKED, 'ba5a0a6': ASIDED, '7914787': HEDGED, 'a5bdada': MODIFIED}
+          'b1d4b88': STACKED, 'ba5a0a6': ASIDED, '7914787': HEDGED, 'a5bdada': MODIFIED, '3bddd69': BRIDGED}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -84,6 +86,8 @@ REVIEWED = [
     'if i win\nand finish \U0001F602 early\nplease call me comet', 'i like chess, my mom \U0001F602 would say',
     'i like chess, or so you \U0001F602 always really just still say', 'i like chess, y\u2018all say',
     'i like chess, my mom <:kek:123456789012345678> would say', 'i like chess, my mom \u2764\uFE0F would say',
+    # gene #231: what only spaced refuses, and a line break inside the report itself.
+    'have' + chr(0xA0) + 'to say ;- / i like chess', 'i like chess, my mom :- /\nwould\nsay',
 ]
 
 
@@ -299,9 +303,10 @@ HEDGE_RESTS = ['', 'would say', 'when i win', 'if i win', 'my mom says', 'my mom
                'you win when we play', 'my opponent is good']
 
 
-def asided(messages, seed, faces=None, hedges=None, breaks=None):
+def asided(messages, seed, faces=None, hedges=None, breaks=None, rests=None):
     """The messages with #212's shapes stacked around the evidence: SLASH_FACES and HEDGES, or `faces` and `hedges`;
-    and with `breaks`, what stands after a face, before its hedge or the rest of the clause, instead of a space."""
+    with `breaks`, what stands after a face, before its hedge or the rest of the clause, instead of a space; and with
+    `rests`, a face followed by one of them directly too (gene #231). Without them, the same messages as before."""
     rng = random.Random(seed)
     faces, hedges = faces or SLASH_FACES, hedges or HEDGES
 
@@ -320,7 +325,8 @@ def asided(messages, seed, faces=None, hedges=None, breaks=None):
              ' ' + rng.choice(faces) + after(),
              f' {rng.choice(KEPT_FACES)}{after()}{rng.choice(hedges)} {rng.choice(HEDGE_RESTS)} '.replace('  ', ' '),
              # Two runs in a row, where #211's reading and the wider one drop different faces (both are read).
-             f' {rng.choice(KEPT_FACES)}{after()}{rng.choice(hedges)} {rng.choice(KEPT_FACES)} {rng.choice(hedges)} ']),
+             f' {rng.choice(KEPT_FACES)}{after()}{rng.choice(hedges)} {rng.choice(KEPT_FACES)} {rng.choice(hedges)} ',
+             *([' ' + rng.choice(faces) + after() + rng.choice(rests) + ' '] if rests else [])]),
             part)
 
     for category, evidence, text in messages:
@@ -365,6 +371,21 @@ BREAKS = ['\n', '\r\n', ' \n ', '\n\n', chr(0xA0), chr(0x2028), ' ']
 def test_messages_with_226s_shapes_are_never_kept_where_a_bound_refuses_them(sha):
     messages = list(asided(itertools.chain(generated(6000, 226), condition_lines(6000, 2260), fuzzed(6000, 22600)),
                            226, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS))
+    assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 1500
+    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
+    assert not leaks(messages, BOUNDS[sha])
+
+
+# gene #231's shapes: a line break inside the report itself, between an auxiliary or a modifier and its verb, after a
+# face (and its own break) or with none.
+BROKEN_REPORTS = ['would\nsay', 'would\r\nsay', 'would\n\nsay', 'would really\nsay', 'would\nsay so', 'did\ntell me',
+                  'would\n' + chr(0x2028) + 'say', 'could\nsay', 'would\nhonestly\nsay', 'would say', 'says']
+
+
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_messages_with_231s_shapes_are_never_kept_where_a_bound_refuses_them(sha):
+    messages = list(asided(itertools.chain(generated(6000, 231), condition_lines(6000, 2310), fuzzed(6000, 23100)),
+                           231, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS, BROKEN_REPORTS))
     assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 1500
     assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
     assert not leaks(messages, BOUNDS[sha])
@@ -438,16 +459,22 @@ def test_the_bound_is_a_real_check():
             ('games', 'i like chess', 'i like chess, my mom :-\n/ would say')):
         assert MODIFIED({'category': category, 'evidence': evidence}, hidden) is not None
         assert personal_note({'category': category, 'evidence': evidence}, hidden) is None
+    assert BRIDGED is not personal_note and BRIDGED not in (MAIN, CURRENT, PREVIOUS, LATEST, NEWEST, STACKED, ASIDED,
+                                                            HEDGED, MODIFIED)
+    for hidden in ('i like chess, my mom :- /\nwould\nsay', 'i like chess, my mom :- /\r\nwould\r\nsay',  # gene #231.
+                   'i like chess, my mom would\nsay', 'i like chess, my mom :- /\ndid\ntell me'):
+        assert BRIDGED({'category': 'games', 'evidence': 'i like chess'}, hidden) is not None
+        assert personal_note({'category': 'games', 'evidence': 'i like chess'}, hidden) is None
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))
 
 
 def test_every_name_mains_validator_has_keeps_its_value():
     """gene #226: a new reading's names never shadow one main's rules read (a regex string named CONTINUES once
     replaced the condition lines' continuation words, and kept what main refused). Every constant and pattern of main's
-    module (a5bdada) is the same here; only functions differ."""
+    module (3bddd69, gene #231) is the same here; only functions differ."""
     import gene.fri_memory as current
     spec = importlib.util.spec_from_file_location('gene._fri_memory_names', Path(__file__).with_name(
-        'reference_fri_memory_a5bdada.py'))
+        'reference_fri_memory_3bddd69.py'))
     main = importlib.util.module_from_spec(spec)
     main.__package__ = 'gene'
     spec.loader.exec_module(main)

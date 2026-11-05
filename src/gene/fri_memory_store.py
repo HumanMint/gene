@@ -54,6 +54,11 @@ def initialize(db):
     # a time, kept across turning it back on as a removal cutoff in every conversation (HumanMint/fri#321). An older
     # controller never reads it.
     db.execute('CREATE TABLE IF NOT EXISTS personal_erasures (user_id TEXT PRIMARY KEY,at REAL NOT NULL)')
+    # And when the Discord message or interaction that asked for it was sent, on Discord's clock, with Gene's stamp of
+    # the erasure it belongs to (HumanMint/fri#337): a message's snowflake is compared with it, not with Gene's clock.
+    # Its own table, so an older controller's writes to the one above never meet it.
+    db.execute('CREATE TABLE IF NOT EXISTS personal_erasure_times (user_id TEXT PRIMARY KEY,at REAL NOT NULL,'
+               'discord_at REAL NOT NULL)')
 
 
 # A note's sources as recorded with its current time: anything else (none, or a time moved since) is unknown.
@@ -85,10 +90,46 @@ def erased(db, user):
     return row[0] if row else None
 
 
+# How far before Gene's own stamp a Discord time may put the cutoff: further would be a stale time (a control that
+# waited out an outage), and holding what was said after it back is the safe way.
+SKEW = 60
+
+
+def record_erasure(db, user, at, discord_at=None, removals=None):
+    """Gene's stamp of the member's erasure, and its cutoff on Discord's clock (see erased_on_discord): the Discord time
+    of the message or interaction that asked, within SKEW of Gene's stamp, or Gene's stamp without one. Neither is ever
+    earlier than a cutoff already in force: an earlier erasure's (Sol round 1 of #213), or `removals`, the latest of
+    the member's note removals, which the erasure deletes (Sol round 2). A request that arrives late, after a newer
+    erasure or removal, or after an outage, can't move a cutoff back and admit what was said before it; nor can
+    Gene's clock stepping back."""
+    in_force = max(erased_on_discord(db, user) or 0, removals or 0)
+    at = max(at, erased(db, user) or 0, removals or 0)
+    cutoff = at if discord_at is None else min(max(discord_at, at - SKEW), at + SKEW)
+    db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
+                (user, at))
+    db.execute('INSERT INTO personal_erasure_times VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET '
+               'at=excluded.at,discord_at=excluded.discord_at', (user, at, max(cutoff, in_force)))
+
+
+def erased_on_discord(db, user):
+    """When the member last turned memory off, on Discord's clock (HumanMint/fri#337): what's compared with a message's
+    snowflake. The cutoff recorded with this same erasure (see record_erasure); otherwise Gene's stamp, as before (see
+    erased), never earlier than one recorded with an earlier erasure: an older controller's, after a rollback, writes
+    its stamp alone. None when never."""
+    at = erased(db, user)
+    if at is None:
+        return None
+    row = db.execute('SELECT at,discord_at FROM personal_erasure_times WHERE user_id=?', (user,)).fetchone()
+    if not row:
+        return at
+    return row[1] if row[0] == at else max(at, row[1])
+
+
 def learned_cutoff(db, guild, scope, user):
     """What learning from history holds a member's words to: their latest removal seen here (see removed), or when
     they last turned memory off, whichever is later. None when neither."""
-    return max((at for at in (removed(db, guild, scope, user), erased(db, user)) if at is not None), default=None)
+    return max((at for at in (removed(db, guild, scope, user), erased_on_discord(db, user)) if at is not None),
+               default=None)
 
 
 def predates(db, guild, scope, user, source):
@@ -100,16 +141,18 @@ def predates(db, guild, scope, user, source):
 def before_erasure(db, user, source):
     """A message sent before the member last turned memory off, answered after it (a queued one, once it's on again):
     a turn saved from it keeps nothing, as one from before a removal doesn't (HumanMint/fri#331). Only a turn's own
-    message is held to it; the other cutoffs (see removed) are unchanged."""
-    at = erased(db, user)
+    message is held to it; the other cutoffs (see removed) are unchanged. On Discord's clock, as the message's
+    snowflake is (HumanMint/fri#337)."""
+    at = erased_on_discord(db, user)
     return bool(source and at is not None and source.timestamp().timestamp() <= at)
 
 
-def last_removal(db, guild, user):
+def last_removal(db, guild, user, on_discord=False):
     """When the member last edited or removed any note, or turned memory off; Fri's own caches drop what they said
-    before it, and so does learning (HumanMint/fri#321)."""
+    before it, and so does learning (HumanMint/fri#321). `on_discord`: with the erasure on Discord's clock (see
+    erased_on_discord), as a newer Fri compares it (HumanMint/fri#337). A removal stays on Gene's clock."""
     cutoffs = [db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND user_id=?',
-                          (guild, user)).fetchone()[0], erased(db, user)]
+                          (guild, user)).fetchone()[0], (erased_on_discord if on_discord else erased)(db, user)]
     return max((at for at in cutoffs if at is not None), default=0)
 
 
@@ -118,17 +161,20 @@ def fences():
     return [digest(category, '') for category in CATEGORIES]
 
 
-def save(db, guild, scope, user, note, at, origin=None, provenance=None, sources=None):
+def save(db, guild, scope, user, note, at, origin=None, provenance=None, sources=None, *, fenced=True):
     """provenance: other members whose words the saving turn drew on; their privacy changes remove the note.
 
     None when the turn didn't say, so it's unknown: only a conversation note can be saved that way.
     sources: the Discord messages it was learned from, which take it when withdrawn (gene #141); None, unknown. The
     same note learned again comes from the newer message: the earlier one, withdrawn, no longer takes it.
+    fenced: whether a removal fence refuses it (see removed): what's learned from what the member said before a
+    removal is. Their own edit in My memory isn't (Sol round 3 of #213): a fence holds back what was learned from
+    before it, never what they type or move now, and one kept at a later time, from Gene's clock running ahead, would.
     """
     if scope == SERVER and provenance is None:
         raise ValueError('A profile note needs to say whose words it drew on')
     category, evidence = note
-    cutoff = removed(db, guild, scope, user)
+    cutoff = removed(db, guild, scope, user) if fenced else None
     if at < time.time()-TTL or (cutoff is not None and at <= cutoff):
         return False
     # The same words in other capitals ("I play valorant", "i play valorant"), said where the same note was and
@@ -253,9 +299,9 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
             raise ValueError('Say what you’re doing, such as I’m working on a mod.'
                              if row['category'] == 'projects' else
                              'Use a short first-person preference, such as I like chess.')
-        for fence in fences():  # See removed().
+        for fence in fences():  # See removed(). Never earlier than it was, even with Gene's clock stepped back.
             db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
-                'user_id,digest) DO UPDATE SET at=excluded.at', (guild, scope, user, fence, time.time()))
+                'user_id,digest) DO UPDATE SET at=max(at,excluded.at)', (guild, scope, user, fence, time.time()))
         db.execute('DELETE FROM personal_notes WHERE id=?', (identifier,))
         # Other excerpts of the same words go with it, under any category: one containing the other, as two
         # excerpts of one message do. For a profile note, in every conversation, which it reached.
@@ -267,11 +313,15 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
                 continue
             if words in other['evidence'].casefold() or other['evidence'].casefold() in words:
                 db.execute('DELETE FROM personal_notes WHERE id=?', (other['id'],))
-        if note:  # An edit keeps the note where it shows, as the member's list labels it, wherever it is made.
-            save(db, guild, scope, user, note, time.time(), row['origin'], (), ())  # In their own words now.
+        # An edit keeps the note where it shows, as the member's list labels it, wherever it is made. In their own
+        # words now, so no removal fence refuses it; any other refusal undoes the edit, the note it replaces included,
+        # never a success with neither kept (Sol round 3 of #213, B3).
+        if note and not save(db, guild, scope, user, note, time.time(), row['origin'], (), (), fenced=False):
+            raise ValueError('That preference can’t be replaced now. Open My memory again.')
         if action == 'keep':  # Out of the profile the way a removal goes, then saved only in this private chat.
             if not save(db, guild, conversation, user, (row['category'], row['evidence']), time.time(), None,
-                        None if row['provenance'] is None else json.loads(row['provenance']), learned(row)):
+                        None if row['provenance'] is None else json.loads(row['provenance']), learned(row),
+                        fenced=False):
                 raise ValueError('That preference can’t be moved now. Open My memory again.')
         cleared(store, db, guild, user, scope, revision)
     return entries(store, guild, conversation, user, profiles)

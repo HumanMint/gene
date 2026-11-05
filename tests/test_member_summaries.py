@@ -370,3 +370,26 @@ def test_a_message_sent_before_an_edit_keeps_nothing_after_it(store, tmp_path, a
                             notes=[], source=queued, provenance=[], audience='server')
     assert saved.get('kept') is False
     assert not store.chat_context('123', 'public:1', '20')['turns']
+
+
+def test_a_later_summary_edit_with_gene_s_clock_stepped_back_keeps_its_fence(store, tmp_path, monkeypatch):
+    """Sol round 2 of HumanMint/gene#213: an edit's removal fence keeps its later time. A second edit, with Gene's clock
+    stepped back three seconds, would otherwise move the fence, and the cutoff Fri reads, earlier than the first."""
+    from gene.fri_member_summary import edit as edit_summary
+    agent = background(store, tmp_path)
+    chat(store, 'we planned a raid on friday')
+    chat(store, 'i main a healer now')
+    build(agent)
+
+    def fence():
+        with store.connection() as db:
+            return db.execute("SELECT max(at) FROM personal_note_removals WHERE user_id='20'").fetchone()[0]
+    for text, behind in (('they like raids', 0), ('they like raids a lot', 3)):
+        real = time.time
+        monkeypatch.setattr(time, 'time', lambda: real() - behind)
+        revision = store.chat_context('123', 'private:9', '20')['revision']
+        edit_summary(store, '123', 'private:9', '20', revision, private_source(), 'replace', text)
+        monkeypatch.setattr(time, 'time', real)
+        if not behind:
+            first = fence()
+    assert first and fence() >= first

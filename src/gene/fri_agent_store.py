@@ -11,7 +11,7 @@ from .fri_explore_store import Exploration
 from .fri_explore_store import initialize as initialize_exploration
 from .fri_explore_store import notes as historical_notes
 from .fri_memory import personal_note
-from .fri_memory_store import erased, last_removal
+from .fri_memory_store import erased, erased_on_discord, last_removal
 from .privacy import clean
 
 CLAIM_SECONDS = 600  # A learning pass's claim: one older is interrupted when the next pass asks (see claim).
@@ -547,7 +547,12 @@ class AgentStore:
                     'removed_at': last_removal(db, guild, user),
                     # When memory was last turned off, on its own: Fri leaves a queued message from before it
                     # unanswered, but still answers one from before a removal (HumanMint/fri#331).
-                    'erased_at': erased(db, user) or 0}
+                    'erased_at': erased(db, user) or 0,
+                    # Both again on Discord's clock, which a message's snowflake is on: dated by the Discord message or
+                    # interaction that asked, where one did. A Fri that knows these compares with them; an older one
+                    # reads the two above, on Gene's clock, as before (HumanMint/fri#337).
+                    'removed_at_discord': last_removal(db, guild, user, on_discord=True),
+                    'erased_at_discord': erased_on_discord(db, user) or 0}
 
     def _summary_current(self, db, row):
         """A summary is shown only while every author still has the revision it was made from."""

@@ -1,7 +1,9 @@
 """Sol round 2 of #178: gene #172 and #173 only ever refuse more than main did (8aad087). And Sol round 1 of #189: gene
 #186 and #187 only ever refuse more than #178 did (8f0ac36). And gene #190 only ever refuses more than #189 did
 (7689069). And gene #198 only ever refuses more than #196 did (7e79220). And gene #201 only ever refuses more than
-#200 and #204 did (50008b5). And gene #207 and #201's item 4 only ever refuse more than #205 did (b1d4b88).
+#200 and #204 did (50008b5). And gene #207 and #201's item 4 only ever refuse more than #205 did (b1d4b88). And gene
+#212's items 1-3 only ever refuse more than #211 did (ba5a0a6, the same validator as 1d59371), with no exemption: its
+item 4 stays open (Sol round 1 of #217).
 Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the reviewed
 repros, and for generated and fuzzed messages, with and without emoji, symbols, invisible characters and apostrophes
 spelled other ways."""
@@ -31,8 +33,9 @@ PREVIOUS = reference('7689069')  # #189, before #190.
 LATEST = reference('7e79220')  # #196 (#190), before #198 and #199.
 NEWEST = reference('50008b5')  # #200 (#198, #199) and #204 (#203), before #201.
 STACKED = reference('b1d4b88')  # #205 (#201), before #207.
+ASIDED = reference('ba5a0a6')  # #211 (#207, #201 item 4), before #212.
 BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST,
-          'b1d4b88': STACKED}
+          'b1d4b88': STACKED, 'ba5a0a6': ASIDED}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -277,6 +280,53 @@ def test_messages_with_stacked_obfuscations_are_never_kept_where_a_bound_refuses
     assert not leaks(messages, BOUNDS[sha])
 
 
+# gene #212's shapes: slash faces with a nose, a trailing bracket or a backslash, attached or alone, with a space inside;
+# shorthand and annotation controls inside faces, keycaps and words; and faces before a hedge of the member's from a
+# wider vocabulary, past a run of modifiers, with what its clause says after it: nothing, the rest of an interrupted
+# clause, a condition, a report, taking it back, or what looks like a clause of its own (Sol round 1 of #217).
+SLASH_FACES = [':^/', ':/)', ':\\', ':-\\', ';\\)', ":'/]", '=/(', ':/ )', ':~/', ':~\\', ';-/ ]']
+HIDDEN = ['\U0001BCA0', '\U0001BCA1', '\U0001BCA2', '\U0001BCA3', chr(0xFFF9), chr(0xFFFA), chr(0xFFFB), '\U0000200B',
+          '']
+HEDGES = ['i believe', 'i really honestly guess', 'i reckon', "i'd say", 'i know', 'we all know', 'i guess', 'i think',
+          'i do honestly think', 'lol i suppose', 'i absolutely believe', 'i strongly think', 'i certainly hope',
+          'i hope']
+HEDGE_RESTS = ['', 'would say', 'when i win', 'if i win', 'my mom says', 'my mom says so', "i'm kidding", 'jk',
+               'my opponent is kidding', 'its fun', 'when the game starts', 'my friends are better',
+               'my mom is saying those exact words', 'that is only if i win', "it's not really true",
+               'you win when we play', 'my opponent is good']
+
+
+def asided(messages, seed):
+    rng = random.Random(seed)
+
+    def hidden():
+        return rng.choice(HIDDEN)
+
+    def stack(part):
+        part = re.sub(r"(?<=\w)(?=\w)", lambda _: hidden() if rng.random() < 0.03 else '', part)
+        part = re.sub(r"(?<=\w)(?=\w)", lambda _: (rng.choice('0123456789') + '\U0000FE0F' + hidden() + '\U000020E3')
+                      if rng.random() < 0.02 else '', part)
+        return re.sub(r'(?<=\w) ', lambda _: rng.choice(
+            [' ', ' ', ' ', (lambda face: face[0] + hidden() + face[1:])(rng.choice(SLASH_FACES)) + ' ',
+             ' ' + rng.choice(SLASH_FACES) + ' ',
+             f' {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} {rng.choice(HEDGE_RESTS)} '.replace('  ', ' '),
+             # Two runs in a row, where #211's reading and the wider one drop different faces (both are read).
+             f' {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} ']), part)
+
+    for category, evidence, text in messages:
+        at = text.find(evidence)
+        yield category, evidence, stack(text[:at]) + evidence + stack(text[at + len(evidence):])
+
+
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_messages_with_212s_shapes_are_never_kept_where_a_bound_refuses_them(sha):
+    messages = list(asided(itertools.chain(generated(6000, 212), condition_lines(6000, 2120),
+                                           fuzzed(6000, 21200)), 212))
+    assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 1500
+    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
+    assert not leaks(messages, BOUNDS[sha])
+
+
 def test_the_bound_is_a_real_check():
     """A validator that keeps what a bound refuses fails it: neither reference is this module under another name."""
     assert MAIN is not personal_note and MAIN({'category': 'games', 'evidence': 'i like chess'},
@@ -307,4 +357,36 @@ def test_the_bound_is_a_real_check():
             ('nickname', 'call me dan', 'if i win ;P i guess\nplease call me dan')):
         assert STACKED({'category': category, 'evidence': evidence}, hidden) is not None
         assert personal_note({'category': category, 'evidence': evidence}, hidden) is None
+    assert ASIDED is not personal_note and ASIDED not in (MAIN, CURRENT, PREVIOUS, LATEST, NEWEST, STACKED)
+    for category, evidence, hidden in (
+            ('games', 'i like chess', 'i like chess, my mom:^/ would say'),
+            ('games', 'i like chess', 'i like chess, my mom:\\ would say'),
+            ('nickname', 'call me dan', 'if i win ;P i believe\nplease call me dan'),
+            ('games', 'i like chess', 'i like chess, my mom:\U0001BCA0P] would say')):
+        assert ASIDED({'category': category, 'evidence': evidence}, hidden) is not None
+        assert personal_note({'category': category, 'evidence': evidence}, hidden) is None
+    for category, evidence, hidden in (  # Pre-existing in #211, found in Sol round 1 of #217 (B5-B7).
+            ('games', 'i like chess', 'i like chess, my mom :-\\ would say'),
+            ('games', 'i like chess', 'i like chess, my mom:/ ) would say'),
+            ('games', 'i like chess', 'i like chess, my mom:~/ would say'),
+            ('nickname', 'call me dan', 'if i win ;P i absolutely believe\nplease call me dan'),
+            ('games', 'i like chess', 'i like chess, my mom would' + chr(0xFFF9) + 'say'),
+            ('games', 'i like chess', 'i like chess, my mom would sa' + chr(0xFFFA) + 'y')):
+        assert ASIDED({'category': category, 'evidence': evidence}, hidden) is not None
+        assert personal_note({'category': category, 'evidence': evidence}, hidden) is None
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))
+
+
+def test_a_messages_readings_are_read_in_the_same_order_whatever_the_hash_seed():
+    """Which reading refuses first decides how much is read (#211's linearity fix): their order is fixed in the code,
+    never a set's, so it's the same in every process, whatever its hash seed."""
+    import os
+    import subprocess
+    import sys
+    script = ('import json, sys; from gene.fri_memory import readings_of; '
+              'print(json.dumps(readings_of(sys.argv[1], sys.argv[2])))')
+    text = 'if i win ;P i believe\nmy mom:\U0001BCA0P] would s\U0001F602ay i like chess :^/ ok'
+    runs = {subprocess.run([sys.executable, '-c', script, text, 'i like chess'], capture_output=True, text=True,
+                           check=True, env={**os.environ, 'PYTHONHASHSEED': seed}).stdout for seed in ('0', '1', '2', '3')}
+    assert len(runs) == 1 and len(json_list := __import__('json').loads(runs.pop())) > 4
+    assert len({tuple(reading) for reading in json_list}) == len(json_list)  # Each once.

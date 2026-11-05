@@ -21,6 +21,20 @@ class Actor(BaseModel):
     user_id: str
 
 
+class Erasure(Actor):
+    # The Discord message that asked, when there is one ("gene forgetme true"): its snowflake dates the erasure on
+    # Discord's clock (HumanMint/fri#337). Red's own data deletion has none.
+    source_id: str | None = Field(default=None, pattern=r'^[0-9]{1,25}$')
+
+
+def discord_time(snowflake):
+    """When a Discord ID's message or interaction was made, on Discord's clock; None if it can't be read."""
+    try:
+        return ((int(snowflake) >> 22) + 1420070400000) / 1000
+    except (TypeError, ValueError):
+        return None
+
+
 class TurnSource(BaseModel):
     """Another member whose message shaped this reply, and the privacy revision Fri observed."""
     model_config = ConfigDict(extra='forbid')
@@ -470,12 +484,13 @@ def create_app(settings: Settings | None = None):
         return {'ok': True}
 
     @app.post('/privacy/erase', dependencies=[auth('runtime', 'fri')])
-    def erase(body: Actor, authorization: str = Header(default='')):
+    def erase(body: Erasure, authorization: str = Header(default='')):
         runtime = hmac.compare_digest(authorization, 'Bearer ' + settings.runtime_token)
         expected = (settings.runtime_guild_id or settings.guild_id) if runtime else settings.guild_id
         if not expected or body.guild_id != expected:
             raise HTTPException(403, 'This server is not configured for this bot')
-        store.erase_user(body.user_id)
+        mine = body.source_id and not store.someone_elses(body.source_id, body.user_id)  # Sol round 1 of #213.
+        store.erase_user(body.user_id, discord_time(body.source_id) if mine else None)
         return {'ok': True}
 
     @app.post('/worker/claim', dependencies=[auth('worker')])
@@ -568,7 +583,16 @@ def create_app(settings: Settings | None = None):
     @app.post('/chat/memory/control', dependencies=[auth('fri')])
     def personal_control(body: PersonalControl):
         chat_scope(body)
-        store.personal_control(body.user_id, body.action)
+        # The member's own message or interaction that asked dates an erasure on Discord's clock (HumanMint/fri#337).
+        # One that isn't theirs, here, is ignored, never a reason to refuse: the erasure goes on Gene's clock.
+        # Nor one the controller has recorded as another member's (Sol round 1 of #213).
+        try:
+            asked = body.source.check(body.guild_id, body.conversation_id, body.user_id) if body.source else None
+        except ValueError:
+            asked = None
+        if asked and store.someone_elses(asked.id, body.user_id):
+            asked = None
+        store.personal_control(body.user_id, body.action, asked.timestamp().timestamp() if asked else None)
         return {'ok': True}
 
     @app.post('/chat/memory/notes', dependencies=[auth('fri')])

@@ -903,9 +903,9 @@ def edit(store, guild, conversation, user, revision, source, action, text=''):
             raise ValueError('There’s no summary to change now. Open My memory again.')
         # A server-wide removal fence, as a profile note edit records: nothing they sent before this, queued or
         # still in a burst, is kept or learned afterwards, so it can't rebuild what they cleared.
-        for fence in fences():
+        for fence in fences():  # Never earlier than it was, even with Gene's clock stepped back.
             db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
-                       'user_id,digest) DO UPDATE SET at=excluded.at', (guild, SERVER, user, fence, time.time()))
+                       'user_id,digest) DO UPDATE SET at=max(at,excluded.at)', (guild, SERVER, user, fence, time.time()))
         cleared(store, db, guild, user, SERVER, revision)
         if action == 'replace':
             now = time.time()

@@ -128,9 +128,12 @@ def test_an_older_report_and_summary_are_held_where_they_may_have_read_it(learni
 
 
 def stored(store):
-    """Whether the report's words and the channel summary are still in the database, shown or not."""
+    """Whether the report's words and the channel summary are still in the database, shown or not: in their rows, or
+    set aside where they're held (gene #252)."""
     with store.connection() as db:
-        return (SUMMARY in db.execute('SELECT body FROM agent_reports').fetchone()[0],
+        tables = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+                                               "('agent_reports','fri_learning_held')")]
+        return (SUMMARY in str([tuple(row) for table in tables for row in db.execute(f'SELECT * FROM {table}')]),
                 db.execute("SELECT 1 FROM agent_summaries WHERE channel_id='1'").fetchone() is not None)
 
 

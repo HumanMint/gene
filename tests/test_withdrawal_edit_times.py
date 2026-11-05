@@ -381,3 +381,98 @@ def test_a_learning_pass_records_the_version_each_note_was_learned_from(learning
     scheduler.finish(claim['id'], records, result, 1, said, True, {}, newest_id=said, versions={said: started+900})
     assert store.chat_context('123', 'public:1', '11')['personal_memory']['notes']
     assert versions(store) == [('note', said, started+900)]
+
+
+# Sol round 3 of fri #364.
+
+def old_exchange(store, conversation='public:1'):
+    """Member 20's exchange answering their 100-day-old message as first sent, saved now: no summary read it."""
+    said = source(age=100*DAY, channel=conversation.split(':')[1])
+    store.save_chat('123', conversation, '20', 0, 'what about that old thing', 'fri said something', 'model', 'high',
+                    source=said, audience='server', provenance=[], versions={said['id']: created(said['id'])})
+    return said['id']
+
+
+def withdraw_old(store, message, how):
+    if how == 'a later edit':
+        store.withdraw_saved('123', [message], edited_at=created(message)+60)
+    elif how == 'a deletion':
+        store.withdraw_saved('123', [message], deleted=True)
+    else:  # Fri's own exchange, by its scope.
+        store.withdraw_turn('123', 'public:1', '20', message)
+
+
+@pytest.mark.parametrize('how', ['a later edit', 'a deletion', 'its scope'])
+@pytest.mark.parametrize('known', [True, False])
+def test_r3_b1_a_withdrawal_leaves_a_summary_whose_sources_never_named_the_message(store, tmp_path, how, known):
+    """Sol round 3's B1: a summary built from two other messages in the channel, then an exchange answering a
+    100-day-old message, and a late edit of that message withdrawn by ID. edited() left the summary, but the exchange's
+    withdrawal dropped it by channel and time alone: the message was sent before the summary's exchanges were saved.
+    Main never asked about that old message's edit. A summary whose sources are known is dropped only where they name
+    the message, for an edit, a deletion or a withdrawal by scope alike, as it read nothing else; one whose sources
+    aren't known still goes by channel and time."""
+    from tests.test_member_summaries import background, build
+    agent = background(store, tmp_path)
+    exchanges_from(store, True)
+    assert build(agent)[1] == {'kept': True}
+    if not known:
+        with store.connection() as db:
+            db.execute('DELETE FROM fri_member_summary_sources')
+    withdraw_old(store, old_exchange(store), how)
+    assert standing(store, '20') == ('shown' if known else 'gone')
+
+
+@pytest.mark.parametrize('known', [True, False])
+def test_r3_b1_a_build_in_flight_that_never_read_the_message_finishes(store, tmp_path, known):
+    """The same for a build claimed before the edit: one whose claim names what it read finishes; one from an older
+    controller, whose claim doesn't, is let go by channel and time as before."""
+    from gene.fri_agent_store import AgentStore
+    from gene.fri_member_summary import CLAIM, finish
+    from tests.test_member_summaries import background, offered
+    agent = background(store, tmp_path)
+    exchanges_from(store, True)
+    offer = offered(agent)
+    if not known:
+        with store.connection() as db:
+            record = AgentStore.get(db, CLAIM)
+            AgentStore.put(db, CLAIM, {key: value for key, value in record.items() if key != 'messages'})
+    withdraw_old(store, old_exchange(store), 'a later edit')
+    if known:
+        assert finish(agent, offer['id'], 'they raid', 'completed', ['public:1'], True) == {'kept': True}
+    else:
+        with pytest.raises(ValueError, match='expired'):
+            finish(agent, offer['id'], 'they raid', 'completed', ['public:1'], True)
+
+
+@pytest.mark.parametrize('skew', SKEWS)
+def test_r3_b1_a_summary_from_the_version_an_edit_repeats_stays_as_an_earlier_exchange_goes(world, monkeypatch, skew):
+    """The exchange answering the message before its edit goes, and the summary, which drew on the edited version,
+    stays, as edited() placed it: the exchange's withdrawal places it by its version too."""
+    client, store = world
+    said = source(age=100*DAY, channel='51')['id']
+    later = time.time()-60
+    summary_drawing_on(store, '20', [said], {said: later})
+    store.save_chat('123', 'public:51', '20', 0, 'what about lunch', 'okay', 'model', 'high',
+                    source={**source(channel='51'), 'id': said}, provenance=[], versions={said: created(said)})
+    skewed(monkeypatch, skew)
+    assert withdraw_saved(client, said, edited_at=later).json() == {'ok': True, 'removed': 1, 'unsure': []}
+    assert standing(store, '20') == 'shown'
+
+
+def test_r3_s1_a_moved_note_keeps_the_version_it_was_learned_from(world):
+    """Sol round 3's S1: shared into the profile through My memory, then kept back in the DM, a note learned from a
+    100-day-old message kept its message but not its version, so a pin repeating that version couldn't be placed
+    against it: the answer was unsure, and Fri held a valid note back. Each move keeps the version."""
+    from gene.fri_memory_store import edit, entries
+    client, store = world
+    said = source(age=100*DAY, channel='51')
+    version = created(said['id'])+5
+    learn(store, LIKE, source=said, versions={said['id']: version})
+    chatter(store, 6)  # Its exchange trimmed: the note alone holds the message.
+    for action, conversation in (('share', 'private:52'), ('keep', 'private:52')):
+        note = next(row for row in entries(store, '123', 'private:52', '20')['entries'] if row['evidence'] == LIKE)
+        revision = entries(store, '123', 'private:52', '20')['revision']
+        edit(store, '123', conversation, '20', note['id'], revision, source(channel='52'), action)
+        assert ('note', said['id'], version) in versions(store), action
+        assert withdraw_saved(client, said['id'], edited_at=version).json() == {'ok': True, 'removed': 0, 'unsure': []}
+        assert LIKE in [row['evidence'] for row in entries(store, '123', 'private:52', '20')['entries']]

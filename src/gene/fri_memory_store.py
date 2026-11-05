@@ -59,6 +59,84 @@ def initialize(db):
     # Its own table, so an older controller's writes to the one above never meet it.
     db.execute('CREATE TABLE IF NOT EXISTS personal_erasure_times (user_id TEXT PRIMARY KEY,at REAL NOT NULL,'
                'discord_at REAL NOT NULL)')
+    # A removal's time an older controller in a rollback window took away (HumanMint/gene#219): deleted while still in
+    # force, as its erasure deletes every removal of the member and stamps its own time, which can be earlier; or moved
+    # back, as its removal writes its own time over a later one. The database keeps the later time here (see
+    # floor_triggers) until this Gene's next start puts it back (see reconcile). Its own table, which an older
+    # controller never reads or drops.
+    db.execute('CREATE TABLE IF NOT EXISTS personal_cutoff_floors (guild_id TEXT,channel_id TEXT,user_id TEXT,'
+               'digest TEXT,at REAL NOT NULL,PRIMARY KEY(guild_id,channel_id,user_id,digest))')
+    floor_triggers(db)
+    reconcile(db)
+
+
+# What floor_triggers keep: the removal as it was, at its later time if two meet.
+KEPT = ('INSERT INTO personal_cutoff_floors VALUES (OLD.guild_id,OLD.channel_id,OLD.user_id,OLD.digest,OLD.at) '
+        'ON CONFLICT(guild_id,channel_id,user_id,digest) DO UPDATE SET at=max(at,excluded.at);')
+
+
+def floor_triggers(db):
+    """Whoever writes the removals, an older controller too, the database keeps each one's later time when it's
+    - deleted within TTL of being written, as 4ffd668's erasure deletes every removal of the member before stamping
+      the erasure with its own clock. Expiry deletes only what's past TTL (per-phrase removals) or HORIZON (wordless
+      ones), so it keeps nothing;
+    - moved back, as 4ffd668's removal writes its own time over a later one. This Gene never moves one back (see
+      edit). Putting it back at once would refuse the older controller's own replacement after it, which it doesn't
+      check, so it's put back at this Gene's next start.
+    And an erasure's stamp is never moved back, as 4ffd668's next erasure would with its clock behind (an upsert of
+    its own time): the later one stays, at once, which only ever holds more back, and its cutoff on Discord's clock is
+    at least the new stamp, so a reader that trusts it (see erased_on_discord) never reads less than the new erasure.
+    Names of their own, which no older controller drops or makes, replaced at each start so a changed body takes
+    effect; in one transaction, so a start cut off between them never leaves one missing."""
+    began = not db.in_transaction
+    if began:
+        db.execute('BEGIN IMMEDIATE')
+    for name, event, body in (
+            ('note_removal_kept_as_floor', 'AFTER DELETE ON personal_note_removals '
+                                           f"WHEN OLD.at>=(julianday('now')-2440587.5)*86400.0-{TTL}", KEPT),
+            ('note_removal_kept_when_moved_back', 'AFTER UPDATE OF at ON personal_note_removals WHEN NEW.at<OLD.at',
+             KEPT),
+            ('erasure_kept_when_moved_back', 'AFTER UPDATE OF at ON personal_erasures WHEN NEW.at<OLD.at',
+             'UPDATE personal_erasure_times SET discord_at=max(discord_at,NEW.at) WHERE user_id=NEW.user_id; '
+             'UPDATE personal_erasures SET at=OLD.at WHERE user_id=NEW.user_id;')):
+        db.execute(f'DROP TRIGGER IF EXISTS {name}')
+        db.execute(f'CREATE TRIGGER {name} {event} BEGIN {body} END')
+    if began:
+        db.commit()
+
+
+def reconcile(db):
+    """At start, what an older controller took away in a rollback window (see floor_triggers) is put back
+    (HumanMint/gene#219), as this Gene's own writes would have kept it:
+    - a removal it moved back gets its later time again;
+    - removals it deleted are carried into the member's erasure, as personal_control does; deleted with no erasure
+      (a rollback's copies of profile removals, say) they change nothing;
+    - and its erasure, stamped with its own clock, is kept at or past this Gene's earlier stamp and cutoff, as
+      record_erasure keeps its own. Its Discord time isn't known, so its cutoff is its stamp or the one in force,
+      whichever is later.
+    Then no floor is left."""
+    began = not db.in_transaction
+    if began:
+        db.execute('BEGIN IMMEDIATE')
+    match = ('f.guild_id=personal_note_removals.guild_id AND f.channel_id=personal_note_removals.channel_id AND '
+             'f.user_id=personal_note_removals.user_id AND f.digest=personal_note_removals.digest')
+    db.execute(f'UPDATE personal_note_removals SET at=(SELECT f.at FROM personal_cutoff_floors f WHERE {match}) '
+               f'WHERE EXISTS (SELECT 1 FROM personal_cutoff_floors f WHERE {match} AND f.at>personal_note_removals.at)')
+    deleted = {row[0]: row[1] for row in db.execute(
+        'SELECT user_id,max(at) FROM personal_cutoff_floors f WHERE NOT EXISTS (SELECT 1 FROM personal_note_removals r '
+        'WHERE r.guild_id=f.guild_id AND r.channel_id=f.channel_id AND r.user_id=f.user_id AND r.digest=f.digest) '
+        'GROUP BY user_id')}
+    older = {row[0] for row in db.execute('SELECT e.user_id FROM personal_erasures e JOIN personal_erasure_times t '
+                                          'ON t.user_id=e.user_id WHERE t.at IS NOT e.at')}
+    for user in sorted(set(deleted) | older):
+        at = erased(db, user)
+        if at is None:
+            continue
+        stamped = db.execute('SELECT at FROM personal_erasure_times WHERE user_id=?', (user,)).fetchone()
+        record_erasure(db, user, max(at, stamped[0] if stamped else at), None, deleted.get(user))
+    db.execute('DELETE FROM personal_cutoff_floors')
+    if began:
+        db.commit()
 
 
 # A note's sources as recorded with its current time: anything else (none, or a time moved since) is unknown.

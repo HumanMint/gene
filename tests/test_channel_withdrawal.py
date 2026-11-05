@@ -373,3 +373,16 @@ def test_the_controller_names_the_messages_it_withdrew(world):  # noqa: F811
     first, second = said(client, 'i like minecraft'), said(client, 'i like chess', channel='52')
     answer = withdraw(client, '51').json()
     assert first['source']['id'] in answer['messages'] and second['source']['id'] not in answer['messages']
+
+
+def test_a_private_turn_is_never_held_to_its_authorization_channel(world):  # noqa: F811
+    """Sol round 2 of #243, B1: a DM's or the panel's scope names the workshop as its channel, to authorize it, never as
+    a thread's parent. With the workshop channel withdrawn, a DM's check and save still go through, as on main (and as
+    the deployed Fri expects)."""
+    client, store = world
+    withdraw(client, '50')
+    dm = turn(source(channel='900'), 'i like chess', channel_id='50', conversation_id='private:900',
+              notes=[{'category': 'games', 'evidence': 'i like chess'}])
+    assert client.post('/chat/turn/check', headers=headers('fri'), json=dm).status_code == 200
+    assert post_turn(client, dm).json()['kept'] is not False
+    assert notes(store, 'private:900') == ['i like chess']

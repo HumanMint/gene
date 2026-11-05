@@ -99,16 +99,19 @@ def test_the_profile_says_the_cutoffs_on_discords_clock_beside_gene_s_own(gene):
     assert set(profile(gene, channel='3')) == {'enabled', 'revision', 'removed_at'}
 
 
-def test_an_erasure_with_no_discord_event_keeps_gene_s_clock(gene):
-    """Red's data deletion request carries no Discord message: its erasure stays on Gene's clock, as today, and the
-    profile's Discord-clock cutoff is that same time, so it never admits more than before."""
+def test_an_erasure_with_no_discord_event_holds_a_few_seconds_past_gene_s_stamp(gene):
+    """Red's data deletion request carries no Discord message: its erasure keeps Gene's stamp (erased_at), and its
+    cutoff on Discord's clock is a few seconds (MARGIN) later (HumanMint/fri#368). With Gene's clock two seconds
+    behind, the member's message sent half a second before it counted as after it, and was kept; it's held back."""
+    from gene.fri_memory_store import MARGIN
     now = REAL()
     with gene_clock(-2):
         assert gene.post('/privacy/erase', headers=headers('fri'), json={'guild_id': '123', 'user_id': '20'}).status_code == 200
     control(gene, 'enable', now + 0.2, -2)
     answer = profile(gene)
-    assert answer['erased_at_discord'] == answer['erased_at'] == pytest.approx(now - 2, abs=1)
-    assert saved(gene, now - 0.5).get('kept') is not False  # As today: Gene's stamp is before it.
+    assert answer['erased_at'] == pytest.approx(now - 2, abs=1)
+    assert answer['erased_at_discord'] == pytest.approx(answer['erased_at'] + MARGIN, abs=0.001)
+    assert saved(gene, now - 0.5) == {'ok': True, 'first_memory': False, 'kept': False}
     assert saved(gene, now - 3, text='i love jazz') == {'ok': True, 'first_memory': False, 'kept': False}
 
 
@@ -164,7 +167,9 @@ def test_an_older_controllers_erasure_after_one_with_a_discord_time_is_on_gene_s
     with store.connection() as db:  # As an older controller's disable writes it.
         db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
                    ('20', now))
-    assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=0.001)
+    from gene.fri_memory_store import MARGIN
+    # Its own stamp, with no Discord time: a few seconds on (HumanMint/fri#368).
+    assert profile(gene)['erased_at_discord'] == pytest.approx(now + MARGIN, abs=0.001)
     control(gene, 'enable', now + 0.2, 0)
     assert saved(gene, now - 10) == {'ok': True, 'first_memory': False, 'kept': False}
 

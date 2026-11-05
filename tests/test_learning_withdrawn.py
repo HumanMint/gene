@@ -22,7 +22,7 @@ def held(*pairs):
 def test_a_pass_hears_of_every_withdrawal_its_finish_would_refuse(learning):  # noqa: F811
     clock, store, settings, scheduler = learning
     client = TestClient(create_app(settings))
-    store.withdraw_saved('123', [BEFORE], deleted=False)  # An edit before the batch: its fence predates the claim.
+    store.withdraw_saved('123', [BEFORE], deleted=False)  # An edit before the batch: no fence, nothing to refuse.
     claim = scheduler.claim()
     assert claim
     store.withdraw_saved('123', [DELETED], deleted=True)  # By ID alone: only Gene knows.

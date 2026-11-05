@@ -6,8 +6,7 @@
    it keeps nothing.
 2. Another member's saved reply whose model request carried it (`drew_on`, from a Fri offering withdrawal-sources):
    once it's deleted, that reply keeps only a breadcrumb, as one that drew on a withdrawn summary does, and so does one
-   that carried Fri's reply to it, or a reply of Fri's that did. An edit retires them too (gene #246): with no versions
-   of the message, what drew on it can't be told from what it says now.
+   that carried Fri's reply to it, or a reply of Fri's that did. An edit leaves those replies, as before (gene #150).
 
 Chat context names the messages a note or an exchange elsewhere came from, beside them, for a Fri that asks, so it can
 keep them out of a request while a withdrawal is still on its way (fri #215).
@@ -245,13 +244,12 @@ def test_one_that_carried_fris_reply_to_it_goes_too_and_one_that_carried_that(wo
 
 
 def test_by_id_alone_with_no_exchange_of_its_own(world):
-    """A message in Fri's view it never answered: only the replies that carried it hold it. An edit retires them too
-    (gene #246; gene #150 left them)."""
+    """A message in Fri's view it never answered: only the replies that carried it hold it."""
     client, store = world
     nearby = source(age=30, channel='51')['id']
     turn(store, 'what did they mean', drew_on=[nearby], age=20)
-    assert withdraw_saved(client, nearby).json() == {'ok': True, 'removed': 0}  # An edit.
-    assert replies(store) == [controller.DRAWN]
+    assert withdraw_saved(client, nearby).json() == {'ok': True, 'removed': 0}  # An edit: it stays.
+    assert replies(store) == ['about that: '+MARKER]
     assert withdraw_saved(client, nearby, deleted=True).json() == {'ok': True, 'removed': 0}
     assert replies(store) == [controller.DRAWN]
     with store.connection() as db:  # Nobody's exchange went, so no fence: its author is unknown here.
@@ -281,8 +279,8 @@ def test_an_ordinary_reply_is_unchanged(world):
 
 
 def test_a_dependent_an_older_controller_left_stays_as_it_would_on_main(world):
-    """An older controller's withdrawals ran without retiring the replies that carried the message, and a start
-    doesn't go back over them: they stay, as they would on main."""
+    """An older controller's withdrawals don't say whether the message was edited or deleted, so a start leaves the
+    replies that carried it, as main does. Only a deletion retires them (gene #150)."""
     client, store = world
     taken, _ = learn(store, 'explain '+MARKER, age=30)
     turn(store, 'what did they mean', drew_on=[taken], age=20)
@@ -423,17 +421,16 @@ def test_a_stale_withdrawal_still_takes_what_holds_the_message(world):
     assert inputs(store, conversation='public:52') == [] and fences(store) == []
 
 
-def test_an_edit_takes_the_members_exchange_notes_and_others_replies(world):
-    """gene #246: an edit retires other members' replies that carried the message too, as a deletion does (gene #150
-    left them). The check before a reply is delivered stays as it was for an edit."""
+def test_an_edit_takes_the_members_exchange_and_notes_but_not_others_replies(world):
+    """gene #150: only a deletion retires other members' replies that carried the message."""
     client, store = world
     taken, _ = learn(store, LIKE, age=30)
     turn(store, 'what did they mean', drew_on=[taken], age=20)
     assert withdraw(client, taken).json()['removed'] == 1  # An edit: no `deleted`.
     assert notes(store) == [] and inputs(store) == []
-    assert replies(store) == [controller.DRAWN]
+    assert replies(store) == ['about that: '+MARKER]
     assert store.check_chat('30', 0, [{'user_id': '20', 'revision': 0}], guild_id='123', drew_on=[taken]) == {'ok': True}
-    withdraw(client, taken, deleted=True)  # Then deleted: still a breadcrumb.
+    withdraw(client, taken, deleted=True)  # Then deleted: now they go.
     assert replies(store) == [controller.DRAWN]
 
 

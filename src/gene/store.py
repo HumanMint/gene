@@ -1189,26 +1189,6 @@ class Store:
             f'message_id IN ({",".join("?"*len(chunk))})', (guild_id, since, *chunk)).fetchone() for chunk in chunks)
 
     @staticmethod
-    def edited_since(db, guild_id, messages, first):
-        """Whether any of these messages, whoever wrote them, was withdrawn (edited, say) while a turn carrying them may
-        have been under way: at or after its first message was sent, by Discord's clock less SKEW, as it may run ahead
-        of the controller's. On record by its ID (see _fence) or under its author (chat_turn_withdrawals). The turn's
-        model request may have read what the message said before (gene #246). A turn with nothing to date it by counts
-        from a week back."""
-        from .fri_member_summary import SKEW
-        messages = sorted({str(message) for message in messages if message})
-        try:
-            began = first.timestamp().timestamp()-SKEW
-        except (AttributeError, ValueError):
-            began = time.time()-WITHDRAWN_SECONDS
-        chunks = [messages[i:i+500] for i in range(0, len(messages), 500)]
-        return any(db.execute(
-            f'SELECT 1 FROM chat_message_fences WHERE guild_id=? AND at>=? AND message_id IN ({",".join("?"*len(chunk))}) '
-            f'UNION ALL SELECT 1 FROM chat_turn_withdrawals WHERE guild_id=? AND at>=? AND '
-            f'message_id IN ({",".join("?"*len(chunk))}) LIMIT 1',
-            (guild_id, began, *chunk, guild_id, began, *chunk)).fetchone() for chunk in chunks)
-
-    @staticmethod
     def withdrawn_during(db, guild_id, messages, since):
         """Whether any of these messages was withdrawn by its ID alone, edited or deleted, at or after `since` (a
         learning batch's claim) while nothing stored held it (gene #149): that batch read it before."""
@@ -1322,9 +1302,8 @@ class Store:
             fenced = fenced or turn_withdrawn(db, guild_id, channel_id, source and source.model_dump(), burst, parent)
             # Nor one whose model request carried a message deleted by now (gene #141): its reply may repeat it, so
             # it keeps nothing, though the member's own message stands, so it settles what was pending as usual.
-            # Or one edited since the turn began (gene #246): with no versions, it may repeat what it said before.
             stale = (fenced or self.deleted_anywhere(db, guild_id, drew_on) or
-                     self.edited_since(db, guild_id, drew_on, first) or predates(db, guild_id, channel_id, user_id, first))
+                     predates(db, guild_id, channel_id, user_id, first))
             # One from before memory was last turned off keeps no exchange or note either (HumanMint/fri#331), and,
             # with memory on again, leaves no question pending: that would carry its words to the member's next turn
             # (HumanMint/fri#337). While memory is still off, its question is pending as any turn's is then, as before.
@@ -1556,11 +1535,10 @@ class Store:
         # A learning report, channel summary or archive observation that read it (gene #244), said in this
         # conversation: a public channel's, or none that learning reads (a DM).
         withdraw_learning(db, [message_id], said_in=conversation_id[7:] if conversation_id.startswith('public:') else '')
-        if deleted and recorded:
-            Store._deleted(db, guild_id, message_id, now, user_id, current)
-        # Others' replies that carried it, or Fri's reply to it, which may repeat it: edited too, as what drew on it
-        # can't be told from what it says now (gene #246; gene #150 left them).
-        Store._retire_drawn(db, guild_id, [message_id, *(turn['reply_message_id'] for turn in turns)])
+        if deleted:  # Others' replies that carried it, or Fri's reply to it, which may repeat it.
+            if recorded:
+                Store._deleted(db, guild_id, message_id, now, user_id, current)
+            Store._retire_drawn(db, guild_id, [message_id, *(turn['reply_message_id'] for turn in turns)])
         from .fri_member_summary import withdrawn
         withdrawn(db, guild_id, user_id, conversation_id, message_id, [turn['at'] for turn in turns])
         return len(turns)
@@ -1603,8 +1581,7 @@ class Store:
 
     @staticmethod
     def _retire_drawn(db, guild_id, messages):
-        """Saved replies whose model request carried one of these messages, edited or deleted (gene #246), keep a
-        breadcrumb, not their words,
+        """Saved replies whose model request carried one of these deleted messages keep a breadcrumb, not their words,
         as a reply drawn on a withdrawn summary does (gene #141): whoever's they are, in any conversation. Then so do
         those that carried Fri's reply in one of them, and so on. Not verbatim, so a reference to it fails closed, and
         a question it left goes. The member's own words stay."""
@@ -1644,13 +1621,14 @@ class Store:
         one saved before a restart, say, would keep its old words until it expires (fri #174). Each saved exchange
         holding one goes as withdraw_turn takes it, under the member and conversation it was saved with. So does a note
         learned from one, its exchange trimmed since (a note outlasts six exchanges), with a fence so nothing learns it
-        again, and a reply that carried one keeps only a breadcrumb, edited or deleted (gene #141, #246). A member
-        summary whose record of what it read names one goes, and a build in flight whose claim does, whatever else holds
-        the message (gene #249; see fri_member_summary.taken); a summary with no such record goes by where and when,
-        under an exchange holding the message, as before. One nothing holds costs nobody else their summary: Fri asks
-        about every edit and delete it can't place, and an unrelated one shouldn't. One nothing places is fenced by its
-        ID, edited or deleted, so a save of a reply still on its way keeps nothing from it (gene #149, #246; see
-        _fence). So every call takes the write lock."""
+        again, and, once deleted, a reply that carried one keeps only a breadcrumb (gene #141). A member summary whose
+        record of what it read names one goes, and a build in flight whose claim does, whatever else holds the message:
+        its exchanges may be trimmed and no note may hold it (gene #249; see fri_member_summary.taken). A summary with
+        no such record goes by where and when, under an exchange holding the message, as before. One nothing holds
+        costs nobody else their summary: Fri asks about every edit and delete it can't place, and an unrelated one
+        shouldn't. A deletion of one still keeps a fence by its ID, and so does an edit while a learning batch reads
+        (gene #149; see _fence). Only a call that finds something, a deletion, or an edit during a learning batch takes
+        the write lock; the rest read."""
         ids = json.dumps(sorted(set(message_ids)))
         def held(db):
             return db.execute(
@@ -1662,10 +1640,15 @@ class Store:
             return [(row['user_id'], message) for message in json.loads(ids) for row in db.execute(
                 f'SELECT DISTINCT user_id FROM personal_notes WHERE guild_id=? AND {CURRENT} AND '
                 'instr(sources,?)>0 ORDER BY user_id', (guild_id, json.dumps(message)))]
+        from .fri_learning_sources import naming
         from .fri_learning_sources import withdraw as withdraw_learning
+        from .fri_member_summary import naming as summaries_naming
         from .fri_member_summary import taken as summaries_taken
         with self.connection() as db:
-            db.execute('BEGIN IMMEDIATE')
+            if not (deleted or self._learning(db) is not None or held(db) or noted(db)
+                    or naming(db, json.loads(ids)) or summaries_naming(db, guild_id, json.loads(ids))):
+                return {'ok': True, 'removed': 0}
+            db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
             # A learning report, channel summary or archive observation that read one, whatever else holds it (gene
             # #244). By ID, with no channel to go by: one with no record of what it read is only held back.
             withdraw_learning(db, json.loads(ids))
@@ -1680,9 +1663,11 @@ class Store:
                 db.execute('INSERT INTO chat_turn_withdrawals VALUES (?,?,?,?) ON CONFLICT(guild_id,user_id,message_id) '
                            'DO UPDATE SET at=excluded.at', (guild_id, user, message, now))
                 self._withdraw_notes(db, guild_id, user, '', message)
-            # Whose a message only replies carried is isn't known here: they retire now, edited or deleted (gene #246).
-            self._retire_drawn(db, guild_id, json.loads(ids))
-            self._fence(db, guild_id, [message for message in json.loads(ids) if message not in placed], deleted, now)
+            if deleted:  # Whose a message only replies carried is isn't known here: they retire now.
+                self._retire_drawn(db, guild_id, json.loads(ids))
+            if deleted or self._learning(db) is not None:
+                self._fence(db, guild_id, [message for message in json.loads(ids) if message not in placed], deleted,
+                            now)
             return {'ok': True, 'removed': removed}
 
     @staticmethod
@@ -1694,10 +1679,9 @@ class Store:
         who erased since that turn (its grant or permit holds the revision then), gets none, as nothing new is written
         about them (gene #145). Otherwise it names nobody.
         A deletion stops a save or check of a turn that carried the message, or answers it (see deleted_anywhere). An
-        edit stops a learning batch already reading it (see withdrawn_during), and the save of a reply whose turn began
-        before it, which may repeat what it said then (see edited_since, gene #246). Never a save of the member's own
-        edited message: that's Fri answering it again as it reads now, under the same ID, and Fri itself withdraws one
-        of the old words landing late (fri #224)."""
+        edit stops only a learning batch already reading it (see withdrawn_during), so it's kept only while one is:
+        a save of the member's own edited message is Fri answering it again as it reads now, under the same ID, and
+        Fri itself withdraws one of the old words landing late (fri #224)."""
         db.execute('DELETE FROM chat_message_fences WHERE at<?', (now-WITHDRAWN_SECONDS,))
         for message in messages:
             user = revision = None

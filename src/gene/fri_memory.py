@@ -683,22 +683,71 @@ def chained(text):
 
 
 # The member's own words with those verbs ("i mentioned it before", "we argued about openings") report no one else: the
-# verb is left as typed where its subject, past any auxiliaries and modifiers, is the member's.
+# verb is left as typed where its subject, past any auxiliaries, negations and modifiers, is the member's ("i have
+# already explained", "i haven't mentioned"), whatever their apostrophe (Sol round 1 of #238, S4). Never a passive one
+# ("i was warned", "we've been told"): someone else did that.
 FIRST_PERSON = frozenset("i we i'm im i've ive i'd id i'll ill we're were we've weve we'd we'll".split())
+OWN_BE = frozenset({"i'm", 'im', "we're"})
+PASSIVE_BE = PASSIVE | {"isn't", 'isnt', "wasn't", 'wasnt', "weren't", 'werent', "aren't", 'arent'}
 STEP_OVER = re.compile(rf"(?i)^(?:{CHAINED}|{RUN_MODIFIERS})$")
-WORDS_BEFORE = 6
+AUXILIARY_WORD = re.compile(rf"(?i)^(?:(?:{CHAINED})(?:n'?t)?|(?:ca|wo|ai|sha)n'?t|cannot)$")
+WORDS_BEFORE = 8
+# A letter the pattern matches in another case, as the ASCII letter it matches: dotted and dotless "i", the long "s",
+# the Kelvin sign. Lowercased, they stayed as they were, and the verb was no key (Sol round 1 of #238, B1).
+ASCII_CASES = {0x130: 'i', 0x131: 'i', 0x17F: 's', 0x212A: 'k'}
+# A verb with something of its own after it reports that, not the claim ("they announced the tournament", "she
+# complained about lag", "he pointed out a bug", "she replied to my message"): left as typed (Sol round 1 of #238, S3).
+# It reports the claim only where what follows is nothing of its own: the clause's end, "so" or "that", the claim's own
+# start, a modifier, or "it" or "this", the person told ("me", "to everyone"), with nothing else after them.
+AFTER_A_REPORT = FIRST_PERSON | frozenset('so that my too once again before earlier already yesterday today lately '
+                                          'always never often sometimes ever still also just even and but or then '
+                                          'lol lmao lmfao haha tho though fr ngl'.split())
+POINTERS = frozenset({'it', 'this'})
+RECIPIENTS = frozenset("me us him her them everyone everybody yall y'all you u people".split())
+NEXT_WORD = re.compile(r"\s*+([\w']+)")
+
+
+def reports_the_claim(text, at):
+    """Whether what follows a report verb ending at `at` leaves it reporting the claim (see AFTER_A_REPORT). At most a
+    few words are read, so a long run of them is never read again from each verb before it."""
+    word = NEXT_WORD.match(text, at)
+    for _ in range(4):
+        if word is None:
+            return True  # The clause ends: punctuation, a face, the message's end.
+        found = word.group(1).lower()
+        if found == 'to':
+            word = NEXT_WORD.match(text, word.end())
+            if word is None or word.group(1).lower() not in RECIPIENTS:
+                return False
+        elif found not in POINTERS and found not in RECIPIENTS:
+            return found in AFTER_A_REPORT or (found.endswith('ly') and found.isalpha())
+        word = NEXT_WORD.match(text, word.end())
+    return True
+
+
+def members_own(text, at, participle):
+    """Whether the report verb at `at` is the member's own (see FIRST_PERSON). `participle`: whether it's the form that
+    "be" makes passive ("warned", not "warning")."""
+    before = APOSTROPHES.sub("'", text[max(0, at - 100):at].replace(chr(0x2019), "'")).lower()
+    nearest = None  # The auxiliary right before the verb, past any modifiers.
+    for word in reversed(WORD.findall(before)[-WORDS_BEFORE:]):
+        if STEP_OVER.match(word) or NEGATED.fullmatch(word) or word in ADVERBS:
+            if nearest is None and AUXILIARY_WORD.match(word):
+                nearest = word
+            continue
+        passive = participle and (nearest in PASSIVE_BE if nearest else word in OWN_BE)
+        return word in FIRST_PERSON and not passive
+    return False
 
 
 def reworded(m):
-    """A report verb outside the vocabulary, as the same form of "say", unless its subject is the member's own."""
-    words = WORD.findall(m.string, max(0, m.start() - 80), m.start())[-WORDS_BEFORE:]
-    for word in reversed(words):
-        if not STEP_OVER.match(word):
-            if word.lower().replace('’', "'") in FIRST_PERSON:
-                return m.group()
-            break
-    found = RUNS_OF_SPACE.sub(' ', m.group().lower())
-    return SAY_PHRASES.get(found) or SAID_AS[found]
+    """A report verb outside the vocabulary, as the same form of "say", unless its subject is the member's own or it
+    has something of its own after it; one it doesn't know after all, as typed: never an error."""
+    found = RUNS_OF_SPACE.sub(' ', m.group().translate(ASCII_CASES).lower())
+    say = SAY_PHRASES.get(found) or SAID_AS.get(found)
+    if say is None or not reports_the_claim(m.string, m.end()) or members_own(m.string, m.start(), say == 'said'):
+        return m.group()
+    return say
 
 
 @functools.lru_cache(maxsize=32)

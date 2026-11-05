@@ -6,14 +6,23 @@ now asks the controller to withdraw the channel itself. Everything held from it,
 deleted message's does, and a record of the channel's ID (never words) keeps anything still on its way from it out,
 under an older controller too."""
 
+import json
+import os
+import subprocess
+import sys
 import time
 
 import pytest
 
+from gene.fri_channel_withdrawal import withdraw as withdraw_channels
 from gene.fri_protocol import compatible, contract
+from gene.store import Store
 from tests.test_api import headers
+from tests.test_erasure_rollback import DEPLOYED, extracted  # noqa: F401
 from tests.test_fri_endings import source
 from tests.test_turn_withdrawal import SCOPE, post_turn, turn, world  # noqa: F401
+
+OLDER = (DEPLOYED, '13dad88')  # The release a rollback goes back to, and Gene main before this.
 
 THREAD = '70'  # A thread under channel 51.
 
@@ -185,3 +194,30 @@ def test_a_withdrawn_channel_is_kept_out_by_the_database_itself(world):  # noqa:
         db.execute("UPDATE personal_notes SET origin='public:51' WHERE evidence='i like public:52'")
     assert count(store, 'chat_turns') == 1 and count(store, 'chat_pending') == 1
     assert notes(store, 'public:52') == ['i like chess']
+
+
+@pytest.mark.parametrize('sha', OLDER)
+def test_an_older_controller_starts_and_keeps_nothing_from_a_withdrawn_channel(tmp_path, extracted, sha):  # noqa: F811
+    """A rollback window: the deployed release, and Gene main before this, start on a database this one wrote, a
+    channel withdrawn in it, as their own code does. Their saves from that channel, an exchange and a profile note,
+    keep nothing; elsewhere they save as before."""
+    code = extracted(sha)
+    if code is None:
+        pytest.skip(f'{sha} is not in this checkout')
+    path = tmp_path/'gene.sqlite3'
+    store = Store(path)
+    withdraw_channels(store, '123', ['51'])
+    saves = [{'conversation': 'public:'+channel, 'text': text, 'source': source(channel=channel)}
+             for channel, text in (('51', 'i like minecraft'), ('52', 'i like chess'))]
+    script = ('import json, sys\nfrom pathlib import Path\nfrom gene.store import Store\n'
+              'store = Store(Path(sys.argv[1]))\n'
+              'for save in json.loads(sys.argv[2]):\n'
+              '    store.save_chat("123", save["conversation"], "20", 0, save["text"], "noted", "model", "high",\n'
+              '                    notes=[{"category": "games", "evidence": save["text"]}], source=save["source"],\n'
+              '                    provenance=[], audience="server")\n')
+    done = subprocess.run([sys.executable, '-c', script, str(path), json.dumps(saves)], cwd=code,
+                          env={**os.environ, 'PYTHONPATH': str(code)}, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[-2000:]
+    store = Store(path)
+    assert notes(store) == ['i like chess']
+    assert turns(store, 'public:51') == [] and turns(store, 'public:52') == ['i like chess']

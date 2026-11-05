@@ -53,6 +53,12 @@ class Conflict(ValueError):
     pass
 
 
+class Held(Conflict):
+    """Refused for now, not for good: what was asked for depends on a member summary held back until its messages are
+    read again (HumanMint/fri#355), and is given or sent once that checks out. The API answers 423, apart from a
+    conflict's 409, so Fri can tell the two apart (a delivery isn't recorded as failed)."""
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
@@ -778,10 +784,13 @@ class Store:
                 'WHERE guild_id=? AND channel_id=? AND user_id=? '
                 'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
             turns = self._current_turns(db, turns)
+            from .fri_member_summary import HELD_REPLY, holding
             for turn in turns:
                 drew = summaries_of(turn)
                 for key in ('user_id', 'summary_generation', 'summary_dependencies'):
                     turn.pop(key)
+                if drew and holding(db, guild_id, drew):  # Withheld while a summary it drew on is (HumanMint/fri#355).
+                    turn['reply'], drew = HELD_REPLY, []
                 if dependencies and drew:
                     turn['summaries'] = drew
                 turn['burst'] = json.loads(turn['burst'])
@@ -794,6 +803,8 @@ class Store:
                                                   'ORDER BY created DESC LIMIT 20', (guild_id,))]
             from .fri_pending import read as read_pending
             pending = read_pending(db, guild_id, channel_id, user_id, revision[0] if revision else 0)
+            if pending and self._held_question(db, guild_id, channel_id, user_id, pending):
+                pending = None
             return {'pending': pending, 'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
                     'elsewhere': self._elsewhere(db, guild_id, channel_id, user_id, sources)
                     if profiles and profile['enabled'] else [],
@@ -817,6 +828,16 @@ class Store:
         current = generation(db, guild_id, user_id)
         summary = view(read(db, guild_id, user_id))
         return summary and {**summary, 'generation': current}
+
+    @staticmethod
+    def _held_question(db, guild_id, conversation, user_id, pending):
+        """Whether the turn that left this question open drew on a summary held back until it's read again: the
+        question is the model's words, so it waits too (HumanMint/fri#355)."""
+        from .fri_member_summary import holding
+        asked = str((pending.get('source') or {}).get('id', ''))
+        return any(holding(db, guild_id, summaries(row)) for row in db.execute(
+            "SELECT user_id,summary_generation,summary_dependencies FROM chat_turns WHERE guild_id=? AND channel_id=? "
+            "AND user_id=? AND json_extract(NULLIF(source,''),'$.id')=?", (guild_id, conversation, user_id, asked)))
 
     def _elsewhere(self, db, guild_id, conversation, user_id, sources=False):
         """What the member said to Fri lately in the server's other everyone-readable conversations.
@@ -880,35 +901,41 @@ class Store:
         game_nights = [] if kind == 'public' else None
         if not enabled:  # Memory off: Fri keeps none of these, and forget-me erased them.
             return {'reminders': reminders, 'saved_work': [], 'game_nights': game_nights}
-        from .fri_member_summary import current_writes
+        from .fri_member_summary import current_writes, held_writes
         from .fri_social_store import ACTIVE, Social
         from .fri_workspace_store import Workspace
         Social.prune(db)
         Workspace.prune(db)
-        # What shows here holds nothing of a summary since lapsed: a reminder's text, a draft's title (gene #158).
+        # What shows here holds nothing of a summary since lapsed: a reminder's text, a draft's title (gene #158). Nor
+        # of one held back until it's read again: those are left out meanwhile (HumanMint/fri#355).
+        held = set()
         if kind == 'private':
-            current_writes(db, 'fri_reminder_dependencies', 'SELECT id FROM fri_reminders WHERE guild_id=? AND '
-                           'user_id=? AND dm_id=?', (guild_id, user_id, place))
-        current_writes(db, 'fri_work_dependencies', "SELECT id FROM fri_work WHERE guild_id=? AND user_id=? AND "
-                       "scope=? AND state='open'", (guild_id, user_id, conversation))
+            mine = 'SELECT id FROM fri_reminders WHERE guild_id=? AND user_id=? AND dm_id=?'
+            current_writes(db, 'fri_reminder_dependencies', mine, (guild_id, user_id, place), held_back=False)
+            held |= held_writes(db, 'fri_reminder_dependencies', mine, (guild_id, user_id, place))
+        mine = "SELECT id FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND state='open'"
+        current_writes(db, 'fri_work_dependencies', mine, (guild_id, user_id, conversation), held_back=False)
+        held |= held_writes(db, 'fri_work_dependencies', mine, (guild_id, user_id, conversation))
         now = time.time()
         if kind == 'private':
             # A settled one stays a day from when it settled: delivery stamps lease_until (two minutes on) when it
             # claims and sends, so a late send after an outage doesn't vanish the moment it goes out.
             for row in db.execute(
-                    f"SELECT body,due,local_time,timezone,state,revision FROM fri_reminders WHERE guild_id=? AND user_id=? "
+                    f"SELECT id,body,due,local_time,timezone,state,revision FROM fri_reminders WHERE guild_id=? AND user_id=? "
                     f"AND dm_id=? AND (state IN ({','.join('?'*len(ACTIVE))}) OR (state IN ('sent','failed','uncertain') "
                     f"AND max(due,lease_until)>?)) ORDER BY state IN ({','.join('?'*len(ACTIVE))}) DESC, due LIMIT ?",
                     (guild_id, user_id, place, *ACTIVE, now-LOOP_SETTLED_SECONDS, *ACTIVE, LOOP_ITEMS)):
+                if row['id'] in held:
+                    continue
                 state = row['state']
                 # Confirming and delivering both check the privacy revision: a change since then means it never goes out.
                 if state in ('pending', 'scheduled', 'claimed') and row['revision'] != revision:
                     state = 'will_not_send'
                 reminders.append({'text': row['body'], 'due': row['due'], 'local_time': row['local_time'],
                                   'timezone': row['timezone'], 'state': state})
-        saved_work = [dict(row) for row in db.execute(
-            "SELECT title,updated FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND state='open' "
-            'ORDER BY updated DESC LIMIT ?', (guild_id, user_id, conversation, LOOP_ITEMS))]
+        saved_work = [{'title': row['title'], 'updated': row['updated']} for row in db.execute(
+            "SELECT id,title,updated FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND state='open' "
+            'ORDER BY updated DESC LIMIT ?', (guild_id, user_id, conversation, LOOP_ITEMS)) if row['id'] not in held]
         if kind == 'public':
             for row in db.execute("SELECT id FROM fri_plans WHERE guild_id=? AND user_id=? AND channel_id=? AND state IN "
                                   "('pending','open','finalized') ORDER BY created DESC", (guild_id, user_id, place)).fetchall():
@@ -963,7 +990,7 @@ class Store:
         nothing pruning it yet goes here, as a read that finds it lapsed drops it, so the reply is a breadcrumb before
         it's reported (gene #120). Only such a reply takes the write lock; any other lookup reads, as before.
         """
-        from .fri_member_summary import lapsed
+        from .fri_member_summary import holding, lapsed
         found = {}
         with self.connection() as db:
             def turn(message_id):
@@ -987,7 +1014,12 @@ class Store:
                 if not all(self._privacy_state(db, s['user_id']) == (s['revision'], True) for s in sources):
                     continue  # Includes the original speaker: never relabel an old reply.
                 # And the summaries it drew on, for a turn answering it to depend on in turn (fri #193). Any other
-                # answer stays as it was.
+                # answer stays as it was. One drawn on a summary held back until it's read again isn't verbatim
+                # meanwhile, so Fri neither repeats it nor answers it as said (HumanMint/fri#355), and it says it's
+                # held, not retired, so Fri keeps its copy for when that checks out (Sol round 1's S1).
+                if summaries(row) and holding(db, guild_id, summaries(row)):
+                    found[message_id] = {'verbatim': False, 'held': True, 'provenance': sources}
+                    continue
                 found[message_id] = {'verbatim': bool(row['verbatim']), 'provenance': sources,
                                      **({'summaries': summaries(row)} if summaries(row) else {})}
         return found
@@ -1160,26 +1192,29 @@ class Store:
         """A turn that drew on the member's summary fails closed once a withdrawal dropped it (gene #91), or once it
         lapsed: one that expired with nothing pruning it yet goes here, as a read that finds it lapsed drops it, so
         its generation moves before it's compared (gene #113). A turn that says nothing, from an older Fri or one that
-        drew on none, is checked as before."""
-        from .fri_member_summary import generation, lapsed
+        drew on none, is checked as before. While the summary is held back until it's read again, the turn is refused
+        too, though nothing is retired: what it copied may not stand (HumanMint/fri#355)."""
+        from .fri_member_summary import generation, held, lapsed
         if summary_generation is None:
             return
         if lapsed(db, guild_id, user_id):
             db.commit()  # It stays gone, and its replies retired, though the refusal undoes the rest.
             raise Conflict(SUMMARY_CHANGED)
-        if generation(db, guild_id, user_id) != summary_generation:
+        if generation(db, guild_id, user_id) != summary_generation or held(db, guild_id, user_id):
             raise Conflict(SUMMARY_CHANGED)
 
     @staticmethod
     def _dependencies_unchanged(db, guild_id, dependencies):
         """A turn that may repeat another reply of Fri's drawn on a member's summary fails closed once that summary went
-        or lapsed, as one drawing on the member's own does (fri #193). The refusal names nobody."""
-        from .fri_member_summary import generation, lapsed
+        or lapsed, as one drawing on the member's own does (fri #193), or while it's held back (HumanMint/fri#355). The
+        refusal names nobody."""
+        from .fri_member_summary import generation, held, lapsed
         for item in dependencies:
             if lapsed(db, guild_id, item['user_id']):
                 db.commit()  # As for the member's own (see _summary_unchanged).
                 raise Conflict(DEPENDENCY_CHANGED)
-            if generation(db, guild_id, item['user_id']) != item['generation']:
+            if (generation(db, guild_id, item['user_id']) != item['generation'] or
+                    held(db, guild_id, item['user_id'])):
                 raise Conflict(DEPENDENCY_CHANGED)
 
     def check_authors(self, authors):

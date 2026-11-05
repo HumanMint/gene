@@ -205,9 +205,11 @@ def test_bounded_profiles_only_return_same_channel_author_privacy_and_fence_chan
     assert profiles.status_code == 200
     answer = profiles.json()
     removed = answer['profiles']['22'].pop('removed_at')  # When they turned memory off (fri #337).
-    assert removed > 0 and answer == {'profiles': {'20': {'enabled': True, 'revision': 0, 'removed_at': 0},
-                                                '21': {'enabled': True, 'revision': 0, 'removed_at': 0},
-                                                '22': {'enabled': False, 'revision': 1}}}
+    # The same on Discord's clock: with no Discord event behind this erasure, Gene's own stamp (fri #337 item 4).
+    assert answer['profiles']['22'].pop('removed_at_discord') == removed > 0
+    assert answer == {'profiles': {'20': {'enabled': True, 'revision': 0, 'removed_at': 0, 'removed_at_discord': 0},
+                                   '21': {'enabled': True, 'revision': 0, 'removed_at': 0, 'removed_at_discord': 0},
+                                   '22': {'enabled': False, 'revision': 1}}}
     for bad in ([source(user='23', channel='456')], [source(user='23', guild='999')],
                 [source(user='23', age=7*86400+1)]):
         assert post(h, '/chat/mentions/profiles', {**scope, 'evidence': bad}).status_code in (400, 403)

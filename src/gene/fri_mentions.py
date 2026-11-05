@@ -250,7 +250,9 @@ def register(app, store, settings, auth):
                 # And when they last turned memory off or removed a note: Fri leaves out a post of theirs from before
                 # it, as the live view does (HumanMint/fri#337).
                 result[user] = {'enabled': profile['enabled'], 'revision': revision,
-                                'removed_at': last_removal(db, body.guild_id, user)}
+                                'removed_at': last_removal(db, body.guild_id, user),
+                                # The same on Discord's clock, which a post's snowflake is on (HumanMint/fri#337).
+                                'removed_at_discord': last_removal(db, body.guild_id, user, on_discord=True)}
             db.execute('UPDATE mention_grants SET profiles=? WHERE token=?',
                        (json.dumps(tracked, sort_keys=True), body.mention_grant))
             return {'profiles': result}

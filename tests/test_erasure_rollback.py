@@ -195,3 +195,73 @@ def test_an_older_genes_removal_never_moves_a_later_one_back(gene, deployed_or_n
     after = cutoffs(path_of(gene))
     again = how == 'its own code' and kept(gene, removal - 1)
     assert not again and after['removed_at'] >= before['removed_at'], (before, after, again)
+
+
+@pytest.mark.parametrize('seed, steps, real', [*((seed, 10, False) for seed in range(12)),
+                                               *((seed, 6, True) for seed in range(2))])
+def test_no_sequence_with_an_older_genes_writes_lowers_a_cutoff_once_this_gene_is_back(tmp_path, deployed_or_none,
+                                                                                         seed, steps, real):
+    """Round 2's invariant of #213 with the deployed release writing too, its clock anywhere within five seconds of
+    Discord's: its memory off and on, and its note removals, each followed by this Gene starting again. No cutoff a
+    reader uses goes back once this Gene is running: erased_at and removed_at, both on Discord's clock, and learning's.
+    Its statements replayed, and its own code where the checkout has it."""
+    import random
+
+    from fastapi.testclient import TestClient
+
+    from gene.api import create_app
+    from gene.config import Settings
+    from gene.fri_memory_store import fences
+    from tests.test_api import headers
+    from tests.test_fri_erasure_clock import control
+    from tests.test_fri_erasure_clock import cutoffs as profile_cutoffs
+    if real and deployed_or_none is None:
+        pytest.skip(f'{DEPLOYED} is not in this checkout')
+    rng = random.Random(seed)
+    settings = Settings(tmp_path/'invariant.db', '123', '10', 'runtime-'+'x'*32, 'worker-'+'x'*32, 'deploy-'+'x'*32,
+                        workshop_channel_id='456', fri_token='fri-'+'x'*32, agent_channels='1,456',
+                        agent_history_channels='1')
+    gene = TestClient(create_app(settings))  # noqa: F811
+    path = tmp_path/'invariant.db'
+    last = profile_cutoffs(gene)
+    for _ in range(steps):
+        offset = rng.uniform(-5, 5)
+        op = rng.choice(['control', 'erase', 'remove', 'enable', 'older erase', 'older remove', 'older remove'])
+        now = REAL()
+        if op == 'control':
+            control(gene, 'disable', now - rng.choice([0, 1, 10, 600]), offset)
+        elif op == 'erase':
+            with gene_clock(offset):
+                assert gene.post('/privacy/erase', headers=headers('runtime'), json={
+                    'guild_id': '123', 'user_id': '20', 'source_id': source(now - rng.choice([0, 10]))['id']}
+                ).status_code == 200
+        elif op == 'remove':
+            if profile(gene)['enabled']:
+                remove_a_note(gene, offset)
+        elif op == 'enable':
+            control(gene, 'enable', now, offset)
+        elif op == 'older erase':
+            if real:
+                as_deployed(deployed_or_none, path, offset, 'disable', 'enable')
+            else:
+                replayed(path, offset)
+            Store(path)
+        else:  # An older Gene's removal: its fences at its own time.
+            if real and profile(gene)['enabled']:
+                from gene.fri_memory_store import save
+                with gene.app.state.store.connection() as db:
+                    save(db, '123', 'server', '20', ('music', 'I love trance'), REAL(), provenance=[])
+                env = {**os.environ, 'PYTHONPATH': str(deployed_or_none)}
+                done = subprocess.run([sys.executable, '-c', REMOVES, str(path), str(offset), source(REAL())['id']],
+                                      cwd=deployed_or_none, env=env, capture_output=True, text=True)
+                assert done.returncode == 0 or 'IndexError' in done.stderr, done.stderr[-2000:]
+            elif not real:
+                with gene.app.state.store.connection() as db:
+                    for fence in fences():
+                        db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,'
+                                   'channel_id,user_id,digest) DO UPDATE SET at=excluded.at',
+                                   ('123', 'server', '20', fence, REAL() + offset))
+            Store(path)
+        current = profile_cutoffs(gene)
+        assert all(current[key] >= last[key] for key in current), (op, offset, last, current)
+        last = current

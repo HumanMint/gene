@@ -956,6 +956,9 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     # gene #231: a line break between an auxiliary and a word that isn't a report verb stays one.
     ('games', 'i like chess', 'i like chess\nwould play more if i had time'),
     ('games', 'i like chess', 'i like chess, i would\nsay its my favorite'),
+    ('games', 'i like chess', 'i like chess, would\nyou play?'),
+    ('nickname', 'call me dan', 'call me dan, would\nyou mind?'),
+    ('games', 'i like chess', 'i like chess, can\nyou tell'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

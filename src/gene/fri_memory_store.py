@@ -360,6 +360,11 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
         current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user,)).fetchone()
         if revision != (current[0] if current else 0):
             raise ValueError('Memory changed. Open My memory again.')
+        # A source Gene has as another member's message isn't this member's press, whoever it says it's from: the
+        # author check above reads only what the request claims (HumanMint/gene#223). A fresh press is an interaction
+        # Gene has never recorded, and their own message is recorded as theirs, so neither is refused.
+        if store.someone_elses_in(db, source.id, user):
+            raise ValueError('Discord source does not match the conversation author or channel')
         store._personal_context(db, guild, conversation, user)
         row = db.execute('SELECT * FROM personal_notes WHERE id=? AND guild_id=? AND user_id=?',
                          (identifier, guild, user)).fetchone()

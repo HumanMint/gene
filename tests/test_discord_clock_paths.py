@@ -19,6 +19,7 @@ from tests.test_fri_erasure_clock import (  # noqa: F401
     remove_a_note,
     source,
 )
+from tests.test_fri_mention_api import h  # noqa: F401
 
 
 def kept(gene, at, user='20', conversation='public:456', text='i love trance'):  # noqa: F811
@@ -140,3 +141,28 @@ def test_red_s_own_data_deletion_holds_a_few_seconds_past_gene_s_stamp(gene):  #
     control(gene, 'enable', asked + 0.2, -2)
     assert not kept(gene, asked - 0.5)
     assert profile(gene)['erased_at_discord'] == pytest.approx(profile(gene)['erased_at'] + memory.MARGIN, abs=0.001)
+
+
+@pytest.mark.parametrize('offset', [-2, 0, 2])
+def test_a_mention_from_before_red_s_deletion_keeps_no_research(h, offset):  # noqa: F811
+    """Sol round 1 of #234, B2 (pre-existing): Red's own data deletion, with Gene's clock `offset` seconds off, then
+    memory on again. A mention sent just before it, handled only now, started research and saved its receipt: a mention's
+    save held its source to the member's note removals (predates), never to their erasure. Its research isn't started and
+    nothing of it is kept."""
+    from tests.test_fri_mention_api import invited, post, turn
+    from tests.test_fri_mention_api import source as mention_source
+    asked = mention_source()  # Sent now: before the deletion.
+    with gene_clock(offset):
+        assert post(h, '/privacy/erase', {'guild_id': '123', 'user_id': '20'}, role='runtime').status_code == 200
+    h.store.personal_control('20', 'enable')
+    _, scope, _ = invited(h, source=asked, content='<@99> weather in Seoul')
+    revision = h.store.chat_context('123', scope['conversation_id'], '20')['revision']
+    research = {**scope, 'revision': revision, 'input': 'weather in Seoul', 'query': 'weather in Seoul'}
+    assert post(h, '/chat/research/start', research).status_code == 400
+    receipt = {'query': 'weather in Seoul', 'answer': 'Clear today.', 'sources': ['https://example.org/weather'],
+               'checked_at': '2026-10-23T00:00:00+00:00'}
+    saved = post(h, '/chat/turn', turn(scope, input='weather in Seoul', revision=revision, web_receipt=receipt))
+    assert saved.status_code == 200 and saved.json().get('kept') is False, saved.text
+    with h.store.connection() as db:
+        assert db.execute('SELECT count(*) FROM web_research').fetchone()[0] == 0
+        assert db.execute('SELECT count(*) FROM web_requests').fetchone()[0] == 0

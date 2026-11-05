@@ -570,7 +570,7 @@ def create_app(settings: Settings | None = None):
                               reply_message_id=body.reply_message_id, verbatim=body.verbatim, audience=body.audience,
                               summary_generation=body.summary_generation,
                               summary_dependencies=[row.model_dump() for row in body.summary_dependencies],
-                              drew_on=body.drew_on)
+                              drew_on=body.drew_on, parent=body.channel_id)
 
     @app.post('/chat/turn/check', dependencies=[auth('fri')])
     def chat_turn_check(body: ChatTurn):
@@ -584,7 +584,7 @@ def create_app(settings: Settings | None = None):
                                 summary_dependencies=[row.model_dump() for row in body.summary_dependencies],
                                 drew_on=body.drew_on, conversation_id=body.conversation_id,
                                 source=body.source.model_dump() if body.source else None,
-                                burst=[row.model_dump() for row in body.burst])
+                                burst=[row.model_dump() for row in body.burst], parent=body.channel_id)
 
     @app.post('/chat/turn/withdraw', dependencies=[auth('fri')])
     def chat_turn_withdraw(body: TurnWithdrawal):

@@ -1141,15 +1141,15 @@ class Store:
         return True
 
     def check_chat(self, user_id, revision, provenance=(), *, guild_id=None, messages=(), summary_generation=None,
-                   summary_dependencies=(), drew_on=(), conversation_id=None, source=None, burst=()):
+                   summary_dependencies=(), drew_on=(), conversation_id=None, source=None, burst=(), parent=None):
         """The save's privacy fence without writing: run before a reply is delivered.
 
         messages: the Discord messages the turn answers (its own and its burst's). One its author withdrew since stops
         the reply (gene #90). summary_generation: the member summary's the turn drew on, if it did (gene #91).
         summary_dependencies: other members' summaries it may repeat through Fri's earlier replies (fri #193).
         drew_on: the other messages its model requests carried. One deleted since stops it too (gene #141).
-        conversation_id, source, burst: where the turn was said. A channel or thread deleted since stops it too
-        (HumanMint/fri#358).
+        conversation_id, source, burst, parent: where the turn was said, and the channel a thread is under. A channel
+        or thread deleted since stops it too (HumanMint/fri#358).
         """
         with self.connection() as db:
             if summary_generation is not None or summary_dependencies:  # A lapsed summary goes here, in one go.
@@ -1160,7 +1160,7 @@ class Store:
             from .fri_channel_withdrawal import turn_withdrawn
             if (self.taken_back(db, guild_id, user_id, messages) or
                     self.deleted_anywhere(db, guild_id, [*messages, *drew_on]) or
-                    turn_withdrawn(db, guild_id, conversation_id, source, burst)):
+                    turn_withdrawn(db, guild_id, conversation_id, source, burst, parent)):
                 raise Conflict(WITHDRAWN)
             self._summary_unchanged(db, guild_id, user_id, summary_generation)
             self._dependencies_unchanged(db, guild_id, summary_dependencies)
@@ -1245,7 +1245,7 @@ class Store:
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
                   *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=None,
                   reply_message_id=None, verbatim=False, audience='conversation', summary_generation=None,
-                  summary_dependencies=(), drew_on=()):
+                  summary_dependencies=(), drew_on=(), parent=None):
         # None: a legacy companion that doesn't track sources. A list, even empty, is complete attribution.
         attributed = provenance is not None
         if audience not in ('server', 'conversation') or (audience == 'server' and not channel_id.startswith('public:')):
@@ -1299,7 +1299,7 @@ class Store:
             fenced = self.taken_back(db, guild_id, user_id, own) or self.deleted_anywhere(db, guild_id, own)
             # Nor one said in a channel or thread deleted since (HumanMint/fri#358): every message of it is.
             from .fri_channel_withdrawal import turn_withdrawn
-            fenced = fenced or turn_withdrawn(db, guild_id, channel_id, source and source.model_dump(), burst)
+            fenced = fenced or turn_withdrawn(db, guild_id, channel_id, source and source.model_dump(), burst, parent)
             # Nor one whose model request carried a message deleted by now (gene #141): its reply may repeat it, so
             # it keeps nothing, though the member's own message stands, so it settles what was pending as usual.
             stale = (fenced or self.deleted_anywhere(db, guild_id, drew_on) or

@@ -35,6 +35,11 @@ def withdraw(client, *channels, guild='123'):
                        json={'guild_id': guild, 'channel_ids': list(channels)})
 
 
+
+def taken(answer):
+    """A withdrawal's answer, but the messages it names (see test_the_controller_names_the_messages_it_withdrew)."""
+    return {key: value for key, value in answer.json().items() if key != 'messages'}
+
 def said(client, text, channel='51', conversation=None, user='20', audience='server', **extra):
     """Member `user` says `text` in `conversation` (channel `channel`'s own, or a thread under it), noted for them."""
     conversation = conversation or 'public:' + channel
@@ -88,7 +93,7 @@ def test_a_deleted_channel_takes_what_was_saved_from_it(world):  # noqa: F811
         db.execute("INSERT INTO agent_summaries(channel_id,body,authors,at) VALUES ('51','minecraft talk','[]',?)", (now,))
         db.execute("INSERT INTO agent_summaries(channel_id,body,authors,at) VALUES ('52','chess talk','[]',?)", (now,))
     assert notes(store) == ['i like chess', 'i like minecraft']
-    assert withdraw(client, '51').json() == {'ok': True, 'channels': ['51'], 'removed': 3}
+    assert taken(withdraw(client, '51')) == {'ok': True, 'channels': ['51'], 'removed': 3}
     assert notes(store) == ['i like chess']
     assert notes(store, 'public:51') == ['i like chess'] and turns(store, 'public:51') == []
     assert turns(store, 'public:52') == ['i like chess']
@@ -104,7 +109,7 @@ def test_a_deleted_thread_takes_what_was_saved_from_it_and_leaves_its_channel(wo
     client, store = world
     said(client, 'i like minecraft', conversation='public:' + THREAD)
     said(client, 'i like chess')
-    assert withdraw(client, THREAD).json() == {'ok': True, 'channels': [THREAD], 'removed': 1}
+    assert taken(withdraw(client, THREAD)) == {'ok': True, 'channels': [THREAD], 'removed': 1}
     assert notes(store) == ['i like chess'] and turns(store, 'public:51') == ['i like chess']
     assert turns(store, 'public:' + THREAD) == []
 
@@ -121,7 +126,7 @@ def test_a_deleted_channel_takes_its_threads_too(world):  # noqa: F811
     said(client, 'i like chess', channel='52')
     assert client.post('/chat/channels/parents', headers=headers('fri'),
                        json={'guild_id': '123', 'parents': {'71': '51'}}).json() == {'ok': True}
-    assert withdraw(client, '51').json() == {'ok': True, 'channels': ['51', THREAD, '71'], 'removed': 2}
+    assert taken(withdraw(client, '51')) == {'ok': True, 'channels': ['51', THREAD, '71'], 'removed': 2}
     assert notes(store) == ['i like chess']
 
 
@@ -131,7 +136,7 @@ def test_what_was_still_on_its_way_from_a_deleted_channel_keeps_nothing(world): 
     client, store = world
     late = turn(source(channel='51'), 'i like minecraft', audience='server',
                 notes=[{'category': 'games', 'evidence': 'i like minecraft'}])
-    assert withdraw(client, '51').json() == {'ok': True, 'channels': ['51'], 'removed': 0}
+    assert taken(withdraw(client, '51')) == {'ok': True, 'channels': ['51'], 'removed': 0}
     assert client.post('/chat/turn/check', headers=headers('fri'), json=late).status_code == 409
     assert post_turn(client, late).json() == {'ok': True, 'first_memory': False, 'kept': False}
     assert notes(store) == [] and turns(store, 'public:51') == []
@@ -197,8 +202,8 @@ def test_a_withdrawn_channel_is_kept_out_by_the_database_itself(world):  # noqa:
             db.execute("INSERT INTO chat_pending VALUES ('123',?,'20','1',?,0,'{}')", (conversation, time.time()))
         db.execute("UPDATE personal_notes SET origin='public:51' WHERE evidence='i like public:52'")
     assert count(store, 'chat_turns') == 1 and count(store, 'chat_pending') == 1
-    assert notes(store, 'public:52') == ['i like chess']
     # A note moved there is refused before it changes, so it stays where it was (Sol round 1 of #243, G1).
+    assert notes(store, 'public:52') == ['i like chess', 'i like public:52']
     assert count(store, 'personal_notes', "evidence='i like public:52' AND origin='public:52'") == 1
 
 
@@ -254,7 +259,7 @@ def test_what_outlived_its_exchanges_goes_too(world):  # noqa: F811
         db.execute("INSERT INTO fri_member_summaries VALUES ('123','31','talks about minecraft',0,'[]',"
                    "'[\"public:51\"]',?,?)", (now, now))
     assert notes(store) == ['i like minecraft']
-    assert withdraw(client, '51').json() == {'ok': True, 'channels': ['51'], 'removed': 0}
+    assert taken(withdraw(client, '51')) == {'ok': True, 'channels': ['51'], 'removed': 0}
     assert notes(store) == [] and count(store, 'fri_member_summaries', "user_id='31'") == 0
     late = turn(source(channel='52'), 'and now?', channel_id='52', conversation_id='public:52',
                 drew_on=[first['source']['id']])

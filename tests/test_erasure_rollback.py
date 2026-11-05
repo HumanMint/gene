@@ -19,20 +19,32 @@ from gene.store import Store
 from tests.test_fri_erasure_clock import REAL, gene, gene_clock, profile, remove_a_note, source  # noqa: F401
 
 DEPLOYED = '4ffd668'  # v1.0.5, the release a rollback goes back to.
+# And Gene main before HumanMint/fri#368 (Sol round 1 of #234, B1): an older Gene than this one, with #228's floors, but
+# no removal times. Each runs the tests of an older Gene's own code.
+RELEASES = (DEPLOYED, '3bddd69')
 ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture(scope='module')
-def deployed(tmp_path_factory):
-    """The deployed release's own code, from this checkout's history: a shallow clone (CI's) doesn't have it."""
-    if subprocess.run(['git', '-C', str(ROOT), 'cat-file', '-e', DEPLOYED + '^{commit}'],
-                      capture_output=True).returncode:
-        pytest.skip(f'{DEPLOYED} is not in this checkout; the replayed statements below still run')
-    where = tmp_path_factory.mktemp('deployed')
-    archive = subprocess.run(['git', '-C', str(ROOT), 'archive', DEPLOYED, 'src'], capture_output=True, check=True)
-    with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
-        tar.extractall(where, **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))  # 3.11.4 on.
-    return where/'src'
+def extracted(tmp_path_factory):
+    """An older release's own code, from this checkout's history, by commit (None where a shallow clone, CI's, doesn't
+    have it)."""
+    found = {}
+
+    def code(sha):
+        if sha not in found:
+            if subprocess.run(['git', '-C', str(ROOT), 'cat-file', '-e', sha + '^{commit}'],
+                              capture_output=True).returncode:
+                found[sha] = None
+            else:
+                where = tmp_path_factory.mktemp('release-' + sha)
+                archive = subprocess.run(['git', '-C', str(ROOT), 'archive', sha, 'src'], capture_output=True,
+                                         check=True)
+                with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
+                    tar.extractall(where, **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))
+                found[sha] = where/'src'
+        return found[sha]
+    return code
 
 
 def as_deployed(code, path, offset, *actions):
@@ -173,13 +185,15 @@ def test_this_genes_own_erasure_leaves_no_floor_behind(gene):  # noqa: F811
         assert db.execute('SELECT count(*) FROM personal_cutoff_floors').fetchone()[0] == 0
 
 
-@pytest.fixture
-def deployed_or_none(request):
-    """The deployed release's code, or None where the checkout doesn't have it."""
-    try:
-        return request.getfixturevalue('deployed')
-    except pytest.skip.Exception:
-        return None
+@pytest.fixture(params=RELEASES)
+def deployed_or_none(request, extracted):
+    """An older release's code (each of RELEASES), or None where the checkout doesn't have it. Its replayed statements
+    are 4ffd668's alone, so they run once."""
+    if request.param != DEPLOYED and 'its statements' in request.node.name:
+        pytest.skip(f'the replayed statements are {DEPLOYED}\'s')
+    if request.param != DEPLOYED and '-False]' in request.node.name:
+        pytest.skip(f'the replayed statements are {DEPLOYED}\'s')
+    return extracted(request.param)
 
 
 REMOVES = ('import sys, time\nreal = time.time\ntime.time = lambda: real() + float(sys.argv[2])\n'
@@ -287,3 +301,24 @@ def test_no_sequence_with_an_older_genes_writes_lowers_a_cutoff_once_this_gene_i
         current = profile_cutoffs(gene)
         assert all(current[key] >= last[key] for key in current), (op, offset, last, current)
         last = current
+
+
+def test_an_older_genes_erasure_keeps_a_removals_cutoff_on_discords_clock(gene, deployed_or_none):  # noqa: F811
+    """Sol round 1 of #234, B1: this Gene dates a removal at T by its press, with its clock two seconds behind (the
+    removal T-2 on Gene's clock). Rolled back to an older Gene, its clock three seconds behind, the member turns memory
+    off and on: Gene main (3bddd69) carries the removals, on Gene's clock, into an erasure about T-2, and its own floors
+    with them. Re-upgraded, the removal's time on Discord's clock survived beside it, unread: erased_at_discord said
+    T-2, and their queued DM from T-0.5 was answered. Every cutoff stays at or past T, whichever older Gene it was."""
+    if deployed_or_none is None:
+        pytest.skip('this release is not in this checkout')
+    removal = REAL()
+    remove_a_note(gene, -2, removal)
+    before = cutoffs(path_of(gene))
+    assert before['removed_at_discord'] == pytest.approx(removal, abs=0.01)
+    as_deployed(deployed_or_none, path_of(gene), -3, 'disable', 'enable')
+    Store(path_of(gene))  # This Gene starts again.
+    after = cutoffs(path_of(gene))
+    assert all(after[key] >= before['removed_at_discord'] for key in ('erased_at_discord', 'removed_at_discord')), \
+        (before, after)
+    with gene.app.state.store.connection() as db:  # Carried into the erasure, the record goes, as this Gene's own erasure deletes it.
+        assert db.execute('SELECT count(*) FROM personal_removal_times').fetchone()[0] == 0

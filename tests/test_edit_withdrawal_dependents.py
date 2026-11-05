@@ -81,14 +81,15 @@ def claim_of(store):
     return json.loads(row[0]) if row else None
 
 
-@pytest.mark.parametrize('rebuild', [False, True], ids=['first build', 'a rebuild'])
+@pytest.mark.parametrize('rebuild', ['first build', 'a rebuild', 'a rebuild, its earlier summary gone since'])
 def test_a_build_in_flight_that_read_the_message_is_called_off(store, tmp_path, rebuild):
     """Its claim names the message, as an exchange it was sent or one its earlier summary drew on, though nothing else
-    holds it now: it's called off, and its finish keeps nothing."""
+    holds it now: it's called off, and its finish keeps nothing. That earlier summary may have gone since the claim
+    (lapsed, say): the claim still carries what it read."""
     agent = background(store, tmp_path)
     chat(store, 'raid tonight?')
     chat(store, 'what build for the raid', 'public:2')
-    if rebuild:
+    if rebuild != 'first build':
         build(agent)
         chat(store, 'the raid went well', ago=5400)
         chat(store, 'next raid friday', ago=5400)
@@ -96,8 +97,13 @@ def test_a_build_in_flight_that_read_the_message_is_called_off(store, tmp_path, 
         message = sources(store)[0]['id']  # Only its earlier summary read this one.
     offered(agent)
     claim = claim_of(store)
-    if not rebuild:
+    if rebuild == 'first build':
         message = claim['messages'][0]['id']
+    elif rebuild == 'a rebuild, its earlier summary gone since':
+        from gene.fri_member_summary import drop
+        with store.connection() as db:
+            drop(db, '123', '20')
+        assert claim_of(store)
     with store.connection() as db:
         db.execute("DELETE FROM chat_turns WHERE json_extract(source,'$.id')=?", (message,))
     store.withdraw_saved('123', [message], deleted=False)

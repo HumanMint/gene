@@ -161,17 +161,20 @@ def fences():
     return [digest(category, '') for category in CATEGORIES]
 
 
-def save(db, guild, scope, user, note, at, origin=None, provenance=None, sources=None):
+def save(db, guild, scope, user, note, at, origin=None, provenance=None, sources=None, *, fenced=True):
     """provenance: other members whose words the saving turn drew on; their privacy changes remove the note.
 
     None when the turn didn't say, so it's unknown: only a conversation note can be saved that way.
     sources: the Discord messages it was learned from, which take it when withdrawn (gene #141); None, unknown. The
     same note learned again comes from the newer message: the earlier one, withdrawn, no longer takes it.
+    fenced: whether a removal fence refuses it (see removed): what's learned from what the member said before a
+    removal is. Their own edit in My memory isn't (Sol round 3 of #213): a fence holds back what was learned from
+    before it, never what they type or move now, and one kept at a later time, from Gene's clock running ahead, would.
     """
     if scope == SERVER and provenance is None:
         raise ValueError('A profile note needs to say whose words it drew on')
     category, evidence = note
-    cutoff = removed(db, guild, scope, user)
+    cutoff = removed(db, guild, scope, user) if fenced else None
     if at < time.time()-TTL or (cutoff is not None and at <= cutoff):
         return False
     # The same words in other capitals ("I play valorant", "i play valorant"), said where the same note was and
@@ -310,11 +313,15 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
                 continue
             if words in other['evidence'].casefold() or other['evidence'].casefold() in words:
                 db.execute('DELETE FROM personal_notes WHERE id=?', (other['id'],))
-        if note:  # An edit keeps the note where it shows, as the member's list labels it, wherever it is made.
-            save(db, guild, scope, user, note, time.time(), row['origin'], (), ())  # In their own words now.
+        # An edit keeps the note where it shows, as the member's list labels it, wherever it is made. In their own
+        # words now, so no removal fence refuses it; any other refusal undoes the edit, the note it replaces included,
+        # never a success with neither kept (Sol round 3 of #213, B3).
+        if note and not save(db, guild, scope, user, note, time.time(), row['origin'], (), (), fenced=False):
+            raise ValueError('That preference can’t be replaced now. Open My memory again.')
         if action == 'keep':  # Out of the profile the way a removal goes, then saved only in this private chat.
             if not save(db, guild, conversation, user, (row['category'], row['evidence']), time.time(), None,
-                        None if row['provenance'] is None else json.loads(row['provenance']), learned(row)):
+                        None if row['provenance'] is None else json.loads(row['provenance']), learned(row),
+                        fenced=False):
                 raise ValueError('That preference can’t be moved now. Open My memory again.')
         cleared(store, db, guild, user, scope, revision)
     return entries(store, guild, conversation, user, profiles)

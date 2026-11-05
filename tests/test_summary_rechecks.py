@@ -9,6 +9,7 @@ one of whose messages it knows was taken back, as it claims. Fri's first claim a
 back until it's rechecked.
 """
 import json
+import time
 
 import pytest
 
@@ -125,16 +126,31 @@ def test_one_whose_sources_arent_known_is_dropped_at_the_next_recheck(store, tmp
         assert not db.execute('SELECT count(*) FROM fri_member_summaries').fetchone()[0]
 
 
-def test_one_whose_message_the_controller_knows_was_taken_back_is_dropped_as_it_is_claimed(store, tmp_path):
-    """The gap: its exchange aged out, so a withdrawal of that message by ID finds nothing holding it and spares the
-    summary. The controller knows it was taken back, so the summary goes without Fri reading anything."""
+def recorded_only(store, message):
+    """A deletion of the message by ID as an older controller on this database records it, sparing a summary whose
+    exchange of it aged out, as nothing else held it (before Sol round 2 of HumanMint/fri#364)."""
+    with store.connection() as db:
+        db.execute("INSERT INTO chat_message_fences(guild_id,message_id,at,deleted) VALUES ('123',?,?,1)",
+                   (message, time.time()))
+
+
+@pytest.mark.parametrize('how', ['by ID', 'recorded only'])
+def test_one_whose_message_the_controller_knows_was_taken_back_is_dropped_as_it_is_claimed(store, tmp_path, how):
+    """The gap: its exchange aged out, so a withdrawal of that message by ID found nothing holding it and spared the
+    summary. The controller knows it was taken back, so the summary goes without Fri reading anything: with the
+    deletion itself now, as the summary names the message (Sol round 2 of fri #364), or as it's claimed, where only the
+    record of it is left."""
     agent = background(store, tmp_path)
     built(store, agent)
     message = sources(store)[0]['id']
     with store.connection() as db:
         db.execute("DELETE FROM chat_turns WHERE user_id='20'")  # Aged out.
-    store.withdraw_saved('123', [message], deleted=True)
-    assert shown(store)  # Spared, as nothing held it.
+    if how == 'by ID':
+        store.withdraw_saved('123', [message], deleted=True)
+        assert shown(store) is None
+    else:
+        recorded_only(store, message)
+        assert shown(store)  # Spared, as nothing held it.
     assert recheck(agent) == {'summaries': []}
     assert shown(store) is None
 
@@ -300,16 +316,22 @@ def test_b1_the_next_build_carries_the_members_words_on(store, tmp_path):
     assert offer['previous'] == {'text': 'mostly raids and builds', 'origins': [], 'messages': []}
 
 
-def test_s1_a_withdrawal_recorded_while_fri_read_takes_the_summary_whatever_fri_answers(store, tmp_path):
+@pytest.mark.parametrize('how', ['by ID', 'recorded only'])
+def test_s1_a_withdrawal_recorded_while_fri_read_takes_the_summary_whatever_fri_answers(store, tmp_path, how):
     """S1: one of its messages was taken back after the claim, while Fri was still reading; Fri's ok, from reads made
-    before that, never shows it again."""
+    before that, never shows it again. By ID, the summary goes with the deletion, so the ok finds nothing to check."""
     agent = background(store, tmp_path)
     built(store, agent)
     item = recheck(agent)['summaries'][0]
     with store.connection() as db:
         db.execute("DELETE FROM chat_turns WHERE user_id='20'")  # Aged out: nothing holds it but the summary.
-    store.withdraw_saved('123', [item['messages'][0]['id']], deleted=True)
-    rechecked(agent, item['id'], 'ok')
+    if how == 'by ID':
+        store.withdraw_saved('123', [item['messages'][0]['id']], deleted=True)
+        with pytest.raises(ValueError, match='expired'):
+            rechecked(agent, item['id'], 'ok')
+    else:
+        recorded_only(store, item['messages'][0]['id'])
+        rechecked(agent, item['id'], 'ok')
     assert shown(store) is None
     with store.connection() as db:
         assert not db.execute('SELECT count(*) FROM fri_member_summaries').fetchone()[0]

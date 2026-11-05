@@ -188,3 +188,28 @@ def test_a_summary_dropped_under_another_server_leaves_this_ones_claim(store, tm
     with store.connection() as db:
         assert not db.execute("SELECT 1 FROM fri_member_summaries WHERE guild_id='777'").fetchone()
     assert claim_of(store)
+
+
+@pytest.mark.parametrize('elsewhere', [False, True], ids=['nothing names it', "another server's summary names it"])
+def test_an_unrelated_edit_only_reads(store, monkeypatch, elsewhere):
+    """Main's fast path stays (gene #253): an edit nothing here holds, and no summary's record or claim here names,
+    returns while another writer holds the write lock, as it takes none."""
+    import sqlite3
+
+    from gene import store as controller
+    message = source(age=60, channel='1')['id']
+    if elsewhere:
+        with store.connection() as db:
+            db.execute("INSERT INTO fri_member_summaries VALUES ('777','20','raids',0,'[]','[\"public:7\"]',?,1)",
+                       (time.time(),))
+            db.execute("INSERT INTO fri_member_summary_sources VALUES ('777','20',1,?)",
+                       (json.dumps([{'id': message, 'conversation_id': 'public:7', 'saved_at': 1}]),))
+    real = sqlite3.connect
+    monkeypatch.setattr(controller.sqlite3, 'connect', lambda *args, **kwargs: real(*args, **{**kwargs, 'timeout': 0.2}))
+    holder = real(store.path, timeout=0.2)
+    holder.execute('BEGIN IMMEDIATE')
+    try:
+        assert store.withdraw_saved('123', [message], deleted=False) == {'ok': True, 'removed': 0}
+    finally:
+        holder.rollback()
+        holder.close()

@@ -2,9 +2,9 @@
 by Gene's clock, was compared with messages' snowflakes, on Discord's: with Gene's clock behind, a message sent just
 before the removal counted as after it and was kept or learned; ahead, one sent just after it was refused. A removal is
 dated by the panel interaction that asked, within a minute of Gene's stamp, as an erasure is, and never moves a cutoff
-earlier. A cutoff known only on Gene's clock (Red's own data deletion, an older Fri's control, a removal no interaction
-dates) holds a few seconds past it (MARGIN). And a history channel's narrower answer says the removal cutoff on
-Discord's clock to a Fri that asks for it."""
+earlier. Red's own data deletion, with no message of the member's to date it by, holds a few seconds past Gene's stamp
+(MARGIN). And a history channel's narrower answer says the removal cutoff on Discord's clock to a Fri that asks for
+it."""
 
 import pytest
 

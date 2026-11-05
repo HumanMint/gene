@@ -41,9 +41,11 @@ HEDGED = reference('7914787')  # #217 (#212 items 1-3), before #221.
 MODIFIED = reference('a5bdada')  # #225 (#221 F1, F2), before #226.
 BRIDGED = reference('3bddd69')  # #229 (#226 items 2, 3), before #231.
 REJOINED = reference('dd7441e')  # #235 (#231 items 1, 3), before #236.
+# Main now: #238 (#236), and the same module at 571fb78. #245 only ever refuses more than it (Sol round 2 of #245).
+WIDENED = reference('2cdaffc')
 BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST,
           'b1d4b88': STACKED, 'ba5a0a6': ASIDED, '7914787': HEDGED, 'a5bdada': MODIFIED, '3bddd69': BRIDGED,
-          'dd7441e': REJOINED}
+          'dd7441e': REJOINED, '2cdaffc': WIDENED}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -100,6 +102,12 @@ REVIEWED = [
     # Sol round 1 of #245: back-references after a wider verb, an apostrophe, and a report heard.
     'i like chess, or so she explained it to me', 'i like chess, she joked that i do',
     'i' + chr(0xFF07) + 'm informed that i like chess', 'i heard that i like chess',
+    # Sol round 2 of #245: what round 1's loosening of #238's reading kept.
+    'i like chess, she joked that i really do', 'i like chess, she joked that i do indeed',
+    'i like chess, she joked that i' + chr(0x200B) + ' do', 'i like chess, she explained that one',
+    'i like chess, she explained that much', 'i like chess, or so she would have already explained my plan',
+    'she warned my mom that i like chess', 'she mentioned my belief that i like chess', 'announced my mom, i like chess',
+    'i like chess, she joked that you really do',
 ]
 
 

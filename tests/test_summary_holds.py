@@ -212,3 +212,25 @@ def test_a_write_depending_on_a_held_summary_is_refused_until_it_checks_out(worl
     assert refused.status_code == 409 and MARKER not in refused.text
     answered(client, claim, 'ok')
     written(client, route, body(dm(2), depending(generation)))
+
+
+def held(store, user):
+    """A kept summary of the member's, held back until it's read again."""
+    now = time.time()
+    with store.connection() as db:
+        db.execute("INSERT INTO fri_member_summaries VALUES ('123',?,'they planned a raid',0,'[]','[\"public:1\"]',?,?)",
+                   (user, now, now))
+        db.execute("INSERT INTO fri_member_summary_rechecks(guild_id,user_id,through,checked,held) VALUES "
+                   "('123',?,?,0,1)", (user, now))
+
+
+def test_reply_checks_leave_out_a_pair_whose_reply_drew_on_a_held_summary(tmp_path):
+    """A reply check sends both replies of a pair to its model: one that drew on a held summary isn't sent meanwhile
+    (as a pair with a non-verbatim reply isn't). Another member's pair is."""
+    from tests.test_fri_reply_checks import exchange
+    from tests.test_fri_reply_checks import setup as reply_checks
+    store, _, checks, _ = reply_checks.__wrapped__(tmp_path)
+    exchange(store, user='20', summary_generation=0)
+    other = exchange(store, user='21', summary_generation=0)
+    held(store, '20')
+    assert [pair['id'] for pair in checks.claim()['pairs']] == [str(other)]

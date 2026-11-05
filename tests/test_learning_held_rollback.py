@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from time import time as real_time
 
 import pytest
@@ -187,6 +188,32 @@ def test_one_held_by_the_mark_alone_has_its_words_set_aside_at_this_genes_next_s
     Store(store.path)  # Again: nothing more moves, and what's set aside is still the words.
     assert SUMMARY in set_aside(store)['report', report_id]['body']
     assert set_aside(store)['summary', '1']['body'] == SUMMARY
+
+
+def test_two_starts_at_once_set_the_words_aside_once(learning, monkeypatch):  # noqa: F811
+    """Two processes starting on one database together: the second waits while the first sets the words aside. Were it
+    not to, it would set them aside first, and the first, reading the placeholder its summary had become, would put that
+    in their place."""
+    import gene.fri_learning_sources as sources
+    _, store, _, _ = learning
+    scheduler, report_id, _, _ = passed(learning)
+    unrecorded(store)
+    with store.connection() as db:  # 016867c's hold(), for each.
+        for kind, item in (('report', report_id), ('summary', '1')):
+            db.execute('INSERT INTO fri_learning_sources VALUES (?,?,NULL,1)', (kind, item))
+    hold, other = sources.hold, []
+
+    def first(db, kind, item):
+        if not other:  # The other start, while this one sets aside, for as long as it may take.
+            other.append(threading.Thread(target=Store, args=(store.path,)))
+            other[0].start()
+            other[0].join(2)
+        hold(db, kind, item)
+    monkeypatch.setattr(sources, 'hold', first)
+    Store(store.path)
+    other[0].join()
+    assert set_aside(store)['summary', '1']['body'] == SUMMARY
+    assert SUMMARY in set_aside(store)['report', report_id]['body'] and not legacy_words(store)
 
 
 def older_summary(store):

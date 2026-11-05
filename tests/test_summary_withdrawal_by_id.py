@@ -9,6 +9,7 @@ import time
 import pytest
 
 from gene.fri_member_summary import CLAIM, generation
+from tests.test_erasure_rollback import extracted  # noqa: F401 (the fixture)
 from tests.test_fri_endings import source
 from tests.test_member_summaries import background, build, chat, offered, shown
 from tests.test_summary_sources import sources, tomorrow
@@ -213,3 +214,27 @@ def test_an_unrelated_edit_only_reads(store, monkeypatch, elsewhere):
     finally:
         holder.rollback()
         holder.close()
+
+
+def test_the_live_gene_finishes_a_claim_this_one_made(store, tmp_path, extracted):  # noqa: F811
+    """Rolled back while a build is in flight: the live Gene's own code finishes the claim this one made, its server
+    named in it, and keeps the summary, as it would its own."""
+    import os
+    import subprocess
+    import sys
+    code = extracted('77442dc')
+    if code is None:
+        pytest.skip('77442dc is not in this checkout')
+    agent, offer, _ = in_flight(store, tmp_path)
+    assert claim_of(store)['guild_id'] == '123'
+    conversations = sorted({row['conversation_id'] for row in offer['exchanges']})
+    script = ('import json, sys\nfrom pathlib import Path\nfrom gene.config import Settings\n'
+              'from gene.fri_agent_store import AgentStore\nfrom gene.fri_member_summary import finish\nfrom gene.store import Store\n'
+              "store = Store(Path(sys.argv[1]))\nsettings = Settings(Path(sys.argv[1]), '123', 'owner', 'r'*40, 'w'*40, 'd'*40, "
+              "agent_channels='1,2')\n"
+              "print(json.dumps(finish(AgentStore(store, settings), sys.argv[2], 'they planned a raid', 'completed', "
+              'json.loads(sys.argv[3]), False)))\n')
+    done = subprocess.run([sys.executable, '-c', script, str(store.path), offer['id'], json.dumps(conversations)], cwd=code,
+                          env={**os.environ, 'PYTHONPATH': str(code)}, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert json.loads(done.stdout.strip().splitlines()[-1]) == {'kept': True} and shown(store)

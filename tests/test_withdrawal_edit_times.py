@@ -157,15 +157,17 @@ def test_a_young_messages_exchange_goes_only_if_saved_from_an_earlier_version(wo
     assert inputs(store) == ([] if version == 'before' else ['what about lunch'])
 
 
-def summary_drawing_on(store, user, messages):
-    """A kept summary of the member's, built from those messages (None: one whose sources aren't known)."""
-    now = time.time()
+def summary_drawing_on(store, user, messages, drew=None):
+    """A kept summary of the member's, built from those messages (None: one whose sources aren't known), and from
+    which version of each (`drew`, message -> version; none recorded by default, as before versions were)."""
+    now, drew = time.time(), drew or {}
     with store.connection() as db:
         db.execute("INSERT INTO fri_member_summaries VALUES ('123',?,'they planned a raid',0,'[]','[\"public:51\"]',"
                    '?,?)', (user, now, now))
         if messages is not None:
             db.execute("INSERT INTO fri_member_summary_sources VALUES ('123',?,?,?)", (user, now, json.dumps(
-                [{'id': message, 'conversation_id': 'public:51', 'saved_at': now} for message in messages])))
+                [{'id': message, 'conversation_id': 'public:51', 'saved_at': now,
+                  **({'version': drew[message]} if message in drew else {})} for message in messages])))
 
 
 def shown(store, user):
@@ -177,17 +179,131 @@ def shown(store, user):
 def test_b1_an_unsure_message_holds_back_its_authors_summary_that_may_have_drawn_on_it(world, sources):
     """Sol round 1's B1: nothing of an unsure message is withdrawn, and Fri holds its ID back, but a summary built from
     it names no such ID in a later request elsewhere, so it carried what the edit took away. Its author's summary is
-    held back until it's read again, where it drew on that message or its sources aren't known. Another member's
-    summary, and one that drew on other messages, stay."""
+    held back until it's read again, where it drew on that message (from a version not known: see the round-2 tests
+    below) or its sources aren't known. Another member's summary whose sources aren't known, and one that drew on
+    other messages, stay."""
     client, store = world
     taken = note_from(store, age=100*DAY, versioned=False)
     other = source(age=200, channel='51')['id']
     summary_drawing_on(store, '20', {'naming it': [taken], 'not known': None, 'naming another': [other]}[sources])
-    summary_drawing_on(store, '30', [taken])
+    summary_drawing_on(store, '30', None)
     assert shown(store, '20') and shown(store, '30')
     assert withdraw_saved(client, taken, edited_at=time.time()).json()['unsure'] == [taken]
     assert shown(store, '20') is (sources == 'naming another')
-    assert shown(store, '30')  # Its saves aren't member 30's.
+    assert shown(store, '30')  # Its saves aren't member 30's, and it names no message.
+
+
+# Sol round 2 of fri #364: a summary is placed by the version of the message it drew on, apart from exchanges and notes.
+
+def gone(store, user):
+    with store.connection() as db:
+        return db.execute("SELECT 1 FROM fri_member_summaries WHERE guild_id='123' AND user_id=?",
+                          (user,)).fetchone() is None
+
+
+def standing(store, user):
+    """'gone', 'held' (kept, but held back until it's read again) or 'shown'."""
+    return 'gone' if gone(store, user) else 'shown' if shown(store, user) else 'held'
+
+
+DREW = {'from an earlier version': 'gone', 'from a version not known': 'held', 'from that version': 'shown'}
+
+
+@pytest.mark.parametrize('skew', SKEWS)
+@pytest.mark.parametrize('drew', list(DREW))
+def test_r2_b2_a_summary_is_placed_by_the_version_it_drew_on_whatever_else_holds_the_message(world, monkeypatch, skew,
+                                                                                         drew):
+    """Sol round 2's B2: a summary built from the message, its exchange trimmed since, and the message answered again
+    after an edit. That newer exchange stays, so the edit kept the message, summary and all, and a request in another
+    channel carried what the edit took away. The summary is placed by itself: built from an earlier version it goes,
+    from one not known it's held back until it's read again, and from that version it stays. The exchange stays."""
+    client, store = world
+    said = source(age=100*DAY, channel='51')['id']
+    edited = time.time()-60
+    summary_drawing_on(store, '20', [said], {'from an earlier version': {said: created(said)},
+                                            'from a version not known': {}, 'from that version': {said: edited}}[drew])
+    store.save_chat('123', 'public:51', '20', 0, 'what about dinner', 'okay', 'model', 'high',
+                    source={**source(channel='51'), 'id': said}, provenance=[], versions={said: edited})
+    skewed(monkeypatch, skew)
+    assert withdraw_saved(client, said, edited_at=edited).json() == {'ok': True, 'removed': 0, 'unsure': []}
+    assert inputs(store) == ['what about dinner']
+    assert standing(store, '20') == DREW[drew]
+
+
+P1 = {'a later edit, the version it drew on known': 'gone', 'a later edit, the version not known': 'held',
+      'a pin repeating the version it drew on': 'shown', 'an edit with no time': 'gone', 'a deletion': 'gone'}
+
+
+@pytest.mark.parametrize('how', list(P1))
+def test_r2_p1_a_summary_alone_holding_the_message_is_placed_too(world, how):
+    """Sol round 2's P1 (pre-existing): the message's exchanges and notes all gone, a summary that drew on it was the
+    only thing holding it, and with nothing else found the withdrawal changed nothing, so the summary stayed in use
+    after the edit. It's placed as above; with no time, or deleted, it goes. Another member's summary that drew on
+    other messages stays."""
+    client, store = world
+    said, other = source(age=100*DAY, channel='51')['id'], source(age=200, channel='51')['id']
+    version = time.time()-DAY
+    summary_drawing_on(store, '20', [other, said], {} if 'not known' in how else {said: version})
+    summary_drawing_on(store, '30', [other], {other: version})
+    when = {'deleted': True} if how == 'a deletion' else {} if how == 'an edit with no time' else {
+        'edited_at': version if how.startswith('a pin') else version+60}
+    assert withdraw_saved(client, said, **when).json()['removed'] == 0
+    assert standing(store, '20') == P1[how]
+    assert standing(store, '30') == 'shown'
+
+
+def exchanges_from(store, versioned, ago=7200):
+    """Member 20's two exchanges in #1, `ago` seconds old, each saved from a version of its message edited 5 s after
+    it was sent (or recording none)."""
+    said = [source(age=ago+age, channel='1') for age in (2000, 1000)]
+    for row, text in zip(said, ('raid tonight?', 'what build for the raid')):
+        store.save_chat('123', 'public:1', '20', 0, text, 'fri said something', 'model', 'high', source=row,
+                        audience='server', provenance=[],
+                        **({'versions': {row['id']: created(row['id'])+5}} if versioned else {}))
+        with store.connection() as db:
+            db.execute('UPDATE chat_turns SET at=at-? WHERE id=(SELECT max(id) FROM chat_turns)', (ago,))
+    return [row['id'] for row in said]
+
+
+def drew_on(store):
+    with store.connection() as db:
+        row = db.execute("SELECT messages FROM fri_member_summary_sources WHERE user_id='20'").fetchone()
+    return [(item['id'], item.get('version')) for item in json.loads(row[0])]
+
+
+@pytest.mark.parametrize('versioned', [True, False])
+def test_a_summary_records_the_version_of_each_message_it_drew_on(store, tmp_path, versioned):
+    """From each exchange's own record, and carried on with the earlier summary's, so an edit is placed against a
+    summary as against an exchange. An exchange that recorded none gives none, and the summary is held on an edit."""
+    from tests.test_member_summaries import background, build
+    from tests.test_summary_sources import tomorrow
+    agent = background(store, tmp_path)
+    first = exchanges_from(store, versioned)
+    assert build(agent)[1] == {'kept': True}
+    assert drew_on(store) == [(i, created(i)+5 if versioned else None) for i in first]
+    later = exchanges_from(store, True, ago=5400)
+    tomorrow(store)
+    assert build(agent)[1] == {'kept': True}
+    assert drew_on(store) == [(i, created(i)+5 if versioned else None) for i in first]+[(i, created(i)+5) for i in later]
+
+
+@pytest.mark.parametrize('how', ['a later edit', 'a pin repeating its version'])
+def test_a_build_in_flight_that_drew_on_an_earlier_version_is_let_go(store, tmp_path, how):
+    """Claimed before the edit, its exchanges trimmed since: nothing else holds the message, and the finish would keep a
+    summary of what the edit took away. It's let go; a pin repeating its version leaves it."""
+    from gene.fri_member_summary import finish
+    from tests.test_member_summaries import background, offered
+    agent = background(store, tmp_path)
+    said = exchanges_from(store, True)
+    offer = offered(agent)
+    with store.connection() as db:
+        db.execute('DELETE FROM chat_turns')  # Trimmed since, as later saves would.
+    store.withdraw_saved('123', [said[0]], edited_at=created(said[0])+5+(60 if how == 'a later edit' else 0))
+    if how == 'a later edit':
+        with pytest.raises(ValueError, match='expired'):
+            finish(agent, offer['id'], 'they raid', 'completed', ['public:1'], True)
+    else:
+        assert finish(agent, offer['id'], 'they raid', 'completed', ['public:1'], True) == {'kept': True}
 
 
 def test_a_deletion_takes_everything_whatever_time_comes_with_it(world):

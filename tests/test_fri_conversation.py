@@ -1221,12 +1221,12 @@ def test_236s_shapes_keep_no_note_when_saved_and_read_again(store, text):
 
 
 def case_equivalents():
-    """Each code point but the ASCII ones whose case folding is all ASCII letters ("ß": "ss"), or which a
-    case-insensitive pattern matches as an ASCII letter (dotless "ı": "i"), with the letters it stands for."""
+    """Each code point but the lowercase ASCII letters whose case folding is all ASCII letters ("A": "a", "ß": "ss"),
+    or which a case-insensitive pattern matches as an ASCII letter (dotless "ı": "i"), with the letters it stands for."""
     letter = re.compile('(?i)[a-z]')
     found = {}
     for point in range(0x110000):
-        if (c := chr(point)).isascii():
+        if (c := chr(point)) in string.ascii_lowercase:
             continue
         if (folded := c.casefold()).isascii() and folded.isalpha():
             found[c] = folded
@@ -1242,7 +1242,7 @@ def test_no_case_equivalent_of_a_report_verb_fails_a_note():
     and as the verb it is wherever the pattern matches it."""
     from gene.fri_memory import REPORTED_TOO, SAID_AS, SAY_PHRASES
     equivalents = case_equivalents()
-    assert {chr(0x17F), chr(0x131), chr(0x130), chr(0x212A), chr(0xDF), chr(0xFB05)} <= set(equivalents)
+    assert {'S', chr(0x17F), chr(0x131), chr(0x130), chr(0x212A), chr(0xDF), chr(0xFB05)} <= set(equivalents)
     note, tried, matched = {'category': 'games', 'evidence': 'i like chess'}, 0, 0
     for verb in [*SAID_AS, *SAY_PHRASES]:
         plain = personal_note(note, f'i like chess, my mom {verb}')
@@ -1255,7 +1255,7 @@ def test_no_case_equivalent_of_a_report_verb_fails_a_note():
                     assert kept == plain, variant
                     matched += 1
                 tried, at = tried + 1, verb.find(letters, at + 1)
-    assert tried > 1000 and matched > 300
+    assert tried > 1200 and matched > 1200
 
 
 def test_a_case_equivalent_report_verb_never_fails_a_turn(client):

@@ -714,6 +714,8 @@ NEXT_WORD = re.compile(r"\s*+([\w']+)")
 FOLLOWING = 6  # Words read after a verb at most.
 # The comma (or semicolon) a report's own clause, its subject and auxiliaries, starts after, on the same line.
 CLAUSE_AFTER_COMMA = re.compile(r"[,;](?=[ \t]*+(?:[\w']+[ \t]++){1,5}$)")
+# "or so" and up to three words (its subject and auxiliaries) right before a report verb: an attribution of the claim.
+ATTRIBUTED = re.compile(r"(?i)\bor\s++so\s++(?:[\w']++\s++){0,3}$")
 
 
 def reports_what(text, at):
@@ -742,10 +744,39 @@ def reports_what(text, at):
             return BACK
     if words[i] in POINTING:
         pointer, i = words[i], past_modifiers(i+1)
-        if ends(i):
+        # "it" and "so" only ever point back ("explained it to everyone"); "this" and "that" do unless a noun follows
+        # them, as a determiner ("that rule"), or, for "that", a clause of its own (Sol round 1 of #245).
+        if ends(i) or pointer in ('it', 'so') or words[i] in TOLD_OF or words[i] in RECIPIENTS:
             return BACK
-        return CLAUSE if pointer == 'that' and opens_clause(words, i) else None
-    return CLAUSE if opens_clause(words, i) else None
+        if pointer == 'that' and opens_clause(words, i):
+            return BACK if elliptical(words, i) else CLAUSE
+        return None
+    if opens_clause(words, i):
+        return BACK if elliptical(words, i) else CLAUSE
+    return None
+
+
+# A clause that only points back at the claim (Sol round 1 of #245, B2): its subject and an auxiliary or a form of "be",
+# and nothing of its own after them ("that i do", "i am too", "that i don't").
+ELLIPTICAL = frozenset("do does did don't doesn't didn't dont doesnt didnt am is are was were isn't wasn't aren't "
+                       "weren't isnt wasnt arent werent have has had haven't hasn't hadn't havent hasnt hadnt can could "
+                       "will would should might must may can't won't wouldn't couldn't shouldn't cant wont wouldnt "
+                       "couldnt shouldnt".split())
+BE_SUBJECTS = frozenset("i'm im we're you're youre he's hes she's shes they're theyre it's".split())
+STILL_BACK = frozenset('not too so either also still really'.split())
+
+
+def elliptical(words, i):
+    """Whether words[i:], a clause (see opens_clause), only point back at the claim (see ELLIPTICAL)."""
+    if words[i] in BE_SUBJECTS:
+        j = i+1
+    elif words[i] in SUBJECTS_AFTER and i+1 < len(words) and words[i+1] in ELLIPTICAL:
+        j = i+2
+    else:
+        return False
+    while j < len(words) and (words[j] in STILL_BACK or words[j] in MODIFIERS_AFTER):
+        j += 1
+    return j == len(words) or words[j] in CLAUSE_ENDS
 
 
 def opens_clause(words, i):
@@ -780,7 +811,11 @@ def reread(text):
     for m in REPORTED_TOO.finditer(text):
         found = RUNS_OF_SPACE.sub(' ', m.group().translate(ASCII_CASES).lower())
         say = SAY_PHRASES.get(found) or SAID_AS.get(found)
-        if say is None or (kind := reports_what(text, m.end())) is None or members_own(text, m.start(), say == 'said'):
+        if say is None:
+            continue
+        # After "or so", the claim's attribution, whatever follows (Sol round 1 of #245, B1).
+        kind = BACK if ATTRIBUTED.search(text, max(0, m.start()-60), m.start()) else reports_what(text, m.end())
+        if kind is None or members_own(text, m.start(), say == 'said'):
             continue
         if kind == CLAUSE and (comma := CLAUSE_AFTER_COMMA.search(text, max(0, m.start()-80), m.start())):
             edits.append((comma.start(), comma.end(), '.'))
@@ -816,20 +851,56 @@ PASSIVE_REPORT = re.compile(rf"(?i)(?:\b(?:was|were|been|be|being|is|are|am|got|
                             rf"|['{chr(0x2019)}{chr(0x2018)}{chr(0x2BC)}](?:m|re|s)\b)(?:\s++(?:been|being)\b)?+"
                             rf"(?:\s++(?:{RUN_MODIFIERS})\b)*+\s++(?:{PASSIVE_VERBS})\b")
 TOLD_OF = frozenset('to of about on for against with in at into over from'.split())
+MODIFIERS_PAST = 3  # Modifiers read past after a passive verb, at most ("advised yesterday to rest").
 
 
 def told_so(m):
-    """A passive report as "was told", unless something else follows it (see TOLD_OF)."""
-    after = NEXT_WORD.match(m.string, m.end())
+    """A passive report as "was told", unless something else follows it (see TOLD_OF), past a modifier or two (Sol
+    round 1 of #245, S2)."""
+    end = m.end()
+    for _ in range(MODIFIERS_PAST):
+        after = NEXT_WORD.match(m.string, end)
+        if not after or not (after.group(1).lower() in MODIFIERS_AFTER or (after.group(1).lower().endswith('ly')
+                                                                          and after.group(1).isalpha())):
+            break
+        end = after.end()
+    after = NEXT_WORD.match(m.string, end)
     if after and after.group(1).lower() in TOLD_OF:
         return m.group()
     return ('' if m.group()[0].isalpha() else ' ') + 'was told'
 
 
+# And (Sol round 1 of #245, B4) hearing it: "i heard that i like chess", "i've heard", "i like chess, i heard". Someone
+# else supplied the claim, so it reads as "was told" too, the member's own "heard" included, where it reports something
+# (see reports_what): not "heard about lag" or "heard the album". One that reports a clause of its own after a comma
+# starts a sentence there, as reread does, so the report is that clause's.
+HEARD_REPORT = re.compile(rf"(?i)(?:(?:\b(?:have|has|had)|'(?:ve|d))\s++)?+(?:(?:{RUN_MODIFIERS})\s++)*+"
+                          rf"\b(?:heard|hears?)\b")
+
+
+def heard_so(text):
+    """Each report heard as "was told" (see HEARD_REPORT)."""
+    edits = []
+    for m in HEARD_REPORT.finditer(text):
+        if (kind := reports_what(text, m.end())) is None:
+            continue
+        if kind == CLAUSE and (comma := CLAUSE_AFTER_COMMA.search(text, max(0, m.start()-80), m.start())):
+            edits.append((comma.start(), comma.end(), '.'))
+        edits.append((m.start(), m.end(), ('' if m.group()[0].isalpha() else ' ') + 'was told'))
+    out, last = [], 0
+    for start, end, new in sorted(edits):
+        if start >= last:
+            out += [text[last:start], new]
+            last = end
+    return ''.join(out) + text[last:]
+
+
 @functools.lru_cache(maxsize=32)
 def passive(text, invisible):
-    """rejoined's reading (see there), with each passive report as "was told" first (see PASSIVE_REPORT)."""
+    """rejoined's reading (see there), with each passive report as "was told" first (see PASSIVE_REPORT), and each
+    report heard (see HEARD_REPORT), every apostrophe inside a word read as a plain one (Sol round 1 of #245, B3)."""
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = heard_so(APOSTROPHES.sub("'", unseen.replace(chr(0x2019), "'")))
     unseen = PASSIVE_REPORT.sub(told_so, unseen)
     unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
     unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))

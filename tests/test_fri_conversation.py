@@ -1258,7 +1258,10 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 'i' + chr(0x2019) + 've mentioned ', "i haven't ", 'was warned ', 'confe' + chr(0x17F) * 2 + 'ed ',
                 # gene #239 and #242: passive runs, and what follows a wider verb, each read a few words at most.
                 'was kindly informed ', "i've been reminded ", 'got got notified ', 'announced my ', 'explained that ',
-                'complained loudly ', 'suggested i ', ', my coach suggested i ', 'it to it to '):
+                'complained loudly ', 'suggested i ', ', my coach suggested i ', 'it to it to ',
+                # Sol round 1 of #245: back-references, "or so", heard, and modifiers after a passive verb.
+                'joked that i do ', 'or so she explained ', 'or so or so ', 'i heard ', "i've heard that ",
+                'heard heard ', 'was advised yesterday ', 'yesterday yesterday ', 'i' + chr(0xFF07) + 'm informed '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

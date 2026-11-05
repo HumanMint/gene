@@ -97,6 +97,9 @@ REVIEWED = [
     'i like chess, my mom confe' + chr(0x17F) * 2 + 'ed', 'i would\nonce have\nsaid hi\nplease call me dan',
     # gene #239: passive reports.
     "i've been informed that i like chess", 'i was reminded that i like chess',
+    # Sol round 1 of #245: back-references after a wider verb, an apostrophe, and a report heard.
+    'i like chess, or so she explained it to me', 'i like chess, she joked that i do',
+    'i' + chr(0xFF07) + 'm informed that i like chess', 'i heard that i like chess',
 ]
 
 
@@ -424,10 +427,16 @@ PASSIVE_SUBJECTS = ['i ', 'we ', 'she ', 'they ', 'jo ', '', "i'", 'i' + chr(0x2
 PASSIVE_RUNS = ['was ', 'were ', "'ve been ", 've been ', 'have been ', 'has been ', 'got ', 'get ', 'am ', "'m ",
                 'been ', 'was just ', 'was kindly ', 'were already ', chr(0x2019) + 've been ', 'was\n', 'was really ']
 PASSIVE_VERBS = ['informed', 'reminded', 'notified', 'assured', 'advised', 'warned', 'told', 'kindly informed']
-PASSIVE_AFTER = [' that ', ' ', ' by my mom that ', ', ', ' lol ', ' of this: ', ' about it: ', '\n']
+PASSIVE_AFTER = [' that ', ' ', ' by my mom that ', ', ', ' lol ', ' of this: ', ' about it: ', '\n',
+                 ' yesterday to rest, ', ' yesterday of it: ', ' again that ']
 REPORT_AFTER = ['my score', 'that rule', 'it to everyone', 'it to me', 'i practice more', 'we play more',
                 'loudly about lag', 'about lag', 'that', 'it', 'me', 'to me that', '', 'so', 'my nickname is dan',
-                'it lol', 'this', 'that i', 'my', 'it to', 'loudly', 'she is moving', 'my fav band is']
+                'it lol', 'this', 'that i', 'my', 'it to', 'loudly', 'she is moving', 'my fav band is',
+                # Sol round 1 of #245: back-references, and a determiner.
+                'that i do', 'i am too', "that i don't lol", 'this to me', 'so to everyone', 'this rule']
+# Sol round 1 of #245, B4: a report heard, before the claim or after it.
+HEARD_RUNS = ['i heard', "i've heard", 'i hear', 'we heard', 'she heard', 'i have heard', 'i' + chr(0xFF07) + 've heard',
+              'i really heard']
 WIDER = ['announced', 'explained', 'suggested', 'complained', 'mentioned', 'pointed out', 'would announce',
          'has been explaining', 'whispered', 'let slip']
 
@@ -438,6 +447,9 @@ def passive_and_object_reports(count, seed):
         category, evidence = rng.choice(CLAIMS)
         passive = rng.choice(PASSIVE_SUBJECTS) + rng.choice(PASSIVE_RUNS) + rng.choice(PASSIVE_VERBS)
         report = (rng.choice(SUBJECTS) + rng.choice(WIDER) + ' ' + rng.choice(REPORT_AFTER)).strip()
+        if rng.randrange(5) == 0:  # Heard in place of the passive run, or after "or so" in place of the report.
+            passive = rng.choice(HEARD_RUNS)
+            report = 'or so ' + report
         shape = rng.randrange(4)
         if shape == 0:
             text = passive + rng.choice(PASSIVE_AFTER) + evidence

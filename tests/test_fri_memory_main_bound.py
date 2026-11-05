@@ -93,6 +93,8 @@ REVIEWED = [
     'have' + chr(0xA0) + 'to say ;- / i like chess', 'i like chess, my mom :- /\nwould\nsay',
     # gene #236: what only bridged refuses, a chained auxiliary, and a report verb outside the vocabulary.
     'must\nsay :-\n/ i like chess', 'i like chess, my mom would\nhave\nsaid', 'i like chess, my mom would announce',
+    # Sol round 1 of #238: a letter in another case in a wider report verb, and what only rejoined refuses.
+    'i like chess, my mom confe' + chr(0x17F) * 2 + 'ed', 'i would\nonce have\nsaid hi\nplease call me dan',
 ]
 
 

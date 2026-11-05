@@ -139,7 +139,7 @@ def held(store, guild):
     """Every channel or thread the controller holds anything saved from (see withdraw), with the channel a thread is
     under where it's known. For Fri's check of those it may have missed the deletion of: one withdrawn before is listed
     again only if something was written there since (an older controller's history summary, say), and goes again."""
-    from .fri_learning_sources import TAKEN
+    from .fri_learning_sources import EXPIRED, TAKEN
     from .fri_learning_sources import channel_of as report_channel
     found = set()
     with store.connection() as db:
@@ -152,10 +152,11 @@ def held(store, guild):
         for table in INVENTORY:
             found |= {str(row[0]) for row in rows(db, f'SELECT DISTINCT channel_id FROM {table}', table=table)
                       if str(row[0]).isdigit()}
-        # A learning report, by the channel its card or body names. One withdrawn to a breadcrumb holds nothing.
+        # A learning report, by the channel its card or body names. One withdrawn or expired to a breadcrumb holds
+        # nothing; one held back holds what's set aside for it.
         for body, card in db.execute('SELECT r.body,c.body FROM agent_reports r LEFT JOIN agent_report_cards c ON '
                                      'c.report_id=r.id').fetchall():
-            if not body.endswith(TAKEN) and (channel := report_channel(body, json.loads(card) if card else {})).isdigit():
+            if not body.endswith((TAKEN, EXPIRED)) and (channel := report_channel(body, json.loads(card) if card else {})).isdigit():
                 found.add(channel)
         known = dict(db.execute('SELECT thread_id,parent_id FROM chat_thread_parents WHERE guild_id=?', (guild,)).fetchall())
     return {'channels': [{'id': channel, 'parent': known.get(channel)}

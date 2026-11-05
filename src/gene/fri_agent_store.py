@@ -141,7 +141,8 @@ class AgentStore:
             db.execute('DELETE FROM agent_summaries WHERE at<?', (time.time()-2*86400,))
             db.execute('DELETE FROM agent_sessions WHERE started<? AND until<?',
                        (time.time()-86400, time.time()))
-            db.execute('DELETE FROM agent_reports WHERE delivered=1 AND at<?', (time.time()-7*86400,))
+            from .fri_learning_sources import expire
+            expire(db, time.time())  # A report's week, delivered or not (gene #250).
             return {'config': self.config(db), 'version': self.get(db, 'version', 0),
                     'auto_repairs_enabled': self.store._setting(db, 'repair_policy') == 'existing-features-v1',
                     'learning_schedule': self.learning_schedule(db, time.time()),
@@ -263,8 +264,10 @@ class AgentStore:
                 return blocked('An owner-requested pass can run at most once every five minutes.')
             if not manual and now < self.get(db, 'next_learning', 0):
                 return None
-            # A report outage pauses learning, so the owner does not lose visibility.
-            if db.execute('SELECT 1 FROM agent_reports WHERE delivered=0').fetchone():
+            # A report outage pauses learning, so the owner does not lose visibility. For the report's week: past it,
+            # it keeps only a breadcrumb, which goes out with the next pass's report (gene #250, see reports).
+            from .fri_learning_sources import KEPT
+            if db.execute('SELECT 1 FROM agent_reports WHERE delivered=0 AND at>=?', (now-KEPT,)).fetchone():
                 return blocked('The previous learning report still needs to reach the owner.')
             if pending:
                 # Running inside its ten minutes, either way of a small clock step; one that can't be read is
@@ -588,9 +591,16 @@ class AgentStore:
               "s.item=r.id ")
 
     def reports(self):
+        """The outbox Fri delivers after each pass: the oldest report still to be delivered, with the breadcrumbs of any
+        past their week before it (gene #250). Were a breadcrumb all it handed over, the pass's own report would pause
+        learning for its week, and expire in its turn."""
+        from .fri_learning_sources import KEPT, expire
+        now = time.time()
         with self.store.connection() as db:
+            expire(db, now)
+            expired = db.execute('SELECT count(*) FROM agent_reports WHERE delivered=0 AND at<?', (now-KEPT,)).fetchone()
             return [self.report_row(r) for r in db.execute(
-                self.REPORT+'WHERE r.delivered=0 ORDER BY r.at LIMIT 1')]
+                self.REPORT+'WHERE r.delivered=0 ORDER BY r.at LIMIT ?', (expired[0]+1,))]
 
     @staticmethod
     def report_row(row):

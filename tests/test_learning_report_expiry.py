@@ -9,7 +9,7 @@ still hears a pass ran. It no longer pauses learning, and it goes out with the n
 import pytest
 
 from tests.test_fri_learning import learning  # noqa: F401 (the fixture)
-from tests.test_learning_held_rollback import held, legacy_words, set_aside
+from tests.test_learning_held_rollback import WORDS, held, legacy_words, set_aside
 from tests.test_learning_report_withdrawal import SUMMARY, passed
 
 WEEK = 7*86400
@@ -38,8 +38,9 @@ def test_the_repro_an_undelivered_report_keeps_no_words_past_its_week(learning, 
     clock[0] += 8*86400
     if read == 'state':
         assert scheduler.state()['report_pending']  # Still to be delivered, as a breadcrumb.
+        assert not legacy_words(store) and not set_aside(store)  # And the channel summary's two days are past.
     [pending] = scheduler.reports()
-    assert not legacy_words(store) and not set_aside(store)
+    assert not report_words(store, report_id)
     assert pending['id'] == report_id and pending['body'].startswith(f'Learning pass {report_id[:8]}\nChannel: <#1>\n')
     assert 'a week' in pending['body'] and 'Held back' not in pending['body']
     card = pending['card']
@@ -58,6 +59,14 @@ def test_inside_its_week_a_pending_report_still_pauses_learning_and_keeps_its_wo
     scheduler.state()
     assert scheduler.claim(manual=True) == {'blocked': PAUSED}
     assert words_kept(store, report_id) and scheduler.reports()[0]['id'] == report_id
+
+
+def report_words(store, report_id):
+    """Whether the report's words are still stored: in its row or card, or set aside."""
+    with store.connection() as db:
+        row = db.execute('SELECT r.body,c.body FROM agent_reports r LEFT JOIN agent_report_cards c ON c.report_id=r.id '
+                         'WHERE r.id=?', (report_id,)).fetchone()
+    return any(words in str(tuple(row)) for words in WORDS) or ('report', report_id) in set_aside(store)
 
 
 def words_kept(store, report_id):
@@ -81,11 +90,32 @@ def test_an_expired_report_goes_out_with_the_next_passs_report(learning):  # noq
     assert 'blocked' not in scheduler.claim(manual=True)
 
 
-def test_one_already_wordless_keeps_its_own_breadcrumb(learning):  # noqa: F811
+@pytest.mark.parametrize('which', ['taken back', 'interrupted'])
+def test_one_already_wordless_keeps_its_own_breadcrumb(learning, which):  # noqa: F811
     """A report its withdrawal already took, or an interrupted pass's, has no words to expire: it stays as it is."""
-    clock, store, _, _ = learning
-    scheduler, report_id, said, _ = passed(learning)
-    store.withdraw_saved('123', [said], deleted=True)
-    [taken] = scheduler.reports()
+    clock, store, _, scheduler = learning
+    if which == 'taken back':
+        scheduler, _, said, _ = passed(learning)
+        store.withdraw_saved('123', [said], deleted=True)
+    else:
+        with store.connection() as db:
+            scheduler.put(db, 'learning_claim', {'id': 'c'*32, 'at': clock[0]-3*86400, 'limit': 1})
+        assert 'interrupted' in scheduler.claim(manual=True)['blocked']
+    [report] = scheduler.reports()
     clock[0] += 8*86400
-    assert scheduler.reports() == [taken] and 'taken back' in taken['body']
+    assert scheduler.reports() == [report] and which in report['body']
+
+
+def test_a_report_past_its_week_holds_nothing_of_its_channel_and_a_held_one_still_does(learning):  # noqa: F811
+    """Fri checks the channels the controller holds anything from for a deletion it may have missed (gene #243). A
+    report held back still holds its words, set aside; one past its week holds none."""
+    from gene.fri_channel_withdrawal import held as holding
+    clock, store, _, _ = learning
+    scheduler, report_id, _ = held(learning)
+    with store.connection() as db:  # Nothing else of #1: its note and the channel summary.
+        db.execute('DELETE FROM personal_notes')
+        db.execute("DELETE FROM agent_summaries WHERE channel_id='1'")
+    assert '1' in [channel['id'] for channel in holding(store, '123')['channels']]
+    clock[0] += 8*86400
+    scheduler.reports()
+    assert '1' not in [channel['id'] for channel in holding(store, '123')['channels']]

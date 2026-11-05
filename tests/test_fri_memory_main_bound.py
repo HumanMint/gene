@@ -441,6 +441,23 @@ def test_the_bound_is_a_real_check():
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))
 
 
+def test_every_name_mains_validator_has_keeps_its_value():
+    """gene #226: a new reading's names never shadow one main's rules read (a regex string named CONTINUES once
+    replaced the condition lines' continuation words, and kept what main refused). Every constant and pattern of main's
+    module (a5bdada) is the same here; only functions differ."""
+    import gene.fri_memory as current
+    spec = importlib.util.spec_from_file_location('gene._fri_memory_names', Path(__file__).with_name(
+        'reference_fri_memory_a5bdada.py'))
+    main = importlib.util.module_from_spec(spec)
+    main.__package__ = 'gene'
+    spec.loader.exec_module(main)
+    for name, value in vars(main).items():
+        if name.startswith('__') or callable(value) and not hasattr(value, 'pattern'):
+            continue
+        mine = getattr(current, name)
+        assert (mine.pattern == value.pattern) if hasattr(value, 'pattern') else mine == value, name
+
+
 def test_a_messages_readings_are_read_in_the_same_order_whatever_the_hash_seed():
     """Which reading refuses first decides how much is read (#211's linearity fix): their order is fixed in the code,
     never a set's, so it's the same in every process, whatever its hash seed."""

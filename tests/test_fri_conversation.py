@@ -764,6 +764,10 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom\n:- / would say'),
     ('games', 'i like chess', 'i like chess, my mom :-\n/ would say'),
     ('games', 'i like chess', 'i like chess, my mom ;P\ni swear would say'),
+    ('games', 'i like chess', 'i like chess, my mom ;P\nwould say'),
+    ('games', 'i like chess', 'i like chess, my mom :)\nsays'),
+    ('games', 'i like chess', 'i like chess, according ;P\nto my mom'),
+    ('games', 'i like chess', 'i like chess, my mom\n;P would say'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -925,6 +929,10 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess ;P\nmy mom bought me a board'),
     ('games', 'i like chess', 'i like chess :/\nits hard tho'),
     ('nickname', 'call me dan', 'call me dan :)\ni like it'),
+    # ... and a line break after a face before anything that doesn't go on with the clause stays one.
+    ('nickname', 'call me dan', 'please call me dan ;P\nok?'),
+    ('games', 'i like chess', 'i like chess :P\ni think its fun'),
+    ('games', 'i like chess', 'i like chess :)\nto be fair'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

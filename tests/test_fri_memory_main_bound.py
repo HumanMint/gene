@@ -43,9 +43,12 @@ BRIDGED = reference('3bddd69')  # #229 (#226 items 2, 3), before #231.
 REJOINED = reference('dd7441e')  # #235 (#231 items 1, 3), before #236.
 # Main now: #238 (#236), and the same module at 571fb78. #245 only ever refuses more than it (Sol round 2 of #245).
 WIDENED = reference('2cdaffc')
+# Main now: #245 (#239), the same module at e9adf67. #254 only ever refuses more than it, but where its passive reading
+# keeps a perception or a longer object of its own.
+PASSIVE = reference('117db20')
 BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST,
           'b1d4b88': STACKED, 'ba5a0a6': ASIDED, '7914787': HEDGED, 'a5bdada': MODIFIED, '3bddd69': BRIDGED,
-          'dd7441e': REJOINED, '2cdaffc': WIDENED}
+          'dd7441e': REJOINED, '2cdaffc': WIDENED, '117db20': PASSIVE}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -108,6 +111,10 @@ REVIEWED = [
     'i like chess, she explained that much', 'i like chess, or so she would have already explained my plan',
     'she warned my mom that i like chess', 'she mentioned my belief that i like chess', 'announced my mom, i like chess',
     'i like chess, she joked that you really do',
+    # gene #254: rejoined's witness against the passive reading, a time before the claim, and longer objects the claim
+    # follows.
+    'i was\nonce would\ntold hi\nplease call me dan', 'i was reminded on monday that i like chess',
+    'i was informed via a short letter that i like chess', 'i was informed via email\nthat i like chess',
 ]
 
 
@@ -436,7 +443,11 @@ PASSIVE_RUNS = ['was ', 'were ', "'ve been ", 've been ', 'have been ', 'has bee
                 'been ', 'was just ', 'was kindly ', 'were already ', chr(0x2019) + 've been ', 'was\n', 'was really ']
 PASSIVE_VERBS = ['informed', 'reminded', 'notified', 'assured', 'advised', 'warned', 'told', 'kindly informed']
 PASSIVE_AFTER = [' that ', ' ', ' by my mom that ', ', ', ' lol ', ' of this: ', ' about it: ', '\n',
-                 ' yesterday to rest, ', ' yesterday of it: ', ' again that ']
+                 ' yesterday to rest, ', ' yesterday of it: ', ' again that ',
+                 # gene #254: perceptions and longer objects of their own, ending the clause or with the claim after.
+                 ' birds, ', ' music\n', ' the new album yesterday, ', ' via a short letter, ', ' via a short letter that ',
+                 ' a refund for the ticket, ', ' a refund for the ticket that ', ' on monday that ', ' on monday, ',
+                 ' via email\nthat ', ' about it, ', ' the album ', ' birds say ', ' of the rules and ']
 REPORT_AFTER = ['my score', 'that rule', 'it to everyone', 'it to me', 'i practice more', 'we play more',
                 'loudly about lag', 'about lag', 'that', 'it', 'me', 'to me that', '', 'so', 'my nickname is dan',
                 'it lol', 'this', 'that i', 'my', 'it to', 'loudly', 'she is moving', 'my fav band is',
@@ -462,7 +473,8 @@ def passive_and_object_reports(count, seed):
         if shape == 0:
             text = passive + rng.choice(PASSIVE_AFTER) + evidence
         elif shape == 1:
-            text = evidence + rng.choice([', ', ', or so ', ' ', '\n', ' :- / ']) + passive
+            text = evidence + rng.choice([', ', ', or so ', ' ', '\n', ' :- / ']) + passive + rng.choice(
+                ['', '', '', ' music', ' about the tournament', ' it', '\nlol', ' the album', ' on monday'])
         elif shape == 2:
             text = evidence + rng.choice([', ', ' ', ', and ', '\n', '; ']) + report
         else:

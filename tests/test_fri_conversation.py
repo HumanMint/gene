@@ -905,6 +905,23 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, she complained loudly about lag'),
     ('games', 'i like chess', 'i like chess, my coach suggested i practice more'),
     ('games', 'i like chess', 'i like chess, she explained it to everyone'),
+    # gene #254 item 3: what only rejoined refuses, with the passive reading's own pipeline (the sixth such witness).
+    ('nickname', 'call me dan', 'i was\nonce would\ntold hi\nplease call me dan'),
+    # gene #254 item 4 (pre-existing): a time, or anything else, before the claim isn't an object of its own.
+    ('games', 'i like chess', 'i was reminded on monday that i like chess'),
+    ('games', 'i like chess', 'i was reminded of it on monday that i like chess'),
+    ('games', 'i like chess', 'i was advised by email to say i like chess'),
+    # gene #254 items 1 and 2: a longer object, or a perception, with the claim after it in its clause, or the next
+    # line carrying it on, or a pointer back at it.
+    ('games', 'i like chess', 'i was informed via a short letter that i like chess'),
+    ('games', 'i like chess', 'i was assured a refund for the ticket and that i like chess'),
+    ('games', 'i like chess', 'i was informed via email\nthat i like chess'),
+    ('games', 'i like chess', 'i heard birds say i like chess'),
+    ('games', 'i like chess', 'i heard the new album yesterday so i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard\nlol'),
+    ('games', 'i like chess', 'i like chess, i heard it'),
+    ('games', 'i like chess', 'i like chess, i heard so from my mom'),
+    ('games', 'i like chess', 'i heard from my mom that i like chess'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1125,6 +1142,17 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i was informed via email, i like chess'),
     ('games', 'i like chess', 'i hear you, i like chess'),
     ('games', 'i like chess', 'i like chess, i heard about the tournament'),
+    # gene #254 item 1: a perception of its own, as main keeps it.
+    ('games', 'i like chess', 'i hear birds, i like chess'),
+    ('games', 'i like chess', 'i like chess, i hear music'),
+    ('games', 'i like chess', 'i heard the new album yesterday, i like chess'),
+    ('games', 'i like chess', 'i like chess. i heard the new album'),
+    # gene #254 item 2: a longer object of its own that ends the clause, as main keeps it.
+    ('games', 'i like chess', 'i was informed via a short letter, i like chess'),
+    ('games', 'i like chess', 'i was assured a refund for the ticket, i like chess'),
+    ('games', 'i like chess', 'i was reminded of the rules for the game, i like chess'),
+    # gene #254 item 4: a time that ends the clause is still an object of its own.
+    ('games', 'i like chess', 'i was reminded on monday, i like chess'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -1260,7 +1288,10 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 # modifiers after a passive verb, objects that end the clause, and apostrophes inside a word.
                 'was kindly informed ', "i've been reminded ", 'got got notified ', 'kindly ', 'i heard ',
                 "i've heard that ", 'heard heard ', 'was advised yesterday ', 'yesterday yesterday ', 'a refund, ',
-                'via email ', 'i hear you, ', 'i' + chr(0xFF07) + 'm informed '):
+                'via email ', 'i hear you, ', 'i' + chr(0xFF07) + 'm informed ',
+                # gene #254: perceptions and longer objects in one long clause, each verb's read once for all of them.
+                'i hear birds ', 'was informed via a short letter ', 'was reminded on monday ', 'heard the album ',
+                'a refund for the ticket ', 'heard\n', 'via email\n'):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
@@ -1302,10 +1333,13 @@ def test_the_same_words_too_many_times_keep_nothing():
 @pytest.mark.parametrize('text', ["i've been informed that i like chess", 'i was reminded that i like chess',
                                   'i' + chr(0x2019) + 've been informed that i like chess',
                                   'i' + chr(0xFF07) + 'm informed that i like chess', 'i heard that i like chess',
-                                  'i like chess, or so she explained it to me', 'i like chess, she joked that i do'])
+                                  'i like chess, or so she explained it to me', 'i like chess, she joked that i do',
+                                  'i was reminded on monday that i like chess',
+                                  'i was informed via a short letter that i like chess'])
 def test_239s_and_245s_reports_keep_no_note_when_saved_or_after_a_restart(store, text):
-    """gene #239, and Sol rounds 1 and 2 of #245: passive reports, one with a fullwidth apostrophe, a report heard, and
-    back-references round 0 kept. None keeps a note through Store.save_chat(), nor once the database is opened again."""
+    """gene #239, Sol rounds 1 and 2 of #245, and gene #254: passive reports, one with a fullwidth apostrophe, a report
+    heard, back-references round 0 kept, and a time or a longer object before the claim. None keeps a note through
+    Store.save_chat(), nor once the database is opened again."""
     saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
                             notes=[{'category': 'games', 'evidence': 'i like chess'}])
     assert not saved['first_memory']

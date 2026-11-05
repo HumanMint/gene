@@ -720,15 +720,24 @@ ATTRIBUTED = re.compile(r"(?i)\bor\s++so\s++(?:[\w']++\s++){0,3}$")
 
 def reports_what(text, at):
     """What the report verb ending at `at` reports (see BACK and CLAUSE), or None. At most FOLLOWING words are read, so
-    a long run of them is never read again from each verb before it; a run that long counts as the clause's end."""
+    a long run of them is never read again from each verb before it; a run that long counts as the clause's end.
+
+    Only what positively reads as something of its own leaves it as typed (Sol round 1 of #245): a noun phrase ("my
+    score", "that rule", "the results"), a preposition ("about lag"), or a clause of its own. Anything else counts as
+    pointing back at the claim: a word an emoji or a symbol runs into, or with a digit in it, which may hide anything
+    ("t9️⃣hat"); a determiner with no noun after it ("my", then a face); another verb, an auxiliary or a copula."""
     words, end = [], at
     while len(words) < FOLLOWING and (word := NEXT_WORD.match(text, end)):
-        words.append(word.group(1).lower())
-        end = word.end()
+        found, end = word.group(1).lower(), word.end()
+        if (end < len(text) and not text[end].isspace() and text[end] not in PLAIN_MARKS) or not found.isascii() \
+                or (any(character.isdigit() for character in found) and not found.isdigit()):
+            words.append(UNREADABLE)
+            break
+        words.append(found)
     i = 0
 
     def past_modifiers(i):
-        while i < len(words) and (words[i] in MODIFIERS_AFTER or (words[i].endswith('ly') and words[i].isalpha())):
+        while i < len(words) and (words[i] in SKIPPED_AFTER or (words[i].endswith('ly') and words[i].isalpha())):
             i += 1
         return i
 
@@ -749,11 +758,31 @@ def reports_what(text, at):
         if ends(i) or pointer in ('it', 'so') or words[i] in TOLD_OF or words[i] in RECIPIENTS:
             return BACK
         if pointer == 'that' and opens_clause(words, i):
-            return BACK if elliptical(words, i) else CLAUSE
-        return None
+            return BACK if elliptical(words, i) or i+1 == len(words) else CLAUSE
+        return None if noun(words[i]) else BACK
     if opens_clause(words, i):
-        return BACK if elliptical(words, i) else CLAUSE
-    return None
+        # A subject with nothing readable after it ("that i", then a face) may be one that points back.
+        return BACK if elliptical(words, i) or i+1 == len(words) else CLAUSE
+    if words[i] in TOLD_OF:
+        return None  # Something else: "about lag", "to rest".
+    if words[i] in DETERMINERS or words[i].isdigit():  # "the results", "3 winners".
+        return None if i+1 < len(words) and noun(words[i+1]) else BACK
+    return None if noun(words[i]) else BACK
+
+
+# What a reading of the words after a report verb steps over (see reports_what): modifiers, interjections, vocatives.
+SKIPPED_AFTER = MODIFIERS_AFTER | frozenset('pls please plz ok okay yo guys bro dude fam'.split())
+# What may follow a word right away and leave it a plain word; anything else (an emoji, a keycap, a symbol, a format
+# control) may hide what the word is.
+PLAIN_MARKS = frozenset('.,;:!?"\')(][-/*~')
+UNREADABLE = '\0'  # A word that can't be read (see reports_what): never a noun, a subject or a modifier.
+DETERMINERS = frozenset('my the a an his their our your these those some every any no'.split())
+
+
+def noun(word):
+    """Whether a word after a report verb reads as a noun of its own (see reports_what): a plain word, possessive or
+    not, that's no verb, auxiliary, subject, pointer or other function word."""
+    return word.replace("'", '').isalpha() and word not in NOT_NOUNS
 
 
 # A clause that only points back at the claim (Sol round 1 of #245, B2): its subject and an auxiliary or a form of "be",
@@ -780,10 +809,12 @@ def elliptical(words, i):
 
 
 def opens_clause(words, i):
-    """Whether words[i:] start a clause: a subject ("i", "she", "it's"), or "my" and a copula soon after ("my nickname
-    is"), not an object ("my score")."""
+    """Whether words[i:] start a clause: a subject ("i", "she", "it's"), "my" and a copula soon after ("my nickname
+    is", "my my fav band is"), not an object ("my score"), or the claim itself as a request ("call me dan")."""
     if words[i] == 'my':
-        return any(word in COPULAS or word.endswith("'s") for word in words[i+1:i+4])
+        return any(word in COPULAS or word.endswith("'s") for word in words[i+1:i+5])
+    if words[i] in ('call', 'please') and words[i+1:i+2] in (['me'], ['call']):
+        return True
     return words[i] in SUBJECTS_AFTER
 
 
@@ -852,6 +883,11 @@ PASSIVE_REPORT = re.compile(rf"(?i)(?:\b(?:was|were|been|be|being|is|are|am|got|
                             rf"(?:\s++(?:{RUN_MODIFIERS})\b)*+\s++(?:{PASSIVE_VERBS})\b")
 TOLD_OF = frozenset('to of about on for against with in at into over from'.split())
 MODIFIERS_PAST = 3  # Modifiers read past after a passive verb, at most ("advised yesterday to rest").
+# Never a noun after a report verb (see noun): subjects, the person told, pointers, determiners, prepositions, clause
+# ends, forms of "be", auxiliaries, and every report verb's forms, passive and heard ones included.
+NOT_NOUNS = (SUBJECTS_AFTER | RECIPIENTS | POINTING | DETERMINERS | TOLD_OF | CLAUSE_ENDS | COPULAS | ELLIPTICAL
+             | BE_SUBJECTS | SKIPPED_AFTER | frozenset(SAID_AS) | FORMS | frozenset(BARE.split('|'))
+             | frozenset(PASSIVE_VERBS.split('|')) | frozenset('hear hears heard hearing call please'.split()))
 
 
 def told_so(m):

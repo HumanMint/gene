@@ -901,6 +901,18 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, i heard it from my mom'),
     ('games', 'i like chess', 'i like chess, i heard that'),
     ('games', 'i like chess', "i like chess, she joked that i'm"),  # "i'm" alone points back too.
+    # "it" and "so" point back whatever follows them, a word of its own included.
+    ('games', 'i like chess', 'i like chess, she explained it word for word'),
+    ('games', 'i like chess', 'i like chess, she mentioned so herself'),
+    # Only what positively reads as an object of its own keeps the note: a word a keycap or an emoji runs into, a
+    # determiner with nothing after it, an interjection before the claim, or the claim as a request, can't be one.
+    ('games', 'i like chess', 'u mentioned loudly t9' + chr(0xFE0F) + chr(0x20E3) + 'hat i like chess'),
+    ('games', 'i like chess', 'i like chess, she announced my \U0001F602'),
+    ('nickname', 'my nickname is dan', 'she would announce lol pls my nickname is dan'),
+    ('nickname', 'call me comet', 'they declared lol call me comet'),
+    ('games', 'i like chess', 'i like chess, she announced kindly advised'),
+    ('games', 'i like chess', 'i like chess, she mentioned will'),
+    ('games', 'i like chess', "i like chess, she complained that i :/ don't lol"),  # A subject, then nothing readable.
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1132,6 +1144,8 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i heard the new album and i like chess'),
     ('games', 'i like chess', 'i like chess, i heard she is moving'),  # Its own clause, after the comma.
     ('games', 'i like chess', "i like chess, she joked that i'm late"),  # A clause of its own: not only "i'm".
+    ('games', 'i like chess', 'i like chess, they announced the results'),  # A noun phrase.
+    ('games', 'i like chess', "i like chess, she explained jo's plan"),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

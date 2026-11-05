@@ -95,6 +95,8 @@ REVIEWED = [
     'must\nsay :-\n/ i like chess', 'i like chess, my mom would\nhave\nsaid', 'i like chess, my mom would announce',
     # Sol round 1 of #238: a letter in another case in a wider report verb, and what only rejoined refuses.
     'i like chess, my mom confe' + chr(0x17F) * 2 + 'ed', 'i would\nonce have\nsaid hi\nplease call me dan',
+    # gene #239: passive reports.
+    "i've been informed that i like chess", 'i was reminded that i like chess',
 ]
 
 
@@ -413,6 +415,48 @@ def test_messages_with_231s_shapes_are_never_kept_where_a_bound_refuses_them(sha
     assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
     assert not leaks(messages, BOUNDS[sha])
 
+
+
+# gene #239's and #242's shapes: passive reports before or after the claim, with any auxiliary, contraction,
+# apostrophe or modifier; and wider report verbs with an object, a clause, a pointer or the person told after them,
+# after the claim, or before it.
+PASSIVE_SUBJECTS = ['i ', 'we ', 'she ', 'they ', 'jo ', '', "i'", 'i' + chr(0x2019)]
+PASSIVE_RUNS = ['was ', 'were ', "'ve been ", 've been ', 'have been ', 'has been ', 'got ', 'get ', 'am ', "'m ",
+                'been ', 'was just ', 'was kindly ', 'were already ', chr(0x2019) + 've been ', 'was\n', 'was really ']
+PASSIVE_VERBS = ['informed', 'reminded', 'notified', 'assured', 'advised', 'warned', 'told', 'kindly informed']
+PASSIVE_AFTER = [' that ', ' ', ' by my mom that ', ', ', ' lol ', ' of this: ', ' about it: ', '\n']
+REPORT_AFTER = ['my score', 'that rule', 'it to everyone', 'it to me', 'i practice more', 'we play more',
+                'loudly about lag', 'about lag', 'that', 'it', 'me', 'to me that', '', 'so', 'my nickname is dan',
+                'it lol', 'this', 'that i', 'my', 'it to', 'loudly', 'she is moving', 'my fav band is']
+WIDER = ['announced', 'explained', 'suggested', 'complained', 'mentioned', 'pointed out', 'would announce',
+         'has been explaining', 'whispered', 'let slip']
+
+
+def passive_and_object_reports(count, seed):
+    rng = random.Random(seed)
+    for _ in range(count):
+        category, evidence = rng.choice(CLAIMS)
+        passive = rng.choice(PASSIVE_SUBJECTS) + rng.choice(PASSIVE_RUNS) + rng.choice(PASSIVE_VERBS)
+        report = (rng.choice(SUBJECTS) + rng.choice(WIDER) + ' ' + rng.choice(REPORT_AFTER)).strip()
+        shape = rng.randrange(4)
+        if shape == 0:
+            text = passive + rng.choice(PASSIVE_AFTER) + evidence
+        elif shape == 1:
+            text = evidence + rng.choice([', ', ', or so ', ' ', '\n', ' :- / ']) + passive
+        elif shape == 2:
+            text = evidence + rng.choice([', ', ' ', ', and ', '\n', '; ']) + report
+        else:
+            text = rng.choice(['lol ok, ', '', 'ok so, ', 'honestly ']) + report + rng.choice([' ', ' that ', ': ']) + evidence
+        yield category, evidence, text
+
+
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_messages_with_239s_and_242s_shapes_are_never_kept_where_a_bound_refuses_them(sha):
+    messages = list(asided(passive_and_object_reports(18000, 239), 239, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS,
+                           CHAINED_REPORTS))
+    assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 1500
+    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
+    assert not leaks(messages, BOUNDS[sha])
 
 def test_the_bound_is_a_real_check():
     """A validator that keeps what a bound refuses fails it: neither reference is this module under another name."""

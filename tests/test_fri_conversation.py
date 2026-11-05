@@ -835,10 +835,28 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'my mom complained to me that i like chess'),
     ('nickname', 'my nickname is dan', 'my mom mentioned my nickname is dan'),
     ('games', 'i like chess', 'i like chess, my mom warned me'),
-    ('games', 'i like chess', 'i like chess, my mom explained it to me'),
     ('games', 'i like chess', 'i like chess, my mom announced this'),
     ('games', 'i like chess', 'i like chess, my mom mentioned so'),
     ('games', 'i like chess', 'i like chess, my mom complained loudly'),
+    # gene #239: a passive report, with any auxiliary, contraction or apostrophe: someone else supplied the claim.
+    ('games', 'i like chess', "i've been informed that i like chess"),
+    ('games', 'i like chess', 'i was reminded that i like chess'),
+    ('games', 'i like chess', 'i was notified that i like chess'),
+    ('games', 'i like chess', 'we were assured that i like chess'),
+    ('games', 'i like chess', 'i have been advised that i like chess'),
+    ('games', 'i like chess', 'i got reminded that i like chess'),
+    ('games', 'i like chess', 'i' + chr(0x2019) + 've been informed that i like chess'),
+    ('games', 'i like chess', 'i was kindly reminded that i like chess'),
+    ('games', 'i like chess', 'i was informed by my mom that i like chess'),
+    ('games', 'i like chess', 'i was informed i like chess'),
+    ('games', 'i like chess', 'she was informed that i like chess'),
+    ('games', 'i like chess', 'i like chess, or so i was informed'),
+    ('games', 'i like chess', "i like chess, i've been reminded"),
+    ('games', 'i like chess', 'i like chess, i was notified'),
+    # gene #242: a wider verb's own clause after it, after a comma, is still a report of the claim when it holds it.
+    ('games', 'i like chess', 'lol ok, my mom announced i like chess'),
+    ('games', 'i like chess', 'i like chess, my mom announced that i like chess'),
+    ('games', 'i like chess', 'ok so, my mom mentioned that i like chess'),
     ('nickname', 'call me dan', 'if i win :)' + chr(0x2007) + chr(0x205F) + '\ni guess\nplease call me dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
@@ -1046,6 +1064,21 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, i haven' + chr(0x2019) + 't mentioned it'),
     ('games', 'i like chess', "i like chess, i haven't mentioned it"),
     ('games', 'i like chess', 'i like chess, we have not announced it'),
+    # gene #242: a wider verb with an object or a clause of its own after it reports that, not the claim. "it", "this"
+    # or "that" with the person told after it is a thing explained, as "it" to everyone is.
+    ('games', 'i like chess', 'i like chess, they announced my score'),
+    ('games', 'i like chess', 'i like chess, she explained that rule'),
+    ('games', 'i like chess', 'i like chess, she complained loudly about lag'),
+    ('games', 'i like chess', 'i like chess, my coach suggested i practice more'),
+    ('games', 'i like chess', 'i like chess, she explained it to everyone'),
+    ('games', 'i like chess', 'i like chess, my mom explained it to me'),
+    ('games', 'i like chess', 'i like chess, my coach suggested we play more'),
+    # gene #239: an active report of the member's own, a passive one of something else, and someone else's active one.
+    ('games', 'i like chess', 'i informed my team that i like chess'),
+    ('games', 'i like chess', 'i reminded my mom that i like chess'),
+    ('games', 'i like chess', 'i like chess. i was reminded of the rules yesterday'),
+    ('games', 'i like chess', 'i like chess, i was advised to rest'),
+    ('games', 'i like chess', 'i like chess, she reminded me about the game'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -1172,7 +1205,10 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 'would\nhave\n', 'has been\noften\n', 'mom announced ', 'i mentioned ', 'pointed out ', 'we we ',
                 # Sol round 1 of #238: what follows a wider verb and its subject, each read a few words at most.
                 'mom announced me me ', 'announced it to everyone ', 'me to it ', 'i have already ',
-                'i' + chr(0x2019) + 've mentioned ', "i haven't ", 'was warned ', 'confe' + chr(0x17F) * 2 + 'ed '):
+                'i' + chr(0x2019) + 've mentioned ', "i haven't ", 'was warned ', 'confe' + chr(0x17F) * 2 + 'ed ',
+                # gene #239 and #242: passive runs, and what follows a wider verb, each read a few words at most.
+                'was kindly informed ', "i've been reminded ", 'got got notified ', 'announced my ', 'explained that ',
+                'complained loudly ', 'suggested i ', ', my coach suggested i ', 'it to it to '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
@@ -1209,6 +1245,17 @@ def test_the_same_words_too_many_times_keep_nothing():
     assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
     assert personal_note(note, 'i like chess. ' * 9) is None
     assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
+
+
+@pytest.mark.parametrize('text', ["i've been informed that i like chess", 'i was reminded that i like chess',
+                                  'i' + chr(0x2019) + 've been informed that i like chess'])
+def test_239s_passive_reports_keep_no_note_when_saved_or_after_a_restart(store, text):
+    """gene #239: each of these kept the note through Store.save_chat(), and it was there again once the database was
+    opened again; nothing is now."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': 'games', 'evidence': 'i like chess'}])
+    assert not saved['first_memory']
+    assert not Store(store.path).chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
 
 
 @pytest.mark.parametrize('text', ['i like chess, my mom would\nhave\nsaid', 'i like chess, my mom would announce',

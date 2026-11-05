@@ -10,12 +10,16 @@
    began before the edit, keeps nothing.
 """
 import json
+import os
+import subprocess
+import sys
 import time
 
 import pytest
 
 from gene import store as controller
 from gene.fri_member_summary import CLAIM, generation
+from tests.test_erasure_rollback import extracted  # noqa: F401 (the fixture)
 from tests.test_fri_endings import source
 from tests.test_member_summaries import background, build, chat, offered, shown
 from tests.test_saved_withdrawal import withdraw_saved
@@ -156,3 +160,32 @@ def test_a_reply_from_a_turn_that_began_well_after_the_edit_saves(world, how):  
         db.execute('UPDATE chat_turn_withdrawals SET at=?', (time.time()-600,))
         db.execute('UPDATE chat_message_fences SET at=?', (time.time()-600,))
     assert reply_to(store, [taken], age=10).get('kept', True) is True and replies(store) == ['about that: '+MARKER]
+
+
+# Rollback: the live release starts on what this wrote.
+
+LIVE = '77442dc'  # v1.0.6, the release a rollback goes back to.
+
+
+def test_the_live_gene_starts_on_what_this_wrote_and_saves_as_before(world, extracted):  # noqa: F811
+    """What this writes is rows of what was there: a fence by an edited message's ID alone, a breadcrumbed reply, a
+    summary dropped. The live Gene, its own code, starts on that database, and saves the member's own edited message
+    again as before (it reads only a deletion's fence for a save)."""
+    code = extracted(LIVE)
+    if code is None:
+        pytest.skip(f'{LIVE} is not in this checkout')
+    client, store = world
+    taken, _ = learn(store, 'explain '+MARKER, age=30)
+    turn(store, 'what did they mean', drew_on=[taken], age=20)
+    nearby = source(age=10, channel='51')
+    withdraw_saved(client, taken, nearby['id'])  # Edits: one placed, one fenced by its ID.
+    assert replies(store) == [controller.DRAWN]
+    script = ('import json, sys\nfrom pathlib import Path\nfrom gene.store import Store\n'
+              'store = Store(Path(sys.argv[1]))\n'
+              "print(json.dumps(store.save_chat('123', 'public:51', '20', 0, 'edited: hello', 'okay', 'model', 'high', "
+              "source=json.loads(sys.argv[2]), provenance=[])))\n")
+    done = subprocess.run([sys.executable, '-c', script, str(store.path), json.dumps(nearby)], cwd=code,
+                          env={**os.environ, 'PYTHONPATH': str(code)}, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[-2000:]
+    assert json.loads(done.stdout.strip().splitlines()[-1]).get('kept', True) is True
+    assert replies(store, '20')[-1] == 'okay' and replies(store) == [controller.DRAWN]

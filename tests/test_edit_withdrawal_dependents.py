@@ -162,6 +162,17 @@ def test_a_reply_from_a_turn_that_began_well_after_the_edit_saves(world, how):  
     assert reply_to(store, [taken], age=10).get('kept', True) is True and replies(store) == ['about that: '+MARKER]
 
 
+def test_a_turn_dated_just_after_the_edit_keeps_nothing_too(world):  # noqa: F811
+    """Discord's clock may run ahead of the controller's (SKEW): a turn whose first message is dated a minute after the
+    edit may still have read the message before it, so its save keeps nothing as well."""
+    client, store = world
+    taken, _ = learn(store, 'explain '+MARKER, age=1200)
+    withdraw_saved(client, taken)
+    with store.connection() as db:  # The edit, recorded a minute and a half back.
+        db.execute('UPDATE chat_turn_withdrawals SET at=?', (time.time()-90,))
+    assert reply_to(store, [taken], age=30)['kept'] is False
+
+
 # Rollback: the live release starts on what this wrote.
 
 LIVE = '77442dc'  # v1.0.6, the release a rollback goes back to.

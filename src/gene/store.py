@@ -1621,11 +1621,14 @@ class Store:
         one saved before a restart, say, would keep its old words until it expires (fri #174). Each saved exchange
         holding one goes as withdraw_turn takes it, under the member and conversation it was saved with. So does a note
         learned from one, its exchange trimmed since (a note outlasts six exchanges), with a fence so nothing learns it
-        again, and, once deleted, a reply that carried one keeps only a breadcrumb (gene #141). One nothing holds costs
-        nobody their summary: Fri asks about every edit and delete it can't place, and an unrelated one shouldn't. A
-        deletion of one still keeps a fence by its ID, and so does an edit while a learning batch reads (gene #149; see
-        _fence). Only a call that finds something, a deletion, or an edit during a learning batch takes the write lock;
-        the rest read."""
+        again, and, once deleted, a reply that carried one keeps only a breadcrumb (gene #141). A member summary whose
+        record of what it read names one goes, and a build in flight whose claim does, whatever else holds the message:
+        its exchanges may be trimmed and no note may hold it (gene #249; see fri_member_summary.taken). A summary with
+        no such record goes by where and when, under an exchange holding the message, as before. One nothing holds
+        costs nobody else their summary: Fri asks about every edit and delete it can't place, and an unrelated one
+        shouldn't. A deletion of one still keeps a fence by its ID, and so does an edit while a learning batch reads
+        (gene #149; see _fence). Only a call that finds something, a deletion, or an edit during a learning batch takes
+        the write lock; the rest read."""
         ids = json.dumps(sorted(set(message_ids)))
         def held(db):
             return db.execute(
@@ -1639,14 +1642,17 @@ class Store:
                 'instr(sources,?)>0 ORDER BY user_id', (guild_id, json.dumps(message)))]
         from .fri_learning_sources import naming
         from .fri_learning_sources import withdraw as withdraw_learning
+        from .fri_member_summary import naming as summaries_naming
+        from .fri_member_summary import taken as summaries_taken
         with self.connection() as db:
             if not (deleted or self._learning(db) is not None or held(db) or noted(db)
-                    or naming(db, json.loads(ids))):
+                    or naming(db, json.loads(ids)) or summaries_naming(db, guild_id, json.loads(ids))):
                 return {'ok': True, 'removed': 0}
             db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
             # A learning report, channel summary or archive observation that read one, whatever else holds it (gene
             # #244). By ID, with no channel to go by: one with no record of what it read is only held back.
             withdraw_learning(db, json.loads(ids))
+            summaries_taken(db, guild_id, json.loads(ids))  # And a member summary or a build in flight (gene #249).
             holding = held(db)
             removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted)
                           for conversation, user, message in holding)

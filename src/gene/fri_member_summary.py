@@ -631,6 +631,48 @@ def withdrawn(db, guild, user, conversation, message_id, saved):
         AgentStore.put(db, CLAIM, None)
 
 
+def named(db, guild, messages):
+    """The members whose summary's record of what it read (see drew_on) names one of these messages. A record goes with
+    its summary, or with the summary it was of once that's replaced, by trigger, whichever controller does it. A
+    message's ID, quoted, only ever stands for an `id` in it: the rest are conversations (`public:`, `private:`) and
+    times."""
+    users = set()
+    for message in sorted({str(message) for message in messages if message}):
+        users |= {row[0] for row in db.execute('SELECT user_id FROM fri_member_summary_sources WHERE guild_id=? AND '
+                                               'instr(messages,?)>0', (guild, json.dumps(message))).fetchall()}
+    return sorted(users)
+
+
+def claimed(record, messages):
+    """Whether a build in flight's claim names one of these messages: an exchange it reads, or one its earlier summary
+    drew on (HumanMint/fri#333)."""
+    if not isinstance(record, dict):
+        return False
+    read = [*(record.get('messages') or ()), *((record.get('previous') or {}).get('messages') or ())]
+    return bool({str(item.get('id')) for item in read if isinstance(item, dict)} & {str(m) for m in messages})
+
+
+def naming(db, guild, messages):
+    """Whether withdrawing these messages takes a summary or a build in flight (see taken)."""
+    from .fri_agent_store import AgentStore
+    return bool(named(db, guild, messages)) or claimed(AgentStore.get(db, CLAIM), messages)
+
+
+def taken(db, guild, messages):
+    """Messages edited or deleted, placed against members' summaries by what each recorded it read, whatever else holds
+    them: a summary outlasts the exchanges it drew on, and no note need hold a message it read (gene #249). Each summary
+    naming one goes, as withdrawn drops one, and so does a build in flight whose claim names one, or whose member's
+    summary went. A summary with no record of what it read goes by where and when, under an exchange holding the
+    message (see withdrawn), as before."""
+    from .fri_agent_store import AgentStore
+    users = named(db, guild, messages)
+    for user in users:
+        drop(db, guild, user)
+    record = AgentStore.get(db, CLAIM)
+    if record and (record.get('user_id') in users or claimed(record, messages)):
+        AgentStore.put(db, CLAIM, None)
+
+
 def _current(db, row):
     from .store import Store
     return (row['refreshed'] >= time.time()-TTL and Store._privacy_state(db, row['user_id']) == (row['revision'], True)

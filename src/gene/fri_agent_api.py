@@ -29,6 +29,9 @@ class Admission(Identity):
 
 class Context(Identity):
     channel_id: str
+    # A Fri that holds a history channel's link target to the removal on Discord's clock asks for it in the narrower
+    # answer (HumanMint/fri#368, the history-cutoffs capability); older Fris check that answer field for field.
+    discord_cutoffs: bool = False
 
 
 class Author(BaseModel):
@@ -135,7 +138,8 @@ def register(app, store, settings, auth, actor):
             if not history and not settings.meme_channel_allowed(body.guild_id, body.channel_id):
                 raise HTTPException(403, 'Channel is outside Fri scope')
             profile = agent.context(body.channel_id, body.user_id, body.guild_id)
-            return {key: profile[key] for key in ('enabled', 'revision', 'removed_at')}
+            keys = ('enabled', 'revision', 'removed_at', *(('removed_at_discord',) if body.discord_cutoffs else ()))
+            return {key: profile[key] for key in keys}
         return agent.context(body.channel_id, body.user_id, body.guild_id)
 
     @app.post('/agent/authors/check', dependencies=[auth('fri')])

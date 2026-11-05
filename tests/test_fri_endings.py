@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import datetime as dt
+import itertools
 import json
 import time
 from types import SimpleNamespace
@@ -19,10 +20,14 @@ from tests.test_fri_chat import response_event
 from tests.test_fri_continuity import arm, origin
 from tests.test_fri_runtime import configured, event
 
+# Distinct synthetic events made in the same millisecond get distinct IDs, as Discord's own sequence bits do: two
+# sources sharing an ID are one message to Gene (its owner check refuses another member's press with it, #232).
+SEQUENCE = itertools.count(1)
+
 
 def source(age=0, user='20', channel='456', guild='123'):
     return {'kind': 'discord_message', 'id': str(discord.utils.time_snowflake(
-        dt.datetime.now(dt.timezone.utc)-dt.timedelta(seconds=age))), 'user_id': user,
+        dt.datetime.now(dt.timezone.utc)-dt.timedelta(seconds=age))+next(SEQUENCE) % (1 << 22)), 'user_id': user,
         'channel_id': channel, 'guild_id': guild, 'display_name': 'friend'}
 
 

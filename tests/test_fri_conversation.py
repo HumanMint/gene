@@ -1078,7 +1078,9 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 'mom :- / ', ': - / ', ':- / ) ', ';P i probably seriously think ', ';P i deeply ', 'family ',
                 # gene #226: space separators inside a face, and line breaks next to one.
                 ':-' + chr(0xA0) + '/ ', ':' + chr(0x3000) + '- / ', ';P\ni guess ', 'mom :- /\n', '\n:- / ', ' \n \n',
-                ':-\n/ ', chr(0xA0) + ' '):
+                ':-\n/ ', chr(0xA0) + ' ',
+                # gene #231: line breaks inside a report continuation, and runs of auxiliaries and modifiers.
+                'would\nsay ', 'mom :- /\nwould\n', 'would really\n', 'would would ', 'would really really '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

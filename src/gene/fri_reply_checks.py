@@ -217,6 +217,10 @@ class ReplyChecks:
                     not earlier['verbatim'] or not earlier['attributed'] or
                     not 0 <= later['at']-earlier['at'] <= FOLLOW_UP):
                 continue
+            from .fri_member_summary import holding
+            from .store import summaries
+            if holding(db, later['guild_id'], [*summaries(earlier), *summaries(later)]):
+                continue  # Its replies are kept out of use while a summary they drew on is held (HumanMint/fri#355).
             revision = earlier['speaker_revision']
             provenance = {(p['user_id'], p['revision']) for turn in (earlier, later)
                           for p in json.loads(turn['provenance'] or '[]')}

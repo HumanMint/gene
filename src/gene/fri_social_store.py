@@ -7,7 +7,7 @@ import time
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .fri_member_summary import current_writes
+from .fri_member_summary import current_writes, held_writes
 from .fri_workspace_store import Workspace
 from .privacy import redact
 from .store import LOOP_SETTLED_SECONDS
@@ -167,11 +167,14 @@ class Social:
         dm = scope['conversation_id'].split(':')[1]
         with self.store.connection() as db:
             self.prune(db)
-            # Whatever is shown holds nothing of a summary since lapsed (gene #158).
-            current_writes(db, REMINDERS, 'SELECT id FROM fri_reminders WHERE guild_id=? AND user_id=? AND dm_id=?',
-                           (scope['guild_id'], scope['user_id'], dm))
+            # Whatever is shown holds nothing of a summary since lapsed (gene #158), nor of one held back until it's read
+            # again, which is left out for now (HumanMint/fri#355).
+            shown = ('SELECT id FROM fri_reminders WHERE guild_id=? AND user_id=? AND dm_id=?',
+                     (scope['guild_id'], scope['user_id'], dm))
+            current_writes(db, REMINDERS, *shown, held_back=False)
+            held = held_writes(db, REMINDERS, *shown)
             return {'items': [dict(r) for r in db.execute('SELECT id,body,due,local_time,timezone,state,message_id FROM fri_reminders WHERE guild_id=? AND user_id=? AND dm_id=? ORDER BY due DESC LIMIT 15',
-                            (scope['guild_id'], scope['user_id'], dm))]}
+                            (scope['guild_id'], scope['user_id'], dm)) if r['id'] not in held]}
 
     def reminder_read(self, item, scope):
         with self.store.connection() as db:
@@ -197,7 +200,9 @@ class Social:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
-            current_writes(db, REMINDERS, 'SELECT ?', (item,))  # Confirming shows it back, and schedules it.
+            # Confirming shows it back, and schedules it. A cancel goes through while a summary it depends on is held
+            # back; a confirm waits (HumanMint/fri#355).
+            current_writes(db, REMINDERS, 'SELECT ?', (item,), held_back=decision != 'cancel')
             row = self.reminder_row(db, item, scope)
             if preview_id and (not row['preview_id'] or preview_id != row['preview_id']):
                 raise ValueError('Use the original bound reminder preview.')
@@ -217,8 +222,12 @@ class Social:
             self.prune(db)
             # Delivery is authorized only for one holding nothing of a summary since lapsed (gene #158).
             now = time.time()
-            current_writes(db, REMINDERS, "SELECT id FROM fri_reminders WHERE state='scheduled' AND due<=?", (now,))
-            for row in db.execute("SELECT * FROM fri_reminders WHERE state='scheduled' AND due<=? ORDER BY due LIMIT 10", (now,)).fetchall():
+            due = ("SELECT id FROM fri_reminders WHERE state='scheduled' AND due<=?", (now,))
+            current_writes(db, REMINDERS, *due, held_back=False)
+            held = held_writes(db, REMINDERS, *due)  # Waits while a summary it depends on is (HumanMint/fri#355).
+            for row in db.execute("SELECT * FROM fri_reminders WHERE state='scheduled' AND due<=? ORDER BY due", (now,)).fetchall():
+                if row['id'] in held:
+                    continue
                 try:
                     Workspace.revision(db, row['user_id'], row['revision'])
                 except ValueError:

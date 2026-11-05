@@ -384,5 +384,5 @@ def test_a_private_turn_is_never_held_to_its_authorization_channel(world):  # no
     dm = turn(source(channel='900'), 'i like chess', channel_id='50', conversation_id='private:900',
               notes=[{'category': 'games', 'evidence': 'i like chess'}])
     assert client.post('/chat/turn/check', headers=headers('fri'), json=dm).status_code == 200
-    assert post_turn(client, dm).json()['kept'] is not False
+    assert post_turn(client, dm).json().get('kept') is not False
     assert notes(store, 'private:900') == ['i like chess']

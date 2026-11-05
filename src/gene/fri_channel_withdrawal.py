@@ -88,8 +88,10 @@ def withdrawn(db, guild, channels):
 def turn_withdrawn(db, guild, conversation, source=None, burst=(), parent=None):
     """Whether a turn in this conversation, from this message (and burst), comes from a withdrawn channel: the thread
     itself, or the channel the turn's scope names it under, whether or not that was known before (Sol round 1 of #243,
-    G2)."""
-    return withdrawn(db, guild, [channel_of(conversation), (source or {}).get('channel_id'), parent,
+    G2). Only a public conversation's scope names a parent: a private one's names the workshop, to authorize it, so it
+    never counts (Sol round 2 of #243, B1)."""
+    here = channel_of(conversation)
+    return withdrawn(db, guild, [here, (source or {}).get('channel_id'), parent if here else None,
                                  *((row.get('source') or {}).get('channel_id') for row in burst)])
 
 

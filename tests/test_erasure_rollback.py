@@ -100,6 +100,8 @@ def test_an_older_genes_erasure_never_lowers_a_removals_cutoff(gene, deployed_or
     after = cutoffs(path_of(gene))
     again = how == 'its own code' and kept(gene, removal - 1)  # Sent a second before the removal.
     assert not again and all(after[key] >= before['removed_at'] for key in after), (before, after, again)
+    with gene.app.state.store.connection() as db:  # What it kept is in the erasure now, and no floor is left.
+        assert db.execute('SELECT count(*) FROM personal_cutoff_floors').fetchone()[0] == 0
 
 
 @pytest.mark.parametrize('how', ['its own code', 'its statements'])
@@ -123,6 +125,26 @@ def test_an_older_genes_erasure_never_lowers_an_earlier_erasures_stamp(gene, dep
     after = cutoffs(path)
     assert after['erased_at'] >= before['erased_at'] and after['erased_at_discord'] >= before['erased_at_discord']
     assert after['removed_at'] >= before['removed_at'], (before, after)
+
+
+def test_an_erasure_stamp_an_older_gene_moved_back_before_this_release_is_put_back(gene):  # noqa: F811
+    """A database an older Gene wrote that way before this release (so before its triggers): this Gene stamped an
+    erasure, then the older one stamped an earlier one over it. At its first start, each cutoff is put back at or past
+    the first erasure's."""
+    path = path_of(gene)
+    store = Store.__new__(Store)
+    store.path = path
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        record_erasure(db, '20', REAL() + 2, REAL())
+    before = cutoffs(path)
+    with store.connection() as db:
+        db.execute('DROP TRIGGER erasure_kept_when_moved_back')  # As before this release.
+    replayed(path, -3)
+    assert cutoffs(path)['erased_at'] < before['erased_at']
+    Store(path)
+    after = cutoffs(path)
+    assert after['erased_at'] >= before['erased_at'] and after['erased_at_discord'] >= before['erased_at_discord']
 
 
 def test_a_removal_that_lapses_raises_no_erasure(gene):  # noqa: F811

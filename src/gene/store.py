@@ -1522,6 +1522,8 @@ class Store:
         db.execute(f'DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? '
                    f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
         Store._withdraw_notes(db, guild_id, user_id, conversation_id, message_id)
+        from .fri_learning_sources import withdraw as withdraw_learning
+        withdraw_learning(db, [message_id])  # A learning report or channel summary that read it (gene #244).
         if deleted:  # Others' replies that carried it, or Fri's reply to it, which may repeat it.
             if recorded:
                 Store._deleted(db, guild_id, message_id, now, user_id, current)
@@ -1624,10 +1626,15 @@ class Store:
             return [(row['user_id'], message) for message in json.loads(ids) for row in db.execute(
                 f'SELECT DISTINCT user_id FROM personal_notes WHERE guild_id=? AND {CURRENT} AND '
                 'instr(sources,?)>0 ORDER BY user_id', (guild_id, json.dumps(message)))]
+        from .fri_learning_sources import naming
+        from .fri_learning_sources import withdraw as withdraw_learning
         with self.connection() as db:
-            if not (deleted or self._learning(db) is not None or held(db) or noted(db)):
+            if not (deleted or self._learning(db) is not None or held(db) or noted(db)
+                    or naming(db, json.loads(ids))):
                 return {'ok': True, 'removed': 0}
             db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
+            # A learning report or channel summary that read one, whatever else holds it (gene #244).
+            withdraw_learning(db, json.loads(ids))
             holding = held(db)
             removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted)
                           for conversation, user, message in holding)

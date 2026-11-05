@@ -87,6 +87,8 @@ def initialize(db):
     if 'revisions' not in {row[1] for row in db.execute('PRAGMA table_info(agent_summaries)')}:
         # Authors' privacy revisions observed when the summary was made; older rows fail closed.
         db.execute("ALTER TABLE agent_summaries ADD COLUMN revisions TEXT NOT NULL DEFAULT '{}'")
+    from .fri_learning_sources import initialize as initialize_learning_sources
+    initialize_learning_sources(db)  # What each report and channel summary read (gene #244).
 
 
 class AgentStore:
@@ -240,8 +242,11 @@ class AgentStore:
             pending = self.get(db, 'learning_claim')
 
             def interrupted():
-                db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
-                           (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; no automatic replay.'))
+                if db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
+                              (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; '
+                               'no automatic replay.')).rowcount:
+                    from .fri_learning_sources import record
+                    record(db, 'report', pending['id'], [])  # The controller's own words: none of a member's.
                 self.put(db, 'learning_claim', None)
                 return blocked('The previous pass was interrupted. Its report is pending; its allowance remains reserved.')
             if pending and (at := claimed_at(pending)) is not None and at-now >= CLAIM_SECONDS:
@@ -422,6 +427,8 @@ class AgentStore:
                            'at=excluded.at,revisions=excluded.revisions',
                            (claim['channel_id'], summary, json.dumps(sorted({r['user_id'] for r in accepted.values()})), now,
                             json.dumps({r['user_id']: r['revision'] for r in accepted.values()}, sort_keys=True)))
+                from .fri_learning_sources import record
+                record(db, 'summary', claim['channel_id'], accepted)  # So a message of them taken back takes it.
             cursors = self.get(db, 'cursors', {})
             discoveries = []
             already_checked = 0
@@ -482,6 +489,9 @@ class AgentStore:
                       + ('\nIssue: '+clean(error, 180) if error else '')
                       + '\nAsk me to change learning frequency, pause learning, or show settings.')
             db.execute('INSERT INTO agent_reports VALUES (?,?,?,0)', (batch_id, now, report))
+            from .fri_learning_sources import record
+            # Its summary, disclosures and findings all come from these: one taken back takes them (gene #244).
+            record(db, 'report', batch_id, accepted)
             card = {'channel_id': claim['channel_id'], 'mode': mode, 'member': name,
                     'term': plan.get('term', ''), 'scanned': scanned, 'eligible': len(accepted),
                     'already_checked': already_checked, 'historical_notes': len(discoveries),

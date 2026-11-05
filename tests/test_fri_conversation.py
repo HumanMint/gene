@@ -768,6 +768,12 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom :)\nsays'),
     ('games', 'i like chess', 'i like chess, according ;P\nto my mom'),
     ('games', 'i like chess', 'i like chess, my mom\n;P would say'),
+    # ... and a space separator beside the line break, which a face's run takes only as a space.
+    ('nickname', 'call me dan', 'if i win ;P' + chr(0xA0) + '\ni probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P\n' + chr(0xA0) + 'i probably think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom\n;P' + chr(0xA0) + 'i swear would say'),
+    ('games', 'i like chess', 'i like chess, my mom ;P' + chr(0x3000) + '\nwould say'),
+    ('nickname', 'call me dan', 'if i win :)' + chr(0x2007) + chr(0x205F) + '\ni guess\nplease call me dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None

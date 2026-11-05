@@ -1083,6 +1083,8 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, she explained it to everyone'),
     ('games', 'i like chess', 'i like chess, my mom explained it to me'),
     ('games', 'i like chess', 'i like chess, my coach suggested we play more'),
+    ('games', 'i like chess', 'they announced my score, i like chess'),  # "my" with no clause: an object, before it too.
+    ('games', 'i like chess', 'she explained my plan and i like chess'),
     # gene #239: an active report of the member's own, a passive one of something else, and someone else's active one.
     ('games', 'i like chess', 'i informed my team that i like chess'),
     ('games', 'i like chess', 'i reminded my mom that i like chess'),

@@ -314,14 +314,14 @@ def readings_of(text, evidence):
     eight times more (gene #212): those four with a face before a hedge from a wider vocabulary dropped too, and four
     with #212's faces and controls read plainly first; and (gene #221) with a face before a hedge past any modifier
     dropped, and twice more with slash faces with whitespace inside them read plainly first; and (gene #226) twice more
-    with Unicode space separators read as a space, and twice more with line breaks next to a face too. Every reading
-    #211, #217 and #225 had is still here, as it was, so each added one only ever refuses more. In this order, each once: which one
+    with Unicode space separators read as a space and line breaks next to a face bridged. Every reading #211, #217 and
+    #225 had is still here, as it was, so each added one only ever refuses more. In this order, each once: which one
     refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
     time grow faster than its length (#211's first CI run)."""
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for transform in (composed, restacked, spaced, unspaced, bridged):
+    for transform in (composed, restacked, spaced, bridged):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
@@ -583,16 +583,9 @@ def spaced(text, invisible):
     return composed(SPACED_SLASH_FACE.sub(' ', unseen), invisible)
 
 
-# And (gene #226 item 2) a Unicode space separator, where #225's reading takes only a space or a tab: inside a slash
-# face ("mom :-<U+00A0>/ would say"), or anywhere. Read as a plain space everywhere, in a reading of its own.
+# And (gene #226 item 2) a Unicode space separator, where #225's readings take only a space or a tab: inside a slash
+# face ("mom :-<U+00A0>/ would say"), or beside a line break next to a face (item 3, below). Read as a plain space.
 SPACE_SEPARATORS = re.compile(r'[\U000000A0\U00001680\U00002000-\U0000200A\U0000202F\U0000205F\U00003000]')
-
-
-@functools.lru_cache(maxsize=32)
-def unspaced(text, invisible):
-    """spaced's reading (see there), with each Unicode space separator a plain space first."""
-    unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text)))
-    return composed(SPACED_SLASH_FACE.sub(' ', SPACE_SEPARATORS.sub(' ', unseen)), invisible)
 
 
 # And (gene #226 item 3) a line break next to a face where what follows continues the clause: a hedge of the member's
@@ -614,8 +607,9 @@ LOOSE_SLASH = re.compile(LOOSE_SLASH_FACE)
 
 @functools.lru_cache(maxsize=32)
 def bridged(text, invisible):
-    """unspaced's reading (see there), with each line break next to a face a space where the clause goes on after
-    it, and each slash face a space, whitespace and line breaks inside it included."""
+    """restacked's reading (see there), with each space separator a plain space, each line break next to a face a
+    space where the clause goes on after it, and each slash face a space, any whitespace inside it included: one
+    reading for both of #226's items, which a reading of item 2's alone never told apart."""
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
     unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
     return composed(LOOSE_SLASH.sub(' ', unseen), invisible)

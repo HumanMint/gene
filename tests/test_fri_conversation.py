@@ -900,6 +900,7 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', "i like chess, or so i've heard"),
     ('games', 'i like chess', 'i like chess, i heard it from my mom'),
     ('games', 'i like chess', 'i like chess, i heard that'),
+    ('games', 'i like chess', "i like chess, she joked that i'm"),  # "i'm" alone points back too.
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1129,6 +1130,8 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     # Sol round 1 of #245, B4: something heard of its own, not the claim.
     ('games', 'i like chess', 'i like chess, i heard about the tournament'),
     ('games', 'i like chess', 'i heard the new album and i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard she is moving'),  # Its own clause, after the comma.
+    ('games', 'i like chess', "i like chess, she joked that i'm late"),  # A clause of its own: not only "i'm".
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

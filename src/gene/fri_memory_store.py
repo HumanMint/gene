@@ -118,8 +118,13 @@ def reconcile(db):
       (a rollback's copies of profile removals, say) they change nothing;
     - and its erasure, stamped with its own clock, is kept at or past this Gene's earlier stamp and cutoff, as
       record_erasure keeps its own. Its Discord time isn't known, so its cutoff is its stamp or the one in force,
-      whichever is later.
-    Then no floor is left."""
+      whichever is later;
+    - and a removal's time on Discord's clock (see record_removal) whose removals went while an older controller ran
+      (its erasure, which never knew that time) is carried into the member's erasure too, whatever else that erasure
+      left: Gene main before HumanMint/fri#368 carries the removals, on Gene's clock alone, and its own floors with
+      them (Sol round 1 of #234, B1). Then that record goes, as this Gene's own erasure deletes it.
+    Then no floor is left. A rollback to any older Gene, this one's predecessor included, never leaves a cutoff earlier
+    than one this Gene had in force."""
     began = not db.in_transaction
     if began:
         db.execute('BEGIN IMMEDIATE')
@@ -133,13 +138,18 @@ def reconcile(db):
         'GROUP BY user_id')}
     older = {row[0] for row in db.execute('SELECT e.user_id FROM personal_erasures e JOIN personal_erasure_times t '
                                           'ON t.user_id=e.user_id WHERE t.at IS NOT e.at')}
-    for user in sorted(set(deleted) | older):
+    orphaned = (' FROM personal_removal_times WHERE NOT EXISTS (SELECT 1 FROM personal_note_removals r WHERE '
+                'r.guild_id=personal_removal_times.guild_id AND r.channel_id=personal_removal_times.channel_id AND '
+                'r.user_id=personal_removal_times.user_id)')
+    left = {row[0] for row in db.execute('SELECT DISTINCT user_id' + orphaned)}
+    for user in sorted(set(deleted) | older | left):
         at = erased(db, user)
         if at is None:
             continue
         stamped = db.execute('SELECT at FROM personal_erasure_times WHERE user_id=?', (user,)).fetchone()
         record_erasure(db, user, max(at, stamped[0] if stamped else at), None, deleted.get(user),
                        removals_on_discord(db, user))  # And the removals' Discord times it left (fri #368).
+        db.execute('DELETE' + orphaned + ' AND user_id=?', (user,))  # In the erasure now.
     db.execute('DELETE FROM personal_cutoff_floors')
     if began:
         db.commit()

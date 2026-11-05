@@ -913,6 +913,12 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, she announced kindly advised'),
     ('games', 'i like chess', 'i like chess, she mentioned will'),
     ('games', 'i like chess', "i like chess, she complained that i :/ don't lol"),  # A subject, then nothing readable.
+    # Witnesses from round 1's mutation checks.
+    ('games', 'i like chess', "i like chess, she joked that i'm too"),
+    ('games', 'i like chess', 'i like chess, she explained this t' + chr(0x20E3) + 'o everyone'),
+    ('games', 'i like chess', 'i like chess, she joked th\U0001F602at i do'),
+    ('games', 'i like chess', 'i like chess, she joked that i d0'),
+    ('games', 'i like chess', 'i like chess, she joked that i... do'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1146,6 +1152,8 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', "i like chess, she joked that i'm late"),  # A clause of its own: not only "i'm".
     ('games', 'i like chess', 'i like chess, they announced the results'),  # A noun phrase.
     ('games', 'i like chess', "i like chess, she explained jo's plan"),
+    ('games', 'i like chess', 'i like chess, she explained that you play more'),  # A clause of its own.
+    ('games', 'i like chess', 'i like chess, they declared call me comet'),  # Another claim, as a request.
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

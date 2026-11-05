@@ -755,14 +755,13 @@ def reports_what(text, at):
         pointer, i = words[i], past_modifiers(i+1)
         # "it" and "so" only ever point back ("explained it to everyone"); "this" and "that" do unless a noun follows
         # them, as a determiner ("that rule"), or, for "that", a clause of its own (Sol round 1 of #245).
-        if ends(i) or pointer in ('it', 'so') or words[i] in TOLD_OF or words[i] in RECIPIENTS:
+        if ends(i) or pointer in ('it', 'so'):
             return BACK
         if pointer == 'that' and opens_clause(words, i):
-            return BACK if elliptical(words, i) or i+1 == len(words) else CLAUSE
-        return None if noun(words[i]) else BACK
+            return BACK if points_back(words, i) else CLAUSE
+        return None if noun(words[i]) else BACK  # The person told, or a preposition ("this to me"), is no noun.
     if opens_clause(words, i):
-        # A subject with nothing readable after it ("that i", then a face) may be one that points back.
-        return BACK if elliptical(words, i) or i+1 == len(words) else CLAUSE
+        return BACK if points_back(words, i) else CLAUSE
     if words[i] in TOLD_OF:
         return None  # Something else: "about lag", "to rest".
     if words[i] in DETERMINERS or words[i].isdigit():  # "the results", "3 winners".
@@ -795,6 +794,12 @@ BE_SUBJECTS = frozenset("i'm im we're you're youre he's hes she's shes they're t
 STILL_BACK = frozenset('not too so either also still really'.split())
 
 
+def points_back(words, i):
+    """Whether words[i:], a clause (see opens_clause), may only point back at the claim: one with nothing of its own
+    (see elliptical), or a subject with nothing readable after it ("that i", then a face, or "that i d0")."""
+    return elliptical(words, i) or words[i+1:i+2] in ([], [UNREADABLE])
+
+
 def elliptical(words, i):
     """Whether words[i:], a clause (see opens_clause), only point back at the claim (see ELLIPTICAL)."""
     if words[i] in BE_SUBJECTS:
@@ -810,9 +815,9 @@ def elliptical(words, i):
 
 def opens_clause(words, i):
     """Whether words[i:] start a clause: a subject ("i", "she", "it's"), "my" and a copula soon after ("my nickname
-    is", "my my fav band is"), not an object ("my score"), or the claim itself as a request ("call me dan")."""
+    is"), not an object ("my score"), or the claim itself as a request ("call me dan")."""
     if words[i] == 'my':
-        return any(word in COPULAS or word.endswith("'s") for word in words[i+1:i+5])
+        return any(word in COPULAS or word.endswith("'s") for word in words[i+1:i+4])
     if words[i] in ('call', 'please') and words[i+1:i+2] in (['me'], ['call']):
         return True
     return words[i] in SUBJECTS_AFTER

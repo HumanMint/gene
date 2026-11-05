@@ -853,6 +853,16 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, or so i was informed'),
     ('games', 'i like chess', "i like chess, i've been reminded"),
     ('games', 'i like chess', 'i like chess, i was notified'),
+    ('games', 'i like chess', "i'm informed that i like chess"),
+    ('games', 'i like chess', 'i' + chr(0x2019) + 'm informed that i like chess'),
+    ('games', 'i like chess', "we're reminded that i like chess"),
+    # gene #239's mutation checks: what only composed refuses, whatever rejoined's pipeline, and the passive reading on
+    # it, read of it.
+    ('nickname', 'my nickname is dan', 'my nickname is dan, ive;' + chr(0x200B) + '-/ ] written a:' + chr(0x1BCA1)
+     + '-\\ song'),
+    ('nickname', 'call me dan', 'call me dan, i5' + chr(0xFE0F) + chr(0x1BCA2) + chr(0x20E3) + 've w9' + chr(0xFE0F)
+     + chr(0x200B) + chr(0x20E3) + 'ritten a song'),
+    ('nickname', 'call me comet', 'call me comet yo' + chr(0x1BCA3) + 'u guys ;-) i firmly believe my opponent is good say'),
     # gene #242: a wider verb's own clause after it, after a comma, is still a report of the claim when it holds it.
     ('games', 'i like chess', 'lol ok, my mom announced i like chess'),
     ('games', 'i like chess', 'i like chess, my mom announced that i like chess'),

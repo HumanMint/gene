@@ -1013,7 +1013,9 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 'mom :-\\ ', 'mom:/ ) ', 'mom:/ ', 'mom:~/ ', 'would' + chr(0xFFF9) + ' ', ':' + chr(0xFFFB) + 'P] ',
                 ';P i really honestly guess ', ';P i really really really ', ';P i know when ', ';P i think my mom says ',
                 ";P i guess i'm kidding ", ';P i guess my opponent is ', ';P i believe would ',
-                ';P i absolutely strongly believe '):
+                ';P i absolutely strongly believe ',
+                # gene #221: slash faces with whitespace inside, and hedges past any modifier, -ly words among them.
+                'mom :- / ', ': - / ', ':- / ) ', ';P i probably seriously think ', ';P i deeply ', 'family '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
@@ -1024,7 +1026,8 @@ def test_a_run_of_fillers_between_symbols_is_crossed_once():
     for pad in ('\U0001F602ok ', ':) ok ', ':)ok ', ';) ok \U0001F602', ';P yeah \U0001F602',
                 ';P lol ', ';P i guess ', ';P lol i ', ';P we all ',  # gene #201 item 4: each aside looked for once.
                 ';P i do honestly think ', ';P lol i suppose ', ';P i know when ',  # gene #212: a wider vocabulary,
-                ';P i absolutely believe '):  # past a run of modifiers, read once more.
+                ';P i absolutely believe ',  # past a run of modifiers, read once more,
+                ';P i probably ', ';P i def seriously think '):  # and past any modifier (gene #221).
         assert_linear(lambda text: personal_note({'category': 'games', 'evidence': 'i like chess'}, text),
                       lambda length: ('i like chess ' + pad * length)[:length])
 

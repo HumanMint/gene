@@ -53,10 +53,11 @@ BEGIN SELECT RAISE(IGNORE); END;
 TRIGGER_NAMES = ('chat_turn_in_withdrawn_channel', 'personal_note_from_withdrawn_channel',
                  'personal_note_moved_to_withdrawn_channel', 'chat_pending_in_withdrawn_channel')
 # Tables holding what a public conversation saved, by conversation ("public:<id>"), and those keyed by the bare ID,
-# with no server named (history summaries and exploring, which read only Fri's own server).
+# with no server named (what exploring read, which reads only Fri's own server). Learning reports, their cards,
+# channel summaries and archive observations go through gene #247's withdraw (see take).
 BY_CONVERSATION = (('chat_pending', 'conversation_id'), ('web_requests', 'channel_id'), ('web_research', 'channel_id'),
                    ('mention_grants', 'conversation_id'))
-BY_CHANNEL = ('agent_summaries', 'fri_explore_notes', 'fri_explore_members', 'fri_explore_queries', 'fri_explore_seen')
+BY_CHANNEL = ('fri_explore_members', 'fri_explore_queries', 'fri_explore_seen')
 # The only tables a store may not have yet: each is made by its own module on first use, not when the store opens.
 OPTIONAL = frozenset(BY_CHANNEL)
 
@@ -208,6 +209,10 @@ def take(db, guild, channels, now):
         AgentStore.put(db, CLAIM, None)
     for table, column in BY_CONVERSATION:
         db.execute(f'DELETE FROM {table} WHERE guild_id=? AND {column} IN ({where})', (guild, *conversations))
+    # Learning reports and their cards keep a breadcrumb, channel summaries and archive observations go (gene #247,
+    # round 1's G5).
+    from .fri_learning_sources import withdraw as withdraw_learning
+    withdraw_learning(db, channels=ids)
     for table in BY_CHANNEL:
         rows(db, f'DELETE FROM {table} WHERE channel_id IN ({marks(ids)})', *ids, table=table)
     # Every message of it the controller knew of is deleted, as by its own deletion: a reply elsewhere that carried

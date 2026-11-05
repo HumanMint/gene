@@ -19,6 +19,8 @@ from gene.fri_protocol import compatible, contract
 from gene.store import Store
 from tests.test_api import headers
 from tests.test_erasure_rollback import DEPLOYED, extracted  # noqa: F401
+from tests.test_fri_agent import finish as learn
+from tests.test_fri_agent import record, setup_agent  # noqa: F401
 from tests.test_fri_endings import source
 from tests.test_turn_withdrawal import SCOPE, post_turn, turn, world  # noqa: F401
 
@@ -221,3 +223,16 @@ def test_an_older_controller_starts_and_keeps_nothing_from_a_withdrawn_channel(t
     store = Store(path)
     assert notes(store) == ['i like chess']
     assert turns(store, 'public:51') == [] and turns(store, 'public:52') == ['i like chess']
+
+
+def test_a_learning_pass_reading_a_channel_deleted_meanwhile_keeps_nothing(setup_agent):  # noqa: F811
+    """A pass that read history from a channel deleted while it ran: what it would send its model is withdrawn, and
+    its finish keeps no note and no summary, as for a privacy change meanwhile."""
+    store, _, agent = setup_agent
+    claim = agent.claim()
+    withdraw_channels(store, 'guild', [claim['channel_id']])
+    assert agent.withdrawn(claim['id'], [{'id': '100', 'user_id': 'person'}]) == ['100']
+    notes = [{'source_id': '100', 'category': 'music', 'evidence': 'I love trance'}]
+    assert learn(agent, claim, [record(claim)], notes)['saved'] == 0
+    assert not agent.context(claim['channel_id'], 'person')['summary']
+    assert not store.chat_context('guild', 'public:' + claim['channel_id'], 'person')['personal_memory']['notes']

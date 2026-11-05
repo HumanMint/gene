@@ -389,6 +389,22 @@ def test_a_private_turn_is_never_held_to_its_authorization_channel(world):  # no
     assert notes(store, 'private:900') == ['i like chess']
 
 
+def test_a_withdrawn_channel_takes_what_exploring_read_there(world):  # noqa: F811
+    """Exploring's names, searches and messages seen in a deleted channel go; another channel's stay. (Its archive
+    observations and history summary go through gene #247's withdraw: see the tests below.)"""
+    client, store = world
+    now = time.time()
+    with store.connection() as db:
+        for channel in ('51', '52'):
+            db.execute('INSERT INTO fri_explore_members VALUES (?,?,?,?)', (channel, '20', 'member twenty', now))
+            db.execute('INSERT INTO fri_explore_queries VALUES (?,?,?,?,?,?,?,?,?)',
+                       ('q' + channel, channel, '20', 'chess openings', 1, '0', 0, now, 0))
+            db.execute('INSERT INTO fri_explore_seen VALUES (?,?,?,?)', ('90' + channel, channel, '20', now))
+    assert taken(withdraw(client, '51'))['ok']
+    for table in ('fri_explore_members', 'fri_explore_queries', 'fri_explore_seen'):
+        assert count(store, table, "channel_id='51'") == 0 and count(store, table, "channel_id='52'") == 1
+
+
 @pytest.mark.parametrize('channel', ['1', '2'])
 def test_a_withdrawn_channel_takes_its_learning_reports_summary_and_observations(learning, channel):  # noqa: F811
     """Round 1's G5 (gene #244, fixed on main by gene #247): a learning pass's report and its card, the channel's

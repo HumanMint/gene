@@ -23,6 +23,7 @@ from tests.test_erasure_rollback import DEPLOYED, extracted  # noqa: F401
 from tests.test_fri_agent import finish as learn
 from tests.test_fri_agent import record, setup_agent  # noqa: F401
 from tests.test_fri_endings import source
+from tests.test_fri_learning import learning  # noqa: F401 (the fixture)
 from tests.test_turn_withdrawal import SCOPE, post_turn, turn, world  # noqa: F401
 
 OLDER = (DEPLOYED, '13dad88')  # The release a rollback goes back to, and Gene main before this.
@@ -386,3 +387,30 @@ def test_a_private_turn_is_never_held_to_its_authorization_channel(world):  # no
     assert client.post('/chat/turn/check', headers=headers('fri'), json=dm).status_code == 200
     assert post_turn(client, dm).json().get('kept') is not False
     assert notes(store, 'private:900') == ['i like chess']
+
+
+@pytest.mark.parametrize('channel', ['1', '2'])
+def test_a_withdrawn_channel_takes_its_learning_reports_summary_and_observations(learning, channel):  # noqa: F811
+    """Round 1's G5 (gene #244, fixed on main by gene #247): a learning pass's report and its card, the channel's
+    summary and an archive search's observations kept the words of a deleted channel. The channel's withdrawal takes
+    them through gene #247's withdraw(), in its own transaction: the report and card keep a breadcrumb, the summary
+    and the observations go. Another channel's withdrawal leaves them."""
+    from tests.test_learning_report_withdrawal import kept_words, passed
+    _, store, _, _ = learning
+    scheduler, report_id, _, _ = passed(learning)
+    withdraw_channels(store, '123', [channel])
+    assert kept_words(scheduler, report_id) is (channel == '2')
+
+
+def test_a_withdrawn_channel_takes_its_archive_observations(learning):  # noqa: F811
+    from tests.test_fri_reports import complete
+    _, store, _, scheduler, _ = complete(learning)
+
+    def observed():
+        with store.connection() as db:
+            return [row[0] for row in db.execute('SELECT source_id FROM fri_explore_notes')]
+    assert observed()
+    withdraw_channels(store, '123', ['2'])
+    assert observed()
+    withdraw_channels(store, '123', ['1'])
+    assert observed() == [] and not scheduler.context('1', '11')['historical_topics']

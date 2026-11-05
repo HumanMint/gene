@@ -332,3 +332,66 @@ def test_a_later_removal_with_gene_s_clock_stepped_back_never_moves_a_cutoff_ear
     remove_a_note(gene, -4)
     after = cutoffs(gene)
     assert before['removed_at'] > 0 and all(after[key] >= before[key] for key in after), (before, after)
+
+
+DM = {'guild_id': '123', 'user_id': '20', 'channel_id': '456', 'conversation_id': 'private:900', 'profiles': True}
+
+
+def my_memory(gene):
+    """My memory, as the member opens it again in their DMs: what's kept, and where."""
+    response = gene.post('/chat/memory/notes', headers=headers('fri'), json=DM)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def pressed(gene, evidence, action, offset, replacement=''):
+    """The member's press on one of their notes in My memory, with Gene's clock `offset` seconds off Discord's."""
+    listed = my_memory(gene)
+    [note] = [entry for entry in listed['entries'] if entry['evidence'] == evidence]
+    asked = {'kind': 'discord_interaction', 'id': source(REAL())['id'], 'user_id': '20', 'display_name': 'friend',
+             'channel_id': '900', 'guild_id': None}
+    with gene_clock(offset):
+        return gene.post(f"/chat/memory/notes/{note['id']}", headers=headers('fri'), json={
+            **DM, 'revision': listed['revision'], 'source': asked, 'action': action, 'evidence': replacement})
+
+
+def profile_notes(gene, *notes, at=None):
+    from gene.fri_memory_store import save
+    with gene.app.state.store.connection() as db:
+        for note in notes:
+            assert save(db, '123', 'server', '20', note, REAL() if at is None else at, provenance=[])
+
+
+def test_a_replacement_after_a_removal_with_gene_s_clock_ahead_is_kept(gene):
+    """Sol round 3 of #213, B3: the member removes one profile note with Gene's clock two seconds ahead, then replaces
+    another after it steps back three. The first removal's fence, kept at its later time, refused the replacement's
+    save, unnoticed after the note it replaces had gone: 200, and neither note, even opened again. Their own words now
+    are kept: a removal fence holds back what was learned from before it, never what they type in My memory."""
+    profile_notes(gene, ('games', 'I like chess'), ('music', 'I love trance'))
+    assert pressed(gene, 'I like chess', 'remove', 2).status_code == 200
+    replaced = pressed(gene, 'I love trance', 'replace', -3, 'I love techno')
+    assert replaced.status_code == 200, replaced.text
+    for listed in (replaced.json(), my_memory(gene)):  # As answered, and opened again.
+        assert [(entry['scope'], entry['evidence']) for entry in listed['entries']] == [('server', 'I love techno')]
+
+
+def test_a_note_kept_here_only_after_a_removal_with_gene_s_clock_ahead_moves(gene):
+    """The same for "Keep here only": the profile note moves into this private chat. Its save there was refused by the
+    other removal's fence, so the move failed ("can't be moved now") where the bases moved it."""
+    profile_notes(gene, ('games', 'I like chess'), ('music', 'I love trance'))
+    assert pressed(gene, 'I like chess', 'remove', 2).status_code == 200
+    kept = pressed(gene, 'I love trance', 'keep', -3)
+    assert kept.status_code == 200, kept.text
+    for listed in (kept.json(), my_memory(gene)):
+        assert [(entry['scope'], entry['evidence']) for entry in listed['entries']] == [('private:900', 'I love trance')]
+
+
+def test_a_replacement_save_that_fails_restores_the_note_it_was_replacing(gene):
+    """Any other refusal of the replacement's save (here: the same words already kept, dated later, from Gene's clock
+    running ahead) is an error, and the note being replaced stays: never a 200 with it gone and nothing in its place
+    that the member asked for."""
+    profile_notes(gene, ('games', 'I like chess'), at=REAL()+5)
+    profile_notes(gene, ('games', 'I like checkers'))
+    replaced = pressed(gene, 'I like checkers', 'replace', 0, 'I like chess')
+    assert replaced.status_code == 400, replaced.text
+    assert sorted(entry['evidence'] for entry in my_memory(gene)['entries']) == ['I like checkers', 'I like chess']

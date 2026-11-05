@@ -245,12 +245,13 @@ def test_one_that_carried_fris_reply_to_it_goes_too_and_one_that_carried_that(wo
 
 
 def test_by_id_alone_with_no_exchange_of_its_own(world):
-    """A message in Fri's view it never answered: only the replies that carried it hold it."""
+    """A message in Fri's view it never answered: only the replies that carried it hold it. An edit retires them too
+    (gene #246; gene #150 left them)."""
     client, store = world
     nearby = source(age=30, channel='51')['id']
     turn(store, 'what did they mean', drew_on=[nearby], age=20)
-    assert withdraw_saved(client, nearby).json() == {'ok': True, 'removed': 0}  # An edit: it stays.
-    assert replies(store) == ['about that: '+MARKER]
+    assert withdraw_saved(client, nearby).json() == {'ok': True, 'removed': 0}  # An edit.
+    assert replies(store) == [controller.DRAWN]
     assert withdraw_saved(client, nearby, deleted=True).json() == {'ok': True, 'removed': 0}
     assert replies(store) == [controller.DRAWN]
     with store.connection() as db:  # Nobody's exchange went, so no fence: its author is unknown here.

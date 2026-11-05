@@ -747,6 +747,33 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom :-\t/ would say'),
     ('games', 'i like chess', 'i like chess, my mom :- \\ would say'),
     ('games', 'i like chess', 'i like chess, my mom:- / ) would say'),
+    # gene #226 item 2: a Unicode space separator inside a slash face (no-break, thin, narrow no-break, ideographic).
+    ('games', 'i like chess', 'i like chess, my mom :-' + chr(0xA0) + '/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom :' + chr(0x2009) + '/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom :' + chr(0x202F) + '-' + chr(0x202F) + '/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:-/' + chr(0xA0) + ') would say'),
+    ('games', 'i like chess', 'i like chess, my mom :' + chr(0x3000) + '/ would say'),
+    # gene #226 item 3: a line break next to a face, before a hedge or the rest of a report, or inside a slash face.
+    ('nickname', 'call me dan', 'if i win ;P\ni probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P\r\ni guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P \n i probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win :)\n\ni seriously think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P' + chr(0x2028) + 'i probably think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\nwould say'),
+    ('games', 'i like chess', 'i like chess, my mom :/\nwould say'),
+    ('games', 'i like chess', 'i like chess, my mom\n:- / would say'),
+    ('games', 'i like chess', 'i like chess, my mom :-\n/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom ;P\ni swear would say'),
+    ('games', 'i like chess', 'i like chess, my mom ;P\nwould say'),
+    ('games', 'i like chess', 'i like chess, my mom :)\nsays'),
+    ('games', 'i like chess', 'i like chess, according ;P\nto my mom'),
+    ('games', 'i like chess', 'i like chess, my mom\n;P would say'),
+    # ... and a space separator beside the line break, which a face's run takes only as a space.
+    ('nickname', 'call me dan', 'if i win ;P' + chr(0xA0) + '\ni probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P\n' + chr(0xA0) + 'i probably think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom\n;P' + chr(0xA0) + 'i swear would say'),
+    ('games', 'i like chess', 'i like chess, my mom ;P' + chr(0x3000) + '\nwould say'),
+    ('nickname', 'call me dan', 'if i win :)' + chr(0x2007) + chr(0x205F) + '\ni guess\nplease call me dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -899,6 +926,19 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, saves are in c: \\games\\chess'),
     # gene #221 F1: a word ending in -ly after a face isn't a hedge without a hedge's verb.
     ('games', 'i like chess', 'i like chess ;P i only play blitz'),
+    # gene #226: a no-break space in a link or a path is never a face, and a face before a line break ends nothing
+    # else.
+    ('games', 'i like chess', 'i like chess, see http:' + chr(0xA0) + '//example.com'),
+    ('games', 'i like chess', 'i like chess, saves are in c:' + chr(0xA0) + '/games'),
+    ('games', 'i like chess', 'i like chess' + chr(0xA0) + 'a lot'),
+    ('games', 'i like chess', 'i like chess :)\nsee you tomorrow'),
+    ('games', 'i like chess', 'i like chess ;P\nmy mom bought me a board'),
+    ('games', 'i like chess', 'i like chess :/\nits hard tho'),
+    ('nickname', 'call me dan', 'call me dan :)\ni like it'),
+    # ... and a line break after a face before anything that doesn't go on with the clause stays one.
+    ('nickname', 'call me dan', 'please call me dan ;P\nok?'),
+    ('games', 'i like chess', 'i like chess :P\ni think its fun'),
+    ('games', 'i like chess', 'i like chess :)\nto be fair'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -1015,7 +1055,10 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 ";P i guess i'm kidding ", ';P i guess my opponent is ', ';P i believe would ',
                 ';P i absolutely strongly believe ',
                 # gene #221: slash faces with whitespace inside, and hedges past any modifier, -ly words among them.
-                'mom :- / ', ': - / ', ':- / ) ', ';P i probably seriously think ', ';P i deeply ', 'family '):
+                'mom :- / ', ': - / ', ':- / ) ', ';P i probably seriously think ', ';P i deeply ', 'family ',
+                # gene #226: space separators inside a face, and line breaks next to one.
+                ':-' + chr(0xA0) + '/ ', ':' + chr(0x3000) + '- / ', ';P\ni guess ', 'mom :- /\n', '\n:- / ', ' \n \n',
+                ':-\n/ ', chr(0xA0) + ' '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
@@ -1027,7 +1070,8 @@ def test_a_run_of_fillers_between_symbols_is_crossed_once():
                 ';P lol ', ';P i guess ', ';P lol i ', ';P we all ',  # gene #201 item 4: each aside looked for once.
                 ';P i do honestly think ', ';P lol i suppose ', ';P i know when ',  # gene #212: a wider vocabulary,
                 ';P i absolutely believe ',  # past a run of modifiers, read once more,
-                ';P i probably ', ';P i def seriously think '):  # and past any modifier (gene #221).
+                ';P i probably ', ';P i def seriously think ',  # and past any modifier (gene #221),
+                ';P\ni probably ', ';P' + chr(0xA0) + 'i guess '):  # and past a line break or a space separator (#226).
         assert_linear(lambda text: personal_note({'category': 'games', 'evidence': 'i like chess'}, text),
                       lambda length: ('i like chess ' + pad * length)[:length])
 
@@ -1051,6 +1095,20 @@ def test_the_same_words_too_many_times_keep_nothing():
     assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
     assert personal_note(note, 'i like chess. ' * 9) is None
     assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
+
+
+@pytest.mark.parametrize('category, evidence, text', [
+    ('nickname', 'call me dan', 'if i win ;P\ni probably think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\nwould say'),
+    ('games', 'i like chess', 'i like chess, my mom :-' + chr(0xA0) + '/ would say'),
+])
+def test_226s_shapes_keep_no_note_when_saved_and_read_again(store, category, evidence, text):
+    """gene #226 items 2 and 3: each of these was kept by Store.save_chat() and there again once read; nothing is
+    now."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': category, 'evidence': evidence}])
+    assert not saved['first_memory']
+    assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
 
 
 @pytest.mark.parametrize('category, evidence, text', [

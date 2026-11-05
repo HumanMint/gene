@@ -460,6 +460,12 @@ class AgentStore:
                     budget['used'] = max(0, budget['used']-(claim['limit']-scanned))
                     self.put(db, 'budget', budget)
             self.put(db, 'learning_claim', None)
+            # Reports past their week still to be delivered go with this one, which says how many (gene #250): Fri sends
+            # one a read, after each pass, so one ahead of each pass's own would keep every report a pass behind (Sol
+            # round 1 of #256, B1). Wordless first, as they'd go out.
+            from .fri_learning_sources import KEPT, expire
+            expire(db, now)
+            missed = db.execute('UPDATE agent_reports SET delivered=1 WHERE delivered=0 AND at<?', (now-KEPT,)).rowcount
             dates = [r['at'] for r in records]
             if oldest is not None and newest is not None and claim['after'] <= oldest <= newest <= now:
                 dates = [oldest, newest]
@@ -496,6 +502,7 @@ class AgentStore:
                       + ('\nConversation summary: '+summary if summary else '')
                       + ('\nSaved disclosures:\n'+'\n'.join(kept) if kept else '')
                       + ('\nIssue: '+clean(error, 180) if error else '')
+                      + (f'\nEarlier reports that expired before they could be delivered: {missed}' if missed else '')
                       + '\nAsk me to change learning frequency, pause learning, or show settings.')
             db.execute('INSERT INTO agent_reports VALUES (?,?,?,0)', (batch_id, now, report))
             from .fri_learning_sources import record
@@ -591,16 +598,15 @@ class AgentStore:
               "s.item=r.id ")
 
     def reports(self):
-        """The outbox Fri delivers after each pass: the oldest report still to be delivered, with the breadcrumbs of any
-        past their week before it (gene #250). Were a breadcrumb all it handed over, the pass's own report would pause
-        learning for its week, and expire in its turn."""
+        """The outbox Fri delivers after each pass: one report a read, as it is then, since Fri sends what a read handed
+        it (Sol round 1 of #256, B1). The oldest still in its week first, so a newer report is never a read behind one
+        past its week (gene #250): learning waits on it. Those past it go with the next pass's report (see finish)."""
         from .fri_learning_sources import KEPT, expire
         now = time.time()
         with self.store.connection() as db:
             expire(db, now)
-            expired = db.execute('SELECT count(*) FROM agent_reports WHERE delivered=0 AND at<?', (now-KEPT,)).fetchone()
             return [self.report_row(r) for r in db.execute(
-                self.REPORT+'WHERE r.delivered=0 ORDER BY r.at LIMIT ?', (expired[0]+1,))]
+                self.REPORT+'WHERE r.delivered=0 ORDER BY r.at<?, r.at LIMIT 1', (now-KEPT,))]
 
     @staticmethod
     def report_row(row):

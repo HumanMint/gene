@@ -57,7 +57,8 @@ CHANNEL = re.compile(r'Channel: <#(\d+)>')
 INTERRUPTED = 'Learning pass interrupted.'  # A report the controller wrote itself, with no member's words.
 TAKEN = 'Its findings were removed: a message it read was taken back.'
 HELD = 'Held back: a message it may have read was taken back.'
-EXPIRED = 'Its findings were removed: it went a week without being delivered.'
+# Also its card's summary, which Fri shows where the conversation summary would be (Sol round 1 of #256, S1).
+EXPIRED = 'Its findings expired before they could be delivered.'
 MARKS = ('held', 'withdrawn', 'expired')  # What a wordless card says it is.
 # A channel summary shown or used: not one held back.
 SHOWN_SUMMARY = ("NOT EXISTS (SELECT 1 FROM fri_learning_sources s WHERE s.kind='summary' "
@@ -116,9 +117,10 @@ def hold(db, kind, item):
 
 def expire(db, now):
     """Reports past their week (gene #250): a delivered one goes, with its card and anything set aside for it; one still
-    to be delivered keeps only a wordless breadcrumb, pending, so the owner still hears the pass ran (it no longer pauses
-    learning, and goes out with the next pass's report: see AgentStore). One with no words (taken back, or an
-    interrupted pass's) stays as it is. Inside the caller's transaction, or one its first statement begins."""
+    to be delivered keeps only a wordless breadcrumb, its card saying why, pending, so the owner still hears the pass ran
+    (it no longer pauses learning, and goes with the next pass's report, which counts it: see AgentStore.finish). One
+    with no words (taken back, or an interrupted pass's) stays as it is. Inside the caller's transaction, or one its
+    first statement begins."""
     db.execute('DELETE FROM agent_reports WHERE delivered=1 AND at<?', (now-KEPT,))
     for row in db.execute('SELECT r.id,r.body,c.body AS card FROM agent_reports r LEFT JOIN agent_report_cards c ON '
                           'c.report_id=r.id WHERE r.delivered=0 AND r.at<?', (now-KEPT,)).fetchall():
@@ -129,7 +131,7 @@ def expire(db, now):
                    (breadcrumb(row['id'], channel_of(row['body'], card), EXPIRED), row['id']))
         if card:
             db.execute('UPDATE agent_report_cards SET body=? WHERE report_id=?',
-                       (json.dumps(wordless(card, expired=True)), row['id']))
+                       (json.dumps({**wordless(card, expired=True), 'summary': EXPIRED}), row['id']))
         record(db, 'report', row['id'], [])  # Nothing of it is left to take.
 
 

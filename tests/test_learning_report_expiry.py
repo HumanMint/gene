@@ -69,7 +69,8 @@ def report_words(store, report_id):
     with store.connection() as db:
         row = db.execute('SELECT r.body,c.body FROM agent_reports r LEFT JOIN agent_report_cards c ON c.report_id=r.id '
                          'WHERE r.id=?', (report_id,)).fetchone()
-    return any(words in str(tuple(row)) for words in WORDS) or ('report', report_id) in set_aside(store)
+    return (row is not None and any(words in str(tuple(row)) for words in WORDS)) or (
+        ('report', report_id) in set_aside(store))
 
 
 def words_kept(store, report_id):
@@ -136,6 +137,7 @@ def test_reports_past_their_week_go_with_the_next_passs_own(learning):  # noqa: 
     clock[0] += 8*86400
     claim = scheduler.claim(manual=True)
     scheduler.finish(claim['id'], [], {}, 0, None, True, {})
+    assert not report_words(store, report_id)  # At once, before anything reads the outbox.
     [[sent], []] = sent_by_fri(scheduler, passes=2)
     assert sent['id'] == claim['id'] and 'Earlier reports that expired before they could be delivered: 2' in sent['body']
     assert not report_words(store, report_id) and not scheduler.state()['report_pending']

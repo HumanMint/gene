@@ -115,7 +115,8 @@ def rows(db, query, *args):
 
 def held(store, guild):
     """Every channel or thread the controller holds anything saved from (see withdraw), with the channel a thread is
-    under where it's known; none withdrawn. For Fri's check of those it may have missed the deletion of."""
+    under where it's known. For Fri's check of those it may have missed the deletion of: one withdrawn before is listed
+    again only if something was written there since (an older controller's history summary, say), and goes again."""
     found = set()
     with store.connection() as db:
         for query in ('SELECT DISTINCT channel_id FROM chat_turns WHERE guild_id=?',
@@ -126,16 +127,16 @@ def held(store, guild):
             found |= {channel for row in rows(db, query, guild) if (channel := channel_of(row[0]))}
         for table in BY_CHANNEL:
             found |= {str(row[0]) for row in rows(db, f'SELECT DISTINCT channel_id FROM {table}') if str(row[0]).isdigit()}
-        gone = {row[0] for row in db.execute('SELECT channel_id FROM chat_channel_withdrawals WHERE guild_id=?', (guild,))}
         known = dict(db.execute('SELECT thread_id,parent_id FROM chat_thread_parents WHERE guild_id=?', (guild,)).fetchall())
     return {'channels': [{'id': channel, 'parent': known.get(channel)}
-                         for channel in sorted(found-gone, key=lambda channel: (len(channel), channel))]}
+                         for channel in sorted(found, key=lambda channel: (len(channel), channel))]}
 
 
 def withdraw(store, guild, channels):
     """Channels and threads deleted in Discord: everything held from them, and from the threads under each channel,
-    goes as each of their messages' deletion would take it (see Store._withdraw_turn), in one transaction. Then a record
-    of each keeps anything still on its way from it out (see withdrawn). A repeat finds nothing more."""
+    goes, in one transaction, as each of their messages' deletion would take it: exchanges, notes learned there, the
+    summaries drawing on them, questions, research, and replies elsewhere that carried one keep a breadcrumb. A record of
+    each then keeps anything still on its way from it out (see withdrawn). A repeat finds nothing more."""
     from .fri_agent_store import AgentStore
     from .fri_member_summary import CLAIM, drop
     from .store import Store
@@ -152,18 +153,13 @@ def withdraw(store, guild, channels):
         db.executemany('INSERT INTO chat_channel_withdrawals VALUES (?,?,?) ON CONFLICT(guild_id,channel_id) '
                        'DO UPDATE SET at=excluded.at', [(guild, channel, now) for channel in ids])
         where = marks(conversations)
-        # Its exchanges, message by message, as their deletions take them: the turns holding each, a question it left
-        # and research it permitted, notes learned from it, the member's summary if it could have read it, and others'
-        # replies that carried it, which keep a breadcrumb (gene #141).
-        turns = db.execute(f"SELECT id,channel_id,user_id,json_extract(NULLIF(source,''),'$.id') AS source_id,burst,"
-                           f"reply_message_id FROM chat_turns WHERE guild_id=? AND channel_id IN ({where})",
-                           (guild, *conversations)).fetchall()
-        messages = set()
-        for turn in turns:
-            said = [turn['source_id'], *((row.get('source') or {}).get('id') for row in json.loads(turn['burst'] or '[]'))]
-            messages |= {str(message) for message in [*said, turn['reply_message_id']] if message}
-            for message in {str(message) for message in said if message}:
-                Store._withdraw_turn(db, guild, turn['channel_id'], turn['user_id'], message, deleted=True)
+        # Its exchanges, and the messages they hold: the members', and Fri's replies.
+        turns = db.execute(f"SELECT json_extract(NULLIF(source,''),'$.id') AS source_id,burst,reply_message_id "
+                           f"FROM chat_turns WHERE guild_id=? AND channel_id IN ({where})", (guild, *conversations))
+        turns = turns.fetchall()
+        messages = {str(message) for turn in turns for message in (
+            turn['source_id'], turn['reply_message_id'],
+            *((row.get('source') or {}).get('id') for row in json.loads(turn['burst'] or '[]'))) if message}
         db.execute(f'DELETE FROM chat_turns WHERE guild_id=? AND channel_id IN ({where})', (guild, *conversations))
         # Notes learned there, wherever they show: a server-profile note keeps the conversation it came from.
         for note in db.execute(f'SELECT sources FROM personal_notes WHERE guild_id=? AND (channel_id IN ({where}) OR '
@@ -182,8 +178,8 @@ def withdraw(store, guild, channels):
             rows(db, f'DELETE FROM {table} WHERE guild_id=? AND {column} IN ({where})', guild, *conversations)
         for table in BY_CHANNEL:
             rows(db, f'DELETE FROM {table} WHERE channel_id IN ({marks(ids)})', *ids)
-        # Every message of it the controller knew of is deleted: a reply elsewhere that carried one keeps a breadcrumb,
-        # and a save still on its way that carried one keeps nothing.
+        # Every message of it the controller knew of is deleted, as by its own deletion: a reply elsewhere that carried
+        # one keeps a breadcrumb (gene #141), and a save still on its way that carried one keeps nothing (gene #149).
         Store._retire_drawn(db, guild, messages)
         Store._fence(db, guild, sorted(messages), True, now)
         return {'ok': True, 'channels': ids, 'removed': len(turns)}

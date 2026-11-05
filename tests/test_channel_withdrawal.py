@@ -236,3 +236,22 @@ def test_a_learning_pass_reading_a_channel_deleted_meanwhile_keeps_nothing(setup
     assert learn(agent, claim, [record(claim)], notes)['saved'] == 0
     assert not agent.context(claim['channel_id'], 'person')['summary']
     assert not store.chat_context('guild', 'public:' + claim['channel_id'], 'person')['personal_memory']['notes']
+
+
+def test_what_outlived_its_exchanges_goes_too(world):  # noqa: F811
+    """A note outlasts the six exchanges kept per conversation, and a summary the exchanges it read: with no exchange
+    left to name the message, the note goes by where it was learned, the summary by where it drew from, and the
+    message is fenced, so a reply elsewhere that carried it keeps nothing."""
+    client, store = world
+    first = said(client, 'i like minecraft')
+    now = time.time()
+    with store.connection() as db:
+        db.execute("DELETE FROM chat_turns WHERE channel_id='public:51'")  # Trimmed since.
+        db.execute("INSERT INTO fri_member_summaries VALUES ('123','31','talks about minecraft',0,'[]',"
+                   "'[\"public:51\"]',?,?)", (now, now))
+    assert notes(store) == ['i like minecraft']
+    assert withdraw(client, '51').json() == {'ok': True, 'channels': ['51'], 'removed': 0}
+    assert notes(store) == [] and count(store, 'fri_member_summaries', "user_id='31'") == 0
+    late = turn(source(channel='52'), 'and now?', channel_id='52', conversation_id='public:52',
+                drew_on=[first['source']['id']])
+    assert client.post('/chat/turn/check', headers=headers('fri'), json=late).status_code == 409

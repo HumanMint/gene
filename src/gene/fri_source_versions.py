@@ -6,7 +6,8 @@ controller saved anything: the controller's clock may run seconds apart from Dis
 fri #364). A later version took away what the save holds, so it goes. The same version again is a pin or an embed
 refresh repeating that edit's time, and an earlier one is an edit's late event: nothing of the save goes. A save that
 recorded none (from an older Fri, or made before this) can't be placed: it goes as before while its message is young,
-and is held back by Fri otherwise.
+and is held back by Fri otherwise. A member summary records the version of each message it drew on beside it, from
+these, and is placed by itself (see fri_member_summary.edited).
 
 Kept in a table of its own, so an older controller works on the same database as before: triggers clear what an
 exchange or a note no longer holds, whichever controller deletes or saves it again.
@@ -55,6 +56,13 @@ def record_note(db, guild, scope, user, note, versions, messages):
                      'AND evidence=?', (guild, scope, user, note[0], note[1])).fetchone()
     if row:
         record(db, 'note', row[0], versions, messages)
+
+
+def version(db, kind, item, message):
+    """The version of the message that exchange or note was saved from, or None if it recorded none."""
+    row = db.execute('SELECT version FROM fri_source_versions WHERE kind=? AND item=? AND message_id=?',
+                     (kind, item, str(message))).fetchone()
+    return row[0] if row else None
 
 
 def holding(db, guild, message):

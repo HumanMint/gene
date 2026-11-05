@@ -1583,8 +1583,12 @@ class Store:
         controller saved it. One saved from an earlier version goes; one from that version or a later one stays, as a
         pin or an embed refresh repeats an earlier edit's time. A message with saves of both kinds, or with one that
         recorded no version of an old message, keeps everything: the answer names it as unsure, for Fri to keep it out
-        of use instead, and a summary of its author's that may have drawn on it is held back until it's read again
-        (Sol round 1 of fri #364). A deletion takes everything, whatever its time."""
+        of use instead, and a summary of its author's whose sources aren't known is held back until it's read again
+        (Sol round 1 of fri #364). A deletion takes everything, whatever its time.
+
+        A member summary that drew on one is placed by itself, by the version it drew on, whatever else holds the
+        message, and when nothing else does (see fri_member_summary.edited): a later save vouches for nothing drawn on
+        an earlier version, and a summary outlasts the exchanges it drew on (Sol round 2 of fri #364)."""
         from .fri_source_versions import place
         timed, every = edited_at is not None and not deleted, sorted(set(message_ids))
         ids, unsure, authors = json.dumps(every), [], {}
@@ -1617,15 +1621,18 @@ class Store:
             return [(row['user_id'], message) for message in json.loads(ids) for row in db.execute(
                 f'SELECT DISTINCT user_id FROM personal_notes WHERE guild_id=? AND {CURRENT} AND '
                 'instr(sources,?)>0 ORDER BY user_id', (guild_id, json.dumps(message)))]
+        from .fri_member_summary import edited, hold_drawn, naming
         with self.connection() as db:
             ids, unsure, authors = sort_out(db)
-            if not (deleted or unsure or self._learning(db) is not None or held(db) or noted(db)):
+            if not (deleted or unsure or self._learning(db) is not None or held(db) or noted(db)
+                    or naming(db, guild_id, every)):
                 return answer(0)
             db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
             ids, unsure, authors = sort_out(db)
-            from .fri_member_summary import hold_drawn
             for message in unsure:
                 hold_drawn(db, guild_id, message, authors[message])
+            for message in every:  # Each summary that drew on it, placed by itself, whatever holds it besides.
+                edited(db, guild_id, message, edited_at if timed else None)
             holding = held(db)
             removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted)
                           for conversation, user, message in holding)

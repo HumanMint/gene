@@ -524,21 +524,88 @@ def drawn(db, guild, user, summary):
     return drew_on(db, guild, user, summary['through']) or None
 
 
+def hold(db, guild, user, through):
+    """The member's summary built through `through` is held back until it's read again (see recheck)."""
+    db.execute('INSERT INTO fri_member_summary_rechecks(guild_id,user_id,through,checked,held) VALUES (?,?,?,0,1) '
+               "ON CONFLICT(guild_id, user_id) DO UPDATE SET through=excluded.through,held=1,claim='',claimed=0",
+               (guild, user, through))
+
+
 def hold_drawn(db, guild, message, users):
     """A message an edit couldn't be placed against, so nothing of it was withdrawn and Fri holds it back instead
-    (HumanMint/fri#358): a kept summary of one of these members (whose saves hold it) that drew on it, or may have, as
-    its sources aren't known, is held back until it's read again (see recheck). Nothing else in a later request may
-    name that message, as an exchange of it ages out of what other channels see, so the summary would still carry what
-    the edit took away (Sol round 1 of fri #364)."""
+    (HumanMint/fri#358): a kept summary of one of these members (whose saves hold it) that may have drawn on it, as its
+    sources aren't known, is held back until it's read again (see recheck). Nothing else in a later request may name
+    that message, as an exchange of it ages out of what other channels see, so the summary would still carry what the
+    edit took away (Sol round 1 of fri #364). One whose sources are known is placed by itself (see edited)."""
     for user in sorted(set(users)):
+        row = kept(db, guild, user)
+        if row and row['body'] and drawn(db, guild, user, row) is None:
+            hold(db, guild, user, row['through'])
+
+
+def placed(items, message, edited_at):
+    """How an edit of the message at `edited_at` (Discord's time; None for one with no time, or a deletion) stands
+    against what drew on these messages (see edited): 'drop' where one drew on an earlier version of it, or there's no
+    time; 'hold' where one drew on it from a version not known; None where each drew on that version or a later one, or
+    none names it."""
+    from .fri_source_versions import SAME
+    versions = [item.get('version') for item in items or () if str(item.get('id')) == str(message)]
+    if not versions:
+        return None
+    if edited_at is None or any(type(v) in (int, float) and edited_at > v+SAME for v in versions):
+        return 'drop'
+    return 'hold' if any(type(v) not in (int, float) for v in versions) else None
+
+
+def in_flight(db):
+    """The build in flight's claim record, or None."""
+    from .fri_agent_store import AgentStore
+    try:
+        return AgentStore.get(db, CLAIM)
+    except sqlite3.OperationalError:  # A store Fri's agent tables were never set up in.
+        return None
+
+
+def claimed_messages(record):
+    """What a build in flight read: its exchanges' messages and the earlier summary's, where known."""
+    return [*(record.get('messages') or ()), *((record.get('previous') or {}).get('messages') or ())]
+
+
+def naming(db, guild, messages):
+    """Whether a kept summary's sources, or the build in flight, name one of these messages as drawn on (see edited)."""
+    ids = {str(message) for message in messages}
+    if any(db.execute('SELECT 1 FROM fri_member_summary_sources WHERE guild_id=? AND instr(messages,?)>0 LIMIT 1',
+                      (guild, json.dumps(message))).fetchone() for message in ids):
+        return True
+    record = in_flight(db)
+    return bool(record) and any(str(item.get('id')) in ids for item in claimed_messages(record))
+
+
+def edited(db, guild, message, edited_at):
+    """A message edited at `edited_at` (Discord's time; None for an edit with no time, or a deletion), placed against
+    each kept summary that names it as drawn on, by the version of it that summary drew on (HumanMint/fri#358), apart
+    from the message's exchanges and notes: a summary can outlast them, and a save of a later version vouches for
+    nothing drawn on an earlier one (Sol round 2 of fri #364). One drawn on an earlier version, or any with no time,
+    goes; one whose version isn't known is held back until it's read again (see recheck); one drawn on that version or
+    a later one stays. A build in flight that read it goes if a summary would go or be held, or its member's does."""
+    from .fri_agent_store import AgentStore
+    users = set()
+    for (user,) in db.execute('SELECT user_id FROM fri_member_summary_sources WHERE guild_id=? AND instr(messages,?)>0',
+                              (guild, json.dumps(str(message)))).fetchall():
         row = kept(db, guild, user)
         if not row or not row['body']:
             continue
         messages = drawn(db, guild, user, row)
-        if messages is None or any(str(item.get('id')) == str(message) for item in messages):
-            db.execute('INSERT INTO fri_member_summary_rechecks(guild_id,user_id,through,checked,held) VALUES '
-                       "(?,?,?,0,1) ON CONFLICT(guild_id, user_id) DO UPDATE SET through=excluded.through,held=1,"
-                       "claim='',claimed=0", (guild, user, row['through']))
+        how = 'hold' if messages is None else placed(messages, message, edited_at)
+        if how == 'drop':
+            drop(db, guild, user)
+        elif how == 'hold':
+            hold(db, guild, user, row['through'])
+        if how:
+            users.add(user)
+    record = in_flight(db)
+    if record and (record['user_id'] in users or placed(claimed_messages(record), message, edited_at)):
+        AgentStore.put(db, CLAIM, None)
 
 
 def identified(turn):
@@ -665,6 +732,7 @@ def checked(text):
 def claim(agent):
     """The next member due a summary, with their own recent words and what Fri kept before, or None."""
     from .fri_reply_checks import neutral
+    from .fri_source_versions import version
     from .store import Store
     now = time.time()
     with agent.store.connection() as db:
@@ -697,9 +765,9 @@ def claim(agent):
             # Held back for a recheck or not: Fri reads what it drew on again itself before carrying it on.
             previous = kept(db, guild, user)
             # Only words said since the member's latest privacy change: one invalidates what came before.
-            turns = [dict(row) for row in db.execute(
-                f'SELECT id,channel_id,input,provenance,at,source,burst FROM chat_turns WHERE {READABLE} AND at>? '
-                'AND speaker_revision=? ORDER BY at DESC, id DESC LIMIT ?',
+            turns = [dict(row) for row in db.execute(  # item: its ID, which _current_turns takes out of the row.
+                f'SELECT id,id AS item,channel_id,input,provenance,at,source,burst FROM chat_turns WHERE {READABLE} '
+                'AND at>? AND speaker_revision=? ORDER BY at DESC, id DESC LIMIT ?',
                 (guild, user, previous['through'] if previous else 0, revision, EXCHANGES))][::-1]
             turns = [turn for turn in agent.store._current_turns(db, turns) if identified(turn)]
             if len(turns) < NEW:
@@ -712,9 +780,14 @@ def claim(agent):
             db.execute('INSERT INTO fri_member_summary_calls VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
                        (user, now))  # Every call counts, whatever happens to it.
             # Each exchange's messages, and those the earlier summary drew on (None if not known), named in the claim
-            # for Fri to check against Discord before any of it is sent or carried on (HumanMint/fri#333).
-            messages = [{'id': message, 'conversation_id': turn['channel_id'], 'saved_at': turn['at']}
-                        for turn in turns for message in messages_of(turn)]
+            # for Fri to check against Discord before any of it is sent or carried on (HumanMint/fri#333). Each with
+            # the version its exchange was saved from, where it recorded one, kept with the summary (see edited).
+            messages = []
+            for turn in turns:
+                for message in messages_of(turn):
+                    seen = version(db, 'turn', turn['item'], message)
+                    messages.append({'id': message, 'conversation_id': turn['channel_id'], 'saved_at': turn['at'],
+                                     **({} if seen is None else {'version': seen})})
             earlier = drawn(db, guild, user, previous) if shown else None
             record = {'id': uuid.uuid4().hex, 'at': now, 'user_id': user, 'revision': revision,
                       'through': max(turn['at'] for turn in turns),

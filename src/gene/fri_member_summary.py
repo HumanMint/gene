@@ -52,6 +52,15 @@ WRITES = (('fri_work_dependencies', 'work_id'), ('fri_reminder_dependencies', 'r
 # What such a draft keeps once one of those summaries goes, instead of its title and words.
 WORK_TITLE = 'Withdrawn draft'
 WORK_RETIRED = 'A draft drawing on what Fri remembered about someone, since withdrawn. Nothing from it is retained here.'
+# What a saved reply that drew on a summary held back until it's read again (HumanMint/fri#349) reads as meanwhile,
+# without being changed (HumanMint/fri#355): once the summary checks out, the reply reads as it was.
+HELD_REPLY = 'Earlier answer drawing on a summary of them that is being checked again. Not shown for now.'
+# Why a draft or reminder depending on such a summary isn't given or sent meanwhile (HumanMint/fri#355).
+HELD_WRITE = 'That draws on what Fri remembered about someone, which is being checked again. Try again in a bit.'
+# Whether the summary of the member `{guild}`, `{user}` names (SQL) is held back until it's read again.
+HOLDING = ('EXISTS (SELECT 1 FROM fri_member_summaries hs JOIN fri_member_summary_rechecks hr ON hr.guild_id=hs.guild_id '
+           'AND hr.user_id=hs.user_id AND hr.through=hs.through AND hr.held WHERE hs.guild_id={guild} AND '
+           'hs.user_id={user})')
 # The same exchanges a member's other conversations may see (Store._elsewhere).
 READABLE = ("guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND attributed=1 "
             "AND response_kind='reply'")
@@ -120,7 +129,20 @@ def initialize(db):
         DELETE FROM fri_member_summary_rechecks WHERE NOT EXISTS (SELECT 1 FROM fri_member_summaries s
             WHERE s.guild_id=fri_member_summary_rechecks.guild_id AND s.user_id=fri_member_summary_rechecks.user_id
             AND s.through=fri_member_summary_rechecks.through);
+        -- Saved work and reminders that drew on their writer's own summary (HumanMint/fri#355, Sol round 1's B3):
+        -- kept out of use while that summary is held back (see held_writes), but never retired when it goes, as the
+        -- writer asked for them (gene #112), so they're kept apart from the dependencies, which retire. kind: the
+        -- dependency table's name (see WRITES).
+        CREATE TABLE IF NOT EXISTS fri_own_summary_writes (
+            kind TEXT NOT NULL, item TEXT NOT NULL, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
+            PRIMARY KEY(kind, item));
     ''')
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for name, table, kind in (('fri_own_summary_writes_work_gone', 'fri_work', 'fri_work_dependencies'),
+                              ('fri_own_summary_writes_reminder_gone', 'fri_reminders', 'fri_reminder_dependencies')):
+        if table in tables:  # Gone with what they name, whichever controller deletes it.
+            db.execute(f"CREATE TRIGGER IF NOT EXISTS {name} AFTER DELETE ON {table} BEGIN DELETE FROM "
+                       f"fri_own_summary_writes WHERE kind='{kind}' AND item=OLD.id; END")
     # One whose member's privacy changed without those (a controller from before them, a database restored without
     # them), or one past its time, which no build finishes now: swept at start, whatever it names.
     db.execute("DELETE FROM agent_state WHERE key=? AND json_valid(value) AND json_type(value)='object' AND ("
@@ -186,14 +208,21 @@ def writes(db):
     return [(table, key) for table, key in WRITES if table in present]
 
 
-def depend_write(db, table, item, scope, dependencies):
+def depend_write(db, table, item, scope, dependencies, own=False):
     """A tool's write of the model's words keeps the summaries its turn may repeat through Fri's earlier replies, with
     their generations, so it's retired once one goes (see retire_writes), as a saved reply is (fri #216). Each goes on
     record (see keep), and so is that member's privacy revision now, which a start checks (see settle). Not the writer's
     own: work and reminders drawn on that stay, as they asked for them (gene #112). A draft edited again keeps what it
-    had, as the edit may still hold those words."""
+    had, as the edit may still hold those words.
+
+    own: the turn drew on the writer's own summary (its summary_generation). That, or one of their own among the
+    summaries it may repeat, is recorded apart (fri_own_summary_writes), so the write is held while that summary is
+    held back (see held_writes), and still never retired for it (HumanMint/fri#355, Sol round 1's B3)."""
     from .store import Store
     key = dict(WRITES)[table]
+    if own or any(row['user_id'] == scope['user_id'] for row in dependencies):
+        db.execute('INSERT INTO fri_own_summary_writes VALUES (?,?,?,?) ON CONFLICT(kind, item) DO NOTHING',
+                   (table, item, scope['guild_id'], scope['user_id']))
     for user, number in sorted({(row['user_id'], row['generation']) for row in dependencies}):
         if user == scope['user_id']:
             continue
@@ -222,11 +251,14 @@ def retire_writes(db, where, args=()):
         db.execute(f'DELETE FROM {table} WHERE {key} IN {items}', args)
 
 
-def current_writes(db, table, items, args=()):
+def current_writes(db, table, items, args=(), held_back=True):
     """Saved work or reminders are about to be shown or sent: a summary one depends on that lapsed (expired, say, with
     nothing pruning it yet) goes first, retiring what they hold of it, as a turn's check does (gene #113, #158). Call it
     first in the transaction: a drop is committed at once, so a refusal that follows can't undo it, and the
-    transaction begins again under the write lock for the checks after it. items: SQL selecting those items' IDs."""
+    transaction begins again under the write lock for the checks after it. items: SQL selecting those items' IDs.
+
+    held_back: one depending on a summary held back until it's read again is refused, for now (HumanMint/fri#355); a
+    list or a delivery claim passes False, and leaves those out itself (see held_writes)."""
     key = dict(WRITES)[table]
     went = False
     for guild, user in db.execute(f'SELECT DISTINCT guild_id,user_id FROM {table} WHERE {key} IN ({items}) '
@@ -235,6 +267,9 @@ def current_writes(db, table, items, args=()):
     if went:
         db.commit()
         db.execute('BEGIN IMMEDIATE')
+    if held_back and held_writes(db, table, items, args):
+        from .store import Held
+        raise Held(HELD_WRITE)
     return went
 
 
@@ -615,10 +650,36 @@ def read(db, guild, user):
     """The member's summary row, or None, as everything that shows or edits one reads it: not while it's held back
     until its messages are read again (HumanMint/fri#349, see recheck), though it stays, and isn't lapsed."""
     row = kept(db, guild, user)
-    if row and db.execute('SELECT 1 FROM fri_member_summary_rechecks WHERE guild_id=? AND user_id=? AND through=? '
-                          'AND held', (guild, user, row['through'])).fetchone():
-        return None
-    return row
+    return None if row and held(db, guild, user) else row
+
+
+def held(db, guild, user):
+    """Whether the member's kept summary is held back until its messages are read again (HumanMint/fri#349). Not just
+    the summary: what was made from it is kept out of use meanwhile too (HumanMint/fri#355), a turn that drew on it at
+    its checks (Store._summary_unchanged), a saved reply that did as history and as a reference (see holding), a draft
+    or reminder depending on it (see held_writes). Nothing is retired for that; only a summary that goes retires them."""
+    return bool(db.execute('SELECT '+HOLDING.format(guild='?', user='?'), (guild, user)).fetchone()[0])
+
+
+def holding(db, guild, drew):
+    """Whether any of these summaries (a saved reply's, see Store's summaries) is held back (see held)."""
+    return any(held(db, guild, item['user_id']) for item in drew)
+
+
+def held_writes(db, table, items, args=()):
+    """Of saved work or reminders (items: SQL selecting their IDs), those depending on a summary held back (see held):
+    left out of lists and deliveries, and refused when asked for by themselves (see current_writes), until it checks
+    out. Their writer's own summary counts too (see depend_write's own). table: of WRITES."""
+    if table not in {name for name, _ in writes(db)}:
+        return set()
+    key = dict(WRITES)[table]
+    held = {row[0] for row in db.execute(f'SELECT DISTINCT d.{key} FROM {table} d WHERE d.{key} IN ({items}) AND '
+                                         + HOLDING.format(guild='d.guild_id', user='d.user_id'), args)}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fri_own_summary_writes'").fetchone():
+        held |= {row[0] for row in db.execute(
+            f'SELECT o.item FROM fri_own_summary_writes o WHERE o.kind=? AND o.item IN ({items}) AND '
+            + HOLDING.format(guild='o.guild_id', user='o.user_id'), (table, *args))}
+    return held
 
 
 def lapsed(db, guild, user):
@@ -936,8 +997,10 @@ def purge(path):
             db.execute('DROP TABLE IF EXISTS fri_member_summary_generations')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_sources')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_rechecks')
-            for name in ('fri_member_summary_claim_revised', 'fri_member_summary_claim_revision_moved'):
+            for name in ('fri_member_summary_claim_revised', 'fri_member_summary_claim_revision_moved',
+                         'fri_own_summary_writes_work_gone', 'fri_own_summary_writes_reminder_gone'):
                 db.execute(f'DROP TRIGGER IF EXISTS {name}')  # Nothing left for them to clear.
+            db.execute('DROP TABLE IF EXISTS fri_own_summary_writes')  # Nothing is held without summaries.
             db.execute('DELETE FROM agent_state WHERE key IN (?,?)', (CLAIM, NEXT))
             # Nothing mirrored outlives the summaries (see expiry_triggers): their refresh times go with them.
             db.execute('DELETE FROM agent_state WHERE substr(key,1,?)=?', (len(MIRROR), MIRROR))

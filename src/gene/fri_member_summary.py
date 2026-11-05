@@ -690,13 +690,20 @@ def generation(db, guild, user):
     return row[0] if row else 0
 
 
-def withdrawn(db, guild, user, conversation, message_id, saved):
+def withdrawn(db, guild, user, conversation, message_id, saved, edited_at=None):
     """A member's message withdrawn (gene #83): their summary, and a build of it in flight, go if either could have
-    drawn on it, as its saved exchanges do. saved: when its exchanges just deleted were saved.
+    drawn on it, as its saved exchanges do. saved: when its exchanges just deleted were saved. edited_at: an edit's
+    time, on Discord's clock (HumanMint/fri#358); None for an edit with no time, or a deletion.
 
-    A build reads only exchanges saved by its `through`, in the conversations it records, and a message is sent
-    before its exchange is saved. So one sent after that (allowing for clock skew) never reached it, even if its
-    exchange has since been trimmed. Not anyone else's summary (fri #101), nor their own edit, which drew on none.
+    One that names what it read (a summary's sources, a claim's messages and its earlier summary's) is placed by those
+    alone, as it read nothing else: it goes, or is held back until it's read again, only where they name the message,
+    by the version of it they read (see placed). So a summary of other messages in the conversation stays, whatever the
+    message's age (Sol round 3 of fri #364).
+
+    One that doesn't say (built before sources were recorded, or by an older controller) goes by where and when: a
+    build reads only exchanges saved by its `through`, in the conversations it records, and a message is sent before
+    its exchange is saved. So one sent after that (allowing for clock skew) never reached it, even if its exchange has
+    since been trimmed. Not anyone else's summary (fri #101), nor their own edit, which drew on none.
     """
     from .fri_agent_store import AgentStore
     earliest = min([((int(message_id) >> 22)+1420070400000)/1000-SKEW, *saved])
@@ -705,13 +712,25 @@ def withdrawn(db, guild, user, conversation, message_id, saved):
         return conversation in conversations and earliest <= through
     row = db.execute('SELECT origins,through FROM fri_member_summaries WHERE guild_id=? AND user_id=?',
                      (guild, user)).fetchone()
-    gone = bool(row) and drew(json.loads(row['origins']), row['through'])
-    if gone:  # A repeat finds no summary, so moves nothing.
+    how = None
+    if row:
+        messages = drawn(db, guild, user, row)
+        how = (placed(messages, message_id, edited_at) if messages is not None
+               else 'drop' if drew(json.loads(row['origins']), row['through']) else None)
+    if how == 'drop':  # A repeat finds no summary, so moves nothing.
         drop(db, guild, user)
+    elif how == 'hold':
+        hold(db, guild, user, row['through'])
     record = AgentStore.get(db, CLAIM)
+    if not record or record['user_id'] != user:
+        return
+    previous = record.get('previous')
     # The build in flight may have been sent the summary as well as its own exchanges.
-    if record and record['user_id'] == user and (gone or drew(
-            {*record['sources'], *(record['previous'] or {}).get('origins', [])}, record['through'])):
+    if record.get('messages') is not None and (previous is None or previous.get('messages') is not None):
+        read = placed(claimed_messages(record), message_id, edited_at)
+    else:
+        read = drew({*record['sources'], *(previous or {}).get('origins', [])}, record['through'])
+    if how or read:
         AgentStore.put(db, CLAIM, None)
 
 

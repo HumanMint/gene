@@ -1506,7 +1506,8 @@ class Store:
                                                                deleted=deleted, revision=revision)}
 
     @staticmethod
-    def _withdraw_turn(db, guild_id, conversation_id, user_id, message_id, *, deleted=False, revision=None):
+    def _withdraw_turn(db, guild_id, conversation_id, user_id, message_id, *, deleted=False, revision=None,
+                       edited_at=None):
         now = time.time()
         db.execute('DELETE FROM chat_turn_withdrawals WHERE at<?', (now-WITHDRAWN_SECONDS,))
         db.execute('DELETE FROM chat_turn_deletions WHERE at<?', (now-WITHDRAWN_SECONDS,))
@@ -1536,7 +1537,7 @@ class Store:
                 Store._deleted(db, guild_id, message_id, now, user_id, current)
             Store._retire_drawn(db, guild_id, [message_id, *(turn['reply_message_id'] for turn in turns)])
         from .fri_member_summary import withdrawn
-        withdrawn(db, guild_id, user_id, conversation_id, message_id, [turn['at'] for turn in turns])
+        withdrawn(db, guild_id, user_id, conversation_id, message_id, [turn['at'] for turn in turns], edited_at)
         return len(turns)
 
     @staticmethod
@@ -1679,7 +1680,8 @@ class Store:
             for message in every:  # Each summary that drew on it, placed by itself, whatever holds it besides.
                 edited(db, guild_id, message, edited_at if timed else None)
             holding = held(db)
-            removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted)
+            removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted,
+                                              edited_at=edited_at if timed else None)
                           for conversation, user, message in holding)
             placed = {message for _, _, message in holding}  # Fenced under their author already, or not at all.
             now = time.time()

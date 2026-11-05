@@ -445,6 +445,8 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
             if scope != SERVER:
                 raise ValueError('That preference already stays where you said it')
             moved(db, guild, conversation, user, row, 'Your list here')
+            from .fri_source_versions import record_note, versions_of
+            kept = versions_of(db, 'note', row['id'])  # The same message, read as it was (HumanMint/fri#358).
         note = personal_note({'category': row['category'], 'evidence': evidence}, evidence) if action == 'replace' else None
         if action == 'replace' and not note:
             raise ValueError('Say what you’re doing, such as I’m working on a mod.'
@@ -477,6 +479,7 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
                         None if row['provenance'] is None else json.loads(row['provenance']), learned(row),
                         fenced=False):
                 raise ValueError('That preference can’t be moved now. Open My memory again.')
+            record_note(db, guild, conversation, user, (row['category'], row['evidence']), kept, learned(row) or ())
         cleared(store, db, guild, user, scope, revision)
     return entries(store, guild, conversation, user, profiles)
 
@@ -532,10 +535,13 @@ def share(store, db, guild, conversation, user, row, profiles):
     if row['provenance'] is None or json.loads(row['provenance']):
         raise ValueError('That preference may repeat someone else’s words, so it stays where you said it')
     moved(db, guild, SERVER, user, row, 'Your server-wide list')
+    from .fri_source_versions import record_note, versions_of
+    kept = versions_of(db, 'note', row['id'])  # The same message, read as it was (HumanMint/fri#358).
     db.execute('DELETE FROM personal_notes WHERE id=?', (row['id'],))
     # Its origin is the private chat where they pressed Share: their consent, so a Fri that drops profile notes
     # said where not everyone can read (fri #98) still shows this one wherever the profile does.
     if not save(db, guild, SERVER, user, (row['category'], row['evidence']), time.time(), conversation, (), learned(row)):
         raise ValueError('That preference can’t be shared now. Open My memory again.')
+    record_note(db, guild, SERVER, user, (row['category'], row['evidence']), kept, learned(row) or ())
     db.commit()
     return entries(store, guild, conversation, user, profiles)

@@ -58,6 +58,12 @@ def record_note(db, guild, scope, user, note, versions, messages):
         record(db, 'note', row[0], versions, messages)
 
 
+def versions_of(db, kind, item):
+    """Every version an exchange or note recorded (message ID -> version), for a move to carry over (see record_note)."""
+    return {row[0]: row[1] for row in db.execute(
+        'SELECT message_id,version FROM fri_source_versions WHERE kind=? AND item=?', (kind, item))}
+
+
 def version(db, kind, item, message):
     """The version of the message that exchange or note was saved from, or None if it recorded none."""
     row = db.execute('SELECT version FROM fri_source_versions WHERE kind=? AND item=? AND message_id=?',

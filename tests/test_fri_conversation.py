@@ -835,6 +835,7 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'my mom complained to me that i like chess'),
     ('nickname', 'my nickname is dan', 'my mom mentioned my nickname is dan'),
     ('games', 'i like chess', 'i like chess, my mom warned me'),
+    ('games', 'i like chess', 'i like chess, my mom explained it to me'),
     ('games', 'i like chess', 'i like chess, my mom announced this'),
     ('games', 'i like chess', 'i like chess, my mom mentioned so'),
     ('games', 'i like chess', 'i like chess, my mom complained loudly'),
@@ -868,6 +869,37 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom announced that i like chess'),
     ('games', 'i like chess', 'ok so, my mom mentioned that i like chess'),
     ('nickname', 'call me dan', 'if i win :)' + chr(0x2007) + chr(0x205F) + '\ni guess\nplease call me dan'),
+    # Sol round 1 of #245: a back-reference to the claim is still a report of it, whatever follows: a pronoun object
+    # or complement ("it", "this", "that", "so", a clause with nothing of its own, "that i do"), or an attribution
+    # ("or so"). #242's fifth example stays refused on purpose: "it" to everyone is the claim told to everyone.
+    ('games', 'i like chess', 'i like chess, or so she explained it to me'),  # B1.
+    ('games', 'i like chess', 'i like chess, she joked that i do'),  # B2.
+    ('games', 'i like chess', 'i like chess, she explained it to everyone'),
+    ('games', 'i like chess', 'i like chess, she joked that i am'),
+    ('games', 'i like chess', "i like chess, she joked that i don't lol"),
+    ('games', 'i like chess', 'i like chess, she joked i do too'),
+    ('games', 'i like chess', 'i like chess, she explained this to me'),
+    ('games', 'i like chess', 'i like chess, she explained that to everyone'),
+    ('games', 'i like chess', 'i like chess, she mentioned so to everyone'),
+    ('games', 'i like chess', 'i like chess, or so she explained my plan'),
+    # Sol round 1 of #245, S1: what only rejoined refuses, which passive's pipeline doesn't.
+    ('games', 'i like chess', 'i like chess, she suggested i use a bot that was would\ntold'),
+    # Sol round 1 of #245, B3 (pre-existing): a passive report with any apostrophe the module reads as one.
+    *(('games', 'i like chess', f'i{apostrophe}m informed that i like chess')
+      for apostrophe in ('‘', '‛', '′', '＇', '´', '’', '\U000002BC', '\U000002BB')),
+    ('games', 'i like chess', 'i＇ve been informed that i like chess'),
+    ('games', 'i like chess', 'we´re reminded that i like chess'),
+    ('games', 'i like chess', 'we were informed that i like chess'),
+    # Sol round 1 of #245, B4 (pre-existing): hearing it is being told it, the member's own "heard" included.
+    ('games', 'i like chess', 'i heard that i like chess'),
+    ('games', 'i like chess', "i've heard that i like chess"),
+    ('games', 'i like chess', 'i hear that i like chess'),
+    ('games', 'i like chess', 'i heard i like chess'),
+    ('games', 'i like chess', 'she heard that i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard'),
+    ('games', 'i like chess', "i like chess, or so i've heard"),
+    ('games', 'i like chess', 'i like chess, i heard it from my mom'),
+    ('games', 'i like chess', 'i like chess, i heard that'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1074,14 +1106,14 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, i haven' + chr(0x2019) + 't mentioned it'),
     ('games', 'i like chess', "i like chess, i haven't mentioned it"),
     ('games', 'i like chess', 'i like chess, we have not announced it'),
-    # gene #242: a wider verb with an object or a clause of its own after it reports that, not the claim. "it", "this"
-    # or "that" with the person told after it is a thing explained, as "it" to everyone is.
+    # gene #242: a wider verb with an object or a clause of its own after it reports that, not the claim: a noun phrase
+    # ("my score", "that rule", "this rule"), a preposition, or a clause with its own subject matter. A back-reference is
+    # still a report (Sol round 1 of #245: "it" to everyone is refused).
     ('games', 'i like chess', 'i like chess, they announced my score'),
     ('games', 'i like chess', 'i like chess, she explained that rule'),
+    ('games', 'i like chess', 'i like chess, she explained this rule'),
     ('games', 'i like chess', 'i like chess, she complained loudly about lag'),
     ('games', 'i like chess', 'i like chess, my coach suggested i practice more'),
-    ('games', 'i like chess', 'i like chess, she explained it to everyone'),
-    ('games', 'i like chess', 'i like chess, my mom explained it to me'),
     ('games', 'i like chess', 'i like chess, my coach suggested we play more'),
     ('games', 'i like chess', 'they announced my score, i like chess'),  # "my" with no clause: an object, before it too.
     ('games', 'i like chess', 'she explained my plan and i like chess'),
@@ -1091,6 +1123,12 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess. i was reminded of the rules yesterday'),
     ('games', 'i like chess', 'i like chess, i was advised to rest'),
     ('games', 'i like chess', 'i like chess, she reminded me about the game'),
+    # Sol round 1 of #245, S2: past a modifier or two, what they were told about, or to do, still decides.
+    ('games', 'i like chess', 'i was advised yesterday to rest, i like chess'),
+    ('games', 'i like chess', 'i was reminded yesterday of the rules, i like chess'),
+    # Sol round 1 of #245, B4: something heard of its own, not the claim.
+    ('games', 'i like chess', 'i like chess, i heard about the tournament'),
+    ('games', 'i like chess', 'i heard the new album and i like chess'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -1257,6 +1295,17 @@ def test_the_same_words_too_many_times_keep_nothing():
     assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
     assert personal_note(note, 'i like chess. ' * 9) is None
     assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
+
+
+@pytest.mark.parametrize('text', ['i like chess, or so she explained it to me', 'i like chess, she joked that i do',
+                                  'i' + chr(0xFF07) + 'm informed that i like chess', 'i heard that i like chess'])
+def test_245s_round_1_reports_keep_no_note_when_saved_or_after_a_restart(store, text):
+    """Sol round 1 of #245: B1 and B2 (#238 refused them, #245 kept them), B3 and B4 (pre-existing), through
+    Store.save_chat() and a reopen of the database."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': 'games', 'evidence': 'i like chess'}])
+    assert not saved['first_memory']
+    assert not Store(store.path).chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
 
 
 @pytest.mark.parametrize('text', ["i've been informed that i like chess", 'i was reminded that i like chess',

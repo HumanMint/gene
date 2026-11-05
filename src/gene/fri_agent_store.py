@@ -513,16 +513,20 @@ class AgentStore:
             config = self.config(db)
             day = int((now-self.get(db, 'started', now))//86400)
             budget = self.get(db, 'budget', {})
+            from .fri_learning_sources import SHOWN_SUMMARY, shown
             reports = [dict(r) for r in db.execute(
-                'SELECT id,at,body,delivered FROM agent_reports WHERE at>? ORDER BY at DESC LIMIT 3',
+                "SELECT r.id,r.at,r.body,r.delivered,coalesce(s.held,0) AS held FROM agent_reports r LEFT JOIN "
+                "fri_learning_sources s ON s.kind='report' AND s.item=r.id WHERE r.at>? ORDER BY r.at DESC LIMIT 3",
                 (now-7*86400,))]
-            for report in reports:
-                report['body'] = report['body'].replace('Untrusted summary:', 'Conversation summary:')
+            for report in reports:  # One held back shows no words (gene #244).
+                report['body'] = shown(report['id'], report['body'], {}, report.pop('held'))[0].replace(
+                    'Untrusted summary:', 'Conversation summary:')
                 channel = re.search(r'Channel: <#(\d+)>', report['body'])
                 report['channel_id'] = channel[1] if channel else None
             summaries = [{k: r[k] for k in ('channel_id', 'body', 'at')} for r in db.execute(
-                'SELECT channel_id,body,at,authors,revisions FROM agent_summaries WHERE at>? ORDER BY at DESC LIMIT 5',
-                (now-2*86400,)) if r['channel_id'] in self.settings.agent_history_channels.split(',')
+                f'SELECT channel_id,body,at,authors,revisions FROM agent_summaries WHERE at>? AND {SHOWN_SUMMARY} '
+                'ORDER BY at DESC LIMIT 5', (now-2*86400,))
+                if r['channel_id'] in self.settings.agent_history_channels.split(',')
                 and self._summary_current(db, r)]  # The same revision fence as ordinary context.
             return {'reports': reports, 'summaries': summaries,
                     'historical_notes': [dict(channel_id=c, **n) for c in self.settings.agent_history_channels.split(',')
@@ -539,8 +543,9 @@ class AgentStore:
     def context(self, channel, user, guild=None):
         guild = guild or self.settings.guild_id
         with self.store.connection() as db:
-            row = db.execute('SELECT body,authors,revisions FROM agent_summaries WHERE channel_id=? AND at>?',
-                             (channel, time.time()-2*86400)).fetchone()
+            from .fri_learning_sources import SHOWN_SUMMARY
+            row = db.execute(f'SELECT body,authors,revisions FROM agent_summaries WHERE channel_id=? AND at>? '
+                             f'AND {SHOWN_SUMMARY}', (channel, time.time()-2*86400)).fetchone()  # Not one held back.
             if row and not self._summary_current(db, row):
                 db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (channel,))
                 row = None
@@ -571,21 +576,26 @@ class AgentStore:
             return False
         return all(self.store._privacy_state(db, author) == (revision, True) for author, revision in revisions.items())
 
+    # A report with its card, and whether it's held back (gene #244).
+    REPORT = ("SELECT r.id,r.body,c.body AS card,coalesce(s.held,0) AS held FROM agent_reports r LEFT JOIN "
+              "agent_report_cards c ON c.report_id=r.id LEFT JOIN fri_learning_sources s ON s.kind='report' AND "
+              "s.item=r.id ")
+
     def reports(self):
         with self.store.connection() as db:
             return [self.report_row(r) for r in db.execute(
-                'SELECT r.id,r.body,c.body AS card FROM agent_reports r '
-                'LEFT JOIN agent_report_cards c ON c.report_id=r.id WHERE delivered=0 ORDER BY at LIMIT 1')]
+                self.REPORT+'WHERE r.delivered=0 ORDER BY r.at LIMIT 1')]
 
     @staticmethod
     def report_row(row):
-        return {'id': row['id'], 'body': row['body'], 'card': json.loads(row['card']) if row['card'] else {}}
+        """As delivered and shown: one held back as a wordless placeholder (see fri_learning_sources.shown)."""
+        from .fri_learning_sources import shown
+        body, card = shown(row['id'], row['body'], json.loads(row['card']) if row['card'] else {}, row['held'])
+        return {'id': row['id'], 'body': body, 'card': card}
 
     def report(self, report_id):
         with self.store.connection() as db:
-            row = db.execute('SELECT r.id,r.body,c.body AS card FROM agent_reports r '
-                             'LEFT JOIN agent_report_cards c ON c.report_id=r.id WHERE r.id=? AND r.at>?',
-                             (report_id, time.time()-7*86400)).fetchone()
+            row = db.execute(self.REPORT+'WHERE r.id=? AND r.at>?', (report_id, time.time()-7*86400)).fetchone()
             return self.report_row(row) if row else None
 
     def delivered(self, report_id):

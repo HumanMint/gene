@@ -1523,7 +1523,9 @@ class Store:
                    f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
         Store._withdraw_notes(db, guild_id, user_id, conversation_id, message_id)
         from .fri_learning_sources import withdraw as withdraw_learning
-        withdraw_learning(db, [message_id])  # A learning report or channel summary that read it (gene #244).
+        # A learning report, channel summary or archive observation that read it (gene #244), said in this
+        # conversation: a public channel's, or none that learning reads (a DM).
+        withdraw_learning(db, [message_id], said_in=conversation_id[7:] if conversation_id.startswith('public:') else '')
         if deleted:  # Others' replies that carried it, or Fri's reply to it, which may repeat it.
             if recorded:
                 Store._deleted(db, guild_id, message_id, now, user_id, current)
@@ -1633,7 +1635,8 @@ class Store:
                     or naming(db, json.loads(ids))):
                 return {'ok': True, 'removed': 0}
             db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
-            # A learning report or channel summary that read one, whatever else holds it (gene #244).
+            # A learning report, channel summary or archive observation that read one, whatever else holds it (gene
+            # #244). By ID, with no channel to go by: one with no record of what it read is only held back.
             withdraw_learning(db, json.loads(ids))
             holding = held(db)
             removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted)

@@ -161,7 +161,7 @@ def test_r1_b1_an_older_report_is_never_destroyed_for_a_message_it_may_not_have_
     else:
         assert not kept_words(scheduler, report_id)
         [pending] = scheduler.reports()
-        assert 'held back' in pending['body'] and pending['card']['summary'] == '' and pending['card']['held']
+        assert 'Held back' in pending['body'] and pending['card']['summary'] == '' and pending['card']['held']
 
 
 @pytest.mark.parametrize('how', HOWS)

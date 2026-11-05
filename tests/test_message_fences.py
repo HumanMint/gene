@@ -10,6 +10,7 @@ author when the controller knows who that is, from a ping's grant or a research 
 """
 import json
 import sqlite3
+import sys
 import time
 from contextlib import closing
 
@@ -151,13 +152,15 @@ def test_an_edit_with_no_learning_batch_in_flight_keeps_nothing(world):
     assert fences(store) == []
 
 
-def test_a_batch_claimed_after_a_fence_learns_from_the_message_as_it_reads_now(world):
+def test_a_batch_claimed_after_a_fence_learns_from_the_message_as_it_reads_now(world, monkeypatch):
     """An edit's fence stops only a batch that was already reading: a later batch reads the edited words."""
     client, store = world
-    taken, finish, claim = batch(client, store)
-    with store.connection() as db:  # A fence from before this batch began.
+    made = [source(age=200, channel='51'), source(age=190, channel='51')]  # What batch() reads, made up front.
+    with store.connection() as db:  # A fence from before this batch began, written before it was claimed.
         db.execute('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted) VALUES (?,?,?,0)',
-                   ('123', taken, claim['at']-1))
+                   ('123', made[0]['id'], time.time()-1))
+    monkeypatch.setattr(sys.modules[__name__], 'source', lambda **_: made.pop(0))
+    _, finish, _ = batch(client, store)
     finish()
     assert sorted(notes(store)) == sorted([LIKE, 'i play chess on weekends'])
 
@@ -562,3 +565,171 @@ def test_a_claim_a_little_ahead_still_counts_as_running(world):
     batch(client, store)
     agent = set_claim_time(store, client, time.time()+30)
     assert agent.claim(manual=True) == {'blocked': 'A learning pass is already running.'}
+
+
+# gene #182: a fence written while the clock is set back still stops the batch in flight.
+
+def test_the_issues_repro_a_withdrawal_during_a_backward_clock_step_stops_the_batch(world, monkeypatch):
+    """Claim at T, the clock set to T-30, a message the batch read withdrawn, the finish at T+10. withdrawn_during()
+    counts only fences at or after the claim, so the note and the summary were kept. A fence dated before the claim in
+    flight invalidates it, whatever its message: nothing the batch read is kept."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    real = time.time
+    monkeypatch.setattr(time, 'time', lambda: claim['at']-30)
+    withdraw_saved(client, taken)
+    monkeypatch.setattr(time, 'time', lambda: claim['at']+10)
+    finish()
+    assert notes(store) == []
+    with store.connection() as db:
+        assert not db.execute('SELECT 1 FROM agent_summaries').fetchone()
+    monkeypatch.setattr(time, 'time', real)
+
+
+def test_an_older_controllers_fence_dated_before_the_claim_also_stops_the_batch(world):
+    """Its own insert (gene main 8aad087's statement), run against this database: the rule is a trigger."""
+    client, store = world
+    taken, finish, claim = batch(client, store)
+    with closing(sqlite3.connect(store.path)) as raw, raw:
+        raw.execute('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted,user_id,revision) '
+                    'VALUES (?,?,?,?,?,?) ON CONFLICT(guild_id,message_id) DO UPDATE SET at=excluded.at',
+                    ('123', taken, claim['at']-30, 0, None, None))
+    finish()
+    assert notes(store) == []
+
+
+def test_a_fence_moved_back_before_the_claim_also_stops_the_batch(world, monkeypatch):
+    """A message fenced before the batch and withdrawn again while the clock is set back keeps its row, at the earlier
+    time: that refresh counts as a fence written now."""
+    client, store = world
+    old = source(age=50, channel='51')['id']
+    withdraw_saved(client, old, deleted=True)
+    _, finish, claim = batch(client, store)
+    monkeypatch.setattr(time, 'time', lambda: claim['at']-30)
+    withdraw_saved(client, old, deleted=True)
+    monkeypatch.undo()
+    finish()
+    assert notes(store) == []
+
+
+def test_a_clock_set_back_with_no_batch_in_flight_changes_nothing(world, monkeypatch):
+    """Guard: a fence dated before a claim made later, and an ordinary withdrawal during one, leave it learning as
+    withdrawn_during() decides."""
+    client, store = world
+    real = time.time
+    monkeypatch.setattr(time, 'time', lambda: real()-30)
+    withdraw_saved(client, source(age=300, channel='51')['id'], deleted=True)
+    monkeypatch.setattr(time, 'time', real)
+    taken, finish, _ = batch(client, store)
+    withdraw_saved(client, taken)  # At or after the claim: only this message is left out.
+    finish()
+    assert notes(store) == ['i play chess on weekends']
+
+
+# Review rounds 1-4 of #192: an older controller's ways out of a malformed claim. Its claim() subtracts the claim's
+# time (8aad087, 34dbbb3), so one it can't read raises there before the interruption report, and its error finish is
+# that claim's only way out; and SQLite reads a repeated key's first value where Python reads its last. #182's
+# triggers, like #177's, only mark a claim invalidated, which never stops a finish or an interruption clearing it.
+
+def older_error_finish(store, claim):
+    """Gene main 8aad087's finish of a failed batch (no records, an error), statement by statement: it never reads the
+    claim's time, clears the claim, then writes its report."""
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        AgentStore.put(db, 'learning_claim', None)
+        db.execute('INSERT INTO agent_reports VALUES (?,?,?,0)',
+                   (claim['id'], time.time(), 'Learning pass\nIssue: discarded'))
+
+
+def write_a_fence(store, fence):
+    """'expired': a fence dated eight days ago, then a frequent write, which expires it (#177's trigger marks the claim
+    when SQLite orders the fence at or after its time); 'before': one dated a minute ago (#182's marks it when SQLite
+    orders the fence before its time). The claim, as Python reads it."""
+    if fence:
+        with store.connection() as db:
+            db.execute('INSERT INTO chat_message_fences(guild_id,message_id,at,deleted,user_id,revision) '
+                       'VALUES (?,?,?,1,?,?)',
+                       ('123', '424242', time.time()-(8*86400 if fence == 'expired' else 60), '20', 0))
+    with store.connection() as db:
+        AgentStore.put(db, 'fence_probe', 1)
+    with store.connection() as db:
+        return AgentStore.get(db, 'learning_claim')
+
+
+FENCES = pytest.mark.parametrize('fence', ['', 'expired', 'before'])
+
+
+@FENCES
+@pytest.mark.parametrize('value', [-(10**400), 10**400, float('nan'), 'bad', None], ids=lambda v: repr(v)[:8])
+def test_an_older_error_finish_still_clears_a_claim_whose_time_cant_be_read(world, value, fence):
+    """Rounds 1 and 2: the error finish clears it and reports it, and the next pass proceeds, whichever fence marked
+    it (SQLite reads -(10**400) as minus infinity, before every fence). This controller refuses such a claim at the
+    finish and interrupts it at the next claim (gene #180) itself."""
+    client, store = world
+    _, _, claim = batch(client, store)
+    agent = set_claim_time(store, client, value)
+    marked = write_a_fence(store, fence)
+    if value == -(10**400) and fence == 'expired':
+        assert marked['privacy_invalidated'] is True  # Round 2's repro.
+    older_error_finish(store, claim)
+    with store.connection() as db:
+        assert AgentStore.get(db, 'learning_claim') is None
+        assert db.execute('SELECT 1 FROM agent_reports WHERE id=?', (claim['id'],)).fetchone()
+        db.execute('UPDATE agent_reports SET delivered=1')
+    assert agent.claim(manual=True)['id'] != claim['id']
+
+
+@FENCES
+@pytest.mark.parametrize('key', ['at', '\\u0061t'], ids=['repeated', 'escaped'])
+def test_an_older_error_finish_still_clears_a_claim_holding_a_second_time(world, key, fence):
+    """Round 3: a claim whose first time is -1e17 and whose second, written plainly or escaped, is -(10**400). An
+    older controller's claim() raises OverflowError on the one Python reads; its error finish clears it."""
+    client, store = world
+    _, _, claim = batch(client, store)
+    with store.connection() as db:
+        first = dict(AgentStore.get(db, 'learning_claim'), at=-1e17)
+        db.execute("UPDATE agent_state SET value=? WHERE key='learning_claim'",
+                   (json.dumps(first)[:-1]+f',"{key}":{-(10**400)}}}',))
+    marked = write_a_fence(store, fence)
+    assert marked['at'] == -(10**400)
+    if fence == 'expired':
+        assert marked['privacy_invalidated'] is True  # Round 3's repro.
+    older_error_finish(store, claim)
+    with store.connection() as db:
+        assert AgentStore.get(db, 'learning_claim') is None
+        assert db.execute('SELECT 1 FROM agent_reports WHERE id=?', (claim['id'],)).fetchone()
+        db.execute('UPDATE agent_reports SET delivered=1')
+    assert AgentStore(store, client.settings).claim(manual=True)['id'] != claim['id']
+
+
+def older_interruption(store, claim):
+    """Gene main 8aad087's claim() past a claim's ten minutes, statement by statement: it reports the claim under the
+    id it read, then clears it."""
+    with store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
+                   (claim['id'], time.time(), 'Learning pass interrupted.'))
+        AgentStore.put(db, 'learning_claim', None)
+
+
+@FENCES
+@pytest.mark.parametrize('key', ['id', '\\u0069d'], ids=['repeated', 'escaped'])
+def test_an_older_interruption_clears_a_claim_holding_a_second_id(world, key, fence):
+    """Round 4: SQLite reads a claim's first "id" and Python its last, written plainly or escaped. An older controller
+    interrupts a nine-day-old claim under the id Python reads: the clear goes through, and the next pass proceeds."""
+    client, store = world
+    _, _, claim = batch(client, store)
+    with store.connection() as db:
+        first = dict(AgentStore.get(db, 'learning_claim'), at=time.time()-9*86400)
+        db.execute("UPDATE agent_state SET value=? WHERE key='learning_claim'",
+                   (json.dumps(first)[:-1]+f',"{key}":"another-claim"}}',))
+    read = write_a_fence(store, fence)
+    assert read['id'] == 'another-claim'
+    if fence == 'expired':
+        assert read['privacy_invalidated'] is True  # Round 4's repro.
+    older_interruption(store, read)
+    with store.connection() as db:
+        assert AgentStore.get(db, 'learning_claim') is None
+        assert db.execute("SELECT 1 FROM agent_reports WHERE id='another-claim'").fetchone()
+        db.execute('UPDATE agent_reports SET delivered=1')
+    assert AgentStore(store, client.settings).claim(manual=True)['id'] != claim['id']

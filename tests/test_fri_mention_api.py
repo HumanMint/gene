@@ -203,9 +203,13 @@ def test_bounded_profiles_only_return_same_channel_author_privacy_and_fence_chan
     evidence = [source(user='21', age=899), source(user='22', age=6*86400)]
     profiles = post(h, '/chat/mentions/profiles', {**scope, 'evidence': evidence})
     assert profiles.status_code == 200
-    assert profiles.json() == {'profiles': {'20': {'enabled': True, 'revision': 0},
-                                         '21': {'enabled': True, 'revision': 0},
-                                         '22': {'enabled': False, 'revision': 1}}}
+    answer = profiles.json()
+    removed = answer['profiles']['22'].pop('removed_at')  # When they turned memory off (fri #337).
+    # The same on Discord's clock: with no Discord event behind this erasure, Gene's own stamp (fri #337 item 4).
+    assert answer['profiles']['22'].pop('removed_at_discord') == removed > 0
+    assert answer == {'profiles': {'20': {'enabled': True, 'revision': 0, 'removed_at': 0, 'removed_at_discord': 0},
+                                   '21': {'enabled': True, 'revision': 0, 'removed_at': 0, 'removed_at_discord': 0},
+                                   '22': {'enabled': False, 'revision': 1}}}
     for bad in ([source(user='23', channel='456')], [source(user='23', guild='999')],
                 [source(user='23', age=7*86400+1)]):
         assert post(h, '/chat/mentions/profiles', {**scope, 'evidence': bad}).status_code in (400, 403)
@@ -342,3 +346,14 @@ def test_a_mention_saves_fingerprint_is_the_one_an_older_controller_kept(h):
         assert post(h, '/chat/turn', {**payload, 'summary_dependencies': dependencies}).status_code == 200
     for drawn in ([], ['12345']):  # Nor the messages it carried (gene #141).
         assert post(h, '/chat/turn', {**payload, 'drew_on': drawn}).status_code == 200
+
+
+def test_nearby_authors_profiles_say_when_they_last_erased_or_removed_a_note(h):
+    """A ping's nearby posts and its reply target are held to their authors' last erasure or note removal, as the live
+    view is (HumanMint/fri#337): so each author's profile says that time (`removed_at`), 0 for one who never did."""
+    h.store.personal_control('21', 'disable')
+    turned_off = time.time()
+    h.store.personal_control('21', 'enable')
+    _, scope, _ = invited(h)
+    profiles = post(h, '/chat/mentions/profiles', {**scope, 'evidence': [source(user='21')]}).json()['profiles']
+    assert profiles['21']['removed_at'] == pytest.approx(turned_off, abs=1) and profiles['20']['removed_at'] == 0

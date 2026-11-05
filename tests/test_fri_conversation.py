@@ -1,5 +1,7 @@
 import asyncio
 import gc
+import re
+import string
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -12,9 +14,10 @@ from gene.api import create_app
 from gene.config import Settings
 from gene.fri_addressing import addressed_text
 from gene.fri_chat import ChatResult
-from gene.fri_memory import memory_intent, personal_note
+from gene.fri_memory import memory_intent, personal_note, plainer
 from gene.store import Conflict, Store
 from tests.test_api import actor, headers
+from tests.test_fri_endings import source
 from tests.test_fri_runtime import configured, event
 
 
@@ -509,6 +512,334 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('nickname', 'call me dan', "if i win\nif that's ok\nplease call me dan"),
     ('nickname', 'call me dan', 'if i win, then\nplease call me dan'),
     ('games', 'i like chess', 'i like chess, or so ya say'),
+    # gene #186: a condition continued on the next line, or in the next clause, is still open.
+    ('nickname', 'call me comet', 'if i win\nand finish the match early\nplease call me comet'),
+    ('nickname', 'call me comet', 'if i win\nor finish the match early\nplease call me comet'),
+    ('nickname', 'call me comet', 'if i win, and finish early\nplease call me comet'),
+    ('nickname', 'call me comet', 'if i win\nand finish early\nand then\nplease call me comet'),
+    ('nickname', 'call me comet', 'if i win\nand finish early\nor tie\nplease call me comet'),
+    ('nickname', 'my nickname is comet', 'whenever we play\nor stream\nmy nickname is comet'),
+    # gene #187: someone else's subject however many modifiers sit before the verb, and whoever the member speaks to
+    # however it's spelled.
+    ('games', 'i like chess', 'i like chess, or so ya still always really just say'),
+    ('games', 'i like chess', 'i like chess, my mom lol lol lol lol would say'),
+    ('games', 'i like chess', 'i like chess, my parents still always really just say'),
+    ('games', 'i like chess', 'i like chess, or so u still always really just say'),
+    ('games', 'i like chess', "i like chess y'all always really just still say"),
+    ('games', 'i like chess', 'i like chess yall say'),
+    ('games', 'i like chess', 'i like chess you guys say'),
+    ('games', 'i like chess', 'i like chess u say'),
+    ('games', 'i like chess', 'i like chess ya say'),
+    ('games', 'i like chess', 'i like chess you say'),
+    # A report word used as a noun or an activity still frames a claim it introduces.
+    ('games', 'i like chess', 'my writing i like chess'),
+    ('games', 'i like chess', 'my mom is tired of writing that i like chess'),
+    # Sol round 1 of #189: an attribution past a noun or activity use (B1), and an aside to the listener inside
+    # someone else's clause (B2).
+    ('games', 'i like chess', 'her writing makes it perfectly clear that i like chess'),
+    ('games', 'i like chess', 'after writing in her diary that i like chess, jo laughs'),
+    ('games', 'i like chess', 'writing is how jo communicates that i like chess'),
+    ('games', 'i like chess', "i like chess, or so the line makes yall think, those are jo's words"),
+    # gene #190: an emoji, Unicode or Discord's own, or an apostrophe spelled another way inside a report or a
+    # condition hides nothing.
+    ('nickname', 'call me comet', 'if i win\nand finish \U0001F602 early\nplease call me comet'),
+    ('nickname', 'call me comet', "if i win\nand finish \U0001F602 early\nif that's ok\nplease call me comet"),
+    ('nickname', 'call me comet', 'if i win\nand finish \U0001F602 early\nor tie\nplease call me comet'),
+    ('games', 'i like chess', 'i like chess, or so you \U0001F602 always really just still say'),
+    ('games', 'i like chess', 'i like chess, my mom \U0001F602 would say'),
+    ('games', 'i like chess', 'i like chess, my mom \u2764\uFE0F would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U0001F468\u200D\U0001F469\u200D\U0001F467 would say'),
+    ('games', 'i like chess', 'i like chess, my mom <:kek:123456789012345678> would say'),
+    ('games', 'i like chess', 'i like chess, or so y\u2018all always really just still say'),
+    ('games', 'i like chess', 'i like chess, y\u2018all say'),
+    ('games', 'i like chess', 'i like chess, y\u02BCall say'),
+    # gene #198: the older symbols sent as emoji, text faces, invisible characters, apostrophes that are word characters,
+    # and emoji inside a word.
+    ('games', 'i like chess', 'i like chess, my mom \U000000A9\U0000FE0F would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U00002122 would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U00002194 would say'),
+    ('games', 'i like chess', 'i like chess, my mom :) would say'),
+    ('nickname', 'call me comet', 'if i win\nand finish \U00002049 early\nplease call me comet'),
+    ('games', 'i like chess', 'i like chess, my mom \U0000200B would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U00002060 would say'),
+    ('games', 'i like chess', 'i like chess, my mom \U000000AD would say'),
+    ('games', 'i like chess', '\U0000200B> hello i like chess'),
+    ('nickname', 'call me dan', 'don\U0000200Bt ever please call me dan'),
+    ('games', 'i like chess', 'i like chess y\U000002BCall say'),
+    ('games', 'i like chess', 'i like chess y\U000002BBall say'),
+    ('games', 'i like chess', 'i like chess, my mom would sa\U0001F602y'),
+    ('games', 'i like chess', 'i like chess, my mom would s\U0001F602a\U0001F602y'),
+    ('games', 'i like chess', 'i like chess. just ki\U0001F602dding'),
+    ('games', 'i like chess', 'i like chess. just k\U0001F602i\U0001F602d\U0001F602d\U0001F602i\U0001F602n\U0001F602g'),
+    ('games', 'i like chess', 'i like chess, a\U0001F602c\U0001F602c\U0001F602o\U0001F602r\U0001F602d\U0001F602i\U0001F602n\U0001F602g to jo'),
+    ('games', 'i like chess', 'i like chess, my mom would\U0000200Bsay'),
+    # Sol round 1 of #200: a reading never adds a comma or joins words that something invisible kept apart.
+    ('nickname', 'call me dan', 'if i win \U0001F602 i guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i w\U0001F602i\U0001F602n\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom would\U0000200Dsay'),
+    ('nickname', 'call me dan', 'if i win\nand\U0000200Dfinish early\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win\nand\U0000200Bfinish early\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess \U0001F602" - jo'),
+    ('games', 'i like chess', 'i like chess \U0001F602\U0000201D - jo'),
+    # Sol round 2 of #200: a face's trailing bracket, a face before a closing quote, mixed invisible and emoji splits, a
+    # pattern-matched form, and an apostrophe right after an emoji.
+    ('games', 'i like chess', 'i like chess, my mom :P) would say'),
+    ('games', 'i like chess', 'i like chess ;P " - jo'),
+    ('games', 'i like chess', 'i like chess, my mom would\U0000200Bsa\U0001F602\U0000200By'),
+    ('games', 'i like chess', 'jo is pre\U0001F602tending i like chess'),
+    ('games', 'i like chess', 'i like chess, y\U0001F602\U00002019all say'),
+    # gene #201: a keycap with its variation selector inside a word, an apostrophe next to what a reading takes out, and
+    # an attached face's trailing brackets.
+    ('games', 'i like chess', 'i like chess, my mom would sa1\uFE0F\u20E3y'),
+    ('nickname', 'call me dan', 'i1\uFE0F\u20E3f i win\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess. just ki1\uFE0F\u20E3dding'),
+    ('games', 'i like chess', 'i like chess, my mom would s#\uFE0F\u20E3ay'),
+    ('nickname', 'call me dan', 'don\U0000200B\U000002BCt ever please call me dan'),
+    ('games', 'i like chess', 'i like chess y\U0000200B\u2018all say'),
+    ('games', 'i like chess', 'i like chess, y\U00002060\u00B4all say'),
+    ('nickname', 'call me dan', 'don\U0001F602\U000002BCt ever please call me dan'),
+    ('games', 'i like chess', 'i like chess y\U0001F602\u2018all say'),
+    ('games', 'i like chess', 'i like chess, my mom:P) would say'),
+    ('games', 'i like chess', 'i like chess, my mom:D)) would say'),
+    ('games', 'i like chess', 'i like chess, my mom;P( would say'),
+    # Sol round 1 of #205: any face attached to a word, its whole trailing alphabet, square brackets included.
+    ('games', 'i like chess', 'i like chess, my mom:P] would say'),
+    ('games', 'i like chess', 'i like chess, my mom:D]] would say'),
+    ('games', 'i like chess', 'i like chess, my mom;P] would say'),
+    ('games', 'i like chess', 'i like chess, my mom:P[ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:P/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:P|* would say'),
+    ('games', 'i like chess', 'i like chess, my mom:-] would say'),
+    ('games', 'i like chess', 'i like chess, my mom:] would say'),
+    ('games', 'i like chess', 'i like chess, my mom;[ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:p) would say'),
+    ('games', 'i like chess', 'i like chess, my mom:o] would say'),
+    ('games', 'i like chess', 'i like chess, my mom:3] would say'),
+    # gene #201 item 6 stays open: past a ";" face and the ordinary fillers ("yeah", "also", "tbh"), every cue counts on
+    # both sides of the face, as main reads them, the member's own report verbs too (Sol round 1 of #205).
+    ('games', 'i like chess', 'i like chess ;P yeah i said her words verbatim'),
+    ('games', 'i like chess', 'i like chess ;P yeah i told a lie'),
+    ('games', 'i like chess', 'i like chess ;P yeah i said it. i was quoting jo'),
+    ('nickname', 'call me dan', 'call me dan ;P yeah i said that. only if i win'),
+    ('games', 'I like chess', 'I like chess ;P Yeah I said her words verbatim'),
+    ('games', 'I like chess', 'I like chess ;P YEAH I TOLD A LIE'),
+    ('games', 'i like chess', 'i like chess ;) also i told a lie \U0001F602'),
+    ('games', 'i like chess', 'i like chess ;P \U0001F602 yeah i told a lie'),
+    ('games', 'i like chess', 'i like chess ;D tbh i said it. i was quoting jo'),
+    ('games', 'i like chess', 'i like chess ;-) tbh, i said her words verbatim'),
+    ('nickname', 'call me dan', 'call me dan ;) tbh i said that. only if i win'),
+    ('nickname', 'call me dan', 'call me dan ;D also we said that. only if i win'),
+    ('games', 'i like chess', 'i like chess ;P yeah we all know my mom says'),
+    ('games', 'i like chess', 'my mom thinks ;P yeah i like chess'),
+    ('games', 'i like chess', 'she said:\nlol ;P yeah i like chess'),
+    ('games', 'i like chess', 'i like chess ;P yeah i do. jk'),
+    ('games', 'i like chess', 'i like chess ;P yeah i said it. jk'),
+    ('games', 'i like chess', 'i like chess ;P yeah i was kidding'),
+    ('games', 'i like chess', 'i like chess ;P yeah i do?'),
+    ('games', 'i like chess', 'i like chess ;P yeah i was told'),
+    ('games', 'i like chess', "i like chess ;P tbh i've been told"),
+    ('games', 'i like chess', 'i like chess ;P also im told'),
+    ('games', 'i like chess', 'i like chess ;P yeah i thought my mom would say'),
+    ('games', 'i like chess', "i like chess ;P yeah i'm saying like my mom does"),
+    ('games', 'i like chess', 'i like chess ;P yeah we told them, as my mom says'),
+    ('games', 'i like chess', 'i like chess ;P yeah i quoted my mom'),
+    ('games', 'i like chess', 'i like chess ;P yeah im quoting my mom'),
+    ('music', 'i love jazz', 'lol ;P yeah i said i love jazz'),
+    ('music', 'i love jazz', 'lol ;P yeah i said \U0001F602 i love jazz'),
+    ('music', 'i love jazz', 'lol ;P yeah i said ;P yeah i love jazz'),
+    ('music', 'i love jazz', 'lol ;P yeah i said ;P. i love jazz'),
+    ('music', 'i love jazz', 'lol ;P yeah i said. i love jazz'),
+    ('nickname', 'call me dan', 'call me dan ;P yeah i mean when i win'),
+    # gene #201 item 4: a face kept before the member's own clause ends nothing when that clause is only an aside.
+    ('nickname', 'call me dan', 'if i win ;P i guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win :P i guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P lol i guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'whenever we play ;D i swear\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom ;P i swear would say'),
+    ('games', 'i like chess', 'i like chess ;P we all know my mom says'),
+    ('games', 'i like chess', 'i like chess ;) i mean my friends say'),
+    ('games', 'I like chess', 'I like chess ;P I guess my mom says'),
+    # gene #207 item 1: what shows nothing inside a face or a keycap, read after it's gone.
+    ('games', 'i like chess', 'i like chess, my mom:\U0000200BP] would say'),
+    ('games', 'i like chess', 'i like chess, my mom:\U00002060P) would say'),
+    ('games', 'i like chess', 'i like chess, my mom would sa1\U0000FE0F\U0000200B\U000020E3y'),
+    ('games', 'i like chess', 'i like chess, my mom would sa1\U0000200B\U0000FE0F\U000020E3y'),
+    ('games', 'i like chess', 'i like chess. just ki#\U0000FE0F\U00002060\U000020E3dding'),
+    ('games', 'i like chess', 'i like chess, my mom would\U0000200Bsa1\U0000FE0F\U000020E3y'),
+    # gene #207 item 2: a slash face attached to a word.
+    ('games', 'i like chess', 'i like chess, my mom:/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:-/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom;/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom=/ would say'),
+    # gene #207 item 3: whole keycaps, not their digits, split a word.
+    ('nickname', 'call me dan', 'don1\U0000FE0F\U000020E3\U000002BC1\U0000FE0F\U000020E3t ever please call me dan'),
+    ('nickname', 'call me dan', 'don1\U000020E3\U000002BC1\U000020E3t ever please call me dan'),
+    ('nickname', 'call me dan', 'don1\U0000FE0F\U000020E3\U000020191\U0000FE0F\U000020E3t ever please call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom would s2\U0000FE0F\U000020E3a3\U0000FE0F\U000020E3y'),
+    # gene #212 item 1: slash faces with a nose, a trailing bracket or a backslash, attached to a word.
+    ('games', 'i like chess', 'i like chess, my mom:^/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:/) would say'),
+    ('games', 'i like chess', 'i like chess, my mom:\\ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:-\\ would say'),
+    ('games', 'i like chess', 'i like chess, my mom;\\) would say'),
+    ('games', 'i like chess', 'i like chess, my mom:\'/] would say'),
+    # gene #212 item 2: asides past the listed hedges, and past a run of modifiers.
+    ('nickname', 'call me dan', 'if i win ;P i believe\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i really honestly guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i reckon\nplease call me dan'),
+    ('nickname', 'call me dan', "if i win ;P i'd say\nplease call me dan"),
+    ('games', 'i like chess', 'i like chess, my mom ;P i believe would say'),
+    ('games', 'i like chess', 'i like chess ;P i do honestly think my mom says'),
+    # ... and modifiers "absolutely", "strongly", "certainly" (pre-existing, Sol round 1 of #217, B6).
+    ('nickname', 'call me dan', 'if i win ;P i absolutely believe\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i strongly think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i certainly hope\nplease call me dan'),
+    # ... and what a hedge's clause says after it: a condition on the claim, a report of it, or taking it back.
+    ('nickname', 'call me dan', 'call me dan ;P i guess when i win'),
+    ('nickname', 'call me dan', 'call me dan ;P i think if i win'),
+    ('games', 'i like chess', 'i like chess ;P i guess my mom says so'),
+    ('games', 'i like chess', "i like chess ;P i guess i'm kidding"),
+    ('games', 'i like chess', 'i like chess ;P i think jk'),
+    ('games', 'i like chess', 'i like chess, my mom ;P i know she would say'),
+    ('nickname', 'call me dan', 'if i win ;P i know my opponent is good\nplease call me dan'),
+    ('nickname', 'call me comet', 'until further :D we all know notice\n\ncall me comet'),
+    # Sol round 1 of #217: what follows a hedge may report the claim or put a condition on it, however much it looks
+    # like a clause of its own (B1-B4), so a face before one ends nothing, as #211 reads it. #212's item 4, keeping
+    # what's provably a clause of its own, stays open for a later design: until then S2 is refused too.
+    ('games', 'i like chess', 'i like chess ;P i think my mom is saying those exact words'),
+    ('nickname', 'call me dan', 'call me dan ;P i guess that is only if i win'),
+    ('games', 'i like chess', "i like chess ;P i know it's not really true"),
+    ('nickname', 'call me dan', 'if i win the very long chess tournament against alice and bob and carol and dave and '
+                                'erin and frank and grace and heidi and ivan and judy and mallory and oscar and peggy '
+                                'and nina ;P i know my opponent is good\nplease call me dan'),  # 179 characters on.
+    ('nickname', 'call me dan', 'call me dan ;P i hope you win when we play'),
+    # #211's reading of the hedges stays beside the wider one, never replaced by it: here #211's keeps the face before
+    # "i reckon", which hedges the claim, where the wider reading alone would drop both faces and keep it.
+    ('games', 'i like chess', 'please ;) i reckon :P i mean i like chess'),
+    ('games', 'i like chess', ":P i'd say so ;P i bet i like chess"),
+    # gene #212 item 3: shorthand format controls show nothing too, inside a face or a keycap.
+    ('games', 'i like chess', 'i like chess, my mom:\U0001BCA0P] would say'),
+    ('games', 'i like chess', 'i like chess, my mom would sa1\U0000FE0F\U0001BCA1\U000020E3y'),
+    ('games', 'i like chess', 'i like chess, my mom would\U0001BCA2say'),
+    ('nickname', 'call me dan', 'don\U0001BCA3t ever please call me dan'),
+    # Pre-existing (Sol round 1 of #217): a slash face standing alone with a backslash, with a space inside it, or
+    # with a "~" nose (B5); and the interlinear annotation controls, read as nothing and as a space (B7).
+    ('games', 'i like chess', 'i like chess, my mom :-\\ would say'),
+    ('games', 'i like chess', 'i like chess, my mom :\\ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:/ ) would say'),
+    ('games', 'i like chess', 'i like chess, my mom:~/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom would' + chr(0xFFF9) + 'say'),
+    ('games', 'i like chess', 'i like chess, my mom would sa' + chr(0xFFFA) + 'y'),
+    ('games', 'i like chess', 'i like chess, my mom:' + chr(0xFFFB) + 'P] would say'),
+    ('nickname', 'call me dan', 'don' + chr(0xFFFB) + 't ever please call me dan'),
+    # gene #221 F1: a hedge past modifiers outside #217's list ("probably", "definitely", "firmly", "seriously"; any
+    # word ending in -ly, and common short ones), so a condition still runs through it.
+    ('nickname', 'call me dan', 'if i win ;P i probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i definitely believe\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i firmly believe\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i seriously think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i prob think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i def believe\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i really probably honestly think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom ;P i seriously think would say'),
+    # gene #221 F2: a slash face with horizontal whitespace around its nose or slash, alone or attached.
+    ('games', 'i like chess', 'i like chess, my mom :- / would say'),
+    ('games', 'i like chess', 'i like chess, my mom : -/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom : - / would say'),
+    ('games', 'i like chess', 'i like chess, my mom : / would say'),
+    ('games', 'i like chess', 'i like chess, my mom :-\t/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom :- \\ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:- / ) would say'),
+    # gene #226 item 2: a Unicode space separator inside a slash face (no-break, thin, narrow no-break, ideographic).
+    ('games', 'i like chess', 'i like chess, my mom :-' + chr(0xA0) + '/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom :' + chr(0x2009) + '/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom :' + chr(0x202F) + '-' + chr(0x202F) + '/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:-/' + chr(0xA0) + ') would say'),
+    ('games', 'i like chess', 'i like chess, my mom :' + chr(0x3000) + '/ would say'),
+    # gene #226 item 3: a line break next to a face, before a hedge or the rest of a report, or inside a slash face.
+    ('nickname', 'call me dan', 'if i win ;P\ni probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P\r\ni guess\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P \n i probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win :)\n\ni seriously think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P' + chr(0x2028) + 'i probably think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\nwould say'),
+    ('games', 'i like chess', 'i like chess, my mom :/\nwould say'),
+    ('games', 'i like chess', 'i like chess, my mom\n:- / would say'),
+    ('games', 'i like chess', 'i like chess, my mom :-\n/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom ;P\ni swear would say'),
+    ('games', 'i like chess', 'i like chess, my mom ;P\nwould say'),
+    ('games', 'i like chess', 'i like chess, my mom :)\nsays'),
+    ('games', 'i like chess', 'i like chess, according ;P\nto my mom'),
+    ('games', 'i like chess', 'i like chess, my mom\n;P would say'),
+    # ... and a space separator beside the line break, which a face's run takes only as a space.
+    ('nickname', 'call me dan', 'if i win ;P' + chr(0xA0) + '\ni probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P\n' + chr(0xA0) + 'i probably think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom\n;P' + chr(0xA0) + 'i swear would say'),
+    ('games', 'i like chess', 'i like chess, my mom ;P' + chr(0x3000) + '\nwould say'),
+    # gene #231 item 3: a line break inside the report itself, between an auxiliary (or a modifier) and its verb,
+    # after a face or with none.
+    ('games', 'i like chess', 'i like chess, my mom :- /\nwould\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\r\nwould\r\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\n\nwould\n\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom ;P\nwould\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom\n:- / would\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\nwould really\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\nwould\nsay so'),
+    ('games', 'i like chess', 'i like chess, my mom would\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\ndid\ntell me'),
+    ('games', 'i like chess', 'i like chess, my mom would' + chr(0x2028) + 'say'),
+    # gene #231 item 1: what only spaced refuses (it keeps the no-break space, so "have to say" is no filler there).
+    ('games', 'i like chess', 'have' + chr(0xA0) + 'to say ;- / i like chess'),
+    # gene #236 item 1: what only bridged refuses (rejoined joins "must say", a filler).
+    ('games', 'i like chess', 'must\nsay :-\n/ i like chess'),
+    ('games', 'i like chess', 'must\tsay :-\n/ i like chess'),
+    ('games', 'i like chess', 'must\rsay :-\n/ i like chess'),
+    # gene #236 item 3: a chained auxiliary, or a modifier #235's run doesn't take, split across lines.
+    ('games', 'i like chess', 'i like chess, my mom would\nhave\nsaid'),
+    ('games', 'i like chess', 'i like chess, my mom would\noften\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom would\nsometimes\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom has been\nsaying'),
+    ('games', 'i like chess', 'i like chess, my mom will\nhave\ntold me'),
+    ('games', 'i like chess', 'i like chess, my mom might\nhave\nmentioned'),
+    # gene #236 item 4: report verbs outside the vocabulary, on one line or split.
+    ('games', 'i like chess', 'i like chess, my mom would\nannounce'),
+    ('games', 'i like chess', 'i like chess, my mom would announce'),
+    ('games', 'i like chess', 'i like chess, my mom would explain'),
+    ('games', 'i like chess', 'i like chess, my mom explained'),
+    ('games', 'i like chess', 'i like chess, my mom mentioned'),
+    ('games', 'i like chess', 'i like chess, my mom announced it'),
+    ('games', 'i like chess', 'i like chess, my dad would complain'),
+    ('games', 'i like chess', 'i like chess, my mom declared'),
+    ('games', 'i like chess', 'i like chess, my sister whispered'),
+    ('games', 'i like chess', 'i like chess, my mom suggested'),
+    ('games', 'i like chess', 'i like chess, my mom replied'),
+    ('games', 'i like chess', 'i like chess, my brother joked'),
+    ('games', 'i like chess', 'i like chess, my mom pointed out'),
+    ('games', 'i like chess', 'i like chess, my mom let slip'),
+    ('games', 'i like chess', 'i like chess, my mom is always\nexplaining'),
+    # Sol round 1 of #238, B1: a report verb with a letter the reading's pattern matches in another case ("ſ" for "s",
+    # dotless or dotted "i", the Kelvin sign for "k") is read as the verb it is; the dictionary lookup raised on it.
+    ('games', 'i like chess', 'i like chess, my mom confe' + chr(0x17F) * 2 + 'ed'),
+    ('games', 'i like chess', 'i like chess, my mom expla' + chr(0x131) + 'ned'),
+    ('games', 'i like chess', 'i like chess, my mom expla' + chr(0x130) + 'ned'),
+    ('games', 'i like chess', 'i like chess, my mom ac' + chr(0x212A) + 'nowledged'),
+    # Sol round 1 of #238, S2: what only rejoined refuses (widened reads "i would once have said" as the member's own).
+    ('nickname', 'call me dan', 'i would\nonce have\nsaid hi\nplease call me dan'),
+    # Sol round 1 of #238, item 5: a passive form is never the member's own: someone else did the warning.
+    ('games', 'i like chess', 'i was warned that i like chess'),
+    ('games', 'i like chess', 'i like chess, i was warned'),
+    ('games', 'i like chess', 'i like chess, we have been warned'),
+    # Sol round 1 of #238, S3: still a report where nothing of its own follows the verb: "that", "so", the claim, "it"
+    # or "this", the person told, or a modifier.
+    ('games', 'i like chess', 'my mom announced i like chess'),
+    ('games', 'i like chess', 'my mom complained to me that i like chess'),
+    ('nickname', 'my nickname is dan', 'my mom mentioned my nickname is dan'),
+    ('games', 'i like chess', 'i like chess, my mom warned me'),
+    ('games', 'i like chess', 'i like chess, my mom explained it to me'),
+    ('games', 'i like chess', 'i like chess, my mom announced this'),
+    ('games', 'i like chess', 'i like chess, my mom mentioned so'),
+    ('games', 'i like chess', 'i like chess, my mom complained loudly'),
+    ('nickname', 'call me dan', 'if i win :)' + chr(0x2007) + chr(0x205F) + '\ni guess\nplease call me dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -593,16 +924,141 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, ive written it down'),
     ('nickname', 'call me dan', "if i win, i'll stream\nif that's ok\nplease call me dan"),
     ('nickname', 'call me dan', 'i lost when we played\nanyway please call me dan'),
+    # gene #186: a continued clause carries a condition, never makes one: one the line before it answered stays answered.
+    ('nickname', 'call me comet', 'i lost\nand finished early\nplease call me comet'),
+    ('nickname', 'call me comet', "if i win, i'll stream\nand finish early\nplease call me comet"),
+    # gene #190: an emoji on its own is no report or condition, wherever it stands.
+    ('games', 'i like chess', 'i like chess \U0001F602'),
+    ('games', 'i like chess', '\U0001F602 i like chess'),
+    ('games', 'i like chess', 'i like chess <:kek:123456789012345678>'),
+    ('games', 'i like chess', 'i like chess \u2764\uFE0F lol'),
+    ('games', 'i like chess', 'i like chess, y\u2018all'),
+    ('games', 'i like chess', 'i like chess, ive written a song \U0001F3B5'),
+    ('music', 'i love jazz', 'i love jazz \U0001F602 say what you want'),
+    ('nickname', 'call me dan', 'pls call me dan \U0001F64F'),
+    ('nickname', 'call me dan', 'whenever you want \U0001F60A\nplease call me dan'),
+    ('nickname', 'call me dan', 'i lost \U0001F62D\nplease call me dan'),
+    # gene #198: text faces, symbols and a word an emoji splits that the rules don't look for say nothing.
+    ('games', 'i like chess', 'i like chess :)'),
+    ('games', 'i like chess', 'i like chess xD'),
+    ('games', 'i like chess', 'i like chess <3'),
+    ('games', 'i like chess', "i like chess :) i'm so bad at it"),
+    ('games', 'i like chess', 'i like chess, my score: 5:30'),
+    ('games', 'i like chess', 'i like chess \U0001F602lol'),
+    ('games', 'i like chess', 'i like chess, the OUT_TAKE was fun'),
+    ('games', 'i like chess', 'i like chess \U00002764\U0000FE0F we should play'),
+    # A text face before the member's own clause stays as typed: ";" ends the sentence there, as main reads it.
+    ('games', 'i like chess', 'i like chess ;P i thought it would be boring'),
+    ('games', 'i like chess', 'i like chess ;P \U0001F602 i thought it would be boring'),
+    ('games', 'i like chess', 'i like chess ;P lol i thought it would be boring'),
+    ('games', 'i like chess', 'i like chess ;P but i thought it would be boring'),
+    # gene #201: a keycap on its own, a time, a link or a colon that isn't a face.
+    ('games', 'i like chess', 'i like chess 1\uFE0F\u20E3'),
+    ('games', 'i like chess', 'i like chess #\uFE0F\u20E3 lol'),
+    ('games', 'i like chess', 'i like chess, my score: 5:30)'),
+    ('games', 'i like chess', 'i like chess re:(x) lol'),
+    ('games', 'i like chess', 'i like chess, see https://example.com/ok lol'),
+    ('games', 'i like chess', 'i like chess, 3:2 in the final'),
+    ('games', 'i like chess', 'i like chess :P)'),
+    ('games', 'i like chess', 'i like chess, thanks:))'),
+    ('games', 'i like chess', 'i like chess, thanks:P]'),
+    # gene #201 item 4: a face before an aside of the member's that reports nothing or opens nothing keeps the note.
+    ('games', 'i like chess', 'i like chess ;P i guess its fun'),
+    ('games', 'i like chess', 'i like chess ;P i swear'),
+    ('games', 'i like chess', 'i like chess ;P i know its nerdy'),
+    ('games', 'i like chess', 'i like chess ;P i think its fun'),
+    ('games', 'i like chess', 'i like chess ;P we all know it'),
+    ('games', 'i like chess', 'i like chess ;P lol i mean it'),
+    ('nickname', 'call me dan', 'i won ;P i guess\nplease call me dan'),
+    # gene #207: a slash that's a path or a link, a keycap on its own or after a word, and what shows nothing inside
+    # a word that spells nothing the rules look for.
+    ('games', 'i like chess', 'i like chess, saves go in c:/games/chess'),
+    ('games', 'i like chess', 'i like chess, my saves are in d:/text/chess'),
+    ('games', 'i like chess', 'i like chess, see http://example.com/a:/b lol'),
+    ('games', 'i like chess', 'i like chess:/'),
+    ('games', 'i like chess', 'i like chess :/ honestly'),
+    ('games', 'i like chess', 'i like chess 1\U0000FE0F\U000020E3 2\U0000FE0F\U000020E3 3\U0000FE0F\U000020E3'),
+    ('games', 'i like chess', 'i like chess, team1\U0000FE0F\U000020E3 rocks'),
+    ('games', 'i like chess', 'i like chess, it\U0000200Bs fun'),
+    ('games', 'i like chess', 'i like chess, my mom would sa1\U0000FE0F\U000020E3ve it'),
+    # gene #212 item 1: a backslash that's a path, a slash that's a link.
+    ('games', 'i like chess', 'i like chess, saves are in c:\\games\\chess'),
+    ('games', 'i like chess', 'i like chess, see https://example.com/x:\\y lol'),
+    ('games', 'i like chess', 'i like chess, see c:/games/chess'),
+    # gene #221 F2: whitespace in a link or a path is never a face.
+    ('games', 'i like chess', 'i like chess, see http: //example.com/chess'),
+    ('games', 'i like chess', 'i like chess, see https://example.com/a: /b'),
+    ('games', 'i like chess', 'i like chess, saves are in c: /games/chess'),
+    ('games', 'i like chess', 'i like chess, saves are in c: \\games\\chess'),
+    # gene #221 F1: a word ending in -ly after a face isn't a hedge without a hedge's verb.
+    ('games', 'i like chess', 'i like chess ;P i only play blitz'),
+    # gene #226: a no-break space in a link or a path is never a face, and a face before a line break ends nothing
+    # else.
+    ('games', 'i like chess', 'i like chess, see http:' + chr(0xA0) + '//example.com'),
+    ('games', 'i like chess', 'i like chess, saves are in c:' + chr(0xA0) + '/games'),
+    ('games', 'i like chess', 'i like chess' + chr(0xA0) + 'a lot'),
+    ('games', 'i like chess', 'i like chess :)\nsee you tomorrow'),
+    ('games', 'i like chess', 'i like chess ;P\nmy mom bought me a board'),
+    ('games', 'i like chess', 'i like chess :/\nits hard tho'),
+    ('nickname', 'call me dan', 'call me dan :)\ni like it'),
+    # ... and a line break after a face before anything that doesn't go on with the clause stays one.
+    ('nickname', 'call me dan', 'please call me dan ;P\nok?'),
+    ('games', 'i like chess', 'i like chess :P\ni think its fun'),
+    ('games', 'i like chess', 'i like chess :)\nto be fair'),
+    # gene #231: a line break between an auxiliary and a word that isn't a report verb stays one.
+    ('games', 'i like chess', 'i like chess\nwould play more if i had time'),
+    ('games', 'i like chess', 'i like chess, i would\nsay its my favorite'),
+    ('games', 'i like chess', 'i like chess, would\nyou play?'),
+    ('nickname', 'call me dan', 'call me dan, would\nyou mind?'),
+    ('games', 'i like chess', 'i like chess, can\nyou tell'),
+    # gene #236: the wider report verbs where they report nothing.
+    ('games', 'i like chess', 'i like chess, jokes are fun'),
+    ('games', 'i like chess', 'i like chess, i read the reports'),
+    ('games', 'i like chess', 'i like chess, i mentioned it before'),
+    ('games', 'i like chess', 'i like chess, we argued about openings'),
+    ('games', 'i like chess', 'i like chess, i have often explained my plan'),
+    ('games', 'i like chess', 'i like chess, my opponent conceded'),
+    ('games', 'i like chess', 'i like chess, the comments were nice'),
+    ('games', 'i like chess', 'i like chess, i want to announce a tournament'),
+    ('games', 'i like chess', 'i like chess, no joke'),
+    ('games', 'i like chess', 'i like chess, the state of the game is great'),
+    ('games', 'i like chess', 'i like chess and i would often play'),
+    # Sol round 1 of #238, S3: a wider report verb with an object of its own reports that, not the claim.
+    ('games', 'i like chess', 'i like chess, can you explain the rules to me'),
+    ('games', 'i like chess', 'i like chess, they announced the tournament'),
+    ('games', 'i like chess', 'i like chess, she complained about lag'),
+    ('games', 'i like chess', 'i like chess, he pointed out a bug'),
+    ('games', 'i like chess', 'i like chess, he admitted defeat'),
+    ('games', 'i like chess', 'i like chess, she replied to my message'),
+    ('games', 'i like chess', 'i like chess, she warned me about the trap'),
+    ('games', 'i like chess', 'i like chess, he whispered something'),
+    ('games', 'i like chess', 'i like chess, he screamed when he lost'),
+    ('games', 'i like chess', 'i like chess, the bot announced 3 winners'),
+    # Sol round 1 of #238, S4: the member's own, past an adverb or a negation, with any apostrophe.
+    ('games', 'i like chess', 'i like chess, i have already explained the rules'),
+    ('games', 'i like chess', 'i like chess, i' + chr(0x2019) + 've explained my plan'),
+    ('games', 'i like chess', 'i like chess, i have already explained it'),
+    ('games', 'i like chess', 'i like chess, i already mentioned it'),
+    ('games', 'i like chess', 'i like chess, i' + chr(0x2019) + 've explained it'),
+    ('games', 'i like chess', "i like chess, i haven't explained it yet"),
+    ('games', 'i like chess', 'i like chess, we' + chr(0x2019) + 've mentioned it before'),
+    ('games', 'i like chess', 'i like chess, i was explaining it to my mom'),  # Active: the member was explaining.
+    ('games', 'i like chess', 'i like chess, i haven' + chr(0x2019) + 't mentioned it'),
+    ('games', 'i like chess', "i like chess, i haven't mentioned it"),
+    ('games', 'i like chess', 'i like chess, we have not announced it'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
 
 
 def fastest_reads(read, texts, runs=5):
-    """Each text's fastest read in CPU time, taking turns so a slow spell on the runner hits them alike."""
+    """Each text's fastest read in CPU time, taking turns so a slow spell on the runner hits them alike. Every read is
+    cold: a message's readings are cached for its other notes (gene #203), and a warm one would time nothing (gene
+    #201), so the cache is cleared first, outside the timer."""
     best = [float('inf')] * len(texts)
     for _ in range(runs):
         for i, text in enumerate(texts):
+            plainer.cache_clear()
             began = time.thread_time()  # Not the runner's other work.
             read(text)
             best[i] = min(best[i], time.thread_time() - began)
@@ -679,9 +1135,72 @@ def test_reports_and_conditions_are_read_in_one_pass():
     for pad in ('my parents always ', 'they would really ', "a'b'c'd'", 'people ', 'whenever we play, ',
                 'whenever you want, ', 'the boys keep swearing ', 'my mom lol was saying ', 'said, ', 'told me, ',
                 'my mom, as usual, said that, ', 'i was saying earlier, ', 'whenever we play\n', 'you say ',
-                "if that's ok\n", 'if i win, then\n'):
+                "if that's ok\n", 'if i win, then\n',
+                # gene #186-#188: continued conditions, long modifier runs, second person, activities and nouns.
+                'and finish the match early\n', 'if i win\nand ', 'or so ya still always really just ', 'lol ',
+                'my mom always ', 'yall ', 'you guys ', 'i writing, ', 'my writing is messy, ',
+                "i've recently been writing ", 'writing makes it fun, ',
+                # gene #190: emoji and apostrophes spelled other ways, read a second time.
+                '\U0001F602 ', 'my mom \U0001F602 ', '<:kek:123456789012345678> ', 'y\u2018all ',
+                'and finish \U0001F602 early\n', '        \U0001F602', '\U0001F44D\U0001F3FD\U0000200D\U0001F602 ',
+                # gene #198, #199: invisible characters, text faces, a long word an emoji splits, an emoji before "i".
+                '\U0000200B\U00002060 ', ':) ', 'x' * 50 + '\U0001F602y ', 'sa\U0001F602y ', '\U0001F602 i ',
+                # Sol round 2 of #200: faces whose alternatives overlap, before an emoji that ends no run of them.
+                'xD ', 'xD \U0001F602 ', ':P) ', 'would\U0000200Bsa\U0001F602\U0000200By ',
+                # gene #201: fillers between emoji, each run's own clause looked for once, and the faces before one.
+                '\U0001F602ok ', '\U0001F602yeah ', ';P ok ', ';P yeah i said ', ';P tbh i ', 'mom:P) ',
+                # gene #207 and #201 item 4: stacked faces and keycaps, keycaps around an apostrophe and in a long word,
+                # slash faces, and faces before an aside, each read once more.
+                'mom:\U0000200BP] ', 'sa1\U0000FE0F\U0000200B\U000020E3y ',
+                'don1\U0000FE0F\U000020E3\U000002BC1\U0000FE0F\U000020E3t ', 'a1\U0000FE0F\U000020E3', 'mom:/ ',
+                ':-/ ', ';P i guess ', ';P lol i guess ', ';P lol ', ':P\U0000200B ',
+                # gene #212: slash faces with a nose, a bracket or a backslash, alone or with a space inside, shorthand
+                # and annotation controls, and hedges past a run of modifiers, with a clause after them.
+                'mom:^/ ', 'mom:/) ', 'mom:\\ ', 'mom:\U0001BCA0P] ', 'sa1\U0000FE0F\U0001BCA1\U000020E3y ',
+                'mom :-\\ ', 'mom:/ ) ', 'mom:/ ', 'mom:~/ ', 'would' + chr(0xFFF9) + ' ', ':' + chr(0xFFFB) + 'P] ',
+                ';P i really honestly guess ', ';P i really really really ', ';P i know when ', ';P i think my mom says ',
+                ";P i guess i'm kidding ", ';P i guess my opponent is ', ';P i believe would ',
+                ';P i absolutely strongly believe ',
+                # gene #221: slash faces with whitespace inside, and hedges past any modifier, -ly words among them.
+                'mom :- / ', ': - / ', ':- / ) ', ';P i probably seriously think ', ';P i deeply ', 'family ',
+                # gene #226: space separators inside a face, and line breaks next to one.
+                ':-' + chr(0xA0) + '/ ', ':' + chr(0x3000) + '- / ', ';P\ni guess ', 'mom :- /\n', '\n:- / ', ' \n \n',
+                ':-\n/ ', chr(0xA0) + ' ',
+                # gene #231: line breaks inside a report continuation, and runs of auxiliaries and modifiers.
+                'would\nsay ', 'mom :- /\nwould\n', 'would really\n', 'would would ', 'would really really ',
+                # gene #236: chained auxiliaries and modifiers, and report verbs outside the vocabulary.
+                'would\nhave\n', 'has been\noften\n', 'mom announced ', 'i mentioned ', 'pointed out ', 'we we ',
+                # Sol round 1 of #238: what follows a wider verb and its subject, each read a few words at most.
+                'mom announced me me ', 'announced it to everyone ', 'me to it ', 'i have already ',
+                'i' + chr(0x2019) + 've mentioned ', "i haven't ", 'was warned ', 'confe' + chr(0x17F) * 2 + 'ed '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
+
+
+def test_a_run_of_fillers_between_symbols_is_crossed_once():
+    """gene #201 item 5: after each run of symbols, the member's own clause is looked for past the fillers, which may
+    run to the message's end ("😂ok 😂ok …"); each is crossed once for all the runs, not once from each."""
+    for pad in ('\U0001F602ok ', ':) ok ', ':)ok ', ';) ok \U0001F602', ';P yeah \U0001F602',
+                ';P lol ', ';P i guess ', ';P lol i ', ';P we all ',  # gene #201 item 4: each aside looked for once.
+                ';P i do honestly think ', ';P lol i suppose ', ';P i know when ',  # gene #212: a wider vocabulary,
+                ';P i absolutely believe ',  # past a run of modifiers, read once more,
+                ';P i probably ', ';P i def seriously think ',  # and past any modifier (gene #221),
+                ';P\ni probably ', ';P' + chr(0xA0) + 'i guess '):  # and past a line break or a space separator (#226).
+        assert_linear(lambda text: personal_note({'category': 'games', 'evidence': 'i like chess'}, text),
+                      lambda length: ('i like chess ' + pad * length)[:length])
+
+
+def test_a_messages_readings_serve_each_of_its_notes():
+    """gene #203: a message is read once for all its notes; only each note's own evidence is read again. The timed reads
+    above are cold, so this is checked here (gene #201)."""
+    text = 'i like chess \U0001F602 i love jazz'
+    plainer.cache_clear()
+    assert personal_note({'category': 'games', 'evidence': 'i like chess'}, text) == ('games', 'i like chess')
+    first = plainer.cache_info()
+    assert personal_note({'category': 'music', 'evidence': 'i love jazz'}, text) == ('music', 'i love jazz')
+    second = plainer.cache_info()
+    assert second.misses - first.misses == 2  # The evidence's own two; nothing of the message is read again.
+    assert second.hits - first.hits >= 2
 
 
 def test_the_same_words_too_many_times_keep_nothing():
@@ -690,6 +1209,105 @@ def test_the_same_words_too_many_times_keep_nothing():
     assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
     assert personal_note(note, 'i like chess. ' * 9) is None
     assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
+
+
+@pytest.mark.parametrize('text', ['i like chess, my mom would\nhave\nsaid', 'i like chess, my mom would announce',
+                                  'i like chess, my mom would\noften\nsay',
+                                  'i like chess, my mom confe' + chr(0x17F) * 2 + 'ed'])  # Sol round 1 of #238, B1.
+def test_236s_shapes_keep_no_note_when_saved_and_read_again(store, text):
+    """gene #236 items 3 and 4: each of these was kept by Store.save_chat(), server-wide too, and there again once
+    read; nothing is now."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': 'games', 'evidence': 'i like chess'}])
+    assert not saved['first_memory']
+    assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
+
+
+def case_equivalents():
+    """Each code point but the lowercase ASCII letters whose case folding is all ASCII letters ("A": "a", "ß": "ss"),
+    or which a case-insensitive pattern matches as an ASCII letter (dotless "ı": "i"), with the letters it stands for."""
+    letter = re.compile('(?i)[a-z]')
+    found = {}
+    for point in range(0x110000):
+        if (c := chr(point)) in string.ascii_lowercase:
+            continue
+        if (folded := c.casefold()).isascii() and folded.isalpha():
+            found[c] = folded
+        elif letter.fullmatch(c):
+            found[c] = next(a for a in string.ascii_lowercase if re.fullmatch('(?i)' + a, c))
+    return found
+
+
+def test_no_case_equivalent_of_a_report_verb_fails_a_note():
+    """Sol round 1 of #238, B1: "confeſſed" matched the wider report verbs' pattern, which ignores case, but lowercased
+    it was no key of theirs, and the lookup raised: Store.save_chat() failed, and /chat/turn with it. Every verb and
+    phrase, with each of its letters in turn written as each code point that stands for it, is read without raising,
+    and as the verb it is wherever the pattern matches it."""
+    from gene.fri_memory import REPORTED_TOO, SAID_AS, SAY_PHRASES
+    equivalents = case_equivalents()
+    assert {'S', chr(0x17F), chr(0x131), chr(0x130), chr(0x212A), chr(0xDF), chr(0xFB05)} <= set(equivalents)
+    note, tried, matched = {'category': 'games', 'evidence': 'i like chess'}, 0, 0
+    for verb in [*SAID_AS, *SAY_PHRASES]:
+        plain = personal_note(note, f'i like chess, my mom {verb}')
+        for c, letters in equivalents.items():
+            at = verb.find(letters)
+            while at >= 0:
+                variant = verb[:at] + c + verb[at + len(letters):]
+                kept = personal_note(note, f'i like chess, my mom {variant}')
+                if REPORTED_TOO.fullmatch(variant):
+                    assert kept == plain, variant
+                    matched += 1
+                tried, at = tried + 1, verb.find(letters, at + 1)
+    assert tried > 1200 and matched > 1200
+
+
+def test_a_case_equivalent_report_verb_never_fails_a_turn(client):
+    """Sol round 1 of #238, B1: the turn is saved, where /chat/turn failed, and keeps no note."""
+    scope = {'guild_id': 'guild', 'channel_id': 'workshop', 'conversation_id': 'public:456', 'user_id': '20'}
+    body = {**scope, 'revision': 0, 'input': 'i like chess, my mom confe' + chr(0x17F) * 2 + 'ed', 'reply': 'noted',
+            'source': source(guild='guild'), 'model': 'model', 'effort': 'high',
+            'notes': [{'category': 'games', 'evidence': 'i like chess'}]}
+    answer = client.post('/chat/turn', headers=headers('fri'), json=body)
+    assert answer.status_code == 200, answer.text
+    assert client.post('/chat/context', headers=headers('fri'), json=scope).json()['personal_memory']['notes'] == []
+
+
+@pytest.mark.parametrize('text', ['i like chess, my mom :- /\nwould\nsay', 'i like chess, my mom would\nsay',
+                                  'i like chess, my mom :- /\r\nwould\r\nsay'])
+def test_231s_shapes_keep_no_note_when_saved_and_read_again(store, text):
+    """gene #231 item 3: each of these was kept by Store.save_chat(), server-wide too, and there again once read;
+    nothing is now."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': 'games', 'evidence': 'i like chess'}])
+    assert not saved['first_memory']
+    assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
+
+
+@pytest.mark.parametrize('category, evidence, text', [
+    ('nickname', 'call me dan', 'if i win ;P\ni probably think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom :- /\nwould say'),
+    ('games', 'i like chess', 'i like chess, my mom :-' + chr(0xA0) + '/ would say'),
+])
+def test_226s_shapes_keep_no_note_when_saved_and_read_again(store, category, evidence, text):
+    """gene #226 items 2 and 3: each of these was kept by Store.save_chat() and there again once read; nothing is
+    now."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': category, 'evidence': evidence}])
+    assert not saved['first_memory']
+    assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
+
+
+@pytest.mark.parametrize('category, evidence, text', [
+    ('nickname', 'call me dan', 'if i win ;P i probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i seriously think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom :- / would say'),
+])
+def test_221s_shapes_keep_no_note_when_saved_and_read_again(store, category, evidence, text):
+    """gene #221: each of these was kept by Store.save_chat() and there again once read; nothing is now."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': category, 'evidence': evidence}])
+    assert not saved['first_memory']
+    assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
 
 
 def test_a_denied_nickname_keeps_no_note_when_saved(store):

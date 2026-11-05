@@ -13,12 +13,26 @@ from .fri_conversation import SourceText
 from .fri_pending import Clarification
 from .fri_protocol import PROTOCOL, contract
 from .fri_research import ResearchReceipt
-from .store import Conflict, Store
+from .store import Conflict, Held, Store
 
 
 class Actor(BaseModel):
     guild_id: str
     user_id: str
+
+
+class Erasure(Actor):
+    # The Discord message that asked, when there is one ("gene forgetme true"): its snowflake dates the erasure on
+    # Discord's clock (HumanMint/fri#337). Red's own data deletion has none.
+    source_id: str | None = Field(default=None, pattern=r'^[0-9]{1,25}$')
+
+
+def discord_time(snowflake):
+    """When a Discord ID's message or interaction was made, on Discord's clock; None if it can't be read."""
+    try:
+        return ((int(snowflake) >> 22) + 1420070400000) / 1000
+    except (TypeError, ValueError):
+        return None
 
 
 class TurnSource(BaseModel):
@@ -222,6 +236,26 @@ class SavedWithdrawal(BaseModel):
     deleted: bool = False  # As above: all of them deleted.
 
 
+class ChannelWithdrawal(BaseModel):
+    """Channels or threads deleted in Discord, each with every message in it (HumanMint/fri#358)."""
+    model_config = ConfigDict(extra='forbid')
+    guild_id: str = Field(pattern=r'^[0-9]{1,25}$')
+    channel_ids: list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]] = Field(min_length=1, max_length=100)
+
+
+class ChannelsHeld(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    guild_id: str = Field(pattern=r'^[0-9]{1,25}$')
+
+
+class ThreadParents(BaseModel):
+    """Threads, each with the channel it's under, as Fri finds them."""
+    model_config = ConfigDict(extra='forbid')
+    guild_id: str = Field(pattern=r'^[0-9]{1,25}$')
+    parents: dict[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')],
+                  Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]] = Field(max_length=500)
+
+
 class ResearchStart(ChatScope):
     source: ChatSource
     revision: int = Field(ge=0)
@@ -322,6 +356,11 @@ def create_app(settings: Settings | None = None):
     async def conflict_handler(_, exc):
         from fastapi.responses import JSONResponse
         return JSONResponse(status_code=409, content={'detail': str(exc)})
+
+    @app.exception_handler(Held)
+    async def held_handler(_, exc):  # For now, not for good (HumanMint/fri#355): see Held.
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=423, content={'detail': str(exc)})
 
     @app.exception_handler(KeyError)
     async def missing_handler(_, exc):
@@ -468,12 +507,16 @@ def create_app(settings: Settings | None = None):
         return {'ok': True}
 
     @app.post('/privacy/erase', dependencies=[auth('runtime', 'fri')])
-    def erase(body: Actor, authorization: str = Header(default='')):
+    def erase(body: Erasure, authorization: str = Header(default='')):
         runtime = hmac.compare_digest(authorization, 'Bearer ' + settings.runtime_token)
         expected = (settings.runtime_guild_id or settings.guild_id) if runtime else settings.guild_id
         if not expected or body.guild_id != expected:
             raise HTTPException(403, 'This server is not configured for this bot')
-        store.erase_user(body.user_id)
+        mine = body.source_id and not store.someone_elses(body.source_id, body.user_id)  # Sol round 1 of #213.
+        # With no message of theirs to date it by (Red's own data deletion), a few seconds past Gene's own stamp, as a
+        # cutoff on Discord's clock: a message sent just before it, with Gene's clock behind, is before it (fri #368).
+        from .fri_memory_store import MARGIN
+        store.erase_user(body.user_id, discord_time(body.source_id) if mine else None, 0 if mine else MARGIN)
         return {'ok': True}
 
     @app.post('/worker/claim', dependencies=[auth('worker')])
@@ -508,11 +551,15 @@ def create_app(settings: Settings | None = None):
 
     @app.post('/chat/turn', dependencies=[auth('fri')])
     def chat_turn(body: ChatTurn):
+        # A thread's channel, which the scope names, so that channel's deletion takes the thread too (fri #358).
+        from .fri_channel_withdrawal import remember_parent
         if body.mention_grant:
             actor(body)
+            remember_parent(store, body.guild_id, body.conversation_id, body.channel_id)
             from .fri_mentions import save_turn
             return save_turn(store, body)
         chat_scope(body)
+        remember_parent(store, body.guild_id, body.conversation_id, body.channel_id)
         return store.save_chat(body.guild_id, body.conversation_id, body.user_id, body.revision, body.input,
                               body.reply, body.model, body.effort, body.input_tokens, body.output_tokens, body.notes,
                               body.source.model_dump(), body.web_receipt.model_dump() if body.web_receipt else None,
@@ -523,7 +570,7 @@ def create_app(settings: Settings | None = None):
                               reply_message_id=body.reply_message_id, verbatim=body.verbatim, audience=body.audience,
                               summary_generation=body.summary_generation,
                               summary_dependencies=[row.model_dump() for row in body.summary_dependencies],
-                              drew_on=body.drew_on)
+                              drew_on=body.drew_on, parent=body.channel_id)
 
     @app.post('/chat/turn/check', dependencies=[auth('fri')])
     def chat_turn_check(body: ChatTurn):
@@ -535,7 +582,9 @@ def create_app(settings: Settings | None = None):
                                 guild_id=body.guild_id, messages=[body.source.id, *(row.source.id for row in body.burst)],
                                 summary_generation=body.summary_generation,
                                 summary_dependencies=[row.model_dump() for row in body.summary_dependencies],
-                                drew_on=body.drew_on)
+                                drew_on=body.drew_on, conversation_id=body.conversation_id,
+                                source=body.source.model_dump() if body.source else None,
+                                burst=[row.model_dump() for row in body.burst], parent=body.channel_id)
 
     @app.post('/chat/turn/withdraw', dependencies=[auth('fri')])
     def chat_turn_withdraw(body: TurnWithdrawal):
@@ -548,6 +597,28 @@ def create_app(settings: Settings | None = None):
         if body.guild_id != settings.guild_id and not (settings.test_guild_id and body.guild_id == settings.test_guild_id):
             raise HTTPException(403, 'Use Fri in a configured server')
         return store.withdraw_saved(body.guild_id, body.message_ids, deleted=body.deleted)
+
+    def fri_server(guild_id):
+        if guild_id != settings.guild_id and not (settings.test_guild_id and guild_id == settings.test_guild_id):
+            raise HTTPException(403, 'Use Fri in a configured server')
+
+    @app.post('/chat/channels/withdraw', dependencies=[auth('fri')])
+    def chat_channels_withdraw(body: ChannelWithdrawal):
+        fri_server(body.guild_id)
+        from .fri_channel_withdrawal import withdraw
+        return withdraw(store, body.guild_id, body.channel_ids)
+
+    @app.post('/chat/channels/held', dependencies=[auth('fri')])
+    def chat_channels_held(body: ChannelsHeld):
+        fri_server(body.guild_id)
+        from .fri_channel_withdrawal import held
+        return held(store, body.guild_id)
+
+    @app.post('/chat/channels/parents', dependencies=[auth('fri')])
+    def chat_channels_parents(body: ThreadParents):
+        fri_server(body.guild_id)
+        from .fri_channel_withdrawal import parents
+        return parents(store, body.guild_id, body.parents)
 
     @app.post('/chat/messages/sources', dependencies=[auth('fri')])
     def chat_message_sources(body: MessageSources):
@@ -566,7 +637,16 @@ def create_app(settings: Settings | None = None):
     @app.post('/chat/memory/control', dependencies=[auth('fri')])
     def personal_control(body: PersonalControl):
         chat_scope(body)
-        store.personal_control(body.user_id, body.action)
+        # The member's own message or interaction that asked dates an erasure on Discord's clock (HumanMint/fri#337).
+        # One that isn't theirs, here, is ignored, never a reason to refuse: the erasure goes on Gene's clock.
+        # Nor one the controller has recorded as another member's (Sol round 1 of #213).
+        try:
+            asked = body.source.check(body.guild_id, body.conversation_id, body.user_id) if body.source else None
+        except ValueError:
+            asked = None
+        if asked and store.someone_elses(asked.id, body.user_id):
+            asked = None
+        store.personal_control(body.user_id, body.action, asked.timestamp().timestamp() if asked else None)
         return {'ok': True}
 
     @app.post('/chat/memory/notes', dependencies=[auth('fri')])

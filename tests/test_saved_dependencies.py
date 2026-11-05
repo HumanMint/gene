@@ -268,16 +268,19 @@ def built_again(client, store):
     from tests.test_turn_withdrawal import built
     with store.connection() as db:
         revision = store._privacy_state(db, '20')[0]
+    # Said once memory is on again, which a message from before it never counts as (HumanMint/fri#331); the turns are
+    # dated back after, so a summary is due.
+    time.sleep(0.01)
     for text, age in (('raid again, bring the '+MARKER, 7200), ('same build again', 7150)):
         store.save_chat('123', 'public:51', '20', revision, text, 'okay', 'model', 'high',
-                        source=source(age=age, channel='51'), provenance=[], audience='server')
+                        source=source(channel='51'), provenance=[], audience='server')
         with store.connection() as db:
             db.execute('UPDATE chat_turns SET at=? WHERE id=(SELECT max(id) FROM chat_turns)', (time.time()-age+1,))
     with store.connection() as db:
         db.execute('DELETE FROM fri_member_summary_calls')
     built(client.app.state.agent, 'they planned another raid with the '+MARKER)
     store.save_chat('123', 'public:51', '20', revision, 'what did i plan', 'your raid', 'model', 'high',
-                    source=source(age=1, channel='51'), provenance=[], reply_message_id='705', verbatim=True,
+                    source=source(channel='51'), provenance=[], reply_message_id='705', verbatim=True,
                     summary_generation=summary_generation_now(store))
 
 

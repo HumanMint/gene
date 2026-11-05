@@ -30,10 +30,14 @@ DAY = 86400
 SETTLE = 3600  # Built once the member's latest exchange is an hour old, so a day's one call covers the chat.
 NEW = 2  # Exchanges since the last build before another is worth a call.
 EXCHANGES = 24  # The newest a build reads.
+DRAWN_MOST = 100  # The most messages a summary names as drawn on (see finish); past that, not known.
 DAILY = 50  # Builds a day across the server, however many members are active.
 CLAIM_TIMEOUT = 600
 SKEW = 300  # Seconds a Discord message's time may run ahead of the controller's clock.
 IDLE = 600  # Seconds before looking again when nobody is due.
+# A kept summary's messages are read again from Discord at least this often, rebuilt or not (HumanMint/fri#349).
+RECHECK = 12*3600
+READS = 50  # The most messages one recheck claim names, past its first summary.
 LENGTH = 500
 UNSAFE = re.compile(r'<[@#&:/]|://|```|\d{15,}')  # Mentions, links, code and ids never reach a summary.
 CLAIM, NEXT = 'member_summary_claim', 'next_member_summary'
@@ -48,6 +52,15 @@ WRITES = (('fri_work_dependencies', 'work_id'), ('fri_reminder_dependencies', 'r
 # What such a draft keeps once one of those summaries goes, instead of its title and words.
 WORK_TITLE = 'Withdrawn draft'
 WORK_RETIRED = 'A draft drawing on what Fri remembered about someone, since withdrawn. Nothing from it is retained here.'
+# What a saved reply that drew on a summary held back until it's read again (HumanMint/fri#349) reads as meanwhile,
+# without being changed (HumanMint/fri#355): once the summary checks out, the reply reads as it was.
+HELD_REPLY = 'Earlier answer drawing on a summary of them that is being checked again. Not shown for now.'
+# Why a draft or reminder depending on such a summary isn't given or sent meanwhile (HumanMint/fri#355).
+HELD_WRITE = 'That draws on what Fri remembered about someone, which is being checked again. Try again in a bit.'
+# Whether the summary of the member `{guild}`, `{user}` names (SQL) is held back until it's read again.
+HOLDING = ('EXISTS (SELECT 1 FROM fri_member_summaries hs JOIN fri_member_summary_rechecks hr ON hr.guild_id=hs.guild_id '
+           'AND hr.user_id=hs.user_id AND hr.through=hs.through AND hr.held WHERE hs.guild_id={guild} AND '
+           'hs.user_id={user})')
 # The same exchanges a member's other conversations may see (Store._elsewhere).
 READABLE = ("guild_id=? AND user_id=? AND audience='server' AND channel_id LIKE 'public:%' AND attributed=1 "
             "AND response_kind='reply'")
@@ -63,7 +76,80 @@ def initialize(db):
         CREATE TABLE IF NOT EXISTS fri_member_summary_generations (
             guild_id TEXT NOT NULL, user_id TEXT NOT NULL, generation INTEGER NOT NULL,
             PRIMARY KEY(guild_id, user_id));
+        -- The Discord messages a member's summary drew on, each with where it was said and when its exchange was
+        -- saved, for the summary whose `through` it names (HumanMint/fri#333). Its own table, so an older controller
+        -- that writes the summary row as it always has still can; one it wrote has none that match, so they're unknown.
+        CREATE TABLE IF NOT EXISTS fri_member_summary_sources (
+            guild_id TEXT NOT NULL, user_id TEXT NOT NULL, through REAL NOT NULL, messages TEXT NOT NULL,
+            PRIMARY KEY(guild_id, user_id));
+        -- It goes with its summary however the summary goes: forget me, clearing chats, erasure, expiry, or a
+        -- controller rolled back to one that doesn't know this table deleting or rewriting the summary as it always
+        -- did. Triggers live in the database, so they fire for that one too (Sol round 1 of #210).
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_sources_deleted AFTER DELETE ON fri_member_summaries BEGIN
+            DELETE FROM fri_member_summary_sources WHERE guild_id=OLD.guild_id AND user_id=OLD.user_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_sources_replaced AFTER UPDATE ON fri_member_summaries
+        WHEN NEW.through IS NOT OLD.through OR NEW.body IS NOT OLD.body BEGIN
+            DELETE FROM fri_member_summary_sources WHERE guild_id=OLD.guild_id AND user_id=OLD.user_id
+                AND through IS NOT NEW.through;
+        END;
+        -- One left from before these, or kept by a database restored without them: swept at start.
+        DELETE FROM fri_member_summary_sources WHERE NOT EXISTS (SELECT 1 FROM fri_member_summaries s
+            WHERE s.guild_id=fri_member_summary_sources.guild_id AND s.user_id=fri_member_summary_sources.user_id
+            AND s.through=fri_member_summary_sources.through);
+        -- A build in flight's claim names the member's messages, where each was said and when it was saved, and a
+        -- rebuild's the earlier summary's too (HumanMint/fri#333). Any privacy change of theirs (forget me, memory
+        -- off or on, cleared chats, an edit) moves their revision, which spends the claim, as finish then keeps
+        -- nothing: it goes in that change's own transaction, by this controller or a rolled-back one, which runs these
+        -- too and doesn't know these names, so never replaces them (Sol round 2 of #210).
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_claim_revised AFTER INSERT ON chat_revisions BEGIN
+            DELETE FROM agent_state WHERE key='member_summary_claim' AND json_valid(value)
+                AND json_extract(value,'$.user_id')=NEW.user_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_claim_revision_moved AFTER UPDATE OF revision ON chat_revisions
+        BEGIN
+            DELETE FROM agent_state WHERE key='member_summary_claim' AND json_valid(value)
+                AND json_extract(value,'$.user_id')=NEW.user_id;
+        END;
+        -- When a kept summary's messages were last read again from Discord, whether it's held back until they are,
+        -- and a recheck claimed for it (HumanMint/fri#349). For the summary whose `through` it names, in its own table
+        -- as the sources are, and gone with it however it goes, by an older controller too. No row: nobody checked
+        -- it, and it shows as before.
+        CREATE TABLE IF NOT EXISTS fri_member_summary_rechecks (
+            guild_id TEXT NOT NULL, user_id TEXT NOT NULL, through REAL NOT NULL, checked REAL NOT NULL,
+            held INTEGER NOT NULL, claim TEXT NOT NULL DEFAULT '', claimed REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY(guild_id, user_id));
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_rechecks_deleted AFTER DELETE ON fri_member_summaries BEGIN
+            DELETE FROM fri_member_summary_rechecks WHERE guild_id=OLD.guild_id AND user_id=OLD.user_id;
+        END;
+        CREATE TRIGGER IF NOT EXISTS fri_member_summary_rechecks_replaced AFTER UPDATE ON fri_member_summaries
+        WHEN NEW.through IS NOT OLD.through OR NEW.body IS NOT OLD.body BEGIN
+            DELETE FROM fri_member_summary_rechecks WHERE guild_id=OLD.guild_id AND user_id=OLD.user_id;
+        END;
+        DELETE FROM fri_member_summary_rechecks WHERE NOT EXISTS (SELECT 1 FROM fri_member_summaries s
+            WHERE s.guild_id=fri_member_summary_rechecks.guild_id AND s.user_id=fri_member_summary_rechecks.user_id
+            AND s.through=fri_member_summary_rechecks.through);
+        -- Saved work and reminders that drew on their writer's own summary (HumanMint/fri#355, Sol round 1's B3):
+        -- kept out of use while that summary is held back (see held_writes), but never retired when it goes, as the
+        -- writer asked for them (gene #112), so they're kept apart from the dependencies, which retire. kind: the
+        -- dependency table's name (see WRITES).
+        CREATE TABLE IF NOT EXISTS fri_own_summary_writes (
+            kind TEXT NOT NULL, item TEXT NOT NULL, guild_id TEXT NOT NULL, user_id TEXT NOT NULL,
+            PRIMARY KEY(kind, item));
     ''')
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for name, table, kind in (('fri_own_summary_writes_work_gone', 'fri_work', 'fri_work_dependencies'),
+                              ('fri_own_summary_writes_reminder_gone', 'fri_reminders', 'fri_reminder_dependencies')):
+        if table in tables:  # Gone with what they name, whichever controller deletes it.
+            db.execute(f"CREATE TRIGGER IF NOT EXISTS {name} AFTER DELETE ON {table} BEGIN DELETE FROM "
+                       f"fri_own_summary_writes WHERE kind='{kind}' AND item=OLD.id; END")
+    # One whose member's privacy changed without those (a controller from before them, a database restored without
+    # them), or one past its time, which no build finishes now: swept at start, whatever it names.
+    db.execute("DELETE FROM agent_state WHERE key=? AND json_valid(value) AND json_type(value)='object' AND ("
+               "json_extract(value,'$.revision') IS NOT coalesce((SELECT revision FROM chat_revisions r WHERE "
+               "r.user_id=json_extract(agent_state.value,'$.user_id')),0) OR EXISTS (SELECT 1 FROM personal_preferences p "
+               "WHERE p.user_id=json_extract(agent_state.value,'$.user_id') AND NOT p.enabled) OR "
+               "coalesce(json_extract(value,'$.at'),0)<=?)", (CLAIM, time.time()-CLAIM_TIMEOUT))
 
 
 def advance(db, guild, user, covered=False):
@@ -122,14 +208,21 @@ def writes(db):
     return [(table, key) for table, key in WRITES if table in present]
 
 
-def depend_write(db, table, item, scope, dependencies):
+def depend_write(db, table, item, scope, dependencies, own=False):
     """A tool's write of the model's words keeps the summaries its turn may repeat through Fri's earlier replies, with
     their generations, so it's retired once one goes (see retire_writes), as a saved reply is (fri #216). Each goes on
     record (see keep), and so is that member's privacy revision now, which a start checks (see settle). Not the writer's
     own: work and reminders drawn on that stay, as they asked for them (gene #112). A draft edited again keeps what it
-    had, as the edit may still hold those words."""
+    had, as the edit may still hold those words.
+
+    own: the turn drew on the writer's own summary (its summary_generation). That, or one of their own among the
+    summaries it may repeat, is recorded apart (fri_own_summary_writes), so the write is held while that summary is
+    held back (see held_writes), and still never retired for it (HumanMint/fri#355, Sol round 1's B3)."""
     from .store import Store
     key = dict(WRITES)[table]
+    if own or any(row['user_id'] == scope['user_id'] for row in dependencies):
+        db.execute('INSERT INTO fri_own_summary_writes VALUES (?,?,?,?) ON CONFLICT(kind, item) DO NOTHING',
+                   (table, item, scope['guild_id'], scope['user_id']))
     for user, number in sorted({(row['user_id'], row['generation']) for row in dependencies}):
         if user == scope['user_id']:
             continue
@@ -158,11 +251,14 @@ def retire_writes(db, where, args=()):
         db.execute(f'DELETE FROM {table} WHERE {key} IN {items}', args)
 
 
-def current_writes(db, table, items, args=()):
+def current_writes(db, table, items, args=(), held_back=True):
     """Saved work or reminders are about to be shown or sent: a summary one depends on that lapsed (expired, say, with
     nothing pruning it yet) goes first, retiring what they hold of it, as a turn's check does (gene #113, #158). Call it
     first in the transaction: a drop is committed at once, so a refusal that follows can't undo it, and the
-    transaction begins again under the write lock for the checks after it. items: SQL selecting those items' IDs."""
+    transaction begins again under the write lock for the checks after it. items: SQL selecting those items' IDs.
+
+    held_back: one depending on a summary held back until it's read again is refused, for now (HumanMint/fri#355); a
+    list or a delivery claim passes False, and leaves those out itself (see held_writes)."""
     key = dict(WRITES)[table]
     went = False
     for guild, user in db.execute(f'SELECT DISTINCT guild_id,user_id FROM {table} WHERE {key} IN ({items}) '
@@ -171,6 +267,9 @@ def current_writes(db, table, items, args=()):
     if went:
         db.commit()
         db.execute('BEGIN IMMEDIATE')
+    if held_back and held_writes(db, table, items, args):
+        from .store import Held
+        raise Held(HELD_WRITE)
     return went
 
 
@@ -218,14 +317,22 @@ def erasure_triggers(db):
     # Whatever drops one of those (count eviction at MESSAGE_FENCES, an erasure, an older controller's own eviction),
     # the batch keeps nothing it read: its finish discards its findings and leaves its cursor, so it's read again
     # (gene #163). Older fences, and deletions with no batch in flight, change nothing.
-    claimed = "(SELECT json_extract(value,'$.at') FROM agent_state WHERE key='learning_claim')"
+    claimed = "(SELECT json_extract(value,'$.at') FROM agent_state WHERE key='learning_claim' AND json_valid(value))"
     learning = ("UPDATE agent_state SET value=json_set(value,'$.privacy_invalidated',json('true')) "
-                "WHERE key='learning_claim' AND json_type(value)='object';")
+                "WHERE key='learning_claim' AND json_valid(value) AND json_type(value)='object';")
+    # A fence dated before the batch in flight was written while the clock was set back, after the batch was claimed:
+    # withdrawn_during() orders fences by time and would miss it, so the batch keeps nothing it read, whichever message
+    # it names (gene #182). One dated at or after the claim is left to withdrawn_during(), message by message.
+    # Whoever writes it, an older controller too.
     triggers = (('privacy_revision_inserted', 'AFTER INSERT ON chat_revisions', body),
                 ('privacy_revision_moved', 'AFTER UPDATE OF revision ON chat_revisions', body),
                 *((f'message_fences_expire{suffix}', event, expire) for suffix, event in FREQUENT),
                 ('message_fence_dropped_while_learning',
-                 f'AFTER DELETE ON chat_message_fences WHEN OLD.at>={claimed}', learning))
+                 f'AFTER DELETE ON chat_message_fences WHEN OLD.at>={claimed}', learning),
+                ('message_fence_before_learning_claim',
+                 f'AFTER INSERT ON chat_message_fences WHEN NEW.at<{claimed}', learning),
+                ('message_fence_moved_before_learning_claim',
+                 f'AFTER UPDATE OF at ON chat_message_fences WHEN NEW.at<{claimed}', learning))
     # Replaced, not kept if they exist, so a body changed since an earlier controller made them takes effect; all in
     # one transaction, so a start cut off between them, or an older controller starting meanwhile, never finds one
     # missing.
@@ -430,7 +537,42 @@ def keep(db, guild, user):
 
 def drop(db, guild, user):
     db.execute('DELETE FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user))
+    db.execute('DELETE FROM fri_member_summary_sources WHERE guild_id=? AND user_id=?', (guild, user))
     advance(db, guild, user)
+
+
+def drew_on(db, guild, user, through):
+    """The messages the member's summary built through `through` drew on (see fri_member_summary_sources), or None
+    where that isn't known."""
+    row = db.execute('SELECT through,messages FROM fri_member_summary_sources WHERE guild_id=? AND user_id=?',
+                     (guild, user)).fetchone()
+    return json.loads(row['messages']) if row and row['through'] == through else None
+
+
+def drawn(db, guild, user, summary):
+    """What a summary row drew on (see drew_on), or None if that isn't known. One that names no conversation it came
+    from is the member's own words, from Edit summary in My memory (see edit), an older controller's included, as a
+    build always names at least one: it drew on no message (Sol round 1 of #214). One that does came from messages, so
+    if it names none, they aren't known (HumanMint/fri#357)."""
+    if not json.loads(summary['origins']):
+        return []
+    return drew_on(db, guild, user, summary['through']) or None
+
+
+def identified(turn):
+    """Whether every message an exchange answered can be named: its own and each of its burst's, a Discord message
+    with an ID. One that can't goes into no build, as nothing could read it again (HumanMint/fri#357)."""
+    rows = [json.loads(turn['source']) if turn.get('source') else {},
+            *((row or {}).get('source') or {} for row in json.loads(turn.get('burst') or '[]'))]
+    return all(isinstance(row, dict) and row.get('kind') == 'discord_message' and str(row.get('id', '')).isdigit()
+               for row in rows)
+
+
+def messages_of(turn):
+    """The Discord messages an exchange answered: its own and its burst's, by ID."""
+    source = json.loads(turn['source']) if turn.get('source') else {}
+    ids = [source.get('id'), *((row.get('source') or {}).get('id') for row in json.loads(turn.get('burst') or '[]'))]
+    return [str(i) for i in ids if i and str(i).isdigit()]
 
 
 def prune(db, now=None):
@@ -495,8 +637,8 @@ def _current(db, row):
             and all(Store._privacy_state(db, s['user_id']) == (s['revision'], True) for s in json.loads(row['provenance'])))
 
 
-def read(db, guild, user):
-    """The member's summary row, or None. An empty body is a build that found nothing worth keeping."""
+def kept(db, guild, user):
+    """The member's summary row, held back or not, or None. An empty body is a build that found nothing worth keeping."""
     row = db.execute('SELECT * FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user)).fetchone()
     if row and not _current(db, row):
         drop(db, guild, user)  # Expired, say, while a reply holding it was still being written.
@@ -504,11 +646,48 @@ def read(db, guild, user):
     return row
 
 
+def read(db, guild, user):
+    """The member's summary row, or None, as everything that shows or edits one reads it: not while it's held back
+    until its messages are read again (HumanMint/fri#349, see recheck), though it stays, and isn't lapsed."""
+    row = kept(db, guild, user)
+    return None if row and held(db, guild, user) else row
+
+
+def held(db, guild, user):
+    """Whether the member's kept summary is held back until its messages are read again (HumanMint/fri#349). Not just
+    the summary: what was made from it is kept out of use meanwhile too (HumanMint/fri#355), a turn that drew on it at
+    its checks (Store._summary_unchanged), a saved reply that did as history and as a reference (see holding), a draft
+    or reminder depending on it (see held_writes). Nothing is retired for that; only a summary that goes retires them."""
+    return bool(db.execute('SELECT '+HOLDING.format(guild='?', user='?'), (guild, user)).fetchone()[0])
+
+
+def holding(db, guild, drew):
+    """Whether any of these summaries (a saved reply's, see Store's summaries) is held back (see held)."""
+    return any(held(db, guild, item['user_id']) for item in drew)
+
+
+def held_writes(db, table, items, args=()):
+    """Of saved work or reminders (items: SQL selecting their IDs), those depending on a summary held back (see held):
+    left out of lists and deliveries, and refused when asked for by themselves (see current_writes), until it checks
+    out. Their writer's own summary counts too (see depend_write's own). table: of WRITES."""
+    if table not in {name for name, _ in writes(db)}:
+        return set()
+    key = dict(WRITES)[table]
+    held = {row[0] for row in db.execute(f'SELECT DISTINCT d.{key} FROM {table} d WHERE d.{key} IN ({items}) AND '
+                                         + HOLDING.format(guild='d.guild_id', user='d.user_id'), args)}
+    if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='fri_own_summary_writes'").fetchone():
+        held |= {row[0] for row in db.execute(
+            f'SELECT o.item FROM fri_own_summary_writes o WHERE o.kind=? AND o.item IN ({items}) AND '
+            + HOLDING.format(guild='o.guild_id', user='o.user_id'), (table, *args))}
+    return held
+
+
 def lapsed(db, guild, user):
     """Whether the member had a summary that lapsed (expired, say, with nothing pruning it yet). It goes now, which
-    moves their generation, so a turn or write that drew on it can't keep its words (gene #113)."""
+    moves their generation, so a turn or write that drew on it can't keep its words (gene #113). One held back for a
+    recheck hasn't lapsed: a turn that drew on it before was given it when it showed."""
     row = db.execute('SELECT 1 FROM fri_member_summaries WHERE guild_id=? AND user_id=?', (guild, user)).fetchone()
-    return bool(row) and read(db, guild, user) is None
+    return bool(row) and kept(db, guild, user) is None
 
 
 def view(row):
@@ -538,7 +717,11 @@ def claim(agent):
         if not config['enabled'] or not config['learning_enabled']:
             return None
         pending = agent.get(db, CLAIM)
-        if (pending and now-pending['at'] < CLAIM_TIMEOUT) or now < agent.get(db, NEXT, 0):
+        if pending and now-pending['at'] < CLAIM_TIMEOUT:
+            return None
+        if pending:  # Past its time, so spent: what it names goes now, whoever is due (Sol round 2 of #210).
+            agent.put(db, CLAIM, None)
+        if now < agent.get(db, NEXT, 0):
             return None
         prune(db, now)
         if db.execute('SELECT count(*) FROM fri_member_summary_calls').fetchone()[0] >= DAILY:
@@ -555,13 +738,14 @@ def claim(agent):
             (guild, NEW, now-SETTLE)).fetchall()
         for (user,) in due:
             revision = Store._privacy_state(db, user)[0]
-            previous = read(db, guild, user)
+            # Held back for a recheck or not: Fri reads what it drew on again itself before carrying it on.
+            previous = kept(db, guild, user)
             # Only words said since the member's latest privacy change: one invalidates what came before.
             turns = [dict(row) for row in db.execute(
-                f'SELECT id,channel_id,input,provenance,at FROM chat_turns WHERE {READABLE} AND at>? '
+                f'SELECT id,channel_id,input,provenance,at,source,burst FROM chat_turns WHERE {READABLE} AND at>? '
                 'AND speaker_revision=? ORDER BY at DESC, id DESC LIMIT ?',
                 (guild, user, previous['through'] if previous else 0, revision, EXCHANGES))][::-1]
-            turns = agent.store._current_turns(db, turns)
+            turns = [turn for turn in agent.store._current_turns(db, turns) if identified(turn)]
             if len(turns) < NEW:
                 continue
             sources = {}
@@ -571,20 +755,29 @@ def claim(agent):
             shown = view(previous)
             db.execute('INSERT INTO fri_member_summary_calls VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
                        (user, now))  # Every call counts, whatever happens to it.
+            # Each exchange's messages, and those the earlier summary drew on (None if not known), named in the claim
+            # for Fri to check against Discord before any of it is sent or carried on (HumanMint/fri#333).
+            messages = [{'id': message, 'conversation_id': turn['channel_id'], 'saved_at': turn['at']}
+                        for turn in turns for message in messages_of(turn)]
+            earlier = drawn(db, guild, user, previous) if shown else None
             record = {'id': uuid.uuid4().hex, 'at': now, 'user_id': user, 'revision': revision,
                       'through': max(turn['at'] for turn in turns),
                       'sources': {c: sorted(map(list, s)) for c, s in sources.items()},
-                      'previous': {k: shown[k] for k in ('provenance', 'origins')} if shown else None}
+                      'previous': {k: shown[k] for k in ('provenance', 'origins')} if shown else None,
+                      'messages': messages}
+            if record['previous'] is not None:
+                record['previous']['messages'] = earlier
             agent.put(db, CLAIM, record)
             return {'id': record['id'], 'model': config['summary_model'], 'effort': config['summary_effort'],
-                    'previous': {'text': shown['text'], 'origins': shown['origins']} if shown else None,
-                    'exchanges': [{'conversation_id': turn['channel_id'], 'message': neutral(turn['input'])}
-                                  for turn in turns]}
+                    'previous': {'text': shown['text'], 'origins': shown['origins'], 'messages': earlier}
+                    if shown else None,
+                    'exchanges': [{'conversation_id': turn['channel_id'], 'message': neutral(turn['input']),
+                                   'messages': messages_of(turn), 'saved_at': turn['at']} for turn in turns]}
         agent.put(db, NEXT, now+IDLE)
         return None
 
 
-def finish(agent, claim_id, summary, status, conversations, previous):
+def finish(agent, claim_id, summary, status, conversations, previous, messages=None):
     """Keep a finished build, only if no one it draws on, the member included, changed anything since the claim.
 
     conversations: those Fri still found everyone could read and sent to the model; previous: whether it
@@ -622,7 +815,125 @@ def finish(agent, claim_id, summary, status, conversations, previous):
                    (agent.settings.guild_id, record['user_id'], text, record['revision'],
                     json.dumps([{'user_id': u, 'revision': r} for u, r in sorted(provenance)]), json.dumps(origins),
                     now, record['through']))
+        # What it drew on: the messages Fri says it sent of those the claim named (all those of the conversations it
+        # sent, from a Fri that doesn't say), and the earlier summary's where it was sent too. Unknown for either (a
+        # claim from before this, or an earlier summary whose own aren't known): none kept, so the next claim says
+        # they aren't known (HumanMint/fri#333).
+        drawn = record.get('messages')
+        if drawn is not None and messages is not None:
+            drawn = [m for m in drawn if m['id'] in set(messages)]
+        if drawn is not None and earlier is not None:
+            drawn = None if earlier.get('messages') is None else [*earlier['messages'], *drawn]
+        if drawn is not None and len(drawn) > DRAWN_MOST:
+            drawn = None  # Past what Fri checks in one build: not carried on, so a chain of them starts again.
+        if drawn is None:
+            db.execute('DELETE FROM fri_member_summary_sources WHERE guild_id=? AND user_id=?',
+                       (agent.settings.guild_id, record['user_id']))
+        else:
+            kept_messages = [m for m in drawn if m['conversation_id'] in origins]
+            db.execute('INSERT INTO fri_member_summary_sources VALUES (?,?,?,?) ON CONFLICT(guild_id, user_id) DO UPDATE '
+                       'SET through=excluded.through,messages=excluded.messages',
+                       (agent.settings.guild_id, record['user_id'], record['through'], json.dumps(kept_messages)))
+        if messages is not None:  # A Fri that read every message it sent again first: that's a check (fri #349).
+            db.execute('INSERT INTO fri_member_summary_rechecks(guild_id,user_id,through,checked,held) VALUES (?,?,?,?,0) '
+                       "ON CONFLICT(guild_id, user_id) DO UPDATE SET through=excluded.through,checked=excluded.checked,"
+                       "held=0,claim='',claimed=0", (agent.settings.guild_id, record['user_id'], record['through'], now))
         return {'kept': bool(text)}
+
+
+def taken_back(db, guild, messages):
+    """Whether the controller knows one of these messages was taken back after its exchange was saved: withdrawn,
+    deleted or fenced by ID (gene #149), its exchange gone or not. One taken back before is an edit Fri answered again
+    under the same ID, and the summary drew on what it says now. Both times are the controller's own."""
+    rows = json.dumps([[str(m['id']), m['saved_at']] for m in messages])
+    found = ("EXISTS (SELECT 1 FROM {} x WHERE x.guild_id=? AND x.message_id=json_extract(m.value,'$[0]') AND "
+             "x.at>json_extract(m.value,'$[1]'))")
+    tables = ('chat_turn_withdrawals', 'chat_turn_deletions', 'chat_message_fences')
+    return bool(db.execute(f"SELECT 1 FROM json_each(?) m WHERE {' OR '.join(found.format(t) for t in tables)} LIMIT 1",
+                           (rows, guild, guild, guild)).fetchone())
+
+
+def recheck(agent, fresh=False):
+    """Kept summaries due a recheck, for Fri to read their messages again from Discord (HumanMint/fri#349): those no
+    check covers, those held back until one does, and those last checked over RECHECK ago, at most READS messages past
+    the first, none claimed in the last CLAIM_TIMEOUT. A rebuild checks its messages too, but needs new exchanges, so
+    one whose exchanges aged out was never checked again. Each names its messages, never its member.
+
+    As it claims: one whose sources aren't known (written before they were recorded, or past DRAWN_MOST) can never be
+    checked, so it goes rather than being held back unused until it expires, and the next build starts from what can
+    be; one of whose messages the controller knows was taken back goes too, without Fri reading anything (a withdrawal
+    by ID finds no exchange holding an aged-out message, so it spares the summary).
+
+    fresh: Fri's first claim since it started, after which deletions it never heard of may have happened. Every summary
+    is held back until it's rechecked."""
+    now = time.time()
+    with agent.store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        guild = agent.settings.guild_id
+        prune(db, now)
+        if fresh:
+            db.execute('INSERT INTO fri_member_summary_rechecks(guild_id,user_id,through,checked,held) SELECT guild_id,'
+                       "user_id,through,0,1 FROM fri_member_summaries WHERE guild_id=? AND body<>'' ON CONFLICT(guild_id,"
+                       "user_id) DO UPDATE SET through=excluded.through,held=1,claim='',claimed=0", (guild,))
+        due = db.execute(
+            'SELECT s.user_id FROM fri_member_summaries s LEFT JOIN fri_member_summary_rechecks r ON '
+            "r.guild_id=s.guild_id AND r.user_id=s.user_id AND r.through=s.through WHERE s.guild_id=? AND s.body<>'' "
+            'AND coalesce(r.claimed,0)<=? AND (r.held IS NULL OR r.held OR r.checked<=?) '
+            'ORDER BY coalesce(r.held,0) DESC, coalesce(r.checked,0), s.user_id',
+            (guild, now-CLAIM_TIMEOUT, now-RECHECK)).fetchall()
+        offered, reads = [], 0
+        for (user,) in due:
+            row = kept(db, guild, user)
+            if row is None:
+                continue  # Lapsed, and gone.
+            messages = drawn(db, guild, user, row)
+            if messages is None or taken_back(db, guild, messages):
+                drop(db, guild, user)
+                continue
+            if not messages:  # The member's own words: nothing to read again, so checked now, and shown.
+                db.execute('INSERT INTO fri_member_summary_rechecks(guild_id,user_id,through,checked,held) VALUES '
+                           "(?,?,?,?,0) ON CONFLICT(guild_id, user_id) DO UPDATE SET through=excluded.through,"
+                           "checked=excluded.checked,held=0,claim='',claimed=0", (guild, user, row['through'], now))
+                continue
+            if offered and reads+len(messages) > READS:
+                break
+            token = uuid.uuid4().hex
+            db.execute('INSERT INTO fri_member_summary_rechecks VALUES (?,?,?,0,0,?,?) ON CONFLICT(guild_id, user_id) '
+                       'DO UPDATE SET claim=excluded.claim,claimed=excluded.claimed',
+                       (guild, user, row['through'], token, now))
+            offered.append({'id': token, 'messages': messages})
+            reads += len(messages)
+        return {'summaries': offered}
+
+
+def rechecked(agent, recheck_id, status):
+    """How a recheck went (see recheck). ok: every message is still there as it was saved, so the summary shows, and
+    isn't due again for RECHECK. unchecked: Discord couldn't say (a message unreadable now, a request failing, or a
+    withdrawal of one still waiting in Fri's queue): held back until a later recheck says ok. changed: one is gone, or
+    edited since its exchange was saved, and Fri has withdrawn it as it does: the summary goes now, as a withdrawal of
+    it would take it. A recheck of a summary replaced since is refused as expired: the new one stands. An ok rests on
+    reads made since the claim, so one of its messages the controller has since recorded as taken back takes the
+    summary all the same (Sol round 1 of #214)."""
+    now = time.time()
+    with agent.store.connection() as db:
+        db.execute('BEGIN IMMEDIATE')
+        guild = agent.settings.guild_id
+        row = db.execute('SELECT user_id,through FROM fri_member_summary_rechecks WHERE guild_id=? AND claim=?',
+                         (guild, recheck_id)).fetchone()
+        if row is None:
+            raise ValueError('That summary recheck expired')
+        if status == 'ok':
+            summary = kept(db, guild, row['user_id'])
+            messages = drawn(db, guild, row['user_id'], summary) if summary else None
+            if messages is None or taken_back(db, guild, messages):
+                status = 'changed'
+        if status == 'changed':
+            drop(db, guild, row['user_id'])
+        else:
+            db.execute("UPDATE fri_member_summary_rechecks SET claim='',checked=CASE WHEN ? THEN ? ELSE checked END,"
+                       'held=? WHERE guild_id=? AND user_id=?', (status == 'ok', now, status != 'ok', guild,
+                                                                  row['user_id']))
+        return {'ok': True}
 
 
 def edit(store, guild, conversation, user, revision, source, action, text=''):
@@ -653,14 +964,17 @@ def edit(store, guild, conversation, user, revision, source, action, text=''):
             raise ValueError('There’s no summary to change now. Open My memory again.')
         # A server-wide removal fence, as a profile note edit records: nothing they sent before this, queued or
         # still in a burst, is kept or learned afterwards, so it can't rebuild what they cleared.
-        for fence in fences():
+        for fence in fences():  # Never earlier than it was, even with Gene's clock stepped back.
             db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
-                       'user_id,digest) DO UPDATE SET at=excluded.at', (guild, SERVER, user, fence, time.time()))
+                       'user_id,digest) DO UPDATE SET at=max(at,excluded.at)', (guild, SERVER, user, fence, time.time()))
         cleared(store, db, guild, user, SERVER, revision)
         if action == 'replace':
             now = time.time()
             db.execute("INSERT INTO fri_member_summaries VALUES (?,?,?,?,'[]','[]',?,?)",
                        (guild, user, text, store._privacy_state(db, user)[0], now, now))
+            # Their own words draw on no message: known, and empty, so a recheck keeps them (Sol round 1 of #214).
+            db.execute("INSERT INTO fri_member_summary_sources VALUES (?,?,?,'[]') ON CONFLICT(guild_id, user_id) "
+                       'DO UPDATE SET through=excluded.through,messages=excluded.messages', (guild, user, now))
     return entries(store, guild, conversation, user, summaries=True)
 
 
@@ -681,6 +995,12 @@ def purge(path):
             db.execute('DROP TABLE IF EXISTS fri_member_summaries')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_calls')
             db.execute('DROP TABLE IF EXISTS fri_member_summary_generations')
+            db.execute('DROP TABLE IF EXISTS fri_member_summary_sources')
+            db.execute('DROP TABLE IF EXISTS fri_member_summary_rechecks')
+            for name in ('fri_member_summary_claim_revised', 'fri_member_summary_claim_revision_moved',
+                         'fri_own_summary_writes_work_gone', 'fri_own_summary_writes_reminder_gone'):
+                db.execute(f'DROP TRIGGER IF EXISTS {name}')  # Nothing left for them to clear.
+            db.execute('DROP TABLE IF EXISTS fri_own_summary_writes')  # Nothing is held without summaries.
             db.execute('DELETE FROM agent_state WHERE key IN (?,?)', (CLAIM, NEXT))
             # Nothing mirrored outlives the summaries (see expiry_triggers): their refresh times go with them.
             db.execute('DELETE FROM agent_state WHERE substr(key,1,?)=?', (len(MIRROR), MIRROR))
@@ -693,6 +1013,16 @@ class Finish(BaseModel):
     status: str = Field(pattern=r'^(completed|failed|incomplete|interrupted|invalid_output|skipped)$')
     conversations: list[str] = Field(default_factory=list, max_length=EXCHANGES)
     previous: bool = False
+    # The messages Fri sent, of those the claim named (HumanMint/fri#333); None from a Fri that doesn't say.
+    messages: list[str] | None = Field(default=None, max_length=EXCHANGES*10+DRAWN_MOST)
+
+
+class Recheck(BaseModel):
+    fresh: bool = False
+
+
+class Rechecked(BaseModel):
+    status: str = Field(pattern=r'^(ok|unchecked|changed)$')
 
 
 def register(app, agent, auth):
@@ -700,11 +1030,22 @@ def register(app, agent, auth):
     def claim_summary():
         return claim(agent)
 
+    @app.post('/agent/member-summary/recheck', dependencies=[auth('fri')])
+    def recheck_summaries(body: Recheck):
+        return recheck(agent, body.fresh)
+
+    @app.post('/agent/member-summary/recheck/{recheck_id}', dependencies=[auth('fri')])
+    def summary_rechecked(recheck_id: str, body: Rechecked):
+        if not re.fullmatch(r'[a-f0-9]{32}', recheck_id):
+            raise ValueError('That summary recheck expired')
+        return rechecked(agent, recheck_id, body.status)
+
     @app.post('/agent/member-summary/{claim_id}/finish', dependencies=[auth('fri')])
     def finish_summary(claim_id: str, body: Finish):
         if not re.fullmatch(r'[a-f0-9]{32}', claim_id):
             raise ValueError('That summary build expired')
-        return finish(agent, claim_id, body.summary, body.status, body.conversations, body.previous)
+        return finish(agent, claim_id, body.summary, body.status, body.conversations, body.previous,
+                      body.messages)
 
 
 def main(argv=None):

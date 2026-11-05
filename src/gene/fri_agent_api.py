@@ -27,6 +27,9 @@ class Admission(Identity):
 
 class Context(Identity):
     channel_id: str
+    # A Fri that holds a history channel's link target to the removal on Discord's clock asks for it in the narrower
+    # answer (HumanMint/fri#368, the history-cutoffs capability); older Fris check that answer field for field.
+    discord_cutoffs: bool = False
 
 
 class Author(BaseModel):
@@ -70,6 +73,16 @@ class ExplorationRoster(BaseModel):
 
 class Checked(BaseModel):
     message_ids: list[str] = Field(max_length=25)
+
+
+class HeldMessage(BaseModel):
+    id: str = Field(pattern=r'^\d{1,25}$')
+    user_id: str = Field(pattern=r'^\d{1,25}$')
+
+
+class Held(BaseModel):
+    """The messages a learning pass is about to send its model, each with its author, as many as its finish takes."""
+    messages: list[HeldMessage] = Field(max_length=40)
 
 
 class Finish(BaseModel):
@@ -118,7 +131,8 @@ def register(app, store, settings, auth, actor):
             if not history and not settings.meme_channel_allowed(body.guild_id, body.channel_id):
                 raise HTTPException(403, 'Channel is outside Fri scope')
             profile = agent.context(body.channel_id, body.user_id, body.guild_id)
-            return {key: profile[key] for key in ('enabled', 'revision', 'removed_at')}
+            keys = ('enabled', 'revision', 'removed_at', *(('removed_at_discord',) if body.discord_cutoffs else ()))
+            return {key: profile[key] for key in keys}
         return agent.context(body.channel_id, body.user_id, body.guild_id)
 
     @app.post('/agent/authors/check', dependencies=[auth('fri')])
@@ -166,6 +180,12 @@ def register(app, store, settings, auth, actor):
     @app.post('/agent/learning/{batch_id}/checked', dependencies=[auth('fri')])
     def checked(batch_id: str, body: Checked):
         return agent.exploration.checked(batch_id, body.message_ids)
+
+    @app.post('/agent/learning/{batch_id}/withdrawn', dependencies=[auth('fri')])
+    def withdrawn(batch_id: str, body: Held):
+        """Of the messages a learning pass is about to send, those its finish would refuse as withdrawn, so they're
+        left out of its model request too (HumanMint/fri#335)."""
+        return {'withdrawn': agent.withdrawn(batch_id, [message.model_dump() for message in body.messages])}
 
     @app.get('/agent/reports', dependencies=[auth('fri')])
     def reports():

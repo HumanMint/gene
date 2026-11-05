@@ -11,7 +11,7 @@ from .fri_explore_store import Exploration
 from .fri_explore_store import initialize as initialize_exploration
 from .fri_explore_store import notes as historical_notes
 from .fri_memory import personal_note
-from .fri_memory_store import last_removal
+from .fri_memory_store import erased, erased_on_discord, last_removal
 from .privacy import clean
 
 CLAIM_SECONDS = 600  # A learning pass's claim: one older is interrupted when the next pass asks (see claim).
@@ -87,6 +87,8 @@ def initialize(db):
     if 'revisions' not in {row[1] for row in db.execute('PRAGMA table_info(agent_summaries)')}:
         # Authors' privacy revisions observed when the summary was made; older rows fail closed.
         db.execute("ALTER TABLE agent_summaries ADD COLUMN revisions TEXT NOT NULL DEFAULT '{}'")
+    from .fri_learning_sources import initialize as initialize_learning_sources
+    initialize_learning_sources(db)  # What each report and channel summary read (gene #244).
 
 
 class AgentStore:
@@ -237,6 +239,26 @@ class AgentStore:
 
             if not c['enabled'] or not c['learning_enabled']:
                 return blocked('Learning is paused. Changing that still needs an owner settings preview.')
+            pending = self.get(db, 'learning_claim')
+
+            def interrupted():
+                if db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
+                              (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; '
+                               'no automatic replay.')).rowcount:
+                    from .fri_learning_sources import record
+                    record(db, 'report', pending['id'], [])  # The controller's own words: none of a member's.
+                self.put(db, 'learning_claim', None)
+                return blocked('The previous pass was interrupted. Its report is pending; its allowance remains reserved.')
+            if pending and (at := claimed_at(pending)) is not None and at-now >= CLAIM_SECONDS:
+                # Dated further ahead than a small clock step: claimed while the clock ran fast, which has been
+                # corrected since. What that claim set from the fast clock (the owner's five minutes, the next pass's
+                # cadence) would hide it until then, so those come back by the same step, and it's interrupted now
+                # (gene #185).
+                for key in ('manual_learning_after', 'next_learning'):
+                    deadline = self.get(db, key, 0)
+                    if type(deadline) in (int, float) and deadline >= at:
+                        self.put(db, key, deadline-(at-now))
+                return interrupted()
             if manual and now < self.get(db, 'manual_learning_after', 0):
                 return blocked('An owner-requested pass can run at most once every five minutes.')
             if not manual and now < self.get(db, 'next_learning', 0):
@@ -244,16 +266,12 @@ class AgentStore:
             # A report outage pauses learning, so the owner does not lose visibility.
             if db.execute('SELECT 1 FROM agent_reports WHERE delivered=0').fetchone():
                 return blocked('The previous learning report still needs to reach the owner.')
-            pending = self.get(db, 'learning_claim')
             if pending:
-                # Running inside its ten minutes, either way of a small clock step; one dated further ahead (a clock
-                # that ran fast) or that can't be read is interrupted rather than held as running until then.
+                # Running inside its ten minutes, either way of a small clock step; one that can't be read is
+                # interrupted rather than held as running (one dated further ahead went above).
                 if (at := claimed_at(pending)) is not None and -CLAIM_SECONDS < now-at < CLAIM_SECONDS:
                     return blocked('A learning pass is already running.')
-                db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
-                           (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; no automatic replay.'))
-                self.put(db, 'learning_claim', None)
-                return blocked('The previous pass was interrupted. Its report is pending; its allowance remains reserved.')
+                return interrupted()
             day = int((now-self.get(db, 'started', now))//86400)
             budget = self.get(db, 'budget', {'day': day, 'used': 0})
             if budget['day'] != day:
@@ -304,6 +322,25 @@ class AgentStore:
             self.put(db, 'next_learning', next_learning)
             return {**claim, 'used_today': budget['used'], 'daily_limit': c['history_daily_messages']}
 
+    def withdrawn(self, batch_id, messages):
+        """Of the messages a learning pass is about to send its model (each {'id', 'user_id'}), those its finish would
+        refuse as withdrawn: its author's own message taken back, one withdrawn by its ID alone since the claim, or one
+        deleted, within the week. So a withdrawal only Gene knows about never reaches the model either
+        (HumanMint/fri#335). Asked under the pass's claim, as its finish is, and refused where that would be."""
+        now = time.time()
+        guild = self.settings.guild_id
+        with self.store.connection() as db:
+            claim = self.get(db, 'learning_claim')
+            if (not claim or claim['id'] != batch_id or (at := claimed_at(claim)) is None
+                    or not 0 <= now-at < FINISH_SECONDS):
+                raise ValueError('Learning claim expired or already completed')
+            from .fri_channel_withdrawal import withdrawn as channel_withdrawn
+            gone = channel_withdrawn(db, guild, [claim.get('channel_id')])  # Deleted since (HumanMint/fri#358).
+            return sorted({message['id'] for message in messages
+                           if gone or self.store.taken_back(db, guild, message['user_id'], [message['id']])
+                           or self.store.withdrawn_during(db, guild, [message['id']], at)
+                           or self.store.deleted_anywhere(db, guild, [message['id']])}, key=int)
+
     def finish(self, batch_id, records, result, scanned, before, done, counters, error='', oldest=None, newest=None, newest_id=None,
                scanned_ids=()):
         now = time.time()
@@ -311,6 +348,14 @@ class AgentStore:
             raise ValueError('Invalid summary output')
         if not isinstance(result.get('observations', []), list):
             raise ValueError('Invalid historical observations')
+        # Each proposed note is read against the words of every record it may come from, before the write lock is
+        # taken (gene #203); which record counts is decided inside, and a note it wasn't read against here is read
+        # there as before.
+        checked = {(index, row['text']): personal_note(candidate, row['text'])
+                   for index, candidate in enumerate(result.get('notes', [])[:5])
+                   if isinstance(candidate, dict) and isinstance(candidate.get('source_id'), str)
+                   for row in records
+                   if isinstance(row, dict) and row.get('id') == candidate['source_id'] and isinstance(row.get('text'), str)}
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             from .store import WITHDRAWN_SECONDS
@@ -331,6 +376,10 @@ class AgentStore:
             mode = claim.get('mode', 'history')
             if claim.get('privacy_invalidated'):
                 records, result, error = [], {}, 'Privacy changed during exploration; findings discarded.'
+            from .fri_channel_withdrawal import withdrawn as channel_withdrawn
+            if channel_withdrawn(db, self.settings.guild_id, [claim.get('channel_id')]):
+                # Deleted while this pass read it (HumanMint/fri#358): nothing it read is kept.
+                records, result, error = [], {}, 'The channel was deleted during this pass; findings discarded.'
             if mode == 'explore' and not error:
                 self.exploration.validate(claim, scanned, scanned_ids)
             if mode == 'recent' and not error and scanned:
@@ -340,7 +389,7 @@ class AgentStore:
             if error:
                 result = {}  # Failed inference cannot produce derived memory or advance a cursor.
             accepted = {}
-            from .fri_memory_store import removed
+            from .fri_memory_store import learned_cutoff
             for r in records:
                 if (r.get('role_id') != claim['role_id'] or not claim['after'] <= r['at'] <= now or
                         (mode == 'explore' and (r['id'] not in scanned_ids or
@@ -349,20 +398,26 @@ class AgentStore:
                     continue
                 revision = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (r['user_id'],)).fetchone()
                 profile = self.store._personal_context(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
-                # Words from before a removal teach nothing again: no note, observation or summary. Nor does a
-                # message withdrawn while this batch read it (gene #141), even one nothing stored held (gene #149).
-                cutoff = removed(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
+                # Words from before a removal teach nothing again: no note, observation or summary, and nor do those
+                # from before memory was last turned off (HumanMint/fri#321). Nor does a message withdrawn while this
+                # batch read it (gene #141), even one nothing stored held (gene #149).
+                cutoff = learned_cutoff(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'])
                 if (profile['enabled'] and r.get('revision') == (revision[0] if revision else 0)
                         and (cutoff is None or r['at'] > cutoff)
                         and not self.store.taken_back(db, self.settings.guild_id, r['user_id'], [r['id']])
                         and not self.store.withdrawn_during(db, self.settings.guild_id, [r['id']], claim['at'])):
                     accepted[r['id']] = r
             kept = []
-            for candidate in (result.get('notes', [])[:5] if mode != 'explore' else []):
+            for index, candidate in enumerate(result.get('notes', [])[:5] if mode != 'explore' else []):
                 if not isinstance(candidate, dict) or not isinstance(candidate.get('source_id'), str):
                     continue
                 r = accepted.get(candidate.get('source_id'))
-                note = personal_note(candidate, r['text']) if r else None
+                if not r:
+                    note = None
+                elif isinstance(r['text'], str) and (index, r['text']) in checked:
+                    note = checked[index, r['text']]
+                else:
+                    note = personal_note(candidate, r['text'])
                 if note:
                     from .fri_memory_store import save
                     if save(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'], note, r['at'],
@@ -378,6 +433,8 @@ class AgentStore:
                            'at=excluded.at,revisions=excluded.revisions',
                            (claim['channel_id'], summary, json.dumps(sorted({r['user_id'] for r in accepted.values()})), now,
                             json.dumps({r['user_id']: r['revision'] for r in accepted.values()}, sort_keys=True)))
+                from .fri_learning_sources import record
+                record(db, 'summary', claim['channel_id'], accepted)  # So a message of them taken back takes it.
             cursors = self.get(db, 'cursors', {})
             discoveries = []
             already_checked = 0
@@ -438,6 +495,9 @@ class AgentStore:
                       + ('\nIssue: '+clean(error, 180) if error else '')
                       + '\nAsk me to change learning frequency, pause learning, or show settings.')
             db.execute('INSERT INTO agent_reports VALUES (?,?,?,0)', (batch_id, now, report))
+            from .fri_learning_sources import record
+            # Its summary, disclosures and findings all come from these: one taken back takes them (gene #244).
+            record(db, 'report', batch_id, accepted)
             card = {'channel_id': claim['channel_id'], 'mode': mode, 'member': name,
                     'term': plan.get('term', ''), 'scanned': scanned, 'eligible': len(accepted),
                     'already_checked': already_checked, 'historical_notes': len(discoveries),
@@ -459,16 +519,20 @@ class AgentStore:
             config = self.config(db)
             day = int((now-self.get(db, 'started', now))//86400)
             budget = self.get(db, 'budget', {})
+            from .fri_learning_sources import SHOWN_SUMMARY, shown
             reports = [dict(r) for r in db.execute(
-                'SELECT id,at,body,delivered FROM agent_reports WHERE at>? ORDER BY at DESC LIMIT 3',
+                "SELECT r.id,r.at,r.body,r.delivered,coalesce(s.held,0) AS held FROM agent_reports r LEFT JOIN "
+                "fri_learning_sources s ON s.kind='report' AND s.item=r.id WHERE r.at>? ORDER BY r.at DESC LIMIT 3",
                 (now-7*86400,))]
-            for report in reports:
-                report['body'] = report['body'].replace('Untrusted summary:', 'Conversation summary:')
+            for report in reports:  # One held back shows no words (gene #244).
+                report['body'] = shown(report['id'], report['body'], {}, report.pop('held'))[0].replace(
+                    'Untrusted summary:', 'Conversation summary:')
                 channel = re.search(r'Channel: <#(\d+)>', report['body'])
                 report['channel_id'] = channel[1] if channel else None
             summaries = [{k: r[k] for k in ('channel_id', 'body', 'at')} for r in db.execute(
-                'SELECT channel_id,body,at,authors,revisions FROM agent_summaries WHERE at>? ORDER BY at DESC LIMIT 5',
-                (now-2*86400,)) if r['channel_id'] in self.settings.agent_history_channels.split(',')
+                f'SELECT channel_id,body,at,authors,revisions FROM agent_summaries WHERE at>? AND {SHOWN_SUMMARY} '
+                'ORDER BY at DESC LIMIT 5', (now-2*86400,))
+                if r['channel_id'] in self.settings.agent_history_channels.split(',')
                 and self._summary_current(db, r)]  # The same revision fence as ordinary context.
             return {'reports': reports, 'summaries': summaries,
                     'historical_notes': [dict(channel_id=c, **n) for c in self.settings.agent_history_channels.split(',')
@@ -485,8 +549,9 @@ class AgentStore:
     def context(self, channel, user, guild=None):
         guild = guild or self.settings.guild_id
         with self.store.connection() as db:
-            row = db.execute('SELECT body,authors,revisions FROM agent_summaries WHERE channel_id=? AND at>?',
-                             (channel, time.time()-2*86400)).fetchone()
+            from .fri_learning_sources import SHOWN_SUMMARY
+            row = db.execute(f'SELECT body,authors,revisions FROM agent_summaries WHERE channel_id=? AND at>? '
+                             f'AND {SHOWN_SUMMARY}', (channel, time.time()-2*86400)).fetchone()  # Not one held back.
             if row and not self._summary_current(db, row):
                 db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (channel,))
                 row = None
@@ -500,7 +565,15 @@ class AgentStore:
                                            for author, revision in sorted(revisions.items()) if author != str(user)],
                     'historical_topics': historical_notes(db, channel, user) if profile['enabled'] and guild == self.settings.guild_id else [],
                     'enabled': profile['enabled'], 'revision': rev[0] if rev else 0,
-                    'removed_at': last_removal(db, guild, user)}
+                    'removed_at': last_removal(db, guild, user),
+                    # When memory was last turned off, on its own: Fri leaves a queued message from before it
+                    # unanswered, but still answers one from before a removal (HumanMint/fri#331).
+                    'erased_at': erased(db, user) or 0,
+                    # Both again on Discord's clock, which a message's snowflake is on: dated by the Discord message or
+                    # interaction that asked, where one did. A Fri that knows these compares with them; an older one
+                    # reads the two above, on Gene's clock, as before (HumanMint/fri#337).
+                    'removed_at_discord': last_removal(db, guild, user, on_discord=True),
+                    'erased_at_discord': erased_on_discord(db, user) or 0}
 
     def _summary_current(self, db, row):
         """A summary is shown only while every author still has the revision it was made from."""
@@ -509,21 +582,26 @@ class AgentStore:
             return False
         return all(self.store._privacy_state(db, author) == (revision, True) for author, revision in revisions.items())
 
+    # A report with its card, and whether it's held back (gene #244).
+    REPORT = ("SELECT r.id,r.body,c.body AS card,coalesce(s.held,0) AS held FROM agent_reports r LEFT JOIN "
+              "agent_report_cards c ON c.report_id=r.id LEFT JOIN fri_learning_sources s ON s.kind='report' AND "
+              "s.item=r.id ")
+
     def reports(self):
         with self.store.connection() as db:
             return [self.report_row(r) for r in db.execute(
-                'SELECT r.id,r.body,c.body AS card FROM agent_reports r '
-                'LEFT JOIN agent_report_cards c ON c.report_id=r.id WHERE delivered=0 ORDER BY at LIMIT 1')]
+                self.REPORT+'WHERE r.delivered=0 ORDER BY r.at LIMIT 1')]
 
     @staticmethod
     def report_row(row):
-        return {'id': row['id'], 'body': row['body'], 'card': json.loads(row['card']) if row['card'] else {}}
+        """As delivered and shown: one held back as a wordless placeholder (see fri_learning_sources.shown)."""
+        from .fri_learning_sources import shown
+        body, card = shown(row['id'], row['body'], json.loads(row['card']) if row['card'] else {}, row['held'])
+        return {'id': row['id'], 'body': body, 'card': card}
 
     def report(self, report_id):
         with self.store.connection() as db:
-            row = db.execute('SELECT r.id,r.body,c.body AS card FROM agent_reports r '
-                             'LEFT JOIN agent_report_cards c ON c.report_id=r.id WHERE r.id=? AND r.at>?',
-                             (report_id, time.time()-7*86400)).fetchone()
+            row = db.execute(self.REPORT+'WHERE r.id=? AND r.at>?', (report_id, time.time()-7*86400)).fetchone()
             return self.report_row(row) if row else None
 
     def delivered(self, report_id):

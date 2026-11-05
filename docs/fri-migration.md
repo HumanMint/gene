@@ -155,8 +155,10 @@ built from other members' messages.
     words, for a week, at most 100,000 (the oldest go first). Whatever drops a fence written since the
     learning batch in flight was claimed (that limit, an erasure, an older controller's own eviction), the
     batch keeps nothing it read and is read again: a trigger replaced at start marks its claim
-    invalidated, which its finish already honours (gene #163). A save still on its way that answers a
-    deleted message, or whose `drew_on` holds one, keeps nothing, and its check refuses with the 409
+    invalidated, which its finish already honours (gene #163). So does a fence dated before the claim in
+    flight, which only a clock set back writes, whichever message it names, and whoever writes it (gene
+    #182). A save still on its way that answers a deleted message, or whose `drew_on` holds one, keeps
+    nothing, and its check refuses with the 409
     above. A learning batch claimed before the fence keeps nothing from the message, edited or deleted;
     one claimed after reads it as it is now. An edit's fence stops nothing else. A save of the member's
     own edited message is Fri answering it again as it now reads, under the same ID, and a save of its

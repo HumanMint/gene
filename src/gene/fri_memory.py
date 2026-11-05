@@ -1,6 +1,7 @@
 """Bounded personal notes, never permissions, shared server facts, or worker input."""
 
 import bisect
+import functools
 import re
 
 from .privacy import clean
@@ -74,9 +75,10 @@ REPORT = re.compile(
     r"usually|just|really|also)\s+)?(?:say|tell|think|believe|assume|claim|insist|reckon|swear)\b")
 # Beyond REPORT (gene #172), a report anywhere after the claim starts: any inflected form ("i like chess, my friend
 # said", "… they are swearing", "… or so she believes", "… according to my brother"), or a bare verb after its subject,
-# through up to three adverbs or auxiliaries ("… my parents say", "… the boys would say", "… my mom will tell you").
-# The subject is any noun phrase but the member's own (see OWN): "i like chess, i think" is their hedge. A subject
-# starts only where a word does, so each is tried once.
+# through any run of adverbs, auxiliaries or interjections ("… my parents say", "… the boys would say", "… my mom will
+# tell you", "… or so ya still always really just say", gene #187). The subject is any noun phrase but the member's own
+# (see OWN): "i like chess, i think" is their hedge. It's the word before the run, never one in it, so each run is
+# crossed once, from its subject, and none of its words is read as one.
 BETWEEN = (r"all|always|still|keep|often|usually|sometimes|just|really|also|even|actually|literally|basically|totally|"
            r"only|kinda|lowkey|would|will|can|could|should|might|may|must|do|does|did|gonna|wanna|gotta")
 SPOKEN = BARE  # Every bare form: "… my friends write", "… my parents text" (Sol round 1 of #178).
@@ -84,11 +86,14 @@ SPOKEN = BARE  # Every bare form: "… my friends write", "… my parents text" 
 NAMES = frozenset({'fri', 'bro', 'dude'})
 # Interjections that may sit between a subject and its verb ("my mom lol would say"); never "ya", which may be "you".
 ASIDES = '|'.join(word for word in SAID.split('|') if word not in NAMES | {'ya'})
+MODIFIER = rf"(?:{BETWEEN}|{ASIDES})"
 HEARD = re.compile(rf"(?i)\b(?:{INFLECTED}|{HEARSAY})\b|"
-                   rf"(?<![\w'])(?P<subject>[\w']+)\s+(?:(?:{BETWEEN}|{ASIDES})\s+){{0,3}}(?:{SPOKEN})\b")
+                   rf"(?<![\w'])(?!{MODIFIER}(?![\w']))(?P<subject>[\w']+)\s+(?:{MODIFIER}\s+)*+(?:{SPOKEN})\b")
 # Main's subjects count wherever they stand ("i like chess they say"); any other only after a break in the claim, so its
 # own words never do: "i like chess, my mom lol would say" is a report, "i love jazz lol say what you want" isn't.
-PLURALS = frozenset({'they', 'people', 'everyone', 'everybody', 'folks', 'friends', 'ppl', 'others', "y'all"})
+PLURALS = frozenset({'they', 'people', 'everyone', 'everybody', 'folks', 'friends', 'ppl', 'others', "y'all"} |
+                    # Whoever the member speaks to, however it's spelled, counts like y'all (gene #187).
+                    {'you', 'u', 'ya', 'yall', 'guys'})
 # The member's own asides to whoever they speak to, never a report: "… if you ask me", "…, makes you think".
 ASIDE_PHRASES = re.compile(r"(?i)\bif (?:you|u|ya) (?:ask|asked) me\b|\bmakes? (?:you|u|ya) (?:think|wonder)\b")
 # After the claim, a report form in the member's own clause with something of its own after it: "…, ive written a
@@ -148,18 +153,19 @@ WORD = re.compile(r"[\w']+")
 TOKEN = re.compile(r"[\w']+|[^\w\s]")
 
 
-def own_clause(lead, m):
+def own_clause(lead, low, m):
     """Whether the clause a report verb before the claim stands in is positively the member's own: 'me' when it
     starts with them ("i was saying earlier, …", "lol i keep telling …", at most three helping words between), 'own'
     for a short list of theirs without an "i", in a clause that starts at punctuation or the sentence's start ("let
     me tell you, …", "believe me, …", "been writing all day, …", "stop swearing lol, …", "just a thought but …", "ask
     anyone, …"), else None: someone else's, or no one can tell, which keeps nothing ("said jo, …", "just said jo, …",
-    whose "just" may be a name, "my mom, as usual, said that, …", "May said earlier, …")."""
+    whose "just" may be a name, "my mom, as usual, said that, …", "May said earlier, …"). `low` is `lead`
+    lowercased, once for every report verb in it (gene #188's nit)."""
     verb, window = m.group().lower(), max(0, m.start() - 80)
     starts = list(STARTS.finditer(lead, window, m.start()))
     if not starts and window > 0:
         return None  # Its clause runs back past what's looked at.
-    words = WORD.findall(lead.lower(), starts[-1].end() if starts else 0, m.start())
+    words = WORD.findall(low, starts[-1].end() if starts else 0, m.start())
     joined = bool(starts) and WORD.fullmatch(starts[-1].group())  # After "but", "so" …, which may be a name.
     lead_in = next((n for n, word in enumerate(words) if not (word in ASIDE_WORDS or word in NAMES) or word == 'ya'),
                    len(words))
@@ -170,7 +176,7 @@ def own_clause(lead, m):
         return 'me'
     if joined:
         return None  # Without an "i", only a clause that starts at punctuation or the sentence's start.
-    tail = ' '.join(WORD.findall(lead.lower(), m.end(), m.end() + 24)[:3])
+    tail = ' '.join(WORD.findall(low, m.end(), m.end() + 24)[:3])
     if (words == ['let', 'me'] or (not words and verb == 'believe' and (tail == 'me' or tail == 'it or not')) or
             (not words and verb == 'ask' and tail in ('anyone', 'anybody')) or
             (verb.endswith('ing') and words in (['been'], ['just', 'been'], ['stop'])) or
@@ -187,12 +193,13 @@ def frames(lead):
     only introduces it without an "i" (gene #172)."""
     if re.search(r'(?i)\baccording to\b', lead):
         return True  # Hearsay main's FRAMED doesn't name.
+    low = lead.lower()  # Once, not once for each report verb (gene #188).
     for m in VERB.finditer(lead):
-        own = own_clause(lead, m)
+        own = own_clause(lead, low, m)
         if own is None:
             return True
         verb, after = m.group().lower(), m.end()
-        before = [word for word in WORD.findall(lead.lower(), max(0, m.start() - 64), m.start()) if word not in ADVERBS]
+        before = [word for word in WORD.findall(low, max(0, m.start() - 64), m.start()) if word not in ADVERBS]
         previous = before[-1] if before else ''
         if verb in PARTICIPLES and (previous in PASSIVE or re.search(r"'(?:s|re|m)$|^im$", previous)):
             return True  # "i was told …", "i was just told …", "it's said …".
@@ -208,16 +215,16 @@ def frames(lead):
     return False
 
 
-def independent(text, m):
+def independent(text, low, m):
     """An inflected report form after the claim in the member's own clause, with something of its own after it (see
-    ME_CLAUSE)."""
+    ME_CLAUSE). `low` is `text` lowercased, once for every form in it (gene #188)."""
     if not ME_CLAUSE.search(text, max(0, m.start() - 60), m.start()):
         return False
     verb = m.group().lower()
-    before = [word for word in WORD.findall(text.lower(), max(0, m.start() - 48), m.start()) if word not in ADVERBS]
+    before = [word for word in WORD.findall(low, max(0, m.start() - 48), m.start()) if word not in ADVERBS]
     if verb in PARTICIPLES and before and (before[-1] in PASSIVE or re.search(r"'(?:s|re|m)$|^im$", before[-1])):
         return False  # "…, or so i was just told", "…, i'm told".
-    following = WORD.findall(text.lower(), m.end(), m.end() + 40)[:2]
+    following = WORD.findall(low, m.end(), m.end() + 40)[:2]
     if not following or following[0] in ASIDE_WORDS:
         return False
     if following[0] in BACKREF:  # Pointing back at the claim, unless an activity goes on: "ive written it down".
@@ -232,13 +239,22 @@ OPENS = re.compile(rf"(?i)(?:(?:{'|'.join(sorted(UNFINISHED))})\s+)*(?:unless|wh
                    r"provided|if)\b")
 
 
+# A clause that goes on from the one before it ("and finish the match early", "or tie") answers nothing: whether a
+# condition is open is up to the clause or line before it (gene #186).
+CONTINUES = frozenset({'and', 'or', 'nor', 'plus'})
+
+
 def unresolved(line):
     """Whether a line ends inside a condition (True), answers it or says something else (False), or has no clause
-    of its own words at all (None): only a courtesy, interjections or "then"."""
+    of its own words at all (None): only a courtesy, interjections, "then" or clauses that go on from the one before
+    ("if i win\nand finish the match early\n…", gene #186)."""
     for clause in reversed(re.split(r"[^\w\s']+", line)):
         words = WORD.findall(COURTESY.sub('', clause.strip(), count=1).lower())
         if any(word not in UNFINISHED for word in words):
-            return bool(OPENS.match(' '.join(words)))
+            opened = bool(OPENS.match(' '.join(words)))
+            first = next((word for word in words if word not in ASIDE_WORDS), '')
+            if opened or first not in CONTINUES:
+                return opened
     return None
 
 
@@ -248,9 +264,10 @@ def reported(spaced):
     after someone else's subject (main's plurals anywhere, any other past a break), short of the member's asides."""
     broken = (BREAK.search(spaced) or re.search('$', spaced)).start()  # The claim's own words end here at most.
     heard = ASIDE_PHRASES.sub(lambda aside: ' ' * len(aside.group()), spaced)  # Same places, asides blanked.
+    low = heard.lower()
     return any(reported_by(m['subject']) and not RHETORICAL.match(m.group()) and (
                    m.start() > broken or m['subject'].lower() in PLURALS) if m['subject'] else
-               not DESCRIBED.search(heard[max(m.start() - 48, 0):m.start()]) and not independent(heard, m)
+               not DESCRIBED.search(heard[max(m.start() - 48, 0):m.start()]) and not independent(heard, low, m)
                for m in HEARD.finditer(heard))
 
 
@@ -288,6 +305,34 @@ LIKES = re.compile(rf"(?i)^(?:i {ADVERB}(?:like|love|prefer|enjoy|play|usually|m
                    r"call me)\b")
 
 
+def readings_of(text, evidence):
+    """Each other way a message and its note's evidence are read, every one of which must keep the note, so each only
+    ever refuses more. Once more with each run of emoji as a space and each apostrophe inside a word as a plain one
+    (gene #190), and twice more with symbols, text faces, characters that show nothing and in-word emoji read plainly
+    (gene #198), and twice more as those, with what still hid a word in them read plainly first (gene #201), and four
+    times more with what's stacked read plainly first, two of them with a face before an aside dropped (gene #207), and
+    eight times more (gene #212): those four with a face before a hedge from a wider vocabulary dropped too, and four
+    with #212's faces and controls read plainly first; and (gene #221) with a face before a hedge past any modifier
+    dropped, and twice more with slash faces with whitespace inside them read plainly first; and (gene #226) twice more
+    with Unicode space separators read as a space and line breaks next to a face bridged; and (gene #231) twice more
+    with line breaks inside a report continuation joined too; and (gene #236) twice more with report verbs outside the
+    vocabulary read as "say" and chained auxiliaries joined. Every reading #211, #217, #225, #229 and #235 had is still
+    here, as it was, so each added one only ever refuses more. In this order, each once: which one
+    refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
+    time grow faster than its length (#211's first CI run)."""
+    readings = [(plainly(text), plainly(evidence).strip())]
+    readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
+                 for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
+    for transform in (composed, restacked, spaced, bridged, rejoined, widened):
+        for invisible in ('', ' '):
+            said = plainer(transform(text, invisible), invisible)
+            note = plainer(transform(evidence, invisible), invisible)
+            readings += [(said, note.strip()), (asides_joined(said), asides_joined(note).strip()),
+                         (asides_joined(said, HEDGE), asides_joined(note, HEDGE).strip()),
+                         (asides_joined(said, WIDER_HEDGE), asides_joined(note, WIDER_HEDGE).strip())]
+    return list(dict.fromkeys(reading for reading in readings if reading != (text, evidence)))
+
+
 def personal_note(candidate, text):
     """Keep a short exact self-disclosure, not a model-written biography/instruction."""
     if not isinstance(candidate, dict) or candidate.get('category') not in CATEGORIES:
@@ -298,16 +343,16 @@ def personal_note(candidate, text):
     if clean(evidence, 180) != evidence or any(s in evidence for s in ('\n', '`', '<@', '://')):
         return None
     # Every place these words stand as whole words must be the member's own plain claim; any doubt keeps nothing.
-    spots, at = [], text.find(evidence)
-    while at >= 0 and len(spots) <= MAX_SPOTS:
-        if whole(text, at, evidence):
-            spots.append(at)
-        at = text.find(evidence, at + 1)
+    spots = spots_of(text, evidence)
     if not spots or len(spots) > MAX_SPOTS:
         return None
     source = Source(text)
     if not all(source.claims(at, evidence) for at in spots):
         return None
+    for plain, said in readings_of(text, evidence):
+        found, source = spots_of(plain, said) if said else [], Source(plain)
+        if not found or len(found) > MAX_SPOTS or not all(source.claims(at, said) for at in found):
+            return None
     # What a member is doing is only ever a projects note, and a projects note only ever says what they're doing.
     if not (DOING if candidate['category'] == 'projects' else LIKES).match(evidence):
         return None
@@ -316,6 +361,414 @@ def personal_note(candidate, text):
                  r'politic\w*|religio\w*|sexual\w*|health|medical|permission|approv\w*|deploy|execute)\b', evidence):
         return None
     return candidate['category'], evidence
+
+
+# An emoji is no word, break or quote of the member's: Unicode ones with their skin tones, joiners and variation
+# selectors, keycaps with their digit, flags, and Discord's own `<:name:id>`. Inside a report or a condition one hid it
+# ("i like chess, my mom 😂 would say", "if i win\nand finish 😂 early\n…"), as did an apostrophe spelled another way
+# ("y‘all say") (gene #190).
+EMOJI = (r"(?:<a?:\w{1,32}:\d{1,21}>|[0-9#*]\uFE0F?\u20E3|[\U0001F000-\U0001FAFF\u2300-\u23FF\u2600-\u27BF"
+         r"\u2B00-\u2BFF\uFE0E\uFE0F\u200D\u20E3\U000E0020-\U000E007F])")
+# A run of them with the spaces around it, matched only from the start of those spaces, so a long run of spaces is
+# crossed once.
+EMOJI_RUN = re.compile(rf"(?<![ \t])[ \t]*+{EMOJI}(?:[ \t]*+{EMOJI})*+[ \t]*+")
+APOSTROPHE = re.compile(r"(?<=\w)[\u2018\u201B\u2032\uFF07\u00B4](?=\w)")
+
+
+def plainly(text):
+    """The text with each run of emoji, and the spaces around it, as one space, and each apostrophe inside a word as a
+    plain one."""
+    return APOSTROPHE.sub("'", EMOJI_RUN.sub(' ', text))
+
+
+# Two more readings, which also only ever refuse more (gene #198). What #196's reading still missed: the older symbols
+# members send as emoji (©, ™, ‼, ⁉, arrows) and text faces (":)", ";P", "xD", "<3"); characters that show nothing
+# (zero-width spaces and joiners, word joiners, soft hyphens, direction marks, tags), read once as nothing ("don<ZWSP>t")
+# and once as a space ("would<ZWSP>say"); apostrophes that are word characters ("yʼall"); and an emoji inside a word
+# ("sa😂y", "ki😂dding"). No reading adds a comma or ends a condition: #199's over-refusals need their own design.
+PICTURE = (r"[\U0001F000-\U0001FAFF\u00A9\u00AE\u203C\u2049\u2122\u2139\u2194-\u2199\u21A9\u21AA\u2300-\u23FF"
+           r"\u24C2\u25AA\u25AB\u25B6\u25C0\u25FB-\u25FE\u2600-\u27BF\u2934\u2935\u2B00-\u2BFF\u3030\u303D\u3297"
+           r"\u3299]")
+# A face may run into the next word (":Pwhat", "<3who", "xDwho"), and takes its trailing brackets (":P)"); after a
+# word only a plain one ("thanks:)"), so "5:30", "re:(x)" and "https://" stay what they are. Matched atomically: its
+# alternatives overlap ("xD"), and nothing may try them again (Sol round 2 of #200).
+FACE = (r"(?>(?<![\w:;=])[:;=][-'^]?(?:[)(\]\[/|*]+|[DPpOo3][)(\]\[/|*]*)|(?<=\w)[:;=][-'^]?(?:[)(]+|[DP])(?!\w)|"
+        r"<3+|(?<![^\W\d_])[xX][Dd]+|[xX][Dd]+(?!\w)|\^_?\^|-_-|(?<!\w)T_T(?!\w))")
+FACES = re.compile(FACE)
+INWORD = rf"(?:<a?:\w{{1,32}}:\d{{1,21}}>|[0-9#*]\u20E3|{PICTURE})"  # What can stand inside a word; a face can't.
+SYMBOL = rf"(?:{INWORD}|{FACE})"
+SYMBOL_RUN = re.compile(rf"(?<![ \t])[ \t]*+{SYMBOL}(?:[ \t]*+{SYMBOL})*+[ \t]*+")
+SHOWS_NOTHING = (r"[\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180B-\u180F\u200B-\u200F\u202A-\u202E"
+                 r"\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\U0001D173-\U0001D17A\U000E0000-\U000E0FFF]")
+INVISIBLE = re.compile(SHOWS_NOTHING)
+APOSTROPHES = re.compile(r"(?<=\w)[\u2018\u201B\u2032\uFF07\u00B4\u02BC\u02BB](?=\w)")
+# In a word that emoji or characters showing nothing split ("tol😂d😂Will", "would<ZWSP>sa😂y", "y😂’all"), each run of
+# pieces that spells a word these rules look for is joined again; what stood between the others stays. Matched from a
+# word's start only.
+SEPARATOR = rf"(?:{INWORD}|{SHOWS_NOTHING})"
+SPLIT = re.compile(rf"(?<![\w'’])\w[\w'’]*(?:{SEPARATOR}+[\w'’]+)+")
+PIECES_OF = re.compile(rf"({SEPARATOR}+)")
+LOOKED_FOR = frozenset(
+    {word for rule in (FRAMED, REPORT, HEARD, NEGATED, ASKING, POLITE, RETRACTED, FILLER, COURTESY, TAKEN_BACK, CONDITION,
+                       OPENS, ASIDE_PHRASES, RHETORICAL, ME_CLAUSE, DESCRIBED, BREAK, STARTS, PRIOR, IDIOM, LIKES, DOING,
+                       INTRODUCES, POINTS_BACK, ASIDE_ONLY, TOLD)
+     for word in re.findall(r"[a-z]{2,}", rule.pattern)}
+    | ME | ME_BETWEEN | ADVERBS | NOUNS | PASSIVE | PARTICIPLES | ASIDE_WORDS | FORMS | OWN | UNFINISHED | CONTINUES
+    | BACKREF | ACTIVITY | PLURALS | NAMES | set(ASKED) | {'u', 'i', 'thats', 'its'})
+PIECES = max(map(len, LOOKED_FOR))  # Even a word split at every letter ("k😂i😂d😂d😂i😂n😂g").
+# The member's own clause, past fillers, after which a run's text faces stay as typed (see plainer): one filler and what
+# follows it at a time, so a message's run of them is crossed once, not once from each run of symbols in it (gene #201).
+KEPT_FILLER = re.compile(r"(?i)(?:lol|lmao|haha|but|and|so|tho|though|ok|okay|well|honestly|anyway)\W+")
+OWN_START = re.compile(r"(?i)(?:i|i'm|im|i've|ive|i'd|i'll|we|we're|we've|we'd|we'll)\b")
+
+
+def past_fillers(text, at, filler, ends):
+    """Where the fillers from `at` end; `ends` keeps each place already crossed, for the message's other runs."""
+    crossed = []
+    while at not in ends:
+        step = filler.match(text, at)
+        if not step:
+            ends[at] = at
+            break
+        crossed.append(at)
+        at = step.end()
+    for place in crossed:
+        ends[place] = ends[at]
+    return ends[at]
+
+
+@functools.lru_cache(maxsize=4096)
+def looked_for(word):
+    """Whether these rules look for this word: the words their patterns and word lists spell, and every form of the
+    ones they match by pattern ("pretending", which a pattern spells as `pretend` and any ending, Sol round 2 of #200)."""
+    word = word.lower().replace('’', "'")
+    return (word in LOOKED_FOR or word.replace("'", '') in LOOKED_FOR
+            or any(rule.fullmatch(word) for rule in (FRAMED, VERB, NEGATED, CONDITION, RETRACTED, TAKEN_BACK)))
+
+
+def unsplit(m):
+    pieces = PIECES_OF.split(m.group())  # Word, separator, word, …
+    words, out, at = pieces[::2], [], 0
+    while at < len(words):
+        upto = next((end for end in range(min(len(words), at + PIECES), at + 1, -1)
+                     if len(''.join(words[at:end])) <= PIECES and looked_for(''.join(words[at:end]))), at + 1)
+        out.append(''.join(words[at:upto]))
+        if upto < len(words):
+            out.append(pieces[2 * upto - 1])  # What stood between this piece and the next stays.
+        at = upto
+    return ''.join(out)
+
+
+@functools.lru_cache(maxsize=32)  # A message's readings serve each of its notes (gene #203).
+def plainer(text, invisible):
+    """gene #198's readings: apostrophes inside a word plain, a word split by emoji or characters showing nothing joined
+    where it spells one these rules look for, other characters showing nothing as `invisible` ('' or ' '), each run of
+    emoji, symbols and text faces with the spaces around it one space, and no run of spaces. Before the member's own
+    clause, a run keeps its text faces as typed ("i like chess ;P 😂 i thought it'd be boring"): the ";" may end their
+    sentence, and leaving it adds no refusal, where removing it would refuse what #196 keeps. The fillers are crossed
+    once for all the message's runs, and a run without a face is a space whatever follows it (gene #201)."""
+    text = INVISIBLE.sub(invisible, SPLIT.sub(unsplit, APOSTROPHES.sub("'", text)))
+    runs, kept, ends = list(SYMBOL_RUN.finditer(text)), {}, {}
+    for m in runs:
+        if FACES.search(m.group()) and OWN_START.match(text, past_fillers(text, m.end(), KEPT_FILLER, ends)):
+            kept[m.start()] = FACES.findall(m.group())
+    out, last = [], 0
+    for m in runs:
+        faces = kept.get(m.start())
+        out += [text[last:m.start()], f" {' '.join(faces)} " if faces else ' ']
+        last = m.end()
+    return re.sub(r'[ \t]{2,}', ' ', ''.join(out) + text[last:])
+
+
+# What those readings still let hide a word (gene #201): a keycap's variation selector, which they read as showing
+# nothing, so the keycap splits ("sa1️⃣y", "i1️⃣f"); an apostrophe beside an emoji or a character showing nothing,
+# which they leave as typed ("don<ZWSP>ʼt", "y😂‘all"); and a face attached to a word, which they take only as
+# ":)" or ":P" ("mom:P) would say", "mom:P] would say", "mom:] would say", "mom:p) would say", Sol round 1 of #205).
+# The message is read twice more with each of these plain first: main's readings stay as they are.
+SELECTED_KEYCAP = re.compile(r'(?<=[0-9#*])\uFE0F(?=\u20E3)')
+NEAR = rf"(?:\w|{PICTURE}|{SHOWS_NOTHING}|[>\u20E3])"
+STRAY = re.compile(rf"(?<={NEAR})[\u2018\u201B\u2032\uFF07\u00B4\u02BC\u02BB](?={NEAR}|<a?:)")
+# Any face FACE knows, after a word: a letter of one and any trailing brackets, slashes, bars and stars, or only
+# brackets, bars and stars, so "https://", "5:30" and "re:(x)" stay what they are.
+ATTACHED = re.compile(r"(?<=\w)[:;=][-'^]?(?:[DPpOo3][)(\]\[/|*]*|[)(\]\[|*]+)(?!\w)")
+
+
+@functools.lru_cache(maxsize=32)
+def prepared(text):
+    """The text with each keycap's variation selector gone, each apostrophe beside a word, an emoji or a character
+    showing nothing plain, and each face attached to a word a space ("mom:P] would say" as "mom  would say")."""
+    return ATTACHED.sub(' ', STRAY.sub("'", SELECTED_KEYCAP.sub('', text)))
+
+
+# What those still let hide a word (gene #207): obfuscations stacked in one place. A character showing nothing inside a
+# face or a keycap ("mom:<ZWSP>P] would say", "sa1<VS><ZWSP><keycap>y"), which they recognize before it's gone; a
+# keycap's digit, which a split word's letters take, so the keycap splits nothing ("don1️⃣ʼ1️⃣t"); and a slash face
+# attached to a word ("mom:/ would say"). And #201's item 4: a face kept before the member's own clause (see plainer)
+# ends nothing when that clause is only an aside ("if i win ;P i guess", "my mom ;P i swear would say"). The message
+# is read four times more, with these read plainly first: main's readings stay as they are.
+SELECTORS = re.compile(r'[\U0000FE00-\U0000FE0F]')  # Never a space: they only pick how the character before shows.
+KEYCAP = re.compile(r'[0-9#*]\U000020E3')
+WHOLE_KEYCAP = '\U0001F51F'  # A keycap of its own, which no word's letters take (see SPLIT).
+# A slash face after a word, never a link's "://" or a path's ":/x" (see ATTACHED).
+SLASHED = re.compile(r"(?<=\w)[:;=]-?/(?![/\w])")
+# The member's aside after a kept face: "i guess", "i swear", "we all know", "i mean".
+OWN_ASIDE = re.compile(r"(?i)(?:i|we)\s+(?:(?:all|just|really|kinda|lowkey|honestly|also)\s+)?"
+                       r"(?:guess|swear|mean|know|bet|suppose|think|figure|admit|promise)\b")
+# And (gene #212) the other ordinary hedges ("i believe", "i reckon", "i'd say"), past any run of modifiers ("i really
+# honestly guess", "i absolutely believe"). A reading of its own, beside OWN_ASIDE's, which stays as it was.
+HEDGE_MODIFIERS = (r"all|just|really|kinda|sorta|lowkey|honestly|also|actually|literally|totally|truly|personally|"
+                   r"still|do|did|would|absolutely|strongly|certainly")
+HEDGE_VERBS = (r"guess|swear|mean|know|bet|suppose|think|figure|admit|promise|believe|reckon|assume|imagine|hope|"
+               r"presume|gather|expect|suspect|say")
+HEDGE = re.compile(rf"(?i)(?:i|we|i'd|we'd)\s+(?:(?:{HEDGE_MODIFIERS})\s+)*+(?:{HEDGE_VERBS})\b")
+# And (gene #221 F1) past any other modifier: a word ending in -ly ("probably", "definitely", "firmly", "seriously") or
+# a common short one ("prob", "def"). A reading of its own, beside OWN_ASIDE's and HEDGE's, which stay as they were.
+MORE_MODIFIERS = r"prob|probs|def|defo|legit|deadass|highkey|pretty|even|kind|sort|of|very|so|too|never|always"
+WIDER_HEDGE = re.compile(rf"(?i)(?:i|we|i'd|we'd)\s+(?:(?:{HEDGE_MODIFIERS}|{MORE_MODIFIERS}|[^\W\d_]+ly)\s+)*+"
+                         rf"(?:{HEDGE_VERBS})\b")
+KEPT_FACES = re.compile(rf"(?<= )(?:{FACE} )+")
+
+
+@functools.lru_cache(maxsize=32)
+def composed(text, invisible):
+    """The text with variation selectors gone, other characters showing nothing as `invisible` ('' or ' '), each
+    keycap whole, then prepared, and each slash face attached to a word a space."""
+    unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', text))
+    return SLASHED.sub(' ', prepared(KEYCAP.sub(WHOLE_KEYCAP, unseen)))
+
+
+@functools.lru_cache(maxsize=64)
+def asides_joined(text, aside=OWN_ASIDE):
+    """A reading (see plainer) with each run of faces it kept dropped where the member's clause after it, past fillers,
+    is only an aside, and the aside too, as ASIDE_PHRASES blanks the member's others: what's around them reads as one
+    clause ("if i win lol \\nplease call me dan", "my mom would say"). The fillers are crossed once for all the
+    message's runs. `aside`: OWN_ASIDE, or HEDGE's wider vocabulary (gene #212), read as well, never instead."""
+    ends, out, last = {}, [], 0
+    for m in KEPT_FACES.finditer(text):
+        if m.start() < last:
+            continue
+        at = past_fillers(text, m.end(), KEPT_FILLER, ends)
+        if found := aside.match(text, at):
+            out += [text[last:m.start()], text[m.end():at]]
+            last = found.end()
+    return ''.join(out) + text[last:]
+
+
+# What #211's readings still let hide a word (gene #212): a slash face with a nose, a trailing bracket or a backslash
+# ("mom:^/ would say", "mom:/) would say", "mom:\ would say"), a "~" nose or a space before its brackets ("mom:~/ would
+# say", "mom:/ ) would say"), attached to a word or standing alone ("mom :-\ would say"), never a link's "://" or a
+# path's ":/x" or ":\x"; and the format controls that show nothing either, shorthand's and interlinear annotation's
+# ("mom:<U+1BCA0>P] would say", "would<U+FFF9>say"). The message is read twice more, with these read plainly first:
+# #211's readings stay as they are.
+CONTROLS = re.compile(r'[\U0001BCA0-\U0001BCA3\U0000FFF9-\U0000FFFB]')
+SLASH_FACE = re.compile(r"(?<![:;=])[:;=][-'^~]?[/\\](?:[ \t]*+[)(\]\[|*]+)?(?![/\\\w])")
+
+
+@functools.lru_cache(maxsize=32)
+def restacked(text, invisible):
+    """composed's reading (see there), with those format controls as `invisible` too, and each slash face a space,
+    both first."""
+    unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text)))
+    return composed(SLASH_FACE.sub(' ', unseen), invisible)
+
+
+# And (gene #221 F2) a slash face with horizontal whitespace around its nose or its slash ("mom :- / would say",
+# "mom : / would say", "mom:- / ) would say"), alone or attached to a word, never a link's ": //" or a path's ": /x" or
+# ": \x". The message is read twice more, with these read plainly first: #217's readings stay as they are.
+SPACED_SLASH_FACE = re.compile(r"(?<![:;=])[:;=][ \t]*+(?:[-'^~][ \t]*+)?[/\\](?:[ \t]*+[)(\]\[|*]+)?(?![/\\\w])")
+
+
+@functools.lru_cache(maxsize=32)
+def spaced(text, invisible):
+    """restacked's reading (see there), with each slash face, whitespace inside it or not, a space instead."""
+    unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text)))
+    return composed(SPACED_SLASH_FACE.sub(' ', unseen), invisible)
+
+
+# And (gene #226 item 2) a Unicode space separator, where #225's readings take only a space or a tab: inside a slash
+# face ("mom :-<U+00A0>/ would say"), or beside a line break next to a face (item 3, below). Read as a plain space.
+SPACE_SEPARATORS = re.compile(r'[\U000000A0\U00001680\U00002000-\U0000200A\U0000202F\U0000205F\U00003000]')
+
+
+# And (gene #226 item 3) a line break next to a face where what follows continues the clause: a hedge of the member's
+# ("if i win ;P<LF>i probably think"), or the rest of a report ("mom :- /<LF>would say", "mom ;P<LF>told me", "according
+# ;P<LF>to my mom", "mom<LF>:- / would say"); and a line break inside a slash face ("mom :-<LF>/ would say"). What #225's
+# readings keep as two lines reads as one clause, in a reading of its own. One before anything else (a question, a
+# sentence of its own) stays a line break. Any line break: a newline, a carriage return, a vertical tab, a form feed,
+# U+0085, U+2028 or U+2029. Each run of whitespace is crossed once, from its start.
+BREAKS = r'\n\r\x0b\x0c\U00000085\U00002028\U00002029'
+LOOSE_SLASH_FACE = r"(?<![:;=])[:;=]\s*+(?:[-'^~]\s*+)?[/\\](?:\s*+[)(\]\[|*]+)?(?![/\\\w])"
+ANY_FACE = rf"(?:{FACE}|{LOOSE_SLASH_FACE})"
+GOES_ON = (rf"(?i:(?:i|we|i'd|we'd)\s+(?:(?:{HEDGE_MODIFIERS}|{MORE_MODIFIERS}|[^\W\d_]+ly)\s+)*+(?:{HEDGE_VERBS})\b"
+             rf"|(?:(?:would|will|could|should|might|must|may|can|does|has|have|had|{HEDGE_MODIFIERS}|{MORE_MODIFIERS}"
+             rf"|[^\W\d_]+ly)\s+)*+(?:{BARE}|{INFLECTED})\b|to\b)")
+FACE_THEN_BREAK = re.compile(rf"({ANY_FACE})[ \t]*+(?:[{BREAKS}][ \t]*+)++(?={GOES_ON})")
+BREAK_THEN_FACE = re.compile(rf"(?<![ \t{BREAKS}])[ \t]*+(?:[{BREAKS}][ \t]*+)++(?=(?:{ANY_FACE}[ \t]++)++{GOES_ON})")
+LOOSE_SLASH = re.compile(LOOSE_SLASH_FACE)
+
+
+@functools.lru_cache(maxsize=32)
+def bridged(text, invisible):
+    """restacked's reading (see there), with each space separator a plain space, each line break next to a face a
+    space where the clause goes on after it, and each slash face a space, any whitespace inside it included: one
+    reading for both of #226's items, which a reading of item 2's alone never told apart."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
+    return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
+
+
+# And (gene #231 item 3) a line break inside the report itself, between an auxiliary (and any modifiers) and its verb
+# ("mom :- /<LF>would<LF>say", "mom would<LF>say", "did<LF>tell me"): it reads as one report, in a reading of its own;
+# bridged's stays as it was. Only a recognized report continuation: an auxiliary, any modifiers that aren't one, then a
+# report verb, so each run of modifiers is crossed once, up to the next auxiliary.
+AUXILIARIES = r"would|will|could|should|might|must|may|can|does|did|do|has|have|had"
+REPORT_RUN = re.compile(rf"(?i)\b(?:{AUXILIARIES})(?:\s++(?!(?:{AUXILIARIES})\b)"
+                        rf"(?:{HEDGE_MODIFIERS}|{MORE_MODIFIERS}|[^\W\d_]+ly)\b)*+\s++(?:{BARE}|{INFLECTED})\b")
+RUNS_OF_SPACE = re.compile(r'\s+')
+
+
+@functools.lru_cache(maxsize=32)
+def rejoined(text, invisible):
+    """bridged's reading (see there), with the whitespace inside each report continuation, line breaks included, one
+    space first."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
+    unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
+    return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
+
+
+# And (gene #236) two more ways a report hid, in a reading of its own; rejoined's stays as it was.
+# - Report verbs outside the vocabulary (announce, explain, mention …): read as the same form of "say", which the report
+#   rules know, on one line or split. Only verbs that report something: not "post", "note", "message" or "promise",
+#   which are mostly something else, and those often nouns too only in their verb-only forms ("joked", not "jokes").
+# - A chained auxiliary or a modifier rejoined's run doesn't take ("would<LF>have<LF>said", "would<LF>often<LF>say",
+#   "has been<LF>saying"): the whole run of auxiliaries and modifiers before a report verb is one, scanned once.
+# Verbs often nouns too (a joke, the comments, a state, a report) are here only in their verb-only forms, and none that
+# a game uses for something else (conceding a match).
+SAY_FORMS = {
+    'say': 'announce explain mention declare reveal whisper argue confess suggest respond admit boast brag exclaim '
+           'mutter mumble scream imply assert allege acknowledge complain yell warn',
+    'says': 'announces explains mentions declares reveals whispers argues confesses suggests responds admits boasts '
+            'brags exclaims mutters mumbles screams implies asserts alleges acknowledges complains yells warns',
+    'said': 'announced explained mentioned declared revealed whispered argued confessed suggested replied commented '
+            'joked warned complained shouted yelled stated reported remarked responded tweeted admitted boasted bragged '
+            'exclaimed muttered mumbled screamed hinted implied emailed asserted alleged acknowledged',
+    'saying': 'announcing explaining mentioning declaring revealing whispering arguing confessing suggesting replying '
+              'commenting complaining shouting yelling stating reporting remarking responding tweeting admitting '
+              'boasting bragging exclaiming muttering mumbling screaming hinting implying emailing asserting alleging '
+              'acknowledging'}
+SAY_PHRASES = {'point out': 'say', 'points out': 'says', 'pointed out': 'said', 'pointing out': 'saying',
+               'bring up': 'say', 'brings up': 'says', 'brought up': 'said', 'bringing up': 'saying',
+               'let slip': 'said', 'lets slip': 'says', 'letting slip': 'saying'}
+SAID_AS = {word: say for say, words in SAY_FORMS.items() for word in words.split()}
+REPORTED_TOO = re.compile(r"(?i)\b(?:" + '|'.join(rf"{first}\s+{second}" for first, second in
+                                                 (phrase.split() for phrase in SAY_PHRASES)) +
+                          '|' + '|'.join(SAID_AS) + r")\b")
+CHAINED = r"would|will|could|should|might|must|may|can|does|did|do|has|have|had|having|be|been|being|is|was|were|am|are"
+RUN_MODIFIERS = rf"{HEDGE_MODIFIERS}|{MORE_MODIFIERS}|often|sometimes|ever|once|again|rarely|seldom|[^\W\d_]+ly"
+AUXILIARY_RUN = re.compile(rf"(?i)\b(?:{CHAINED})\b(?:\s++(?:{CHAINED}|{RUN_MODIFIERS})\b)*+")
+VERB_NEXT = re.compile(rf"(?i)\s++(?:{BARE}|{INFLECTED})\b")
+
+
+def chained(text):
+    """The text with the whitespace inside each run of auxiliaries and modifiers before a report verb, line breaks
+    included, one space. Each run is matched once, from its first auxiliary to its last word, so a long one is never
+    read again from each place in it."""
+    out, last = [], 0
+    for run in AUXILIARY_RUN.finditer(text):
+        if verb := VERB_NEXT.match(text, run.end()):
+            out += [text[last:run.start()], RUNS_OF_SPACE.sub(' ', text[run.start():verb.end()])]
+            last = verb.end()
+    return ''.join(out) + text[last:]
+
+
+# The member's own words with those verbs ("i mentioned it before", "we argued about openings") report no one else: the
+# verb is left as typed where its subject, past any auxiliaries, negations and modifiers, is the member's ("i have
+# already explained", "i haven't mentioned"), whatever their apostrophe (Sol round 1 of #238, S4). Never a passive one
+# ("i was warned", "we've been told"): someone else did that.
+FIRST_PERSON = frozenset("i we i'm im i've ive i'd id i'll ill we're were we've weve we'd we'll".split())
+OWN_BE = frozenset({"i'm", 'im', "we're"})
+PASSIVE_BE = PASSIVE | {"isn't", 'isnt', "wasn't", 'wasnt', "weren't", 'werent', "aren't", 'arent'}
+STEP_OVER = re.compile(rf"(?i)^(?:{CHAINED}|{RUN_MODIFIERS})$")
+AUXILIARY_WORD = re.compile(rf"(?i)^(?:(?:{CHAINED})(?:n'?t)?|(?:ca|wo|ai|sha)n'?t|cannot)$")
+WORDS_BEFORE = 8
+# A letter the pattern matches in another case, as the ASCII letter it matches: dotted and dotless "i", the long "s",
+# the Kelvin sign. Lowercased, they stayed as they were, and the verb was no key (Sol round 1 of #238, B1).
+ASCII_CASES = {0x130: 'i', 0x131: 'i', 0x17F: 's', 0x212A: 'k'}
+# A verb with something of its own after it reports that, not the claim ("they announced the tournament", "she
+# complained about lag", "he pointed out a bug", "she replied to my message"): left as typed (Sol round 1 of #238, S3).
+# It reports the claim only where what follows is nothing of its own: the clause's end, "so" or "that", the claim's own
+# start, a modifier, or "it" or "this", the person told ("me", "to everyone"), with nothing else after them.
+AFTER_A_REPORT = FIRST_PERSON | frozenset('so that my too once again before earlier already yesterday today lately '
+                                          'always never often sometimes ever still also just even and but or then '
+                                          'lol lmao lmfao haha tho though fr ngl'.split())
+POINTERS = frozenset({'it', 'this'})
+RECIPIENTS = frozenset("me us him her them everyone everybody yall y'all you u people".split())
+NEXT_WORD = re.compile(r"\s*+([\w']+)")
+
+
+def reports_the_claim(text, at):
+    """Whether what follows a report verb ending at `at` leaves it reporting the claim (see AFTER_A_REPORT). At most a
+    few words are read, so a long run of them is never read again from each verb before it."""
+    word = NEXT_WORD.match(text, at)
+    for _ in range(4):
+        if word is None:
+            return True  # The clause ends: punctuation, a face, the message's end.
+        found = word.group(1).lower()
+        if found == 'to':
+            word = NEXT_WORD.match(text, word.end())
+            if word is None or word.group(1).lower() not in RECIPIENTS:
+                return False
+        elif found not in POINTERS and found not in RECIPIENTS:
+            return found in AFTER_A_REPORT or (found.endswith('ly') and found.isalpha())
+        word = NEXT_WORD.match(text, word.end())
+    return True
+
+
+def members_own(text, at, participle):
+    """Whether the report verb at `at` is the member's own (see FIRST_PERSON). `participle`: whether it's the form that
+    "be" makes passive ("warned", not "warning")."""
+    before = APOSTROPHES.sub("'", text[max(0, at - 100):at].replace(chr(0x2019), "'")).lower()
+    nearest = None  # The auxiliary right before the verb, past any modifiers.
+    for word in reversed(WORD.findall(before)[-WORDS_BEFORE:]):
+        if STEP_OVER.match(word) or NEGATED.fullmatch(word) or word in ADVERBS:
+            if nearest is None and AUXILIARY_WORD.match(word):
+                nearest = word
+            continue
+        passive = participle and (nearest in PASSIVE_BE if nearest else word in OWN_BE)
+        return word in FIRST_PERSON and not passive
+    return False
+
+
+def reworded(m):
+    """A report verb outside the vocabulary, as the same form of "say", unless its subject is the member's own or it
+    has something of its own after it; one it doesn't know after all, as typed: never an error."""
+    found = RUNS_OF_SPACE.sub(' ', m.group().translate(ASCII_CASES).lower())
+    say = SAY_PHRASES.get(found) or SAID_AS.get(found)
+    if say is None or not reports_the_claim(m.string, m.end()) or members_own(m.string, m.start(), say == 'said'):
+        return m.group()
+    return say
+
+
+@functools.lru_cache(maxsize=32)
+def widened(text, invisible):
+    """rejoined's reading (see there), with each report verb outside the vocabulary the same form of "say", and each
+    run of auxiliaries and modifiers before a report verb joined, both first."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = chained(REPORTED_TOO.sub(reworded, unseen))
+    unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
+    unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
+    return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
+
+
+def spots_of(text, evidence):
+    """Where the evidence stands as whole words, stopping once there are more than MAX_SPOTS."""
+    spots, at = [], text.find(evidence)
+    while at >= 0 and len(spots) <= MAX_SPOTS:
+        if whole(text, at, evidence):
+            spots.append(at)
+        at = text.find(evidence, at + 1)
+    return spots
 
 
 def whole(text, at, evidence):

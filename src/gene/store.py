@@ -53,6 +53,12 @@ class Conflict(ValueError):
     pass
 
 
+class Held(Conflict):
+    """Refused for now, not for good: what was asked for depends on a member summary held back until its messages are
+    read again (HumanMint/fri#355), and is given or sent once that checks out. The API answers 423, apart from a
+    conflict's 409, so Fri can tell the two apart (a delivery isn't recorded as failed)."""
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
@@ -240,6 +246,8 @@ class Store:
             expiry_triggers(db)  # And on a summary lapsing under one that doesn't check (gene #176).
             settle_summaries(db)
             self._settle_withdrawals(db)
+            from .fri_channel_withdrawal import initialize as initialize_channel_withdrawals
+            initialize_channel_withdrawals(db)  # Once every table and column its triggers name exists.
             # Existing queued requests have never received intake approval. Fail closed
             # during migration; completed/running jobs and release approvals retain their history.
             db.execute('UPDATE jobs SET state="awaiting_owner" WHERE state="queued" '
@@ -700,8 +708,37 @@ class Store:
             db.execute('DELETE FROM memories WHERE id=? AND guild_id=?', (memory_id, guild_id))
             self._audit(db, actor, 'forget', memory_id)
 
-    def erase_user(self, user_id):
-        self.personal_control(user_id, 'disable')
+    # Where the controller records who wrote a message by its ID: a saved turn's own message, a fenced or deleted one with
+    # its author, a pending question's, a ping's grant and a research permit, each made for that message's author.
+    MESSAGE_AUTHORS = (("SELECT user_id FROM chat_turns WHERE json_extract(NULLIF(source,''),'$.id')=?"),
+                       # And a burst's earlier messages, the same member's (Sol round 2 of #213).
+                       ("SELECT user_id FROM chat_turns WHERE EXISTS (SELECT 1 FROM json_each(chat_turns.burst) b "
+                        "WHERE json_extract(b.value,'$.source.id')=?)"),
+                       'SELECT user_id FROM chat_message_fences WHERE message_id=? AND user_id IS NOT NULL',
+                       'SELECT user_id FROM chat_turn_deletions WHERE message_id=? AND user_id IS NOT NULL',
+                       'SELECT user_id FROM chat_pending WHERE source_id=?',
+                       'SELECT user_id FROM mention_grants WHERE source_id=?',
+                       'SELECT user_id FROM web_requests WHERE source_id=?')
+
+    def someone_elses(self, message_id, user_id):
+        """Whether the controller has this message recorded as another member's (see MESSAGE_AUTHORS): then it never
+        dates an erasure of this one's (Sol round 1 of #213)."""
+        with self.connection() as db:
+            return self.someone_elses_in(db, message_id, user_id)
+
+    @classmethod
+    def someone_elses_in(cls, db, message_id, user_id):
+        """someone_elses, read in a transaction already open: a memory edit's (HumanMint/gene#223)."""
+        for query in cls.MESSAGE_AUTHORS:
+            try:
+                if any(str(row[0]) != str(user_id) for row in db.execute(query, (str(message_id),))):
+                    return True
+            except sqlite3.OperationalError:  # A table this store never set up.
+                continue
+        return False
+
+    def erase_user(self, user_id, discord_at=None, margin=0):
+        self.personal_control(user_id, 'disable', discord_at, margin)
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self._erase_jobs(db, db.execute('SELECT id,proposal FROM jobs WHERE user_id=?', (user_id,)).fetchall(),
@@ -754,10 +791,13 @@ class Store:
                 'WHERE guild_id=? AND channel_id=? AND user_id=? '
                 'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
             turns = self._current_turns(db, turns)
+            from .fri_member_summary import HELD_REPLY, holding
             for turn in turns:
                 drew = summaries_of(turn)
                 for key in ('user_id', 'summary_generation', 'summary_dependencies'):
                     turn.pop(key)
+                if drew and holding(db, guild_id, drew):  # Withheld while a summary it drew on is (HumanMint/fri#355).
+                    turn['reply'], drew = HELD_REPLY, []
                 if dependencies and drew:
                     turn['summaries'] = drew
                 turn['burst'] = json.loads(turn['burst'])
@@ -770,6 +810,8 @@ class Store:
                                                   'ORDER BY created DESC LIMIT 20', (guild_id,))]
             from .fri_pending import read as read_pending
             pending = read_pending(db, guild_id, channel_id, user_id, revision[0] if revision else 0)
+            if pending and self._held_question(db, guild_id, channel_id, user_id, pending):
+                pending = None
             return {'pending': pending, 'turns': turns, 'facts': facts, 'revision': revision[0] if revision else 0,
                     'elsewhere': self._elsewhere(db, guild_id, channel_id, user_id, sources)
                     if profiles and profile['enabled'] else [],
@@ -793,6 +835,16 @@ class Store:
         current = generation(db, guild_id, user_id)
         summary = view(read(db, guild_id, user_id))
         return summary and {**summary, 'generation': current}
+
+    @staticmethod
+    def _held_question(db, guild_id, conversation, user_id, pending):
+        """Whether the turn that left this question open drew on a summary held back until it's read again: the
+        question is the model's words, so it waits too (HumanMint/fri#355)."""
+        from .fri_member_summary import holding
+        asked = str((pending.get('source') or {}).get('id', ''))
+        return any(holding(db, guild_id, summaries(row)) for row in db.execute(
+            "SELECT user_id,summary_generation,summary_dependencies FROM chat_turns WHERE guild_id=? AND channel_id=? "
+            "AND user_id=? AND json_extract(NULLIF(source,''),'$.id')=?", (guild_id, conversation, user_id, asked)))
 
     def _elsewhere(self, db, guild_id, conversation, user_id, sources=False):
         """What the member said to Fri lately in the server's other everyone-readable conversations.
@@ -856,35 +908,41 @@ class Store:
         game_nights = [] if kind == 'public' else None
         if not enabled:  # Memory off: Fri keeps none of these, and forget-me erased them.
             return {'reminders': reminders, 'saved_work': [], 'game_nights': game_nights}
-        from .fri_member_summary import current_writes
+        from .fri_member_summary import current_writes, held_writes
         from .fri_social_store import ACTIVE, Social
         from .fri_workspace_store import Workspace
         Social.prune(db)
         Workspace.prune(db)
-        # What shows here holds nothing of a summary since lapsed: a reminder's text, a draft's title (gene #158).
+        # What shows here holds nothing of a summary since lapsed: a reminder's text, a draft's title (gene #158). Nor
+        # of one held back until it's read again: those are left out meanwhile (HumanMint/fri#355).
+        held = set()
         if kind == 'private':
-            current_writes(db, 'fri_reminder_dependencies', 'SELECT id FROM fri_reminders WHERE guild_id=? AND '
-                           'user_id=? AND dm_id=?', (guild_id, user_id, place))
-        current_writes(db, 'fri_work_dependencies', "SELECT id FROM fri_work WHERE guild_id=? AND user_id=? AND "
-                       "scope=? AND state='open'", (guild_id, user_id, conversation))
+            mine = 'SELECT id FROM fri_reminders WHERE guild_id=? AND user_id=? AND dm_id=?'
+            current_writes(db, 'fri_reminder_dependencies', mine, (guild_id, user_id, place), held_back=False)
+            held |= held_writes(db, 'fri_reminder_dependencies', mine, (guild_id, user_id, place))
+        mine = "SELECT id FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND state='open'"
+        current_writes(db, 'fri_work_dependencies', mine, (guild_id, user_id, conversation), held_back=False)
+        held |= held_writes(db, 'fri_work_dependencies', mine, (guild_id, user_id, conversation))
         now = time.time()
         if kind == 'private':
             # A settled one stays a day from when it settled: delivery stamps lease_until (two minutes on) when it
             # claims and sends, so a late send after an outage doesn't vanish the moment it goes out.
             for row in db.execute(
-                    f"SELECT body,due,local_time,timezone,state,revision FROM fri_reminders WHERE guild_id=? AND user_id=? "
+                    f"SELECT id,body,due,local_time,timezone,state,revision FROM fri_reminders WHERE guild_id=? AND user_id=? "
                     f"AND dm_id=? AND (state IN ({','.join('?'*len(ACTIVE))}) OR (state IN ('sent','failed','uncertain') "
                     f"AND max(due,lease_until)>?)) ORDER BY state IN ({','.join('?'*len(ACTIVE))}) DESC, due LIMIT ?",
                     (guild_id, user_id, place, *ACTIVE, now-LOOP_SETTLED_SECONDS, *ACTIVE, LOOP_ITEMS)):
+                if row['id'] in held:
+                    continue
                 state = row['state']
                 # Confirming and delivering both check the privacy revision: a change since then means it never goes out.
                 if state in ('pending', 'scheduled', 'claimed') and row['revision'] != revision:
                     state = 'will_not_send'
                 reminders.append({'text': row['body'], 'due': row['due'], 'local_time': row['local_time'],
                                   'timezone': row['timezone'], 'state': state})
-        saved_work = [dict(row) for row in db.execute(
-            "SELECT title,updated FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND state='open' "
-            'ORDER BY updated DESC LIMIT ?', (guild_id, user_id, conversation, LOOP_ITEMS))]
+        saved_work = [{'title': row['title'], 'updated': row['updated']} for row in db.execute(
+            "SELECT id,title,updated FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND state='open' "
+            'ORDER BY updated DESC LIMIT ?', (guild_id, user_id, conversation, LOOP_ITEMS)) if row['id'] not in held]
         if kind == 'public':
             for row in db.execute("SELECT id FROM fri_plans WHERE guild_id=? AND user_id=? AND channel_id=? AND state IN "
                                   "('pending','open','finalized') ORDER BY created DESC", (guild_id, user_id, place)).fetchall():
@@ -939,7 +997,7 @@ class Store:
         nothing pruning it yet goes here, as a read that finds it lapsed drops it, so the reply is a breadcrumb before
         it's reported (gene #120). Only such a reply takes the write lock; any other lookup reads, as before.
         """
-        from .fri_member_summary import lapsed
+        from .fri_member_summary import holding, lapsed
         found = {}
         with self.connection() as db:
             def turn(message_id):
@@ -963,7 +1021,12 @@ class Store:
                 if not all(self._privacy_state(db, s['user_id']) == (s['revision'], True) for s in sources):
                     continue  # Includes the original speaker: never relabel an old reply.
                 # And the summaries it drew on, for a turn answering it to depend on in turn (fri #193). Any other
-                # answer stays as it was.
+                # answer stays as it was. One drawn on a summary held back until it's read again isn't verbatim
+                # meanwhile, so Fri neither repeats it nor answers it as said (HumanMint/fri#355), and it says it's
+                # held, not retired, so Fri keeps its copy for when that checks out (Sol round 1's S1).
+                if summaries(row) and holding(db, guild_id, summaries(row)):
+                    found[message_id] = {'verbatim': False, 'held': True, 'provenance': sources}
+                    continue
                 found[message_id] = {'verbatim': bool(row['verbatim']), 'provenance': sources,
                                      **({'summaries': summaries(row)} if summaries(row) else {})}
         return found
@@ -1078,13 +1141,15 @@ class Store:
         return True
 
     def check_chat(self, user_id, revision, provenance=(), *, guild_id=None, messages=(), summary_generation=None,
-                   summary_dependencies=(), drew_on=()):
+                   summary_dependencies=(), drew_on=(), conversation_id=None, source=None, burst=(), parent=None):
         """The save's privacy fence without writing: run before a reply is delivered.
 
         messages: the Discord messages the turn answers (its own and its burst's). One its author withdrew since stops
         the reply (gene #90). summary_generation: the member summary's the turn drew on, if it did (gene #91).
         summary_dependencies: other members' summaries it may repeat through Fri's earlier replies (fri #193).
         drew_on: the other messages its model requests carried. One deleted since stops it too (gene #141).
+        conversation_id, source, burst, parent: where the turn was said, and the channel a thread is under. A channel
+        or thread deleted since stops it too (HumanMint/fri#358).
         """
         with self.connection() as db:
             if summary_generation is not None or summary_dependencies:  # A lapsed summary goes here, in one go.
@@ -1092,8 +1157,10 @@ class Store:
             if self._privacy_state(db, user_id)[0] != revision:
                 raise Conflict('This conversation was cleared while Fri was replying. Start again.')
             self._checked_provenance(db, user_id, provenance)
+            from .fri_channel_withdrawal import turn_withdrawn
             if (self.taken_back(db, guild_id, user_id, messages) or
-                    self.deleted_anywhere(db, guild_id, [*messages, *drew_on])):
+                    self.deleted_anywhere(db, guild_id, [*messages, *drew_on]) or
+                    turn_withdrawn(db, guild_id, conversation_id, source, burst, parent)):
                 raise Conflict(WITHDRAWN)
             self._summary_unchanged(db, guild_id, user_id, summary_generation)
             self._dependencies_unchanged(db, guild_id, summary_dependencies)
@@ -1136,26 +1203,29 @@ class Store:
         """A turn that drew on the member's summary fails closed once a withdrawal dropped it (gene #91), or once it
         lapsed: one that expired with nothing pruning it yet goes here, as a read that finds it lapsed drops it, so
         its generation moves before it's compared (gene #113). A turn that says nothing, from an older Fri or one that
-        drew on none, is checked as before."""
-        from .fri_member_summary import generation, lapsed
+        drew on none, is checked as before. While the summary is held back until it's read again, the turn is refused
+        too, though nothing is retired: what it copied may not stand (HumanMint/fri#355)."""
+        from .fri_member_summary import generation, held, lapsed
         if summary_generation is None:
             return
         if lapsed(db, guild_id, user_id):
             db.commit()  # It stays gone, and its replies retired, though the refusal undoes the rest.
             raise Conflict(SUMMARY_CHANGED)
-        if generation(db, guild_id, user_id) != summary_generation:
+        if generation(db, guild_id, user_id) != summary_generation or held(db, guild_id, user_id):
             raise Conflict(SUMMARY_CHANGED)
 
     @staticmethod
     def _dependencies_unchanged(db, guild_id, dependencies):
         """A turn that may repeat another reply of Fri's drawn on a member's summary fails closed once that summary went
-        or lapsed, as one drawing on the member's own does (fri #193). The refusal names nobody."""
-        from .fri_member_summary import generation, lapsed
+        or lapsed, as one drawing on the member's own does (fri #193), or while it's held back (HumanMint/fri#355). The
+        refusal names nobody."""
+        from .fri_member_summary import generation, held, lapsed
         for item in dependencies:
             if lapsed(db, guild_id, item['user_id']):
                 db.commit()  # As for the member's own (see _summary_unchanged).
                 raise Conflict(DEPENDENCY_CHANGED)
-            if generation(db, guild_id, item['user_id']) != item['generation']:
+            if (generation(db, guild_id, item['user_id']) != item['generation'] or
+                    held(db, guild_id, item['user_id'])):
                 raise Conflict(DEPENDENCY_CHANGED)
 
     def check_authors(self, authors):
@@ -1175,7 +1245,7 @@ class Store:
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
                   *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=None,
                   reply_message_id=None, verbatim=False, audience='conversation', summary_generation=None,
-                  summary_dependencies=(), drew_on=()):
+                  summary_dependencies=(), drew_on=(), parent=None):
         # None: a legacy companion that doesn't track sources. A list, even empty, is complete attribution.
         attributed = provenance is not None
         if audience not in ('server', 'conversation') or (audience == 'server' and not channel_id.startswith('public:')):
@@ -1195,6 +1265,9 @@ class Store:
         if web_receipt:
             from .fri_research import ResearchReceipt
             web_receipt = ResearchReceipt.model_validate(web_receipt).model_dump()
+        # The notes it may keep are read from the message alone, before the write lock is taken, so a long message
+        # holds no other write up while it's read (gene #203). What the database says about them is checked inside.
+        checked = [personal_note(candidate, text) for candidate in list(notes)[:3]]
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             current = db.execute('SELECT revision FROM chat_revisions WHERE user_id=?', (user_id,)).fetchone()
@@ -1216,23 +1289,32 @@ class Store:
             if source:
                 db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
                            (guild_id, channel_id, user_id, source.id))
-            # Words sent before the member removed a note seen here, answered after it (a queued message),
-            # can't bring it back: like memory off, the turn keeps nothing, and says so. Nor can a message of
-            # theirs withdrawn before this save landed (gene #90): its exchange went, and this would be it again.
-            from .fri_memory_store import predates
+            # Words sent before the member removed a note seen here, or before they last turned memory off, answered
+            # after it (a queued message), can't bring them back: like memory off, the turn keeps nothing, and says
+            # so (HumanMint/fri#331). Nor can a message of theirs withdrawn before this save landed (gene #90): its
+            # exchange went, and this would be it again.
+            from .fri_memory_store import before_erasure, predates
             first = ChatSource.model_validate(burst[0]['source']) if burst else source  # A burst's earliest.
             own = [*([source.id] if source else []), *(row['source']['id'] for row in burst)]
             fenced = self.taken_back(db, guild_id, user_id, own) or self.deleted_anywhere(db, guild_id, own)
+            # Nor one said in a channel or thread deleted since (HumanMint/fri#358): every message of it is.
+            from .fri_channel_withdrawal import turn_withdrawn
+            fenced = fenced or turn_withdrawn(db, guild_id, channel_id, source and source.model_dump(), burst, parent)
             # Nor one whose model request carried a message deleted by now (gene #141): its reply may repeat it, so
             # it keeps nothing, though the member's own message stands, so it settles what was pending as usual.
             stale = (fenced or self.deleted_anywhere(db, guild_id, drew_on) or
                      predates(db, guild_id, channel_id, user_id, first))
+            # One from before memory was last turned off keeps no exchange or note either (HumanMint/fri#331), and,
+            # with memory on again, leaves no question pending: that would carry its words to the member's next turn
+            # (HumanMint/fri#337). While memory is still off, its question is pending as any turn's is then, as before.
+            erased = before_erasure(db, user_id, first)
+            back_on = erased and self._privacy_state(db, user_id)[1]  # Memory on again since.
             # A withdrawn message's late save leaves what's pending as it is: a newer turn may have left a question.
             if response_kind == 'reply' and not fenced:
                 save_pending(db, guild_id, channel_id, user_id, revision, text, source,
-                             None if stale else clarification, provenance if attributed else None)
+                             None if stale or back_on else clarification, provenance if attributed else None)
             profile = self._personal_context(db, guild_id, channel_id, user_id)
-            if not profile['enabled'] or stale:
+            if not profile['enabled'] or stale or erased:
                 return {'ok': True, 'first_memory': False, 'kept': False}
             if web_receipt:
                 db.execute('INSERT INTO web_research(guild_id,user_id,channel_id,created,receipt) VALUES (?,?,?,?,?)',
@@ -1253,8 +1335,7 @@ class Store:
                     return []
                 saying = [row['source']['id'] for row in burst if evidence in row['text']]
                 return [saying[-1] if saying else source.id]
-            for candidate in list(notes)[:3]:
-                note = personal_note(candidate, text)
+            for note in checked:
                 if not note:
                     continue
                 # What a member is working on stays where they said it, even in a turn that reaches the profile.
@@ -1313,6 +1394,9 @@ class Store:
         wide = fences()
         db.execute(f'DELETE FROM personal_note_removals WHERE at<? AND (at<? OR digest NOT IN ({",".join("?"*len(wide))}))',
                    (time.time() - TTL, time.time() - HORIZON, *wide))
+        db.execute('DELETE FROM personal_erasures WHERE at<?', (time.time() - HORIZON,))  # Wordless, so as long.
+        db.execute('DELETE FROM personal_erasure_times WHERE at<?', (time.time() - HORIZON,))  # And its Discord time.
+        db.execute('DELETE FROM personal_removal_times WHERE at<?', (time.time() - HORIZON,))  # A removal's too.
         # A note learned while other members' words were in view goes when any of them changes their privacy.
         for note_id, provenance in db.execute("SELECT id,provenance FROM personal_notes WHERE guild_id=? AND "
                                               "user_id=? AND provenance<>'[]'", (guild_id, user_id)).fetchall():
@@ -1336,7 +1420,10 @@ class Store:
                               "channel_id=? AND user_id=? AND (? OR provenance IS NULL OR provenance='[]') "
                               'ORDER BY at DESC LIMIT ?', (guild_id, scope, user_id, profiles, limit(scope)))]}
 
-    def personal_control(self, user_id, action):
+    def personal_control(self, user_id, action, discord_at=None, margin=0):
+        """`discord_at`: when the Discord message or interaction that asked was sent, on Discord's clock, if known: an
+        erasure's cutoff for the member's words is that, not Gene's own stamp (HumanMint/fri#337). `margin`: with none,
+        how many seconds past Gene's stamp the cutoff is (Red's own deletion, HumanMint/fri#368)."""
         if action not in ('disable', 'enable'):
             raise ValueError('Invalid memory control')
         with self.connection() as db:
@@ -1352,7 +1439,21 @@ class Store:
                 erase_social(db, user_id)
                 db.execute('DELETE FROM web_research WHERE user_id=?', (user_id,))
                 db.execute('DELETE FROM personal_notes WHERE user_id=?', (user_id,))
+                # Their removals' latest cutoff first, which the erasure's keeps (Sol round 2 of #213): a request that
+                # arrives late, dated before a removal, mustn't let what was said before that removal back.
+                removals = db.execute('SELECT max(at) FROM personal_note_removals WHERE user_id=?',
+                                      (user_id,)).fetchone()[0]
+                from .fri_memory_store import removals_on_discord
+                removals_discord = removals_on_discord(db, user_id)  # And on Discord's clock (HumanMint/fri#368).
                 db.execute('DELETE FROM personal_note_removals WHERE user_id=?', (user_id,))
+                db.execute('DELETE FROM personal_removal_times WHERE user_id=?', (user_id,))
+                # Their removals went with the rest, so what's kept instead is when: no words, their ID and a time,
+                # a cutoff for everything they said before it once memory is on again (HumanMint/fri#321), with when
+                # they asked on Discord's clock, if known (HumanMint/fri#337).
+                from .fri_memory_store import record_erasure
+                record_erasure(db, user_id, time.time(), discord_at, removals, removals_discord, margin)
+                # The floor the database kept as they went (HumanMint/gene#219) is in the erasure now.
+                db.execute('DELETE FROM personal_cutoff_floors WHERE user_id=?', (user_id,))
                 # Their deletions first, while their fences still say which messages were theirs (gene #145).
                 db.execute('DELETE FROM chat_turn_deletions WHERE user_id=? OR EXISTS (SELECT 1 FROM chat_turn_withdrawals '
                            'w WHERE w.user_id=? AND w.guild_id=chat_turn_deletions.guild_id AND '
@@ -1430,6 +1531,10 @@ class Store:
         db.execute(f'DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? '
                    f'AND source_id IN ({marks})', (guild_id, conversation_id, user_id, *sources))
         Store._withdraw_notes(db, guild_id, user_id, conversation_id, message_id)
+        from .fri_learning_sources import withdraw as withdraw_learning
+        # A learning report, channel summary or archive observation that read it (gene #244), said in this
+        # conversation: a public channel's, or none that learning reads (a DM).
+        withdraw_learning(db, [message_id], said_in=conversation_id[7:] if conversation_id.startswith('public:') else '')
         if deleted:  # Others' replies that carried it, or Fri's reply to it, which may repeat it.
             if recorded:
                 Store._deleted(db, guild_id, message_id, now, user_id, current)
@@ -1532,10 +1637,16 @@ class Store:
             return [(row['user_id'], message) for message in json.loads(ids) for row in db.execute(
                 f'SELECT DISTINCT user_id FROM personal_notes WHERE guild_id=? AND {CURRENT} AND '
                 'instr(sources,?)>0 ORDER BY user_id', (guild_id, json.dumps(message)))]
+        from .fri_learning_sources import naming
+        from .fri_learning_sources import withdraw as withdraw_learning
         with self.connection() as db:
-            if not (deleted or self._learning(db) is not None or held(db) or noted(db)):
+            if not (deleted or self._learning(db) is not None or held(db) or noted(db)
+                    or naming(db, json.loads(ids))):
                 return {'ok': True, 'removed': 0}
             db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
+            # A learning report, channel summary or archive observation that read one, whatever else holds it (gene
+            # #244). By ID, with no channel to go by: one with no record of what it read is only held back.
+            withdraw_learning(db, json.loads(ids))
             holding = held(db)
             removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted)
                           for conversation, user, message in holding)

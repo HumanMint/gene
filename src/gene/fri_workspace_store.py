@@ -9,7 +9,7 @@ import json
 import time
 import uuid
 
-from .fri_member_summary import current_writes
+from .fri_member_summary import HELD_WRITE, current_writes, held_writes
 from .privacy import redact
 
 WORK = 'fri_work_dependencies'
@@ -82,20 +82,22 @@ class Workspace:
     def read(self, scope, work_id=''):
         with self.store.connection() as db:
             self.prune(db)
-            # Whatever is shown holds nothing of a summary since lapsed (gene #158).
-            current_writes(db, WORK, 'SELECT id FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND '
-                                     "(?='' OR id=?)", (scope['guild_id'], scope['user_id'],
-                                                         scope['conversation_id'], work_id, work_id))
+            # Whatever is shown holds nothing of a summary since lapsed (gene #158), nor of one held back until it's read
+            # again: asked for by itself, it's refused, and a list leaves it out, for now (HumanMint/fri#355).
+            shown = ('SELECT id FROM fri_work WHERE guild_id=? AND user_id=? AND scope=? AND '
+                     "(?='' OR id=?)", (scope['guild_id'], scope['user_id'], scope['conversation_id'], work_id, work_id))
+            current_writes(db, WORK, *shown, held_back=bool(work_id))
             if work_id:
                 work = self.get(db, work_id, scope)
                 work['deliveries'] = [dict(r) for r in db.execute(
                     'SELECT id,target_id,version,state,message_id FROM fri_posts WHERE work_id=? ORDER BY created DESC LIMIT 5',
                     (work_id,))]
                 return work
+            held = held_writes(db, WORK, *shown)
             return {'items': [dict(row) for row in db.execute(
                 'SELECT id,title,version,state,updated,expires FROM fri_work WHERE guild_id=? AND user_id=? '
                 'AND scope=? ORDER BY updated DESC LIMIT 30',
-                (scope['guild_id'], scope['user_id'], scope['conversation_id']))]}
+                (scope['guild_id'], scope['user_id'], scope['conversation_id'])) if row['id'] not in held]}
 
     def save(self, scope, source, revision, work_id, version, title, body, state, request_text='',
              summary_generation=None, summary_dependencies=()):
@@ -153,7 +155,8 @@ class Workspace:
                     (work_id, scope['guild_id'], scope['user_id'], scope['conversation_id'], title, body,
                      state, revision, now, now, now+30*86400))
             if scope['conversation_id'].startswith('private:'):  # In a channel it's the member's own words, as above.
-                depend_write(db, 'fri_work_dependencies', work_id, scope, summary_dependencies)
+                depend_write(db, 'fri_work_dependencies', work_id, scope, summary_dependencies,
+                             own=summary_generation is not None)
             db.execute('INSERT INTO fri_work_events VALUES (?,?,?)', (source.id, work_id, payload))
             return self.get(db, work_id, scope)
 
@@ -203,7 +206,8 @@ class Workspace:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
-            current_writes(db, WORK, 'SELECT work_id FROM fri_posts WHERE id=?', (post_id,))
+            # A cancel goes through while a summary it depends on is held back; an approval waits (HumanMint/fri#355).
+            current_writes(db, WORK, 'SELECT work_id FROM fri_posts WHERE id=?', (post_id,), held_back=approve)
             row = db.execute('SELECT * FROM fri_posts WHERE id=?', (post_id,)).fetchone()
             if not row:
                 raise KeyError('Post expired or was erased')
@@ -224,9 +228,13 @@ class Workspace:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
-            # Delivery is authorized only for a draft holding nothing of a summary since lapsed (gene #158).
-            current_writes(db, WORK, "SELECT work_id FROM fri_posts WHERE state='authorized'")
-            row = db.execute("SELECT * FROM fri_posts WHERE state='authorized' ORDER BY created LIMIT 1").fetchone()
+            # Delivery is authorized only for a draft holding nothing of a summary since lapsed (gene #158). One whose
+            # draft depends on a summary held back until it's read again waits (HumanMint/fri#355).
+            authorized = "SELECT work_id FROM fri_posts WHERE state='authorized'"
+            current_writes(db, WORK, authorized, held_back=False)
+            held = held_writes(db, WORK, authorized)
+            row = next((row for row in db.execute("SELECT * FROM fri_posts WHERE state='authorized' ORDER BY created")
+                        .fetchall() if row['work_id'] not in held), None)
             if not row:
                 return None
             try:
@@ -242,10 +250,18 @@ class Workspace:
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self.prune(db)
-            current_writes(db, WORK, 'SELECT work_id FROM fri_posts WHERE id=?', (post_id,))
+            draft = ('SELECT work_id FROM fri_posts WHERE id=?', (post_id,))
+            current_writes(db, WORK, *draft, held_back=False)
             row = db.execute('SELECT * FROM fri_posts WHERE id=?', (post_id,)).fetchone()
             if not row or row['state'] != 'claimed' or row['lease'] != lease:
                 raise ValueError('Delivery grant unavailable; do not send')
+            if held_writes(db, WORK, *draft):
+                # Its draft's summary was held back after the claim. Nothing was sent: it's authorized again, with no
+                # lease, and goes once that checks out; the answer says it's held, not refused (HumanMint/fri#355).
+                from .store import Held
+                db.execute("UPDATE fri_posts SET state='authorized',lease='' WHERE id=?", (post_id,))
+                db.commit()
+                raise Held(HELD_WRITE)
             self.revision(db, row['user_id'], row['revision'])
             db.execute("UPDATE fri_posts SET state='sending' WHERE id=?", (post_id,))
             return dict(row)

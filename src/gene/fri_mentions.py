@@ -158,9 +158,12 @@ def save_turn(store, body):
         db.execute('UPDATE mention_grants SET turn_hash=? WHERE token=?', (fingerprint, body.mention_grant))
         db.execute('DELETE FROM web_requests WHERE guild_id=? AND channel_id=? AND user_id=? AND source_id=?',
                    (body.guild_id, body.conversation_id, body.user_id, body.source.id))
-        from .fri_memory_store import predates
+        from .fri_memory_store import before_erasure, predates
+        # Nor a mention sent before the member last turned memory off, answered after it, as a turn's save holds one
+        # (HumanMint/fri#331): its research receipt and exchange are kept nowhere (Sol round 1 of #234, B2).
         if (not store._personal_context(db, body.guild_id, body.conversation_id, body.user_id)['enabled'] or
-                predates(db, body.guild_id, body.conversation_id, body.user_id, body.source)):
+                predates(db, body.guild_id, body.conversation_id, body.user_id, body.source) or
+                before_erasure(db, body.user_id, body.source)):
             return {'ok': True, 'first_memory': False, 'kept': False}  # The grant is used; nothing stays.
         if body.web_receipt:
             db.execute('INSERT INTO web_research(guild_id,user_id,channel_id,created,receipt) VALUES (?,?,?,?,?)',
@@ -241,12 +244,18 @@ def register(app, store, settings, auth):
                 raise HTTPException(403, 'Mention privacy evidence is limited to 25 nearby authors')
             if row['turn_hash'] and users-set(tracked)-{body.user_id}:
                 raise HTTPException(403, 'Completed mention context cannot add new authors')
+            from .fri_memory_store import last_removal
             result = {}
             for user in users:
                 profile = store._personal_context(db, body.guild_id, body.conversation_id, user)
                 revision = _revision(db, user)
                 tracked[user] = revision
-                result[user] = {'enabled': profile['enabled'], 'revision': revision}
+                # And when they last turned memory off or removed a note: Fri leaves out a post of theirs from before
+                # it, as the live view does (HumanMint/fri#337).
+                result[user] = {'enabled': profile['enabled'], 'revision': revision,
+                                'removed_at': last_removal(db, body.guild_id, user),
+                                # The same on Discord's clock, which a post's snowflake is on (HumanMint/fri#337).
+                                'removed_at_discord': last_removal(db, body.guild_id, user, on_discord=True)}
             db.execute('UPDATE mention_grants SET profiles=? WHERE token=?',
                        (json.dumps(tracked, sort_keys=True), body.mention_grant))
             return {'profiles': result}

@@ -1,5 +1,6 @@
 import copy
 import datetime as dt
+import itertools
 import time
 
 import discord
@@ -13,9 +14,13 @@ from gene.gene_controls import COMMANDS, arguments, requested
 from gene.store import Store
 from tests.test_api import headers
 
+# Distinct synthetic events made in the same millisecond get distinct IDs, as Discord's own sequence bits do: two
+# sources sharing an ID are one message to Gene (its owner check refuses another member's press with it, #232).
+SEQUENCE = itertools.count(1)
+
 
 def control_body(**changes):
-    event_id = str(discord.utils.time_snowflake(dt.datetime.now(dt.timezone.utc)))
+    event_id = str(discord.utils.time_snowflake(dt.datetime.now(dt.timezone.utc))+next(SEQUENCE) % (1 << 22))
     body = {'guild_id': '123', 'user_id': '20', 'channel_id': '1', 'conversation_id': 'public:1',
             'source': {'kind': 'discord_message', 'id': event_id, 'user_id': '20', 'display_name': 'Nova',
                        'channel_id': '1', 'guild_id': '123'},

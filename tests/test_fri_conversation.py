@@ -829,6 +829,16 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i was warned that i like chess'),
     ('games', 'i like chess', 'i like chess, i was warned'),
     ('games', 'i like chess', 'i like chess, we have been warned'),
+    # Sol round 1 of #238, S3: still a report where nothing of its own follows the verb: "that", "so", the claim, "it"
+    # or "this", the person told, or a modifier.
+    ('games', 'i like chess', 'my mom announced i like chess'),
+    ('games', 'i like chess', 'my mom complained to me that i like chess'),
+    ('nickname', 'my nickname is dan', 'my mom mentioned my nickname is dan'),
+    ('games', 'i like chess', 'i like chess, my mom warned me'),
+    ('games', 'i like chess', 'i like chess, my mom explained it to me'),
+    ('games', 'i like chess', 'i like chess, my mom announced this'),
+    ('games', 'i like chess', 'i like chess, my mom mentioned so'),
+    ('games', 'i like chess', 'i like chess, my mom complained loudly'),
     ('nickname', 'call me dan', 'if i win :)' + chr(0x2007) + chr(0x205F) + '\ni guess\nplease call me dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
@@ -1018,6 +1028,12 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, they announced the tournament'),
     ('games', 'i like chess', 'i like chess, she complained about lag'),
     ('games', 'i like chess', 'i like chess, he pointed out a bug'),
+    ('games', 'i like chess', 'i like chess, he admitted defeat'),
+    ('games', 'i like chess', 'i like chess, she replied to my message'),
+    ('games', 'i like chess', 'i like chess, she warned me about the trap'),
+    ('games', 'i like chess', 'i like chess, he whispered something'),
+    ('games', 'i like chess', 'i like chess, he screamed when he lost'),
+    ('games', 'i like chess', 'i like chess, the bot announced 3 winners'),
     # Sol round 1 of #238, S4: the member's own, past an adverb or a negation, with any apostrophe.
     ('games', 'i like chess', 'i like chess, i have already explained the rules'),
     ('games', 'i like chess', 'i like chess, i' + chr(0x2019) + 've explained my plan'),
@@ -1150,7 +1166,10 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 # gene #231: line breaks inside a report continuation, and runs of auxiliaries and modifiers.
                 'would\nsay ', 'mom :- /\nwould\n', 'would really\n', 'would would ', 'would really really ',
                 # gene #236: chained auxiliaries and modifiers, and report verbs outside the vocabulary.
-                'would\nhave\n', 'has been\noften\n', 'mom announced ', 'i mentioned ', 'pointed out ', 'we we '):
+                'would\nhave\n', 'has been\noften\n', 'mom announced ', 'i mentioned ', 'pointed out ', 'we we ',
+                # Sol round 1 of #238: what follows a wider verb and its subject, each read a few words at most.
+                'mom announced me me ', 'announced it to everyone ', 'me to it ', 'i have already ',
+                'i' + chr(0x2019) + 've mentioned ', "i haven't ", 'was warned ', 'confe' + chr(0x17F) * 2 + 'ed '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

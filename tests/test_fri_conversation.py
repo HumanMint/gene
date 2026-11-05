@@ -787,6 +787,33 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom would' + chr(0x2028) + 'say'),
     # gene #231 item 1: what only spaced refuses (it keeps the no-break space, so "have to say" is no filler there).
     ('games', 'i like chess', 'have' + chr(0xA0) + 'to say ;- / i like chess'),
+    # gene #236 item 1: what only bridged refuses (rejoined joins "must say", a filler).
+    ('games', 'i like chess', 'must\nsay :-\n/ i like chess'),
+    ('games', 'i like chess', 'must\tsay :-\n/ i like chess'),
+    ('games', 'i like chess', 'must\rsay :-\n/ i like chess'),
+    # gene #236 item 3: a chained auxiliary, or a modifier #235's run doesn't take, split across lines.
+    ('games', 'i like chess', 'i like chess, my mom would\nhave\nsaid'),
+    ('games', 'i like chess', 'i like chess, my mom would\noften\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom would\nsometimes\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom has been\nsaying'),
+    ('games', 'i like chess', 'i like chess, my mom will\nhave\ntold me'),
+    ('games', 'i like chess', 'i like chess, my mom might\nhave\nmentioned'),
+    # gene #236 item 4: report verbs outside the vocabulary, on one line or split.
+    ('games', 'i like chess', 'i like chess, my mom would\nannounce'),
+    ('games', 'i like chess', 'i like chess, my mom would announce'),
+    ('games', 'i like chess', 'i like chess, my mom would explain'),
+    ('games', 'i like chess', 'i like chess, my mom explained'),
+    ('games', 'i like chess', 'i like chess, my mom mentioned'),
+    ('games', 'i like chess', 'i like chess, my mom announced it'),
+    ('games', 'i like chess', 'i like chess, my dad would complain'),
+    ('games', 'i like chess', 'i like chess, my mom declared'),
+    ('games', 'i like chess', 'i like chess, my sister whispered'),
+    ('games', 'i like chess', 'i like chess, my mom suggested'),
+    ('games', 'i like chess', 'i like chess, my mom replied'),
+    ('games', 'i like chess', 'i like chess, my brother joked'),
+    ('games', 'i like chess', 'i like chess, my mom pointed out'),
+    ('games', 'i like chess', 'i like chess, my mom let slip'),
+    ('games', 'i like chess', 'i like chess, my mom is always\nexplaining'),
     ('nickname', 'call me dan', 'if i win :)' + chr(0x2007) + chr(0x205F) + '\ni guess\nplease call me dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
@@ -959,6 +986,12 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, would\nyou play?'),
     ('nickname', 'call me dan', 'call me dan, would\nyou mind?'),
     ('games', 'i like chess', 'i like chess, can\nyou tell'),
+    # gene #236: the wider report verbs where they report nothing.
+    ('games', 'i like chess', 'i like chess, can you explain the rules?'),
+    ('games', 'i like chess', 'i like chess, i want to announce a tournament'),
+    ('games', 'i like chess', 'i like chess, no joke'),
+    ('games', 'i like chess', 'i like chess, the state of the game is great'),
+    ('games', 'i like chess', 'i like chess and i would often play'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -1117,6 +1150,17 @@ def test_the_same_words_too_many_times_keep_nothing():
     assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
     assert personal_note(note, 'i like chess. ' * 9) is None
     assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
+
+
+@pytest.mark.parametrize('text', ['i like chess, my mom would\nhave\nsaid', 'i like chess, my mom would announce',
+                                  'i like chess, my mom would\noften\nsay'])
+def test_236s_shapes_keep_no_note_when_saved_and_read_again(store, text):
+    """gene #236 items 3 and 4: each of these was kept by Store.save_chat(), server-wide too, and there again once
+    read; nothing is now."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': 'games', 'evidence': 'i like chess'}])
+    assert not saved['first_memory']
+    assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
 
 
 @pytest.mark.parametrize('text', ['i like chess, my mom :- /\nwould\nsay', 'i like chess, my mom would\nsay',

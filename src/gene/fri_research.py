@@ -51,6 +51,10 @@ def start(store, guild, conversation, user, revision, source, text, query, *, me
             raise ValueError('Conversation changed before research started')
         if store.taken_back(db, guild, user, [event.id]):  # Withdrawn since Fri saved an exchange with it (gene #90).
             raise ValueError('That message was edited or deleted before research started')
+        # Nor one sent before the member last turned memory off (Sol round 1 of #234, B2).
+        from .fri_memory_store import before_erasure
+        if before_erasure(db, user, event):
+            raise ValueError('That message was sent before memory was last turned off')
         # A mention invitation never inherits authority from a channel's older
         # configured-scope clarification, even if the same database row remains.
         pending = None if mention else read(db, guild, conversation, user, revision)

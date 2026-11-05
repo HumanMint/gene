@@ -41,9 +41,11 @@ HEDGED = reference('7914787')  # #217 (#212 items 1-3), before #221.
 MODIFIED = reference('a5bdada')  # #225 (#221 F1, F2), before #226.
 BRIDGED = reference('3bddd69')  # #229 (#226 items 2, 3), before #231.
 REJOINED = reference('dd7441e')  # #235 (#231 items 1, 3), before #236.
+# Main now: #238 (#236), and the same module at 571fb78. #245 only ever refuses more than it (Sol round 2 of #245).
+WIDENED = reference('2cdaffc')
 BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST,
           'b1d4b88': STACKED, 'ba5a0a6': ASIDED, '7914787': HEDGED, 'a5bdada': MODIFIED, '3bddd69': BRIDGED,
-          'dd7441e': REJOINED}
+          'dd7441e': REJOINED, '2cdaffc': WIDENED}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -95,6 +97,17 @@ REVIEWED = [
     'must\nsay :-\n/ i like chess', 'i like chess, my mom would\nhave\nsaid', 'i like chess, my mom would announce',
     # Sol round 1 of #238: a letter in another case in a wider report verb, and what only rejoined refuses.
     'i like chess, my mom confe' + chr(0x17F) * 2 + 'ed', 'i would\nonce have\nsaid hi\nplease call me dan',
+    # gene #239: passive reports.
+    "i've been informed that i like chess", 'i was reminded that i like chess',
+    # Sol round 1 of #245: back-references after a wider verb, an apostrophe, and a report heard.
+    'i like chess, or so she explained it to me', 'i like chess, she joked that i do',
+    'i' + chr(0xFF07) + 'm informed that i like chess', 'i heard that i like chess',
+    # Sol round 2 of #245: what round 1's loosening of #238's reading kept.
+    'i like chess, she joked that i really do', 'i like chess, she joked that i do indeed',
+    'i like chess, she joked that i' + chr(0x200B) + ' do', 'i like chess, she explained that one',
+    'i like chess, she explained that much', 'i like chess, or so she would have already explained my plan',
+    'she warned my mom that i like chess', 'she mentioned my belief that i like chess', 'announced my mom, i like chess',
+    'i like chess, she joked that you really do',
 ]
 
 
@@ -413,6 +426,57 @@ def test_messages_with_231s_shapes_are_never_kept_where_a_bound_refuses_them(sha
     assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
     assert not leaks(messages, BOUNDS[sha])
 
+
+
+# gene #239's and #242's shapes: passive reports before or after the claim, with any auxiliary, contraction,
+# apostrophe or modifier; and wider report verbs with an object, a clause, a pointer or the person told after them,
+# after the claim, or before it.
+PASSIVE_SUBJECTS = ['i ', 'we ', 'she ', 'they ', 'jo ', '', "i'", 'i' + chr(0x2019)]
+PASSIVE_RUNS = ['was ', 'were ', "'ve been ", 've been ', 'have been ', 'has been ', 'got ', 'get ', 'am ', "'m ",
+                'been ', 'was just ', 'was kindly ', 'were already ', chr(0x2019) + 've been ', 'was\n', 'was really ']
+PASSIVE_VERBS = ['informed', 'reminded', 'notified', 'assured', 'advised', 'warned', 'told', 'kindly informed']
+PASSIVE_AFTER = [' that ', ' ', ' by my mom that ', ', ', ' lol ', ' of this: ', ' about it: ', '\n',
+                 ' yesterday to rest, ', ' yesterday of it: ', ' again that ']
+REPORT_AFTER = ['my score', 'that rule', 'it to everyone', 'it to me', 'i practice more', 'we play more',
+                'loudly about lag', 'about lag', 'that', 'it', 'me', 'to me that', '', 'so', 'my nickname is dan',
+                'it lol', 'this', 'that i', 'my', 'it to', 'loudly', 'she is moving', 'my fav band is',
+                # Sol round 1 of #245: back-references, and a determiner.
+                'that i do', 'i am too', "that i don't lol", 'this to me', 'so to everyone', 'this rule']
+# Sol round 1 of #245, B4: a report heard, before the claim or after it.
+HEARD_RUNS = ['i heard', "i've heard", 'i hear', 'we heard', 'she heard', 'i have heard', 'i' + chr(0xFF07) + 've heard',
+              'i really heard']
+WIDER = ['announced', 'explained', 'suggested', 'complained', 'mentioned', 'pointed out', 'would announce',
+         'has been explaining', 'whispered', 'let slip']
+
+
+def passive_and_object_reports(count, seed):
+    rng = random.Random(seed)
+    for _ in range(count):
+        category, evidence = rng.choice(CLAIMS)
+        passive = rng.choice(PASSIVE_SUBJECTS) + rng.choice(PASSIVE_RUNS) + rng.choice(PASSIVE_VERBS)
+        report = (rng.choice(SUBJECTS) + rng.choice(WIDER) + ' ' + rng.choice(REPORT_AFTER)).strip()
+        if rng.randrange(5) == 0:  # Heard in place of the passive run, or after "or so" in place of the report.
+            passive = rng.choice(HEARD_RUNS)
+            report = 'or so ' + report
+        shape = rng.randrange(4)
+        if shape == 0:
+            text = passive + rng.choice(PASSIVE_AFTER) + evidence
+        elif shape == 1:
+            text = evidence + rng.choice([', ', ', or so ', ' ', '\n', ' :- / ']) + passive
+        elif shape == 2:
+            text = evidence + rng.choice([', ', ' ', ', and ', '\n', '; ']) + report
+        else:
+            text = rng.choice(['lol ok, ', '', 'ok so, ', 'honestly ']) + report + rng.choice([' ', ' that ', ': ']) + evidence
+        yield category, evidence, text
+
+
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_messages_with_239s_and_242s_shapes_are_never_kept_where_a_bound_refuses_them(sha):
+    messages = list(asided(passive_and_object_reports(18000, 239), 239, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS,
+                           CHAINED_REPORTS))
+    assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 1500
+    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
+    assert not leaks(messages, BOUNDS[sha])
 
 def test_the_bound_is_a_real_check():
     """A validator that keeps what a bound refuses fails it: neither reference is this module under another name."""

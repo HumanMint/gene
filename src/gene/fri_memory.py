@@ -316,14 +316,15 @@ def readings_of(text, evidence):
     dropped, and twice more with slash faces with whitespace inside them read plainly first; and (gene #226) twice more
     with Unicode space separators read as a space and line breaks next to a face bridged; and (gene #231) twice more
     with line breaks inside a report continuation joined too; and (gene #236) twice more with report verbs outside the
-    vocabulary read as "say" and chained auxiliaries joined. Every reading #211, #217, #225, #229 and #235 had is still
-    here, as it was, so each added one only ever refuses more. In this order, each once: which one
+    vocabulary read as "say" and chained auxiliaries joined; and (gene #239) twice more with passive reports, and reports
+    heard, read as "was told". Every reading #211, #217, #225, #229, #235 and #238 had is still here, as it was, so each
+    added one only ever refuses more. In this order, each once: which one
     refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
     time grow faster than its length (#211's first CI run)."""
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for transform in (composed, restacked, spaced, bridged, rejoined, widened):
+    for transform in (composed, restacked, spaced, bridged, rejoined, widened, passive):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
@@ -756,6 +757,65 @@ def widened(text, invisible):
     run of auxiliaries and modifiers before a report verb joined, both first."""
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
     unseen = chained(REPORTED_TOO.sub(reworded, unseen))
+    unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
+    unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
+    return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
+
+
+# And (gene #239) a passive report: "i was told that ...", "i've been informed that ...", "i was reminded that ...". Someone
+# else supplied the claim, whoever the subject is, so #238's first-person exception never applies. The report rules
+# know "told" after "was"; "informed", "reminded", "notified", "assured", "advised" and "warned" are read as it, with the
+# auxiliaries and modifiers before them as "was", whatever their apostrophes (every one inside a word read as a plain
+# one first), in a reading of its own; every other reading stays as it was, so this one only ever refuses more. So is a
+# report heard ("i heard that ...", "i've heard", "i like chess, i heard"): the verb alone reads as "was told".
+# Not where what follows is something else they were told about, or to do ("reminded of the rules", "advised to rest",
+# past a modifier or two), nor an object of its own that ends the clause ("assured a refund,", "informed via email."),
+# nor "i hear you" (Sol round 2 of #245, S1, S2): before punctuation or the message's end only, so one the claim follows
+# in the same clause is still a report.
+PASSIVE_VERBS = r"informed|reminded|notified|assured|advised|warned|told"
+PASSIVE_REPORT = re.compile(rf"(?i)(?:\b(?:was|were|been|be|being|is|are|am|got|get|gets|getting|im)\b"
+                            rf"|['{chr(0x2019)}{chr(0x2018)}{chr(0x2BC)}](?:m|re|s)\b)(?:\s++(?:been|being)\b)?+"
+                            rf"(?:\s++(?:{RUN_MODIFIERS})\b)*+\s++(?:{PASSIVE_VERBS})\b")
+HEARD_REPORT = re.compile(r"(?i)\b(?:heard|hears?)\b")  # The verb alone, so a run of modifiers is never rescanned.
+TOLD_OF = frozenset('to of about on for against with in at into over from'.split())
+STEPPED_OVER = frozenset('too once again before earlier already yesterday today lately always never often sometimes '
+                         'ever still also just even lol lmao lmfao haha tho though fr ngl'.split())
+MODIFIERS_PAST = 3  # Modifiers read past after a passive verb, at most.
+CLAUSE_DONE = r"[ \t]*+(?=[,.;!?\n]|$)"
+COMPLETE_OBJECT = re.compile(rf"(?i)\s++(?:a|an|the|some|my|your|his|her|their|our|via|about)(?:\s++[\w']++){{1,2}}"
+                             rf"{CLAUSE_DONE}")
+ACKNOWLEDGED = re.compile(rf"(?i)\s++(?:you|u|ya){CLAUSE_DONE}")
+
+
+def told_so(m):
+    """A passive report as "was told", unless something else follows it (see above)."""
+    end = m.end()
+    for _ in range(MODIFIERS_PAST):
+        after = NEXT_WORD.match(m.string, end)
+        word = after.group(1).lower() if after else ''
+        if word not in STEPPED_OVER and not (word.endswith('ly') and word.isalpha()):
+            break
+        end = after.end()
+    after = NEXT_WORD.match(m.string, end)
+    if (after and after.group(1).lower() in TOLD_OF) or COMPLETE_OBJECT.match(m.string, end):
+        return m.group()
+    return ('' if m.group()[0].isalpha() else ' ') + 'was told'
+
+
+def heard_so(m):
+    """A report heard as "was told", unless an object of its own ends the clause, or it's "i hear you"."""
+    if COMPLETE_OBJECT.match(m.string, m.end()) or ACKNOWLEDGED.match(m.string, m.end()):
+        return m.group()
+    return 'was told'
+
+
+@functools.lru_cache(maxsize=32)
+def passive(text, invisible):
+    """rejoined's reading (see there), with each passive report, and each report heard, as "was told" first (see
+    PASSIVE_REPORT), every apostrophe inside a word as a plain one before that (Sol round 1 of #245, B3)."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = APOSTROPHES.sub("'", unseen.replace(chr(0x2019), "'"))
+    unseen = PASSIVE_REPORT.sub(told_so, HEARD_REPORT.sub(heard_so, unseen))
     unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
     unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
     return composed(LOOSE_SLASH.sub(' ', unseen), invisible)

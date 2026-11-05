@@ -840,6 +840,71 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom mentioned so'),
     ('games', 'i like chess', 'i like chess, my mom complained loudly'),
     ('nickname', 'call me dan', 'if i win :)' + chr(0x2007) + chr(0x205F) + '\ni guess\nplease call me dan'),
+    # gene #239: a passive report, with any auxiliary, contraction or apostrophe: someone else supplied the claim.
+    ('games', 'i like chess', "i've been informed that i like chess"),
+    ('games', 'i like chess', 'i was reminded that i like chess'),
+    ('games', 'i like chess', 'i was notified that i like chess'),
+    ('games', 'i like chess', 'we were assured that i like chess'),
+    ('games', 'i like chess', 'i have been advised that i like chess'),
+    ('games', 'i like chess', 'i got reminded that i like chess'),
+    ('games', 'i like chess', 'i' + chr(0x2019) + 've been informed that i like chess'),
+    ('games', 'i like chess', 'i was kindly reminded that i like chess'),
+    ('games', 'i like chess', 'i was informed by my mom that i like chess'),
+    ('games', 'i like chess', 'i was informed i like chess'),
+    ('games', 'i like chess', 'she was informed that i like chess'),
+    ('games', 'i like chess', 'i like chess, or so i was informed'),
+    ('games', 'i like chess', "i like chess, i've been reminded"),
+    ('games', 'i like chess', 'i like chess, i was notified'),
+    ('games', 'i like chess', "i'm informed that i like chess"),
+    ('games', 'i like chess', 'i' + chr(0x2019) + 'm informed that i like chess'),
+    ('games', 'i like chess', "we're reminded that i like chess"),
+    ('games', 'i like chess', 'we were informed that i like chess'),
+    ('games', 'i like chess', 'i was informed via email that i like chess'),  # An object the claim follows.
+    # gene #239's mutation checks: what only composed refuses, whatever rejoined's pipeline, and the passive reading on
+    # it, read of it.
+    ('nickname', 'my nickname is dan', 'my nickname is dan, ive;' + chr(0x200B) + '-/ ] written a:' + chr(0x1BCA1)
+     + '-\\ song'),
+    ('nickname', 'call me dan', 'call me dan, i5' + chr(0xFE0F) + chr(0x1BCA2) + chr(0x20E3) + 've w9' + chr(0xFE0F)
+     + chr(0x200B) + chr(0x20E3) + 'ritten a song'),
+    ('nickname', 'call me comet', 'call me comet yo' + chr(0x1BCA3) + 'u guys ;-) i firmly believe my opponent is good say'),
+    # Sol round 1 of #245, S1: what only rejoined refuses, which passive's pipeline doesn't.
+    ('games', 'i like chess', 'i like chess, she suggested i use a bot that was would\ntold'),
+    # Sol round 1 of #245, B3 (pre-existing): a passive report with any apostrophe the module reads as one.
+    *(('games', 'i like chess', f'i{apostrophe}m informed that i like chess')
+      for apostrophe in ('‘', '‛', '′', '＇', '´', '’', '\U000002BC', '\U000002BB')),
+    ('games', 'i like chess', 'i＇ve been informed that i like chess'),
+    ('games', 'i like chess', 'we´re reminded that i like chess'),
+    # Sol round 1 of #245, B4 (pre-existing): hearing it is being told it, the member's own "heard" included.
+    ('games', 'i like chess', 'i heard that i like chess'),
+    ('games', 'i like chess', "i've heard that i like chess"),
+    ('games', 'i like chess', 'i hear that i like chess'),
+    ('games', 'i like chess', 'i heard i like chess'),
+    ('games', 'i like chess', 'she heard that i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard'),
+    ('games', 'i like chess', "i like chess, or so i've heard"),
+    ('games', 'i like chess', 'i like chess, i heard it from my mom'),
+    ('games', 'i like chess', 'i like chess, i heard that'),
+    ('games', 'i like chess', 'i really heard that i like chess'),
+    # Sol rounds 1 and 2 of #245: back-references and objects after a wider verb, which round 0 and 1's loosening of
+    # #238's reading kept. Main refuses them, and so does every reading here: they only ever refuse more than main.
+    ('games', 'i like chess', 'i like chess, or so she explained it to me'),
+    ('games', 'i like chess', 'i like chess, she joked that i do'),
+    ('games', 'i like chess', 'i like chess, she joked that i really do'),
+    ('games', 'i like chess', 'i like chess, she joked that i do indeed'),
+    ('games', 'i like chess', 'i like chess, she joked that i' + chr(0x200B) + ' do'),
+    ('games', 'i like chess', 'i like chess, she joked that you really do'),
+    ('games', 'i like chess', 'i like chess, she explained that one'),
+    ('games', 'i like chess', 'i like chess, she explained that much'),
+    ('games', 'i like chess', 'i like chess, or so she would have already explained my plan'),
+    ('games', 'i like chess', 'she warned my mom that i like chess'),
+    ('games', 'i like chess', 'she mentioned my belief that i like chess'),
+    ('games', 'i like chess', 'announced my mom, i like chess'),
+    # gene #242's five stay refused (refuse-only: main refuses them): over-refusals, kept open there.
+    ('games', 'i like chess', 'i like chess, they announced my score'),
+    ('games', 'i like chess', 'i like chess, she explained that rule'),
+    ('games', 'i like chess', 'i like chess, she complained loudly about lag'),
+    ('games', 'i like chess', 'i like chess, my coach suggested i practice more'),
+    ('games', 'i like chess', 'i like chess, she explained it to everyone'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1046,6 +1111,20 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, i haven' + chr(0x2019) + 't mentioned it'),
     ('games', 'i like chess', "i like chess, i haven't mentioned it"),
     ('games', 'i like chess', 'i like chess, we have not announced it'),
+    # gene #239: an active report of the member's own, a passive one of something else, and someone else's active one.
+    ('games', 'i like chess', 'i informed my team that i like chess'),
+    ('games', 'i like chess', 'i reminded my mom that i like chess'),
+    ('games', 'i like chess', 'i like chess. i was reminded of the rules yesterday'),
+    ('games', 'i like chess', 'i like chess, i was advised to rest'),
+    ('games', 'i like chess', 'i like chess, she reminded me about the game'),
+    # Sol round 1 of #245, S2: past a modifier or two, what they were told about, or to do, still decides.
+    ('games', 'i like chess', 'i was advised yesterday to rest, i like chess'),
+    ('games', 'i like chess', 'i was reminded yesterday of the rules, i like chess'),
+    # Sol round 2 of #245, S1, S2: an object of its own that ends the clause, or "i hear you", as main keeps them.
+    ('games', 'i like chess', 'i was assured a refund, i like chess'),
+    ('games', 'i like chess', 'i was informed via email, i like chess'),
+    ('games', 'i like chess', 'i hear you, i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard about the tournament'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -1054,11 +1133,15 @@ def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, 
 def fastest_reads(read, texts, runs=5):
     """Each text's fastest read in CPU time, taking turns so a slow spell on the runner hits them alike. Every read is
     cold: a message's readings are cached for its other notes (gene #203), and a warm one would time nothing (gene
-    #201), so the cache is cleared first, outside the timer."""
+    #201), so every reading's cache is cleared first, outside the timer (Sol round 2 of #245, S3: clearing only
+    plainer's left the others warm)."""
+    import gene.fri_memory as memory
+    caches = [value for value in vars(memory).values() if callable(getattr(value, 'cache_clear', None))]
     best = [float('inf')] * len(texts)
     for _ in range(runs):
         for i, text in enumerate(texts):
-            plainer.cache_clear()
+            for cache in caches:
+                cache.cache_clear()
             began = time.thread_time()  # Not the runner's other work.
             read(text)
             best[i] = min(best[i], time.thread_time() - began)
@@ -1172,7 +1255,12 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 'would\nhave\n', 'has been\noften\n', 'mom announced ', 'i mentioned ', 'pointed out ', 'we we ',
                 # Sol round 1 of #238: what follows a wider verb and its subject, each read a few words at most.
                 'mom announced me me ', 'announced it to everyone ', 'me to it ', 'i have already ',
-                'i' + chr(0x2019) + 've mentioned ', "i haven't ", 'was warned ', 'confe' + chr(0x17F) * 2 + 'ed '):
+                'i' + chr(0x2019) + 've mentioned ', "i haven't ", 'was warned ', 'confe' + chr(0x17F) * 2 + 'ed ',
+                # gene #239: passive runs, reports heard (Sol round 2 of #245, S3: a run of modifiers before none),
+                # modifiers after a passive verb, objects that end the clause, and apostrophes inside a word.
+                'was kindly informed ', "i've been reminded ", 'got got notified ', 'kindly ', 'i heard ',
+                "i've heard that ", 'heard heard ', 'was advised yesterday ', 'yesterday yesterday ', 'a refund, ',
+                'via email ', 'i hear you, ', 'i' + chr(0xFF07) + 'm informed '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
@@ -1209,6 +1297,19 @@ def test_the_same_words_too_many_times_keep_nothing():
     assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
     assert personal_note(note, 'i like chess. ' * 9) is None
     assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
+
+
+@pytest.mark.parametrize('text', ["i've been informed that i like chess", 'i was reminded that i like chess',
+                                  'i' + chr(0x2019) + 've been informed that i like chess',
+                                  'i' + chr(0xFF07) + 'm informed that i like chess', 'i heard that i like chess',
+                                  'i like chess, or so she explained it to me', 'i like chess, she joked that i do'])
+def test_239s_and_245s_reports_keep_no_note_when_saved_or_after_a_restart(store, text):
+    """gene #239, and Sol rounds 1 and 2 of #245: passive reports, one with a fullwidth apostrophe, a report heard, and
+    back-references round 0 kept. None keeps a note through Store.save_chat(), nor once the database is opened again."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': 'games', 'evidence': 'i like chess'}])
+    assert not saved['first_memory']
+    assert not Store(store.path).chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
 
 
 @pytest.mark.parametrize('text', ['i like chess, my mom would\nhave\nsaid', 'i like chess, my mom would announce',

@@ -724,8 +724,8 @@ class Store:
                     continue
         return False
 
-    def erase_user(self, user_id, discord_at=None):
-        self.personal_control(user_id, 'disable', discord_at)
+    def erase_user(self, user_id, discord_at=None, margin=0):
+        self.personal_control(user_id, 'disable', discord_at, margin)
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             self._erase_jobs(db, db.execute('SELECT id,proposal FROM jobs WHERE user_id=?', (user_id,)).fetchall(),
@@ -1371,9 +1371,10 @@ class Store:
                               "channel_id=? AND user_id=? AND (? OR provenance IS NULL OR provenance='[]') "
                               'ORDER BY at DESC LIMIT ?', (guild_id, scope, user_id, profiles, limit(scope)))]}
 
-    def personal_control(self, user_id, action, discord_at=None):
+    def personal_control(self, user_id, action, discord_at=None, margin=0):
         """`discord_at`: when the Discord message or interaction that asked was sent, on Discord's clock, if known: an
-        erasure's cutoff for the member's words is that, not Gene's own stamp (HumanMint/fri#337)."""
+        erasure's cutoff for the member's words is that, not Gene's own stamp (HumanMint/fri#337). `margin`: with none,
+        how many seconds past Gene's stamp the cutoff is (Red's own deletion, HumanMint/fri#368)."""
         if action not in ('disable', 'enable'):
             raise ValueError('Invalid memory control')
         with self.connection() as db:
@@ -1401,7 +1402,7 @@ class Store:
                 # a cutoff for everything they said before it once memory is on again (HumanMint/fri#321), with when
                 # they asked on Discord's clock, if known (HumanMint/fri#337).
                 from .fri_memory_store import record_erasure
-                record_erasure(db, user_id, time.time(), discord_at, removals, removals_discord)
+                record_erasure(db, user_id, time.time(), discord_at, removals, removals_discord, margin)
                 # The floor the database kept as they went (HumanMint/gene#219) is in the erasure now.
                 db.execute('DELETE FROM personal_cutoff_floors WHERE user_id=?', (user_id,))
                 # Their deletions first, while their fences still say which messages were theirs (gene #145).

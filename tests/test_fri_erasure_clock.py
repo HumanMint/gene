@@ -144,7 +144,7 @@ def test_a_source_that_is_not_the_members_still_erases_on_gene_s_clock(gene):
     now = REAL()
     control(gene, 'disable', now, -2, source=source(now + 30, user='21'))
     assert not profile(gene)['enabled']
-    assert profile(gene)['erased_at_discord'] == pytest.approx(now - 2 + MARGIN, abs=1)
+    assert profile(gene)['erased_at_discord'] == pytest.approx(now - 2, abs=1)
 
 
 def test_gene_forgetme_is_dated_by_its_command_message(gene):
@@ -167,8 +167,7 @@ def test_an_older_controllers_erasure_after_one_with_a_discord_time_is_on_gene_s
     with store.connection() as db:  # As an older controller's disable writes it.
         db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
                    ('20', now))
-    # Its own stamp, with no Discord time: a few seconds on (HumanMint/fri#368).
-    assert profile(gene)['erased_at_discord'] == pytest.approx(now + MARGIN, abs=0.001)
+    assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=0.001)
     control(gene, 'enable', now + 0.2, 0)
     assert saved(gene, now - 10) == {'ok': True, 'first_memory': False, 'kept': False}
 
@@ -216,7 +215,8 @@ def test_a_message_gene_knows_is_someone_elses_never_dates_an_erasure(gene, rout
         assert gene.post('/privacy/erase', headers=headers('runtime'),
                          json={'guild_id': '123', 'user_id': '20', 'source_id': theirs['id']}).status_code == 200
     assert not profile(gene)['enabled']
-    assert profile(gene)['erased_at_discord'] == pytest.approx(now + MARGIN, abs=1)
+    # Red's own route, with no message of the member's to date it by, holds a few seconds on (fri #368).
+    assert profile(gene)['erased_at_discord'] == pytest.approx(now + (MARGIN if route == 'erase' else 0), abs=1)
 
 
 def test_an_older_controllers_later_erasure_never_moves_the_cutoff_earlier(gene):
@@ -229,8 +229,7 @@ def test_an_older_controllers_later_erasure_never_moves_the_cutoff_earlier(gene)
         db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
                    ('20', now - 4))
     asked = discord.utils.snowflake_time(int(source(now)['id'])).timestamp()
-    # Never earlier than the first's; the older one's own, with no Discord time, a MARGIN on (HumanMint/fri#368).
-    assert profile(gene)['erased_at_discord'] == pytest.approx(max(asked, now - 4 + MARGIN), abs=0.002)
+    assert profile(gene)['erased_at_discord'] == pytest.approx(asked, abs=0.002)
 
 
 def remove_a_note(gene, offset, at=None, user='20'):
@@ -326,7 +325,7 @@ def test_a_burst_message_gene_knows_is_someone_elses_never_dates_an_erasure(gene
                                    burst=[{'source': first, 'text': 'so'}, {'source': last, 'text': 'hey fri'}])
     control(gene, 'disable', now, 0, source={**first, 'user_id': '20'})
     assert not profile(gene)['enabled']
-    assert profile(gene)['erased_at_discord'] == pytest.approx(now + MARGIN, abs=1)
+    assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=1)
 
 
 def test_a_later_removal_with_gene_s_clock_stepped_back_never_moves_a_cutoff_earlier(gene):

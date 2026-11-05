@@ -90,9 +90,9 @@ def test_a_later_removal_never_moves_the_discord_cutoff_earlier(gene):  # noqa: 
     assert profile(gene)['removed_at_discord'] >= before
 
 
-def test_a_removal_no_interaction_dates_holds_a_few_seconds_past_gene_s_stamp(gene):  # noqa: F811
+def test_a_removal_no_interaction_dates_is_read_on_gene_s_clock_never_earlier_than_one_recorded(gene):  # noqa: F811
     """A removal written with no Discord time (a summary edit's, or an older controller's) is read on Discord's clock
-    as Gene's stamp a few seconds on, never earlier than one recorded before it."""
+    as its Gene stamp, as before, never earlier than one recorded before it."""
     from gene.fri_memory_store import fences
     first = REAL()
     remove_a_note(gene, 0, first)
@@ -102,7 +102,7 @@ def test_a_removal_no_interaction_dates_holds_a_few_seconds_past_gene_s_stamp(ge
         for fence in fences():
             db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id,'
                        'digest) DO UPDATE SET at=max(at,excluded.at)', ('123', 'server', '20', fence, later))
-    assert profile(gene)['removed_at_discord'] == pytest.approx(max(later + memory.MARGIN, recorded), abs=0.01)
+    assert profile(gene)['removed_at_discord'] == pytest.approx(max(later, recorded), abs=0.01)
 
 
 def test_an_erasure_keeps_a_removals_cutoff_on_discords_clock(gene):  # noqa: F811

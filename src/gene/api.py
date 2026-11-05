@@ -488,7 +488,10 @@ def create_app(settings: Settings | None = None):
         if not expected or body.guild_id != expected:
             raise HTTPException(403, 'This server is not configured for this bot')
         mine = body.source_id and not store.someone_elses(body.source_id, body.user_id)  # Sol round 1 of #213.
-        store.erase_user(body.user_id, discord_time(body.source_id) if mine else None)
+        # With no message of theirs to date it by (Red's own data deletion), a few seconds past Gene's own stamp, as a
+        # cutoff on Discord's clock: a message sent just before it, with Gene's clock behind, is before it (fri #368).
+        from .fri_memory_store import MARGIN
+        store.erase_user(body.user_id, discord_time(body.source_id) if mine else None, 0 if mine else MARGIN)
         return {'ok': True}
 
     @app.post('/worker/claim', dependencies=[auth('worker')])

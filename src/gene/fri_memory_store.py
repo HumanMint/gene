@@ -83,17 +83,24 @@ def floor_triggers(db):
     - moved back, as 4ffd668's removal writes its own time over a later one. This Gene never moves one back (see
       edit). Putting it back at once would refuse the older controller's own replacement after it, which it doesn't
       check, so it's put back at this Gene's next start.
+    And an erasure's stamp is never moved back, as 4ffd668's next erasure would with its clock behind (an upsert of
+    its own time): the later one stays, at once, which only ever holds more back, and its cutoff on Discord's clock is
+    at least the new stamp, so a reader that trusts it (see erased_on_discord) never reads less than the new erasure.
     Names of their own, which no older controller drops or makes, replaced at each start so a changed body takes
     effect; in one transaction, so a start cut off between them never leaves one missing."""
     began = not db.in_transaction
     if began:
         db.execute('BEGIN IMMEDIATE')
-    for name, event in (
+    for name, event, body in (
             ('note_removal_kept_as_floor', 'AFTER DELETE ON personal_note_removals '
-                                           f"WHEN OLD.at>=(julianday('now')-2440587.5)*86400.0-{TTL}"),
-            ('note_removal_kept_when_moved_back', 'AFTER UPDATE OF at ON personal_note_removals WHEN NEW.at<OLD.at')):
+                                           f"WHEN OLD.at>=(julianday('now')-2440587.5)*86400.0-{TTL}", KEPT),
+            ('note_removal_kept_when_moved_back', 'AFTER UPDATE OF at ON personal_note_removals WHEN NEW.at<OLD.at',
+             KEPT),
+            ('erasure_kept_when_moved_back', 'AFTER UPDATE OF at ON personal_erasures WHEN NEW.at<OLD.at',
+             'UPDATE personal_erasure_times SET discord_at=max(discord_at,NEW.at) WHERE user_id=NEW.user_id; '
+             'UPDATE personal_erasures SET at=OLD.at WHERE user_id=NEW.user_id;')):
         db.execute(f'DROP TRIGGER IF EXISTS {name}')
-        db.execute(f'CREATE TRIGGER {name} {event} BEGIN {KEPT} END')
+        db.execute(f'CREATE TRIGGER {name} {event} BEGIN {body} END')
     if began:
         db.commit()
 

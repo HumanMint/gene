@@ -58,8 +58,12 @@ TRIGGER_NAMES = ('chat_turn_in_withdrawn_channel', 'personal_note_from_withdrawn
 BY_CONVERSATION = (('chat_pending', 'conversation_id'), ('web_requests', 'channel_id'), ('web_research', 'channel_id'),
                    ('mention_grants', 'conversation_id'))
 BY_CHANNEL = ('fri_explore_members', 'fri_explore_queries', 'fri_explore_seen')
+# What held() lists by the bare ID: those, and what #247's withdraw takes by channel, so a channel holding only a
+# channel summary or an archive observation is found too (Sol round 3 of #243). Learning reports name theirs in their
+# card or body (see held).
+INVENTORY = ('agent_summaries', 'fri_explore_notes', *BY_CHANNEL)
 # The only tables a store may not have yet: each is made by its own module on first use, not when the store opens.
-OPTIONAL = frozenset(BY_CHANNEL)
+OPTIONAL = frozenset(INVENTORY)
 
 
 def initialize(db):
@@ -135,6 +139,8 @@ def held(store, guild):
     """Every channel or thread the controller holds anything saved from (see withdraw), with the channel a thread is
     under where it's known. For Fri's check of those it may have missed the deletion of: one withdrawn before is listed
     again only if something was written there since (an older controller's history summary, say), and goes again."""
+    from .fri_learning_sources import TAKEN
+    from .fri_learning_sources import channel_of as report_channel
     found = set()
     with store.connection() as db:
         for query in ('SELECT DISTINCT channel_id FROM chat_turns WHERE guild_id=?',
@@ -143,9 +149,14 @@ def held(store, guild):
                       'SELECT DISTINCT o.value FROM fri_member_summaries s, json_each(s.origins) o WHERE s.guild_id=?',
                       *(f'SELECT DISTINCT {column} FROM {table} WHERE guild_id=?' for table, column in BY_CONVERSATION)):
             found |= {channel for row in rows(db, query, guild) if (channel := channel_of(row[0]))}
-        for table in BY_CHANNEL:
+        for table in INVENTORY:
             found |= {str(row[0]) for row in rows(db, f'SELECT DISTINCT channel_id FROM {table}', table=table)
                       if str(row[0]).isdigit()}
+        # A learning report, by the channel its card or body names. One withdrawn to a breadcrumb holds nothing.
+        for body, card in db.execute('SELECT r.body,c.body FROM agent_reports r LEFT JOIN agent_report_cards c ON '
+                                     'c.report_id=r.id').fetchall():
+            if not body.endswith(TAKEN) and (channel := report_channel(body, json.loads(card) if card else {})).isdigit():
+                found.add(channel)
         known = dict(db.execute('SELECT thread_id,parent_id FROM chat_thread_parents WHERE guild_id=?', (guild,)).fetchall())
     return {'channels': [{'id': channel, 'parent': known.get(channel)}
                          for channel in sorted(found, key=lambda channel: (len(channel), channel))]}

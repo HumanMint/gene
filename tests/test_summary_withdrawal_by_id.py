@@ -4,6 +4,7 @@ in flight whose claim names it. A summary with no recorded sources goes by where
 the message, as before. An unrelated message still costs nobody their summary.
 """
 import json
+import time
 
 import pytest
 
@@ -170,3 +171,20 @@ def test_a_claim_naming_no_server_is_called_off_under_any(store, tmp_path):
         AgentStore.put(db, CLAIM, record)
     store.withdraw_saved('777', [message], deleted=False)
     assert claim_of(store) is None
+
+
+def test_a_summary_dropped_under_another_server_leaves_this_ones_claim(store, tmp_path):
+    """Its member's summary under the other server goes, as it read the message there; the build in flight here, for the
+    same member, stays (gene #253)."""
+    from gene.fri_member_summary import drawn
+    _, _, message = in_flight(store, tmp_path)
+    with store.connection() as db:  # As if a summary of member 20's had been kept under server 777 too.
+        db.execute("INSERT INTO fri_member_summaries VALUES ('777','20','raids',0,'[]','[\"public:7\"]',?,1)",
+                   (time.time(),))
+        db.execute("INSERT INTO fri_member_summary_sources VALUES ('777','20',1,?)",
+                   (json.dumps([{'id': message, 'conversation_id': 'public:7', 'saved_at': 1}]),))
+        assert drawn(db, '777', '20', db.execute("SELECT * FROM fri_member_summaries WHERE guild_id='777'").fetchone())
+    store.withdraw_saved('777', [message], deleted=False)
+    with store.connection() as db:
+        assert not db.execute("SELECT 1 FROM fri_member_summaries WHERE guild_id='777'").fetchone()
+    assert claim_of(store)

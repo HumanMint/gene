@@ -158,3 +158,40 @@ def deployed_or_none(request):
         return request.getfixturevalue('deployed')
     except pytest.skip.Exception:
         return None
+
+
+REMOVES = ('import sys, time\nreal = time.time\ntime.time = lambda: real() + float(sys.argv[2])\n'
+           'from pathlib import Path\nfrom gene.store import Store\nfrom gene.fri_memory_store import edit, entries\n'
+           'store = Store(Path(sys.argv[1]))\nlisted = entries(store, "123", "private:900", "20")\n'
+           'asked = {"kind": "discord_interaction", "id": sys.argv[3], "user_id": "20", "display_name": "friend",\n'
+           '         "channel_id": "900", "guild_id": None}\n'
+           'edit(store, "123", "private:900", "20", listed["entries"][0]["id"], listed["revision"], asked, "remove")\n')
+
+
+@pytest.mark.parametrize('how', ['its own code', 'its statements'])
+def test_an_older_genes_removal_never_moves_a_later_one_back(gene, deployed_or_none, how):  # noqa: F811
+    """This Gene removes one of member 20's profile notes with its clock two seconds ahead. Rolled back, the deployed
+    Gene, its clock three seconds behind, removes another: it writes its own time over the first removal's, earlier.
+    Re-upgraded, their message from a second before the first removal was saved again."""
+    from gene.fri_memory_store import fences, save
+    with gene.app.state.store.connection() as db:
+        assert save(db, '123', 'server', '20', ('music', 'I love trance'), REAL() - 1, provenance=[])
+    removal = REAL()
+    remove_a_note(gene, 2, removal)  # Its own note, the newer one.
+    before = cutoffs(path_of(gene))
+    if how == 'its own code':
+        if deployed_or_none is None:
+            pytest.skip(f'{DEPLOYED} is not in this checkout')
+        env = {**os.environ, 'PYTHONPATH': str(deployed_or_none)}
+        done = subprocess.run([sys.executable, '-c', REMOVES, str(path_of(gene)), '-3', source(REAL())['id']],
+                              cwd=deployed_or_none, env=env, capture_output=True, text=True)
+        assert done.returncode == 0, done.stderr[-2000:]
+    else:  # Its removal's fences, as 4ffd668's edit writes them.
+        with gene.app.state.store.connection() as db:
+            for fence in fences():
+                db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
+                           'user_id,digest) DO UPDATE SET at=excluded.at', ('123', 'server', '20', fence, REAL() - 3))
+    Store(path_of(gene))  # This Gene starts again.
+    after = cutoffs(path_of(gene))
+    again = how == 'its own code' and kept(gene, removal - 1)
+    assert not again and after['removed_at'] >= before['removed_at'], (before, after, again)

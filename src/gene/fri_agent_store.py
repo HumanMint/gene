@@ -334,8 +334,10 @@ class AgentStore:
             if (not claim or claim['id'] != batch_id or (at := claimed_at(claim)) is None
                     or not 0 <= now-at < FINISH_SECONDS):
                 raise ValueError('Learning claim expired or already completed')
+            from .fri_channel_withdrawal import withdrawn as channel_withdrawn
+            gone = channel_withdrawn(db, guild, [claim.get('channel_id')])  # Deleted since (HumanMint/fri#358).
             return sorted({message['id'] for message in messages
-                           if self.store.taken_back(db, guild, message['user_id'], [message['id']])
+                           if gone or self.store.taken_back(db, guild, message['user_id'], [message['id']])
                            or self.store.withdrawn_during(db, guild, [message['id']], at)
                            or self.store.deleted_anywhere(db, guild, [message['id']])}, key=int)
 
@@ -374,6 +376,10 @@ class AgentStore:
             mode = claim.get('mode', 'history')
             if claim.get('privacy_invalidated'):
                 records, result, error = [], {}, 'Privacy changed during exploration; findings discarded.'
+            from .fri_channel_withdrawal import withdrawn as channel_withdrawn
+            if channel_withdrawn(db, self.settings.guild_id, [claim.get('channel_id')]):
+                # Deleted while this pass read it (HumanMint/fri#358): nothing it read is kept.
+                records, result, error = [], {}, 'The channel was deleted during this pass; findings discarded.'
             if mode == 'explore' and not error:
                 self.exploration.validate(claim, scanned, scanned_ids)
             if mode == 'recent' and not error and scanned:

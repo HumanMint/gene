@@ -320,3 +320,5 @@ def test_an_older_genes_erasure_keeps_a_removals_cutoff_on_discords_clock(gene, 
     after = cutoffs(path_of(gene))
     assert all(after[key] >= before['removed_at_discord'] for key in ('erased_at_discord', 'removed_at_discord')), \
         (before, after)
+    with gene.app.state.store.connection() as db:  # Carried into the erasure, the record goes, as this Gene's own erasure deletes it.
+        assert db.execute('SELECT count(*) FROM personal_removal_times').fetchone()[0] == 0

@@ -932,6 +932,9 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, i was reminded of'),
     ('games', 'i like chess', 'i was informed via a short letter: i like chess'),
     ('games', 'i like chess', 'i like chess, i heard ' + chr(0x131) + 't'),
+    ('games', 'i like chess', 'i heard the new album: i like chess'),  # A colon, a quote or a dash carries it on.
+    ('games', 'i like chess', 'i heard music "i like chess"'),
+    ('games', 'i like chess', 'i hear birds - i like chess'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1163,9 +1166,12 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i was reminded of the rules for the game, i like chess'),
     # gene #254 item 4: a time that ends the clause is still an object of its own.
     ('games', 'i like chess', 'i was reminded on monday, i like chess'),
-    # And a line break ends one, as main keeps it.
+    # And a line break ends one, as main keeps it (and a perception, item 1, as main before #245 does).
     ('games', 'i like chess', 'i hear birds\nok i like chess'),
     ('games', 'i like chess', 'i like chess\ni was reminded of the rules\nok'),
+    ('games', 'i like chess', 'i like chess, i heard the album\nok'),
+    ('games', 'i like chess', 'i like chess, i was reminded of the rules\nok'),
+    ('games', 'i like chess', 'i like chess, i heard birds\nok'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

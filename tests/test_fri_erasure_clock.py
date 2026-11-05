@@ -45,6 +45,21 @@ def gene_clock(offset):
         time.time = real
 
 
+@contextmanager
+def bracket():
+    """The real time just before and just after the block, as [before, after], the second filled in as it ends: what
+    Gene stamps while the block runs lies between them, however long it takes under load (gene #233)."""
+    times = [REAL()]
+    yield times
+    times.append(REAL())
+
+
+def within(value, times, offset=0):
+    """Whether `value` is a Gene stamp taken during `times` (see bracket), `offset` seconds off: a clock offset, or a
+    cutoff's fixed distance from the stamp."""
+    return times[0] + offset <= value <= times[1] + offset
+
+
 def control(gene, action, at, offset, user='20', **changes):
     body = {'guild_id': '123', 'user_id': user, 'channel_id': '456', 'conversation_id': 'public:456',
             'action': action, 'source': source(at, user), **changes}
@@ -91,12 +106,13 @@ def test_the_profile_says_the_cutoffs_on_discords_clock_beside_gene_s_own(gene):
     now = REAL()
     before = profile(gene)
     assert before['erased_at_discord'] == before['removed_at_discord'] == 0
-    control(gene, 'disable', now, -2)
+    with bracket() as erasing:
+        control(gene, 'disable', now, -2)
     control(gene, 'enable', now + 0.2, -2)
     answer = profile(gene)
     asked = discord.utils.snowflake_time(int(source(now)['id'])).timestamp()
     assert answer['erased_at_discord'] == answer['removed_at_discord'] == pytest.approx(asked, abs=0.002)
-    assert answer['erased_at'] == pytest.approx(now - 2, abs=1)
+    assert within(answer['erased_at'], erasing, -2)
     assert set(profile(gene, channel='3')) == {'enabled', 'revision', 'removed_at'}
 
 
@@ -105,11 +121,11 @@ def test_an_erasure_with_no_discord_event_holds_a_few_seconds_past_gene_s_stamp(
     cutoff on Discord's clock is a few seconds (MARGIN) later (HumanMint/fri#368). With Gene's clock two seconds
     behind, the member's message sent half a second before it counted as after it, and was kept; it's held back."""
     now = REAL()
-    with gene_clock(-2):
+    with gene_clock(-2), bracket() as erasing:
         assert gene.post('/privacy/erase', headers=headers('fri'), json={'guild_id': '123', 'user_id': '20'}).status_code == 200
     control(gene, 'enable', now + 0.2, -2)
     answer = profile(gene)
-    assert answer['erased_at'] == pytest.approx(now - 2, abs=1)
+    assert within(answer['erased_at'], erasing, -2)
     assert answer['erased_at_discord'] == pytest.approx(answer['erased_at'] + MARGIN, abs=0.001)
     assert saved(gene, now - 0.5) == {'ok': True, 'first_memory': False, 'kept': False}
     assert saved(gene, now - 3, text='i love jazz') == {'ok': True, 'first_memory': False, 'kept': False}
@@ -121,10 +137,10 @@ def test_a_discord_time_from_an_earlier_erasure_is_never_used_for_a_later_one(ge
     said between the two."""
     now = REAL()
     control(gene, 'disable', now - 30, 0)
-    with gene_clock(0):
+    with gene_clock(0), bracket() as erasing:
         assert gene.post('/privacy/erase', headers=headers('fri'), json={'guild_id': '123', 'user_id': '20'}).status_code == 200
     control(gene, 'enable', now + 0.2, 0)
-    assert profile(gene)['erased_at_discord'] == pytest.approx(now + MARGIN, abs=1)
+    assert within(profile(gene)['erased_at_discord'], erasing, MARGIN)
     assert saved(gene, now - 10, revision=3) == {'ok': True, 'first_memory': False, 'kept': False}
 
 
@@ -132,9 +148,10 @@ def test_a_discord_time_far_from_gene_s_is_held_to_a_minute_before_it(gene):
     """A Discord time never moves the cutoff more than a minute before Gene's own stamp: a stale one (a control that
     waited out an outage) holds back what was said after it, never admits it."""
     now = REAL()
-    control(gene, 'disable', now - 600, 0)
+    with bracket() as erasing:
+        control(gene, 'disable', now - 600, 0)
     control(gene, 'enable', now + 0.2, 0)
-    assert profile(gene)['erased_at_discord'] == pytest.approx(now - 60, abs=1)
+    assert within(profile(gene)['erased_at_discord'], erasing, -60)
     assert saved(gene, now - 90) == {'ok': True, 'first_memory': False, 'kept': False}
 
 
@@ -142,9 +159,10 @@ def test_a_source_that_is_not_the_members_still_erases_on_gene_s_clock(gene):
     """A control whose source isn't the member's own message is still carried out: an erasure is never refused.
     Its Discord time isn't trusted, so the cutoff is Gene's own stamp."""
     now = REAL()
-    control(gene, 'disable', now, -2, source=source(now + 30, user='21'))
+    with bracket() as erasing:
+        control(gene, 'disable', now, -2, source=source(now + 30, user='21'))
     assert not profile(gene)['enabled']
-    assert profile(gene)['erased_at_discord'] == pytest.approx(now - 2, abs=1)
+    assert within(profile(gene)['erased_at_discord'], erasing, -2)
 
 
 def test_gene_forgetme_is_dated_by_its_command_message(gene):
@@ -209,14 +227,15 @@ def test_a_message_gene_knows_is_someone_elses_never_dates_an_erasure(gene, rout
     now = REAL()
     theirs = source(now - 30, user='30')
     gene.app.state.store.save_chat('123', 'public:456', '30', 0, 'hey fri', 'hey', 'model', 'high', source=theirs)
-    if route == 'control':
-        control(gene, 'disable', now, 0, source={**theirs, 'user_id': '20'})
-    else:
-        assert gene.post('/privacy/erase', headers=headers('runtime'),
-                         json={'guild_id': '123', 'user_id': '20', 'source_id': theirs['id']}).status_code == 200
+    with bracket() as erasing:
+        if route == 'control':
+            control(gene, 'disable', now, 0, source={**theirs, 'user_id': '20'})
+        else:
+            assert gene.post('/privacy/erase', headers=headers('runtime'),
+                             json={'guild_id': '123', 'user_id': '20', 'source_id': theirs['id']}).status_code == 200
     assert not profile(gene)['enabled']
     # Red's own route, with no message of the member's to date it by, holds a few seconds on (fri #368).
-    assert profile(gene)['erased_at_discord'] == pytest.approx(now + (MARGIN if route == 'erase' else 0), abs=1)
+    assert within(profile(gene)['erased_at_discord'], erasing, MARGIN if route == 'erase' else 0)
 
 
 def test_an_older_controllers_later_erasure_never_moves_the_cutoff_earlier(gene):
@@ -323,9 +342,10 @@ def test_a_burst_message_gene_knows_is_someone_elses_never_dates_an_erasure(gene
     first, last = source(now - 30, user='30'), source(now - 29, user='30')
     gene.app.state.store.save_chat('123', 'public:456', '30', 0, 'hey fri', 'hey', 'model', 'high', source=last,
                                    burst=[{'source': first, 'text': 'so'}, {'source': last, 'text': 'hey fri'}])
-    control(gene, 'disable', now, 0, source={**first, 'user_id': '20'})
+    with bracket() as erasing:
+        control(gene, 'disable', now, 0, source={**first, 'user_id': '20'})
     assert not profile(gene)['enabled']
-    assert profile(gene)['erased_at_discord'] == pytest.approx(now, abs=1)
+    assert within(profile(gene)['erased_at_discord'], erasing)
 
 
 def test_a_later_removal_with_gene_s_clock_stepped_back_never_moves_a_cutoff_earlier(gene):

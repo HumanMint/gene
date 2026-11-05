@@ -1119,7 +1119,9 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 ':-' + chr(0xA0) + '/ ', ':' + chr(0x3000) + '- / ', ';P\ni guess ', 'mom :- /\n', '\n:- / ', ' \n \n',
                 ':-\n/ ', chr(0xA0) + ' ',
                 # gene #231: line breaks inside a report continuation, and runs of auxiliaries and modifiers.
-                'would\nsay ', 'mom :- /\nwould\n', 'would really\n', 'would would ', 'would really really '):
+                'would\nsay ', 'mom :- /\nwould\n', 'would really\n', 'would would ', 'would really really ',
+                # gene #236: chained auxiliaries and modifiers, and report verbs outside the vocabulary.
+                'would\nhave\n', 'has been\noften\n', 'mom announced ', 'i mentioned ', 'pointed out ', 'we we '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 

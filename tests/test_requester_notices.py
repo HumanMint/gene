@@ -87,6 +87,11 @@ def test_an_erased_reporter_leaves_nothing_to_reply_to(store):
         claim(store, job['id'], 'owner')
 
 
+# The reply's message ID, as a Discord message ID: 19 digits, more than a timestamp's repr ever has, so finding it in
+# a row means it was kept, never that a stamp or token happened to contain it (gene #237).
+REPLY = '1438291776543210555'
+
+
 def notice(store, job_id):
     with store.connection() as db:
         return dict(db.execute('SELECT * FROM requester_notices WHERE job_id=?', (job_id,)).fetchone())
@@ -101,12 +106,12 @@ def test_an_erasure_keeps_only_a_tombstone_of_the_reply(store, erased):
         with store.connection() as db:
             db.execute('UPDATE jobs SET provenance=? WHERE id=?', ('[{"user_id": "30", "revision": 0}]', job['id']))
     lease = claim(store, job['id'], 'owner')['lease']
-    finish(store, job['id'], lease, 'sent', '555')
+    finish(store, job['id'], lease, 'sent', REPLY)
     store.erase_user('20' if erased == 'reporter' else '30')
     assert store.get(job['id'])['source_url'] == ''
     row = notice(store, job['id'])
     assert row['state'] == 'sent' and row['message_id'] == ''
-    assert '555' not in repr(row)
+    assert [column for column, value in row.items() if REPLY in str(value)] == []  # Nor anywhere else in it.
     with pytest.raises(Conflict):
         claim(store, job['id'], 'owner')
 

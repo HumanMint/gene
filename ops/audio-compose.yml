@@ -1,3 +1,4 @@
+# Gene integration glue; build audio images from HumanMint/red-audio-adapter.
 # Maintainer-owned audio deployment, independent of Discord feature releases.
 name: gene-audio
 services:

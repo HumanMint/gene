@@ -92,3 +92,81 @@ def test_a_build_in_flight_that_read_the_message_is_called_off(store, tmp_path, 
         db.execute("DELETE FROM chat_turns WHERE json_extract(source,'$.id')=?", (message,))
     store.withdraw_saved('123', [message], deleted=False)
     assert claim_of(store) is None
+
+
+# gene #253.
+
+def in_flight(store, tmp_path):
+    """Member 20's build claimed, reading two exchanges; the first one's message, its exchange trimmed since, and no
+    note learned from it. Returns the agent, the offer and that message."""
+    agent = background(store, tmp_path)
+    chat(store, 'raid tonight?')
+    chat(store, 'what build for the raid', 'public:2')
+    offer = offered(agent)
+    message = claim_of(store)['messages'][0]['id']
+    with store.connection() as db:
+        db.execute("DELETE FROM chat_turns WHERE json_extract(source,'$.id')=?", (message,))
+    return agent, offer, message
+
+
+def finished(agent, offer):
+    from gene.fri_member_summary import finish
+    conversations = sorted({row['conversation_id'] for row in offer['exchanges']})
+    assert finish(agent, offer['id'], 'they planned a raid', 'completed', conversations, False) == {'kept': True}
+    return True
+
+
+@pytest.mark.parametrize('when', ['between its two reads', 'after its read'])
+def test_a_build_finishing_while_an_edit_is_looked_up_doesnt_survive(store, tmp_path, monkeypatch, when):
+    """gene #253 item 1: the build finishes while the withdrawal looks for a summary or a claim naming the message. Read
+    apart, the summary's record before it finished and the claim after, neither named it, so the withdrawal returned
+    without the write lock, and the finished summary kept the message's old words. Read as one snapshot, one of them
+    names it, and the summary is taken under the write lock, as when it finishes after that read."""
+    from gene import fri_member_summary
+    from gene.fri_agent_store import AgentStore
+    agent, offer, message = in_flight(store, tmp_path)
+    ran = []
+    if when == 'between its two reads':  # As main read them: the claim second, outside any transaction.
+        get = AgentStore.get
+
+        def getting(db, key, default=None):
+            if key == CLAIM and not db.in_transaction and not ran:
+                ran.append(finished(agent, offer))
+            return get(db, key, default)
+        monkeypatch.setattr(AgentStore, 'get', staticmethod(getting))
+    else:  # After the lookup, before the write lock.
+        naming = fri_member_summary.naming
+
+        def looked(db, *args):
+            answer = naming(db, *args)
+            if not ran:
+                ran.append(finished(agent, offer))
+            return answer
+        monkeypatch.setattr(fri_member_summary, 'naming', looked)
+    store.withdraw_saved('123', [message], deleted=False)
+    assert shown(store) is None and claim_of(store) is None
+    assert ran or when == 'between its two reads'  # Read as one, there's no between.
+
+
+def test_an_edit_under_another_server_leaves_a_claim_of_this_one(store, tmp_path):
+    """gene #253 item 2: a build in the configured server claims M, and a withdrawal of M by ID comes under another
+    server (the configured test one, say): its claim is left, as its saved summaries are. Under its own, it's called
+    off as before."""
+    _, _, message = in_flight(store, tmp_path)
+    store.withdraw_saved('777', [message], deleted=False)
+    assert claim_of(store) and claim_of(store)['guild_id'] == '123'
+    store.withdraw_saved('123', [message], deleted=False)
+    assert claim_of(store) is None
+
+
+def test_a_claim_naming_no_server_is_called_off_under_any(store, tmp_path):
+    """One written before claims named their server (by an older controller, in a rollback window) can't be placed:
+    it's called off whichever server the withdrawal names, as before."""
+    from gene.fri_agent_store import AgentStore
+    _, _, message = in_flight(store, tmp_path)
+    with store.connection() as db:
+        record = AgentStore.get(db, CLAIM)
+        record.pop('guild_id', None)
+        AgentStore.put(db, CLAIM, record)
+    store.withdraw_saved('777', [message], deleted=False)
+    assert claim_of(store) is None

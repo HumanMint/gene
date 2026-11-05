@@ -1043,6 +1043,9 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', "i like chess, i haven't explained it yet"),
     ('games', 'i like chess', 'i like chess, we' + chr(0x2019) + 've mentioned it before'),
     ('games', 'i like chess', 'i like chess, i was explaining it to my mom'),  # Active: the member was explaining.
+    ('games', 'i like chess', 'i like chess, i haven' + chr(0x2019) + 't mentioned it'),
+    ('games', 'i like chess', "i like chess, i haven't mentioned it"),
+    ('games', 'i like chess', 'i like chess, we have not announced it'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

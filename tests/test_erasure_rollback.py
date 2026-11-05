@@ -31,7 +31,7 @@ def deployed(tmp_path_factory):
     where = tmp_path_factory.mktemp('deployed')
     archive = subprocess.run(['git', '-C', str(ROOT), 'archive', DEPLOYED, 'src'], capture_output=True, check=True)
     with tarfile.open(fileobj=io.BytesIO(archive.stdout)) as tar:
-        tar.extractall(where, filter='data')
+        tar.extractall(where, **({'filter': 'data'} if hasattr(tarfile, 'data_filter') else {}))  # 3.11.4 on.
     return where/'src'
 
 

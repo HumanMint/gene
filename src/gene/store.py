@@ -1347,6 +1347,7 @@ class Store:
                    (time.time() - TTL, time.time() - HORIZON, *wide))
         db.execute('DELETE FROM personal_erasures WHERE at<?', (time.time() - HORIZON,))  # Wordless, so as long.
         db.execute('DELETE FROM personal_erasure_times WHERE at<?', (time.time() - HORIZON,))  # And its Discord time.
+        db.execute('DELETE FROM personal_removal_times WHERE at<?', (time.time() - HORIZON,))  # A removal's too.
         # A note learned while other members' words were in view goes when any of them changes their privacy.
         for note_id, provenance in db.execute("SELECT id,provenance FROM personal_notes WHERE guild_id=? AND "
                                               "user_id=? AND provenance<>'[]'", (guild_id, user_id)).fetchall():
@@ -1392,12 +1393,15 @@ class Store:
                 # arrives late, dated before a removal, mustn't let what was said before that removal back.
                 removals = db.execute('SELECT max(at) FROM personal_note_removals WHERE user_id=?',
                                       (user_id,)).fetchone()[0]
+                from .fri_memory_store import removals_on_discord
+                removals_discord = removals_on_discord(db, user_id)  # And on Discord's clock (HumanMint/fri#368).
                 db.execute('DELETE FROM personal_note_removals WHERE user_id=?', (user_id,))
+                db.execute('DELETE FROM personal_removal_times WHERE user_id=?', (user_id,))
                 # Their removals went with the rest, so what's kept instead is when: no words, their ID and a time,
                 # a cutoff for everything they said before it once memory is on again (HumanMint/fri#321), with when
                 # they asked on Discord's clock, if known (HumanMint/fri#337).
                 from .fri_memory_store import record_erasure
-                record_erasure(db, user_id, time.time(), discord_at, removals)
+                record_erasure(db, user_id, time.time(), discord_at, removals, removals_discord)
                 # The floor the database kept as they went (HumanMint/gene#219) is in the erasure now.
                 db.execute('DELETE FROM personal_cutoff_floors WHERE user_id=?', (user_id,))
                 # Their deletions first, while their fences still say which messages were theirs (gene #145).

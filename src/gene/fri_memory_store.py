@@ -59,6 +59,11 @@ def initialize(db):
     # Its own table, so an older controller's writes to the one above never meet it.
     db.execute('CREATE TABLE IF NOT EXISTS personal_erasure_times (user_id TEXT PRIMARY KEY,at REAL NOT NULL,'
                'discord_at REAL NOT NULL)')
+    # And a member's latest note removal in each conversation (or the profile), on Discord's clock: when the panel press
+    # that asked was sent, with Gene's stamp of the removals it belongs to (HumanMint/fri#368), as for an erasure above.
+    # Its own table: an older controller's removals, which write Gene's clock alone, never meet it.
+    db.execute('CREATE TABLE IF NOT EXISTS personal_removal_times (guild_id TEXT,channel_id TEXT,user_id TEXT,'
+               'at REAL NOT NULL,discord_at REAL NOT NULL,PRIMARY KEY(guild_id,channel_id,user_id))')
     # A removal's time an older controller in a rollback window took away (HumanMint/gene#219): deleted while still in
     # force, as its erasure deletes every removal of the member and stamps its own time, which can be earlier; or moved
     # back, as its removal writes its own time over a later one. The database keeps the later time here (see
@@ -85,7 +90,8 @@ def floor_triggers(db):
       check, so it's put back at this Gene's next start.
     And an erasure's stamp is never moved back, as 4ffd668's next erasure would with its clock behind (an upsert of
     its own time): the later one stays, at once, which only ever holds more back, and its cutoff on Discord's clock is
-    at least the new stamp, so a reader that trusts it (see erased_on_discord) never reads less than the new erasure.
+    at least the new stamp a MARGIN on, its Discord time unknown (HumanMint/fri#368), so a reader that trusts it (see
+    erased_on_discord) never reads less than the new erasure.
     Names of their own, which no older controller drops or makes, replaced at each start so a changed body takes
     effect; in one transaction, so a start cut off between them never leaves one missing."""
     began = not db.in_transaction
@@ -97,7 +103,7 @@ def floor_triggers(db):
             ('note_removal_kept_when_moved_back', 'AFTER UPDATE OF at ON personal_note_removals WHEN NEW.at<OLD.at',
              KEPT),
             ('erasure_kept_when_moved_back', 'AFTER UPDATE OF at ON personal_erasures WHEN NEW.at<OLD.at',
-             'UPDATE personal_erasure_times SET discord_at=max(discord_at,NEW.at) WHERE user_id=NEW.user_id; '
+             f'UPDATE personal_erasure_times SET discord_at=max(discord_at,NEW.at+{MARGIN}) WHERE user_id=NEW.user_id; '
              'UPDATE personal_erasures SET at=OLD.at WHERE user_id=NEW.user_id;')):
         db.execute(f'DROP TRIGGER IF EXISTS {name}')
         db.execute(f'CREATE TRIGGER {name} {event} BEGIN {body} END')
@@ -133,7 +139,8 @@ def reconcile(db):
         if at is None:
             continue
         stamped = db.execute('SELECT at FROM personal_erasure_times WHERE user_id=?', (user,)).fetchone()
-        record_erasure(db, user, max(at, stamped[0] if stamped else at), None, deleted.get(user))
+        record_erasure(db, user, max(at, stamped[0] if stamped else at), None, deleted.get(user),
+                       removals_on_discord(db, user))  # And the removals' Discord times it left (fri #368).
     db.execute('DELETE FROM personal_cutoff_floors')
     if began:
         db.commit()
@@ -171,18 +178,24 @@ def erased(db, user):
 # How far before Gene's own stamp a Discord time may put the cutoff: further would be a stale time (a control that
 # waited out an outage), and holding what was said after it back is the safe way.
 SKEW = 60
+# A cutoff known only on Gene's clock (no Discord event behind it: Red's own data deletion, an older Fri's control, a
+# removal no panel press dates), as it's compared with a message's snowflake: a few seconds later, so a message sent
+# just before it, with Gene's clock behind Discord's, still counts as before it (HumanMint/fri#368). Holding a few
+# seconds' more back is the safe way.
+MARGIN = 5
 
 
-def record_erasure(db, user, at, discord_at=None, removals=None):
+def record_erasure(db, user, at, discord_at=None, removals=None, removals_discord=None):
     """Gene's stamp of the member's erasure, and its cutoff on Discord's clock (see erased_on_discord): the Discord time
     of the message or interaction that asked, within SKEW of Gene's stamp, or Gene's stamp without one. Neither is ever
     earlier than a cutoff already in force: an earlier erasure's (Sol round 1 of #213), or `removals`, the latest of
-    the member's note removals, which the erasure deletes (Sol round 2). A request that arrives late, after a newer
-    erasure or removal, or after an outage, can't move a cutoff back and admit what was said before it; nor can
-    Gene's clock stepping back."""
-    in_force = max(erased_on_discord(db, user) or 0, removals or 0)
+    the member's note removals, which the erasure deletes (Sol round 2), and `removals_discord`, the same on Discord's
+    clock (HumanMint/fri#368). A request that arrives late, after a newer erasure or removal, or after an outage,
+    can't move a cutoff back and admit what was said before it; nor can Gene's clock stepping back. With no Discord
+    time, the cutoff is Gene's stamp a MARGIN on (HumanMint/fri#368)."""
+    in_force = max(erased_on_discord(db, user) or 0, removals or 0, removals_discord or 0)
     at = max(at, erased(db, user) or 0, removals or 0)
-    cutoff = at if discord_at is None else min(max(discord_at, at - SKEW), at + SKEW)
+    cutoff = at + MARGIN if discord_at is None else min(max(discord_at, at - SKEW), at + SKEW)
     db.execute('INSERT INTO personal_erasures VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET at=excluded.at',
                 (user, at))
     db.execute('INSERT INTO personal_erasure_times VALUES (?,?,?) ON CONFLICT(user_id) DO UPDATE SET '
@@ -191,28 +204,73 @@ def record_erasure(db, user, at, discord_at=None, removals=None):
 
 def erased_on_discord(db, user):
     """When the member last turned memory off, on Discord's clock (HumanMint/fri#337): what's compared with a message's
-    snowflake. The cutoff recorded with this same erasure (see record_erasure); otherwise Gene's stamp, as before (see
-    erased), never earlier than one recorded with an earlier erasure: an older controller's, after a rollback, writes
-    its stamp alone. None when never."""
+    snowflake. The cutoff recorded with this same erasure (see record_erasure); otherwise Gene's stamp a MARGIN on
+    (HumanMint/fri#368), never earlier than one recorded with an earlier erasure: an older controller's, after a
+    rollback, writes its stamp alone. None when never."""
     at = erased(db, user)
     if at is None:
         return None
     row = db.execute('SELECT at,discord_at FROM personal_erasure_times WHERE user_id=?', (user,)).fetchone()
     if not row:
-        return at
-    return row[1] if row[0] == at else max(at, row[1])
+        return at + MARGIN
+    return row[1] if row[0] == at else max(at + MARGIN, row[1])
 
 
-def learned_cutoff(db, guild, scope, user):
-    """What learning from history holds a member's words to: their latest removal seen here (see removed), or when
-    they last turned memory off, whichever is later. None when neither."""
-    return max((at for at in (removed(db, guild, scope, user), erased_on_discord(db, user)) if at is not None),
+def removal_on_discord(db, guild, channel, user):
+    """The member's latest note removal in this conversation (or the profile, SERVER) alone, on Discord's clock
+    (HumanMint/fri#368): the time recorded with these same removals (see record_removal); otherwise their Gene stamp a
+    MARGIN on, never earlier than one recorded with an earlier removal (a summary edit's, or an older controller's,
+    writes Gene's clock alone). And a recorded one whose removals went (an older controller's erasure) still holds. None
+    when none."""
+    fence = db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND channel_id=? AND user_id=?',
+                       (guild, channel, user)).fetchone()[0]
+    row = db.execute('SELECT at,discord_at FROM personal_removal_times WHERE guild_id=? AND channel_id=? AND user_id=?',
+                     (guild, channel, user)).fetchone()
+    if row and fence == row[0]:
+        return row[1]
+    return max((at for at in (None if fence is None else fence + MARGIN, row[1] if row else None) if at is not None),
                default=None)
 
 
+def removed_on_discord(db, guild, scope, user):
+    """removed (see there), on Discord's clock: the later of this scope's and the profile's (see removal_on_discord)."""
+    return max((at for at in (removal_on_discord(db, guild, scope, user), removal_on_discord(db, guild, SERVER, user))
+                if at is not None), default=None)
+
+
+def removals_on_discord(db, user, guild=None):
+    """The member's latest note removal anywhere (in this guild, if given), on Discord's clock. None when none."""
+    where, args = ('user_id=?', (user,)) if guild is None else ('guild_id=? AND user_id=?', (guild, user))
+    places = db.execute(f'SELECT guild_id,channel_id FROM personal_note_removals WHERE {where} UNION '
+                        f'SELECT guild_id,channel_id FROM personal_removal_times WHERE {where}', args + args).fetchall()
+    return max((at for place in places if (at := removal_on_discord(db, place[0], place[1], user)) is not None),
+               default=None)
+
+
+def record_removal(db, guild, scope, user, stamp, discord_at, before):
+    """After a removal's fences are written at Gene's `stamp`: its time on Discord's clock, the panel press's
+    (`discord_at`), within SKEW of the stamp as an erasure's is (see record_erasure), and never earlier than `before`,
+    this scope's cutoff on Discord's clock when it began (see removal_on_discord), whatever order presses arrive in or
+    however Gene's clock steps (HumanMint/fri#368)."""
+    fence = db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND channel_id=? AND user_id=?',
+                       (guild, scope, user)).fetchone()[0]
+    cutoff = max(min(max(discord_at, stamp - SKEW), stamp + SKEW), before or 0)
+    db.execute('INSERT INTO personal_removal_times VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,user_id) DO '
+               'UPDATE SET at=excluded.at,discord_at=excluded.discord_at', (guild, scope, user, fence, cutoff))
+
+
+def learned_cutoff(db, guild, scope, user):
+    """What learning from history holds a member's words to: their latest removal seen here, or when they last turned
+    memory off, whichever is later, both on Discord's clock, as a message's time is (HumanMint/fri#368). None when
+    neither."""
+    return max((at for at in (removed_on_discord(db, guild, scope, user), erased_on_discord(db, user))
+                if at is not None), default=None)
+
+
 def predates(db, guild, scope, user, source):
-    """A message sent before the member's latest removal seen here, answered after it: it keeps nothing."""
-    cutoff = removed(db, guild, scope, user)
+    """A message sent before the member's latest removal seen here, answered after it: it keeps nothing. On Discord's
+    clock, as the message's snowflake is (HumanMint/fri#368)."""
+    cutoff = removed_on_discord(db, guild, scope, user)
     return bool(source and cutoff is not None and source.timestamp().timestamp() <= cutoff)
 
 
@@ -228,9 +286,12 @@ def before_erasure(db, user, source):
 def last_removal(db, guild, user, on_discord=False):
     """When the member last edited or removed any note, or turned memory off; Fri's own caches drop what they said
     before it, and so does learning (HumanMint/fri#321). `on_discord`: with the erasure on Discord's clock (see
-    erased_on_discord), as a newer Fri compares it (HumanMint/fri#337). A removal stays on Gene's clock."""
-    cutoffs = [db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND user_id=?',
-                          (guild, user)).fetchone()[0], (erased_on_discord if on_discord else erased)(db, user)]
+    erased_on_discord), as a newer Fri compares it (HumanMint/fri#337), and each removal too (see removal_on_discord,
+    HumanMint/fri#368)."""
+    removals = (removals_on_discord(db, user, guild) if on_discord else
+                db.execute('SELECT max(at) FROM personal_note_removals WHERE guild_id=? AND user_id=?',
+                           (guild, user)).fetchone()[0])
+    cutoffs = [removals, (erased_on_discord if on_discord else erased)(db, user)]
     return max((at for at in cutoffs if at is not None), default=0)
 
 
@@ -377,9 +438,12 @@ def edit(store, guild, conversation, user, identifier, revision, source, action,
             raise ValueError('Say what you’re doing, such as I’m working on a mod.'
                              if row['category'] == 'projects' else
                              'Use a short first-person preference, such as I like chess.')
+        before, stamp = removal_on_discord(db, guild, scope, user), time.time()
         for fence in fences():  # See removed(). Never earlier than it was, even with Gene's clock stepped back.
             db.execute('INSERT INTO personal_note_removals VALUES (?,?,?,?,?) ON CONFLICT(guild_id,channel_id,'
-                'user_id,digest) DO UPDATE SET at=max(at,excluded.at)', (guild, scope, user, fence, time.time()))
+                'user_id,digest) DO UPDATE SET at=max(at,excluded.at)', (guild, scope, user, fence, stamp))
+        # And when the press was sent, on Discord's clock (HumanMint/fri#368).
+        record_removal(db, guild, scope, user, stamp, source.timestamp().timestamp(), before)
         db.execute('DELETE FROM personal_notes WHERE id=?', (identifier,))
         # Other excerpts of the same words go with it, under any category: one containing the other, as two
         # excerpts of one message do. For a profile note, in every conversation, which it reached.

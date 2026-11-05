@@ -729,6 +729,24 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom would sa' + chr(0xFFFA) + 'y'),
     ('games', 'i like chess', 'i like chess, my mom:' + chr(0xFFFB) + 'P] would say'),
     ('nickname', 'call me dan', 'don' + chr(0xFFFB) + 't ever please call me dan'),
+    # gene #221 F1: a hedge past modifiers outside #217's list ("probably", "definitely", "firmly", "seriously"; any
+    # word ending in -ly, and common short ones), so a condition still runs through it.
+    ('nickname', 'call me dan', 'if i win ;P i probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i definitely believe\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i firmly believe\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i seriously think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i prob think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i def believe\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i really probably honestly think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom ;P i seriously think would say'),
+    # gene #221 F2: a slash face with horizontal whitespace around its nose or slash, alone or attached.
+    ('games', 'i like chess', 'i like chess, my mom :- / would say'),
+    ('games', 'i like chess', 'i like chess, my mom : -/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom : - / would say'),
+    ('games', 'i like chess', 'i like chess, my mom : / would say'),
+    ('games', 'i like chess', 'i like chess, my mom :-\t/ would say'),
+    ('games', 'i like chess', 'i like chess, my mom :- \\ would say'),
+    ('games', 'i like chess', 'i like chess, my mom:- / ) would say'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -874,6 +892,13 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, saves are in c:\\games\\chess'),
     ('games', 'i like chess', 'i like chess, see https://example.com/x:\\y lol'),
     ('games', 'i like chess', 'i like chess, see c:/games/chess'),
+    # gene #221 F2: whitespace in a link or a path is never a face.
+    ('games', 'i like chess', 'i like chess, see http: //example.com/chess'),
+    ('games', 'i like chess', 'i like chess, see https://example.com/a: /b'),
+    ('games', 'i like chess', 'i like chess, saves are in c: /games/chess'),
+    ('games', 'i like chess', 'i like chess, saves are in c: \\games\\chess'),
+    # gene #221 F1: a word ending in -ly after a face isn't a hedge without a hedge's verb.
+    ('games', 'i like chess', 'i like chess ;P i only play blitz'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -988,7 +1013,9 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 'mom :-\\ ', 'mom:/ ) ', 'mom:/ ', 'mom:~/ ', 'would' + chr(0xFFF9) + ' ', ':' + chr(0xFFFB) + 'P] ',
                 ';P i really honestly guess ', ';P i really really really ', ';P i know when ', ';P i think my mom says ',
                 ";P i guess i'm kidding ", ';P i guess my opponent is ', ';P i believe would ',
-                ';P i absolutely strongly believe '):
+                ';P i absolutely strongly believe ',
+                # gene #221: slash faces with whitespace inside, and hedges past any modifier, -ly words among them.
+                'mom :- / ', ': - / ', ':- / ) ', ';P i probably seriously think ', ';P i deeply ', 'family '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
@@ -999,7 +1026,8 @@ def test_a_run_of_fillers_between_symbols_is_crossed_once():
     for pad in ('\U0001F602ok ', ':) ok ', ':)ok ', ';) ok \U0001F602', ';P yeah \U0001F602',
                 ';P lol ', ';P i guess ', ';P lol i ', ';P we all ',  # gene #201 item 4: each aside looked for once.
                 ';P i do honestly think ', ';P lol i suppose ', ';P i know when ',  # gene #212: a wider vocabulary,
-                ';P i absolutely believe '):  # past a run of modifiers, read once more.
+                ';P i absolutely believe ',  # past a run of modifiers, read once more,
+                ';P i probably ', ';P i def seriously think '):  # and past any modifier (gene #221).
         assert_linear(lambda text: personal_note({'category': 'games', 'evidence': 'i like chess'}, text),
                       lambda length: ('i like chess ' + pad * length)[:length])
 
@@ -1023,6 +1051,19 @@ def test_the_same_words_too_many_times_keep_nothing():
     assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
     assert personal_note(note, 'i like chess. ' * 9) is None
     assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
+
+
+@pytest.mark.parametrize('category, evidence, text', [
+    ('nickname', 'call me dan', 'if i win ;P i probably think\nplease call me dan'),
+    ('nickname', 'call me dan', 'if i win ;P i seriously think\nplease call me dan'),
+    ('games', 'i like chess', 'i like chess, my mom :- / would say'),
+])
+def test_221s_shapes_keep_no_note_when_saved_and_read_again(store, category, evidence, text):
+    """gene #221: each of these was kept by Store.save_chat() and there again once read; nothing is now."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': category, 'evidence': evidence}])
+    assert not saved['first_memory']
+    assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
 
 
 def test_a_denied_nickname_keeps_no_note_when_saved(store):

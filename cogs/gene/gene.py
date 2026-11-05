@@ -142,5 +142,6 @@ class Gene(commands.Cog):
             await self.say(ctx, 'Use `gene forgetme true` to erase your request text, links, saved chats and '
                                'context and cancel pending proposals. Code, Discord posts, and backups are separate records.')
             return
-        await self.api('POST', '/privacy/erase', self.actor(ctx))
+        # The command message dates the erasure on Discord's clock (HumanMint/fri#337).
+        await self.api('POST', '/privacy/erase', {**self.actor(ctx), 'source_id': str(ctx.message.id)})
         await self.say(ctx, 'Your stored requests, chats, links, and approved context have been erased.')

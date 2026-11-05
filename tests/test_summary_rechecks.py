@@ -9,6 +9,7 @@ one of whose messages it knows was taken back, as it claims. Fri's first claim a
 back until it's rechecked.
 """
 import json
+import time
 
 import pytest
 
@@ -126,15 +127,18 @@ def test_one_whose_sources_arent_known_is_dropped_at_the_next_recheck(store, tmp
 
 
 def test_one_whose_message_the_controller_knows_was_taken_back_is_dropped_as_it_is_claimed(store, tmp_path):
-    """The gap: its exchange aged out, so a withdrawal of that message by ID finds nothing holding it and spares the
-    summary. The controller knows it was taken back, so the summary goes without Fri reading anything."""
+    """The gap: its exchange aged out, and an older controller, in a rollback window, withdrew that message by ID with
+    nothing holding it, so it spared the summary. The controller knows it was taken back, so the summary goes as its
+    recheck is claimed, without Fri reading anything. (This one drops it at the withdrawal itself, by what the summary
+    recorded it read: gene #249.)"""
     agent = background(store, tmp_path)
     built(store, agent)
     message = sources(store)[0]['id']
     with store.connection() as db:
         db.execute("DELETE FROM chat_turns WHERE user_id='20'")  # Aged out.
-    store.withdraw_saved('123', [message], deleted=True)
-    assert shown(store)  # Spared, as nothing held it.
+        db.execute('INSERT INTO chat_turn_deletions(guild_id,message_id,at,user_id,revision) VALUES (?,?,?,?,0)',
+                   ('123', message, time.time(), '20'))  # As an older controller records a deletion.
+    assert shown(store)  # Spared, as nothing held it then.
     assert recheck(agent) == {'summaries': []}
     assert shown(store) is None
 
@@ -300,16 +304,27 @@ def test_b1_the_next_build_carries_the_members_words_on(store, tmp_path):
     assert offer['previous'] == {'text': 'mostly raids and builds', 'origins': [], 'messages': []}
 
 
-def test_s1_a_withdrawal_recorded_while_fri_read_takes_the_summary_whatever_fri_answers(store, tmp_path):
+@pytest.mark.parametrize('by', ['an older controller', 'this one'])
+def test_s1_a_withdrawal_recorded_while_fri_read_takes_the_summary_whatever_fri_answers(store, tmp_path, by):
     """S1: one of its messages was taken back after the claim, while Fri was still reading; Fri's ok, from reads made
-    before that, never shows it again."""
+    before that, never shows it again. This controller drops it at the withdrawal itself (gene #249), so Fri's ok finds
+    that recheck gone."""
     agent = background(store, tmp_path)
     built(store, agent)
     item = recheck(agent)['summaries'][0]
+    message = item['messages'][0]['id']
     with store.connection() as db:
         db.execute("DELETE FROM chat_turns WHERE user_id='20'")  # Aged out: nothing holds it but the summary.
-    store.withdraw_saved('123', [item['messages'][0]['id']], deleted=True)
-    rechecked(agent, item['id'], 'ok')
+        if by == 'an older controller':
+            db.execute('INSERT INTO chat_turn_deletions(guild_id,message_id,at,user_id,revision) VALUES (?,?,?,?,0)',
+                       ('123', message, time.time(), '20'))
+    if by == 'this one':
+        store.withdraw_saved('123', [message], deleted=True)
+        assert shown(store) is None
+        with pytest.raises(ValueError, match='expired'):
+            rechecked(agent, item['id'], 'ok')
+    else:
+        rechecked(agent, item['id'], 'ok')
     assert shown(store) is None
     with store.connection() as db:
         assert not db.execute('SELECT count(*) FROM fri_member_summaries').fetchone()[0]

@@ -643,19 +643,30 @@ def named(db, guild, messages):
     return sorted(users)
 
 
-def claimed(record, messages):
-    """Whether a build in flight's claim names one of these messages: an exchange it reads, or one its earlier summary
-    drew on (HumanMint/fri#333)."""
-    if not isinstance(record, dict):
+def ours(record, guild):
+    """Whether a build in flight's claim is this server's (gene #253). One from before claims named their server, by an
+    older controller in a rollback window, can't be placed, so it counts as anyone's."""
+    return isinstance(record, dict) and str(record.get('guild_id', guild)) == str(guild)
+
+
+def claimed(record, guild, messages):
+    """Whether a build in flight's claim, this server's (see ours), names one of these messages: an exchange it reads,
+    or one its earlier summary drew on (HumanMint/fri#333)."""
+    if not ours(record, guild):
         return False
     read = [*(record.get('messages') or ()), *((record.get('previous') or {}).get('messages') or ())]
     return bool({str(item.get('id')) for item in read if isinstance(item, dict)} & {str(m) for m in messages})
 
 
 def naming(db, guild, messages):
-    """Whether withdrawing these messages takes a summary or a build in flight (see taken)."""
-    from .fri_agent_store import AgentStore
-    return bool(named(db, guild, messages)) or claimed(AgentStore.get(db, CLAIM), messages)
+    """Whether withdrawing these messages takes a summary or a build in flight (see taken). Read in one statement, so
+    from one snapshot: read apart, a build finishing in between was missed both ways, its summary's record read before
+    it finished and its claim after (gene #253). taken looks again under the write lock."""
+    wanted = json.dumps([json.dumps(str(message)) for message in messages if message])
+    found, record = db.execute(
+        'SELECT EXISTS (SELECT 1 FROM fri_member_summary_sources s, json_each(?) m WHERE s.guild_id=? AND '
+        'instr(s.messages,m.value)>0), (SELECT value FROM agent_state WHERE key=?)', (wanted, guild, CLAIM)).fetchone()
+    return bool(found) or claimed(json.loads(record) if record else None, guild, messages)
 
 
 def taken(db, guild, messages):
@@ -669,7 +680,7 @@ def taken(db, guild, messages):
     for user in users:
         drop(db, guild, user)
     record = AgentStore.get(db, CLAIM)
-    if record and (record.get('user_id') in users or claimed(record, messages)):
+    if ours(record, guild) and (record.get('user_id') in users or claimed(record, guild, messages)):
         AgentStore.put(db, CLAIM, None)
 
 
@@ -802,7 +813,7 @@ def claim(agent):
             messages = [{'id': message, 'conversation_id': turn['channel_id'], 'saved_at': turn['at']}
                         for turn in turns for message in messages_of(turn)]
             earlier = drawn(db, guild, user, previous) if shown else None
-            record = {'id': uuid.uuid4().hex, 'at': now, 'user_id': user, 'revision': revision,
+            record = {'id': uuid.uuid4().hex, 'at': now, 'guild_id': guild, 'user_id': user, 'revision': revision,
                       'through': max(turn['at'] for turn in turns),
                       'sources': {c: sorted(map(list, s)) for c, s in sources.items()},
                       'previous': {k: shown[k] for k in ('provenance', 'origins')} if shown else None,

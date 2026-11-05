@@ -8,6 +8,7 @@ under an older controller too."""
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -16,7 +17,7 @@ import pytest
 
 from gene.fri_channel_withdrawal import withdraw as withdraw_channels
 from gene.fri_protocol import compatible, contract
-from gene.store import Store
+from gene.store import DRAWN, Store
 from tests.test_api import headers
 from tests.test_erasure_rollback import DEPLOYED, extracted  # noqa: F401
 from tests.test_fri_agent import finish as learn
@@ -180,7 +181,8 @@ def test_only_fri_and_only_its_server(world, body):  # noqa: F811
 
 def test_a_withdrawn_channel_is_kept_out_by_the_database_itself(world):  # noqa: F811
     """An older controller, in a rollback window, knows nothing of the record: what it would save from a withdrawn
-    channel, an exchange, a note or a question, goes as it's written. Elsewhere nothing changes."""
+    channel, an exchange, a note or a question, is refused as it's written, and a note moved there stays where it was.
+    Elsewhere nothing changes."""
     client, store = world
     withdraw(client, '51', THREAD)
     with store.connection() as db:
@@ -196,6 +198,8 @@ def test_a_withdrawn_channel_is_kept_out_by_the_database_itself(world):  # noqa:
         db.execute("UPDATE personal_notes SET origin='public:51' WHERE evidence='i like public:52'")
     assert count(store, 'chat_turns') == 1 and count(store, 'chat_pending') == 1
     assert notes(store, 'public:52') == ['i like chess']
+    # A note moved there is refused before it changes, so it stays where it was (Sol round 1 of #243, G1).
+    assert count(store, 'personal_notes', "evidence='i like public:52' AND origin='public:52'") == 1
 
 
 @pytest.mark.parametrize('sha', OLDER)
@@ -255,3 +259,112 @@ def test_what_outlived_its_exchanges_goes_too(world):  # noqa: F811
     late = turn(source(channel='52'), 'and now?', channel_id='52', conversation_id='public:52',
                 drew_on=[first['source']['id']])
     assert client.post('/chat/turn/check', headers=headers('fri'), json=late).status_code == 409
+
+
+@pytest.mark.parametrize('sha', OLDER)
+def test_an_older_controllers_save_from_it_leaves_a_note_from_elsewhere(tmp_path, extracted, sha):  # noqa: F811
+    """Sol round 1 of #243, G1: this controller saved "i like chess" as a profile note from #52; an older one, in a
+    rollback window, saves the same note from withdrawn #51, which updates that row. The update is refused before it
+    changes anything: the note from #52 stays, as it was."""
+    code = extracted(sha)
+    if code is None:
+        pytest.skip(f'{sha} is not in this checkout')
+    path = tmp_path/'gene.sqlite3'
+    store = Store(path)
+    store.save_chat('123', 'public:52', '20', 0, 'i like chess', 'noted', 'model', 'high', provenance=[],
+                    audience='server', notes=[{'category': 'games', 'evidence': 'i like chess'}],
+                    source=source(channel='52'))
+    withdraw_channels(store, '123', ['51'])
+    script = ('import json, sys\nfrom pathlib import Path\nfrom gene.store import Store\n'
+              'store = Store(Path(sys.argv[1]))\n'
+              'store.save_chat("123", "public:51", "20", 0, "i like chess", "noted", "model", "high",\n'
+              '                notes=[{"category": "games", "evidence": "i like chess"}], source=json.loads(sys.argv[2]),\n'
+              '                provenance=[], audience="server")\n')
+    done = subprocess.run([sys.executable, '-c', script, str(path), json.dumps(source(channel='51'))], cwd=code,
+                          env={**os.environ, 'PYTHONPATH': str(code)}, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr[-2000:]
+    store = Store(path)
+    assert notes(store) == ['i like chess']
+    with store.connection() as db:
+        assert db.execute("SELECT origin FROM personal_notes WHERE evidence='i like chess'").fetchall()[0][0] == 'public:52'
+
+
+def test_a_thread_under_a_withdrawn_channel_keeps_nothing_though_its_channel_was_not_known(world):  # noqa: F811
+    """Sol round 1 of #243, G2: #51 withdrawn before any turn named thread 70 under it. A late save there, which names
+    #51 as its channel, keeps nothing, and its check is refused; the thread is withdrawn with its channel then."""
+    client, store = world
+    withdraw(client, '51')
+    late = turn(source(channel=THREAD), 'i like chess', channel_id='51', conversation_id='public:' + THREAD,
+                audience='server', notes=[{'category': 'games', 'evidence': 'i like chess'}])
+    assert client.post('/chat/turn/check', headers=headers('fri'), json=late).status_code == 409
+    assert post_turn(client, late).json() == {'ok': True, 'first_memory': False, 'kept': False}
+    assert notes(store) == [] and turns(store, 'public:' + THREAD) == []
+
+
+def test_naming_a_withdrawn_channel_as_a_threads_withdraws_the_thread(world):  # noqa: F811
+    """Sol round 1 of #243, G2: thread 71 saved under #51 by an older controller, with no channel kept for it; #51
+    withdrawn; Fri names #51 as its channel later. What was saved there goes then, and the thread is withdrawn."""
+    client, store = world
+    store.save_chat('123', 'public:71', '20', 0, 'i like osu', 'noted', 'model', 'high', audience='server',
+                    provenance=[], notes=[{'category': 'games', 'evidence': 'i like osu'}],
+                    source=source(user='20', channel='71'))
+    withdraw(client, '51')
+    assert notes(store) == ['i like osu']
+    assert client.post('/chat/channels/parents', headers=headers('fri'),
+                       json={'guild_id': '123', 'parents': {'71': '51'}}).json() == {'ok': True}
+    assert notes(store) == [] and turns(store, 'public:71') == []
+    late = turn(source(channel='71'), 'i like chess', channel_id='51', conversation_id='public:71')
+    assert client.post('/chat/turn/check', headers=headers('fri'), json=late).status_code == 409
+
+
+def test_messages_only_a_summary_or_a_build_still_names_are_retired_and_fenced_too(world):  # noqa: F811
+    """Sol round 1 of #243, G3: a message of #51's whose exchange went (trimmed), named only by a kept summary's
+    sources, or by a build in flight, carried by a reply in #52. Withdrawing #51 retires that reply too, and fences the
+    message, as its own deletion would."""
+    client, store = world
+    kept, building = said(client, 'i like minecraft'), said(client, 'i like osu')
+    for first, where in ((kept, '52'), (building, '52')):
+        said(client, 'what was i saying', channel=where, reply='you like that one', audience='conversation',
+             drew_on=[first['source']['id']])
+    now = time.time()
+    with store.connection() as db:
+        db.execute("DELETE FROM chat_turns WHERE channel_id='public:51'")  # Trimmed since.
+        db.execute("DELETE FROM personal_notes WHERE origin='public:51' OR channel_id='public:51'")
+        db.execute("INSERT INTO fri_member_summaries VALUES ('123','20','likes minecraft',0,'[]','[\"public:51\"]',?,?)",
+                   (now, now))
+        db.execute('INSERT INTO fri_member_summary_sources VALUES (?,?,?,?)', ('123', '20', now, json.dumps(
+            [{'id': kept['source']['id'], 'conversation_id': 'public:51', 'saved_at': now}])))
+        db.execute("INSERT INTO agent_state VALUES ('member_summary_claim',?) ON CONFLICT(key) DO UPDATE SET "
+                   "value=excluded.value", (json.dumps({
+                       'id': 'claim', 'user_id': '30', 'at': now, 'through': now, 'revision': 0,
+                       'sources': {'public:51': [['30', 0]]}, 'previous': None,
+                       'messages': [{'id': building['source']['id'], 'conversation_id': 'public:51', 'saved_at': now}]}),))
+    withdraw(client, '51')
+    with store.connection() as db:
+        assert [row[0] for row in db.execute("SELECT reply FROM chat_turns WHERE channel_id='public:52'")] == [
+            DRAWN, DRAWN]
+    for first in (kept, building):
+        late = turn(source(channel='52'), 'and now?', channel_id='52', conversation_id='public:52',
+                    drew_on=[first['source']['id']])
+        assert client.post('/chat/turn/check', headers=headers('fri'), json=late).status_code == 409
+
+
+def test_a_failure_part_way_through_withdraws_nothing_and_says_so(world, monkeypatch):  # noqa: F811
+    """Sol round 1 of #243, G4: a failure other than an optional table that was never made (a full disk, say) fails
+    the request, and the transaction with it: nothing is withdrawn, and Fri keeps the channel queued."""
+    client, store = world
+    said(client, 'i like minecraft')
+    import gene.fri_channel_withdrawal as channels
+    monkeypatch.setattr(channels, 'BY_CONVERSATION', (*channels.BY_CONVERSATION, ('chat_pending', 'not_a_column')))
+    with pytest.raises(sqlite3.OperationalError):
+        withdraw(client, '51')
+    assert notes(store) == ['i like minecraft'] and count(store, 'chat_channel_withdrawals') == 0
+
+
+def test_the_controller_names_the_messages_it_withdrew(world):  # noqa: F811
+    """For Fri's own fences (fri #372, Sol round 1, F1): the messages a channel's withdrawal took, by ID, so a copy
+    of what they said that Fri read before is held back as theirs would be."""
+    client, store = world
+    first, second = said(client, 'i like minecraft'), said(client, 'i like chess', channel='52')
+    answer = withdraw(client, '51').json()
+    assert first['source']['id'] in answer['messages'] and second['source']['id'] not in answer['messages']

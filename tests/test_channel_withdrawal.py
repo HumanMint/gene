@@ -175,6 +175,29 @@ def test_the_controller_says_which_channels_it_holds_anything_from(world):  # no
     assert [row['id'] for row in held['channels']] == ['51', THREAD]
 
 
+def test_a_channel_holding_only_learning_is_still_held(world):  # noqa: F811
+    """Sol round 3 of #243: a channel with only a channel summary (60), an archive observation (61), or a learning
+    report, by its card (62) or by its body alone (63), is listed, so Fri's sweep checks it. A report withdrawn to a
+    breadcrumb holds nothing, so its channel isn't listed again."""
+    client, store = world
+    now = time.time()
+    with store.connection() as db:
+        db.execute("INSERT INTO agent_summaries(channel_id,body,authors,at) VALUES ('60','raid talk','[]',?)", (now,))
+        db.execute('INSERT INTO fri_explore_notes VALUES (?,?,?,?,?,?,?,?)',
+                   ('61', '20', '9061', 'games', 'raids', 'likes raids', now, now))
+        db.execute("INSERT INTO agent_reports(id,at,body) VALUES ('r62',?,'Learning pass r62\nfindings')", (now,))
+        db.execute("INSERT INTO agent_report_cards VALUES ('r62',?)", (json.dumps({'channel_id': '62'}),))
+        db.execute("INSERT INTO agent_reports(id,at,body) VALUES ('r63',?,'Learning pass r63\nChannel: <#63>\nfindings')",
+                   (now,))
+
+    def listed():
+        return [row['id'] for row in client.post('/chat/channels/held', headers=headers('fri'),
+                                                 json={'guild_id': '123'}).json()['channels']]
+    assert listed() == ['60', '61', '62', '63']
+    withdraw(client, '60', '61', '62', '63')
+    assert listed() == []
+
+
 @pytest.mark.parametrize('body', [{'guild_id': '999', 'channel_ids': ['51']}])
 def test_only_fri_and_only_its_server(world, body):  # noqa: F811
     client, _ = world

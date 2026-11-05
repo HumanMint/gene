@@ -87,6 +87,8 @@ def initialize(db):
     if 'revisions' not in {row[1] for row in db.execute('PRAGMA table_info(agent_summaries)')}:
         # Authors' privacy revisions observed when the summary was made; older rows fail closed.
         db.execute("ALTER TABLE agent_summaries ADD COLUMN revisions TEXT NOT NULL DEFAULT '{}'")
+    from .fri_learning_sources import initialize as initialize_learning_sources
+    initialize_learning_sources(db)  # What each report and channel summary read (gene #244).
 
 
 class AgentStore:
@@ -240,8 +242,11 @@ class AgentStore:
             pending = self.get(db, 'learning_claim')
 
             def interrupted():
-                db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
-                           (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; no automatic replay.'))
+                if db.execute('INSERT OR IGNORE INTO agent_reports VALUES (?,?,?,0)',
+                              (pending['id'], now, 'Learning pass interrupted. Reserved scan allowance retained; '
+                               'no automatic replay.')).rowcount:
+                    from .fri_learning_sources import record
+                    record(db, 'report', pending['id'], [])  # The controller's own words: none of a member's.
                 self.put(db, 'learning_claim', None)
                 return blocked('The previous pass was interrupted. Its report is pending; its allowance remains reserved.')
             if pending and (at := claimed_at(pending)) is not None and at-now >= CLAIM_SECONDS:
@@ -428,6 +433,8 @@ class AgentStore:
                            'at=excluded.at,revisions=excluded.revisions',
                            (claim['channel_id'], summary, json.dumps(sorted({r['user_id'] for r in accepted.values()})), now,
                             json.dumps({r['user_id']: r['revision'] for r in accepted.values()}, sort_keys=True)))
+                from .fri_learning_sources import record
+                record(db, 'summary', claim['channel_id'], accepted)  # So a message of them taken back takes it.
             cursors = self.get(db, 'cursors', {})
             discoveries = []
             already_checked = 0
@@ -488,6 +495,9 @@ class AgentStore:
                       + ('\nIssue: '+clean(error, 180) if error else '')
                       + '\nAsk me to change learning frequency, pause learning, or show settings.')
             db.execute('INSERT INTO agent_reports VALUES (?,?,?,0)', (batch_id, now, report))
+            from .fri_learning_sources import record
+            # Its summary, disclosures and findings all come from these: one taken back takes them (gene #244).
+            record(db, 'report', batch_id, accepted)
             card = {'channel_id': claim['channel_id'], 'mode': mode, 'member': name,
                     'term': plan.get('term', ''), 'scanned': scanned, 'eligible': len(accepted),
                     'already_checked': already_checked, 'historical_notes': len(discoveries),
@@ -509,16 +519,20 @@ class AgentStore:
             config = self.config(db)
             day = int((now-self.get(db, 'started', now))//86400)
             budget = self.get(db, 'budget', {})
+            from .fri_learning_sources import SHOWN_SUMMARY, shown
             reports = [dict(r) for r in db.execute(
-                'SELECT id,at,body,delivered FROM agent_reports WHERE at>? ORDER BY at DESC LIMIT 3',
+                "SELECT r.id,r.at,r.body,r.delivered,coalesce(s.held,0) AS held FROM agent_reports r LEFT JOIN "
+                "fri_learning_sources s ON s.kind='report' AND s.item=r.id WHERE r.at>? ORDER BY r.at DESC LIMIT 3",
                 (now-7*86400,))]
-            for report in reports:
-                report['body'] = report['body'].replace('Untrusted summary:', 'Conversation summary:')
+            for report in reports:  # One held back shows no words (gene #244).
+                report['body'] = shown(report['id'], report['body'], {}, report.pop('held'))[0].replace(
+                    'Untrusted summary:', 'Conversation summary:')
                 channel = re.search(r'Channel: <#(\d+)>', report['body'])
                 report['channel_id'] = channel[1] if channel else None
             summaries = [{k: r[k] for k in ('channel_id', 'body', 'at')} for r in db.execute(
-                'SELECT channel_id,body,at,authors,revisions FROM agent_summaries WHERE at>? ORDER BY at DESC LIMIT 5',
-                (now-2*86400,)) if r['channel_id'] in self.settings.agent_history_channels.split(',')
+                f'SELECT channel_id,body,at,authors,revisions FROM agent_summaries WHERE at>? AND {SHOWN_SUMMARY} '
+                'ORDER BY at DESC LIMIT 5', (now-2*86400,))
+                if r['channel_id'] in self.settings.agent_history_channels.split(',')
                 and self._summary_current(db, r)]  # The same revision fence as ordinary context.
             return {'reports': reports, 'summaries': summaries,
                     'historical_notes': [dict(channel_id=c, **n) for c in self.settings.agent_history_channels.split(',')
@@ -535,8 +549,9 @@ class AgentStore:
     def context(self, channel, user, guild=None):
         guild = guild or self.settings.guild_id
         with self.store.connection() as db:
-            row = db.execute('SELECT body,authors,revisions FROM agent_summaries WHERE channel_id=? AND at>?',
-                             (channel, time.time()-2*86400)).fetchone()
+            from .fri_learning_sources import SHOWN_SUMMARY
+            row = db.execute(f'SELECT body,authors,revisions FROM agent_summaries WHERE channel_id=? AND at>? '
+                             f'AND {SHOWN_SUMMARY}', (channel, time.time()-2*86400)).fetchone()  # Not one held back.
             if row and not self._summary_current(db, row):
                 db.execute('DELETE FROM agent_summaries WHERE channel_id=?', (channel,))
                 row = None
@@ -567,21 +582,26 @@ class AgentStore:
             return False
         return all(self.store._privacy_state(db, author) == (revision, True) for author, revision in revisions.items())
 
+    # A report with its card, and whether it's held back (gene #244).
+    REPORT = ("SELECT r.id,r.body,c.body AS card,coalesce(s.held,0) AS held FROM agent_reports r LEFT JOIN "
+              "agent_report_cards c ON c.report_id=r.id LEFT JOIN fri_learning_sources s ON s.kind='report' AND "
+              "s.item=r.id ")
+
     def reports(self):
         with self.store.connection() as db:
             return [self.report_row(r) for r in db.execute(
-                'SELECT r.id,r.body,c.body AS card FROM agent_reports r '
-                'LEFT JOIN agent_report_cards c ON c.report_id=r.id WHERE delivered=0 ORDER BY at LIMIT 1')]
+                self.REPORT+'WHERE r.delivered=0 ORDER BY r.at LIMIT 1')]
 
     @staticmethod
     def report_row(row):
-        return {'id': row['id'], 'body': row['body'], 'card': json.loads(row['card']) if row['card'] else {}}
+        """As delivered and shown: one held back as a wordless placeholder (see fri_learning_sources.shown)."""
+        from .fri_learning_sources import shown
+        body, card = shown(row['id'], row['body'], json.loads(row['card']) if row['card'] else {}, row['held'])
+        return {'id': row['id'], 'body': body, 'card': card}
 
     def report(self, report_id):
         with self.store.connection() as db:
-            row = db.execute('SELECT r.id,r.body,c.body AS card FROM agent_reports r '
-                             'LEFT JOIN agent_report_cards c ON c.report_id=r.id WHERE r.id=? AND r.at>?',
-                             (report_id, time.time()-7*86400)).fetchone()
+            row = db.execute(self.REPORT+'WHERE r.id=? AND r.at>?', (report_id, time.time()-7*86400)).fetchone()
             return self.report_row(row) if row else None
 
     def delivered(self, report_id):

@@ -1,5 +1,7 @@
 import asyncio
 import gc
+import re
+import string
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -15,6 +17,7 @@ from gene.fri_chat import ChatResult
 from gene.fri_memory import memory_intent, personal_note, plainer
 from gene.store import Conflict, Store
 from tests.test_api import actor, headers
+from tests.test_fri_endings import source
 from tests.test_fri_runtime import configured, event
 
 
@@ -787,6 +790,55 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, my mom would' + chr(0x2028) + 'say'),
     # gene #231 item 1: what only spaced refuses (it keeps the no-break space, so "have to say" is no filler there).
     ('games', 'i like chess', 'have' + chr(0xA0) + 'to say ;- / i like chess'),
+    # gene #236 item 1: what only bridged refuses (rejoined joins "must say", a filler).
+    ('games', 'i like chess', 'must\nsay :-\n/ i like chess'),
+    ('games', 'i like chess', 'must\tsay :-\n/ i like chess'),
+    ('games', 'i like chess', 'must\rsay :-\n/ i like chess'),
+    # gene #236 item 3: a chained auxiliary, or a modifier #235's run doesn't take, split across lines.
+    ('games', 'i like chess', 'i like chess, my mom would\nhave\nsaid'),
+    ('games', 'i like chess', 'i like chess, my mom would\noften\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom would\nsometimes\nsay'),
+    ('games', 'i like chess', 'i like chess, my mom has been\nsaying'),
+    ('games', 'i like chess', 'i like chess, my mom will\nhave\ntold me'),
+    ('games', 'i like chess', 'i like chess, my mom might\nhave\nmentioned'),
+    # gene #236 item 4: report verbs outside the vocabulary, on one line or split.
+    ('games', 'i like chess', 'i like chess, my mom would\nannounce'),
+    ('games', 'i like chess', 'i like chess, my mom would announce'),
+    ('games', 'i like chess', 'i like chess, my mom would explain'),
+    ('games', 'i like chess', 'i like chess, my mom explained'),
+    ('games', 'i like chess', 'i like chess, my mom mentioned'),
+    ('games', 'i like chess', 'i like chess, my mom announced it'),
+    ('games', 'i like chess', 'i like chess, my dad would complain'),
+    ('games', 'i like chess', 'i like chess, my mom declared'),
+    ('games', 'i like chess', 'i like chess, my sister whispered'),
+    ('games', 'i like chess', 'i like chess, my mom suggested'),
+    ('games', 'i like chess', 'i like chess, my mom replied'),
+    ('games', 'i like chess', 'i like chess, my brother joked'),
+    ('games', 'i like chess', 'i like chess, my mom pointed out'),
+    ('games', 'i like chess', 'i like chess, my mom let slip'),
+    ('games', 'i like chess', 'i like chess, my mom is always\nexplaining'),
+    # Sol round 1 of #238, B1: a report verb with a letter the reading's pattern matches in another case ("ſ" for "s",
+    # dotless or dotted "i", the Kelvin sign for "k") is read as the verb it is; the dictionary lookup raised on it.
+    ('games', 'i like chess', 'i like chess, my mom confe' + chr(0x17F) * 2 + 'ed'),
+    ('games', 'i like chess', 'i like chess, my mom expla' + chr(0x131) + 'ned'),
+    ('games', 'i like chess', 'i like chess, my mom expla' + chr(0x130) + 'ned'),
+    ('games', 'i like chess', 'i like chess, my mom ac' + chr(0x212A) + 'nowledged'),
+    # Sol round 1 of #238, S2: what only rejoined refuses (widened reads "i would once have said" as the member's own).
+    ('nickname', 'call me dan', 'i would\nonce have\nsaid hi\nplease call me dan'),
+    # Sol round 1 of #238, item 5: a passive form is never the member's own: someone else did the warning.
+    ('games', 'i like chess', 'i was warned that i like chess'),
+    ('games', 'i like chess', 'i like chess, i was warned'),
+    ('games', 'i like chess', 'i like chess, we have been warned'),
+    # Sol round 1 of #238, S3: still a report where nothing of its own follows the verb: "that", "so", the claim, "it"
+    # or "this", the person told, or a modifier.
+    ('games', 'i like chess', 'my mom announced i like chess'),
+    ('games', 'i like chess', 'my mom complained to me that i like chess'),
+    ('nickname', 'my nickname is dan', 'my mom mentioned my nickname is dan'),
+    ('games', 'i like chess', 'i like chess, my mom warned me'),
+    ('games', 'i like chess', 'i like chess, my mom explained it to me'),
+    ('games', 'i like chess', 'i like chess, my mom announced this'),
+    ('games', 'i like chess', 'i like chess, my mom mentioned so'),
+    ('games', 'i like chess', 'i like chess, my mom complained loudly'),
     ('nickname', 'call me dan', 'if i win :)' + chr(0x2007) + chr(0x205F) + '\ni guess\nplease call me dan'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
@@ -959,6 +1011,41 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess, would\nyou play?'),
     ('nickname', 'call me dan', 'call me dan, would\nyou mind?'),
     ('games', 'i like chess', 'i like chess, can\nyou tell'),
+    # gene #236: the wider report verbs where they report nothing.
+    ('games', 'i like chess', 'i like chess, jokes are fun'),
+    ('games', 'i like chess', 'i like chess, i read the reports'),
+    ('games', 'i like chess', 'i like chess, i mentioned it before'),
+    ('games', 'i like chess', 'i like chess, we argued about openings'),
+    ('games', 'i like chess', 'i like chess, i have often explained my plan'),
+    ('games', 'i like chess', 'i like chess, my opponent conceded'),
+    ('games', 'i like chess', 'i like chess, the comments were nice'),
+    ('games', 'i like chess', 'i like chess, i want to announce a tournament'),
+    ('games', 'i like chess', 'i like chess, no joke'),
+    ('games', 'i like chess', 'i like chess, the state of the game is great'),
+    ('games', 'i like chess', 'i like chess and i would often play'),
+    # Sol round 1 of #238, S3: a wider report verb with an object of its own reports that, not the claim.
+    ('games', 'i like chess', 'i like chess, can you explain the rules to me'),
+    ('games', 'i like chess', 'i like chess, they announced the tournament'),
+    ('games', 'i like chess', 'i like chess, she complained about lag'),
+    ('games', 'i like chess', 'i like chess, he pointed out a bug'),
+    ('games', 'i like chess', 'i like chess, he admitted defeat'),
+    ('games', 'i like chess', 'i like chess, she replied to my message'),
+    ('games', 'i like chess', 'i like chess, she warned me about the trap'),
+    ('games', 'i like chess', 'i like chess, he whispered something'),
+    ('games', 'i like chess', 'i like chess, he screamed when he lost'),
+    ('games', 'i like chess', 'i like chess, the bot announced 3 winners'),
+    # Sol round 1 of #238, S4: the member's own, past an adverb or a negation, with any apostrophe.
+    ('games', 'i like chess', 'i like chess, i have already explained the rules'),
+    ('games', 'i like chess', 'i like chess, i' + chr(0x2019) + 've explained my plan'),
+    ('games', 'i like chess', 'i like chess, i have already explained it'),
+    ('games', 'i like chess', 'i like chess, i already mentioned it'),
+    ('games', 'i like chess', 'i like chess, i' + chr(0x2019) + 've explained it'),
+    ('games', 'i like chess', "i like chess, i haven't explained it yet"),
+    ('games', 'i like chess', 'i like chess, we' + chr(0x2019) + 've mentioned it before'),
+    ('games', 'i like chess', 'i like chess, i was explaining it to my mom'),  # Active: the member was explaining.
+    ('games', 'i like chess', 'i like chess, i haven' + chr(0x2019) + 't mentioned it'),
+    ('games', 'i like chess', "i like chess, i haven't mentioned it"),
+    ('games', 'i like chess', 'i like chess, we have not announced it'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -1080,7 +1167,12 @@ def test_reports_and_conditions_are_read_in_one_pass():
                 ':-' + chr(0xA0) + '/ ', ':' + chr(0x3000) + '- / ', ';P\ni guess ', 'mom :- /\n', '\n:- / ', ' \n \n',
                 ':-\n/ ', chr(0xA0) + ' ',
                 # gene #231: line breaks inside a report continuation, and runs of auxiliaries and modifiers.
-                'would\nsay ', 'mom :- /\nwould\n', 'would really\n', 'would would ', 'would really really '):
+                'would\nsay ', 'mom :- /\nwould\n', 'would really\n', 'would would ', 'would really really ',
+                # gene #236: chained auxiliaries and modifiers, and report verbs outside the vocabulary.
+                'would\nhave\n', 'has been\noften\n', 'mom announced ', 'i mentioned ', 'pointed out ', 'we we ',
+                # Sol round 1 of #238: what follows a wider verb and its subject, each read a few words at most.
+                'mom announced me me ', 'announced it to everyone ', 'me to it ', 'i have already ',
+                'i' + chr(0x2019) + 've mentioned ', "i haven't ", 'was warned ', 'confe' + chr(0x17F) * 2 + 'ed '):
         assert_linear(read, lambda length: (pad * length)[:length - len(body)] + body)
         assert_linear(read, lambda length: body + (pad * length)[:length - len(body)])
 
@@ -1117,6 +1209,67 @@ def test_the_same_words_too_many_times_keep_nothing():
     assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
     assert personal_note(note, 'i like chess. ' * 9) is None
     assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
+
+
+@pytest.mark.parametrize('text', ['i like chess, my mom would\nhave\nsaid', 'i like chess, my mom would announce',
+                                  'i like chess, my mom would\noften\nsay',
+                                  'i like chess, my mom confe' + chr(0x17F) * 2 + 'ed'])  # Sol round 1 of #238, B1.
+def test_236s_shapes_keep_no_note_when_saved_and_read_again(store, text):
+    """gene #236 items 3 and 4: each of these was kept by Store.save_chat(), server-wide too, and there again once
+    read; nothing is now."""
+    saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                            notes=[{'category': 'games', 'evidence': 'i like chess'}])
+    assert not saved['first_memory']
+    assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
+
+
+def case_equivalents():
+    """Each code point but the lowercase ASCII letters whose case folding is all ASCII letters ("A": "a", "ß": "ss"),
+    or which a case-insensitive pattern matches as an ASCII letter (dotless "ı": "i"), with the letters it stands for."""
+    letter = re.compile('(?i)[a-z]')
+    found = {}
+    for point in range(0x110000):
+        if (c := chr(point)) in string.ascii_lowercase:
+            continue
+        if (folded := c.casefold()).isascii() and folded.isalpha():
+            found[c] = folded
+        elif letter.fullmatch(c):
+            found[c] = next(a for a in string.ascii_lowercase if re.fullmatch('(?i)' + a, c))
+    return found
+
+
+def test_no_case_equivalent_of_a_report_verb_fails_a_note():
+    """Sol round 1 of #238, B1: "confeſſed" matched the wider report verbs' pattern, which ignores case, but lowercased
+    it was no key of theirs, and the lookup raised: Store.save_chat() failed, and /chat/turn with it. Every verb and
+    phrase, with each of its letters in turn written as each code point that stands for it, is read without raising,
+    and as the verb it is wherever the pattern matches it."""
+    from gene.fri_memory import REPORTED_TOO, SAID_AS, SAY_PHRASES
+    equivalents = case_equivalents()
+    assert {'S', chr(0x17F), chr(0x131), chr(0x130), chr(0x212A), chr(0xDF), chr(0xFB05)} <= set(equivalents)
+    note, tried, matched = {'category': 'games', 'evidence': 'i like chess'}, 0, 0
+    for verb in [*SAID_AS, *SAY_PHRASES]:
+        plain = personal_note(note, f'i like chess, my mom {verb}')
+        for c, letters in equivalents.items():
+            at = verb.find(letters)
+            while at >= 0:
+                variant = verb[:at] + c + verb[at + len(letters):]
+                kept = personal_note(note, f'i like chess, my mom {variant}')
+                if REPORTED_TOO.fullmatch(variant):
+                    assert kept == plain, variant
+                    matched += 1
+                tried, at = tried + 1, verb.find(letters, at + 1)
+    assert tried > 1200 and matched > 1200
+
+
+def test_a_case_equivalent_report_verb_never_fails_a_turn(client):
+    """Sol round 1 of #238, B1: the turn is saved, where /chat/turn failed, and keeps no note."""
+    scope = {'guild_id': 'guild', 'channel_id': 'workshop', 'conversation_id': 'public:456', 'user_id': '20'}
+    body = {**scope, 'revision': 0, 'input': 'i like chess, my mom confe' + chr(0x17F) * 2 + 'ed', 'reply': 'noted',
+            'source': source(guild='guild'), 'model': 'model', 'effort': 'high',
+            'notes': [{'category': 'games', 'evidence': 'i like chess'}]}
+    answer = client.post('/chat/turn', headers=headers('fri'), json=body)
+    assert answer.status_code == 200, answer.text
+    assert client.post('/chat/context', headers=headers('fri'), json=scope).json()['personal_memory']['notes'] == []
 
 
 @pytest.mark.parametrize('text', ['i like chess, my mom :- /\nwould\nsay', 'i like chess, my mom would\nsay',

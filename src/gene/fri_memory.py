@@ -312,19 +312,21 @@ def readings_of(text, evidence):
     (gene #198), and twice more as those, with what still hid a word in them read plainly first (gene #201), and four
     times more with what's stacked read plainly first, two of them with a face before an aside dropped (gene #207), and
     eight times more (gene #212): those four with a face before a hedge from a wider vocabulary dropped too, and four
-    with #212's faces and controls read plainly first. Every reading #211 had is still here, as it was, so each of
-    #212's only ever refuses more. In this order, each once: which one refuses first decides how much is read, and a
-    set's order, which changes with the text, made a longer message's time grow faster than its length (#211's first
-    CI run)."""
+    with #212's faces and controls read plainly first; and (gene #221) with a face before a hedge past any modifier
+    dropped, and twice more with slash faces with whitespace inside them read plainly first. Every reading #211 and
+    #217 had is still here, as it was, so each added one only ever refuses more. In this order, each once: which one
+    refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
+    time grow faster than its length (#211's first CI run)."""
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for transform in (composed, restacked):
+    for transform in (composed, restacked, spaced):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
             readings += [(said, note.strip()), (asides_joined(said), asides_joined(note).strip()),
-                         (asides_joined(said, HEDGE), asides_joined(note, HEDGE).strip())]
+                         (asides_joined(said, HEDGE), asides_joined(note, HEDGE).strip()),
+                         (asides_joined(said, WIDER_HEDGE), asides_joined(note, WIDER_HEDGE).strip())]
     return list(dict.fromkeys(reading for reading in readings if reading != (text, evidence)))
 
 
@@ -513,9 +515,14 @@ OWN_ASIDE = re.compile(r"(?i)(?:i|we)\s+(?:(?:all|just|really|kinda|lowkey|hones
 # honestly guess", "i absolutely believe"). A reading of its own, beside OWN_ASIDE's, which stays as it was.
 HEDGE_MODIFIERS = (r"all|just|really|kinda|sorta|lowkey|honestly|also|actually|literally|totally|truly|personally|"
                    r"still|do|did|would|absolutely|strongly|certainly")
-HEDGE = re.compile(rf"(?i)(?:i|we|i'd|we'd)\s+(?:(?:{HEDGE_MODIFIERS})\s+)*+"
-                   r"(?:guess|swear|mean|know|bet|suppose|think|figure|admit|promise|believe|reckon|assume|imagine|"
-                   r"hope|presume|gather|expect|suspect|say)\b")
+HEDGE_VERBS = (r"guess|swear|mean|know|bet|suppose|think|figure|admit|promise|believe|reckon|assume|imagine|hope|"
+               r"presume|gather|expect|suspect|say")
+HEDGE = re.compile(rf"(?i)(?:i|we|i'd|we'd)\s+(?:(?:{HEDGE_MODIFIERS})\s+)*+(?:{HEDGE_VERBS})\b")
+# And (gene #221 F1) past any other modifier: a word ending in -ly ("probably", "definitely", "firmly", "seriously") or
+# a common short one ("prob", "def"). A reading of its own, beside OWN_ASIDE's and HEDGE's, which stay as they were.
+MORE_MODIFIERS = r"prob|probs|def|defo|legit|deadass|highkey|pretty|even|kind|sort|of|very|so|too|never|always"
+WIDER_HEDGE = re.compile(rf"(?i)(?:i|we|i'd|we'd)\s+(?:(?:{HEDGE_MODIFIERS}|{MORE_MODIFIERS}|[^\W\d_]+ly)\s+)*+"
+                         rf"(?:{HEDGE_VERBS})\b")
 KEPT_FACES = re.compile(rf"(?<= )(?:{FACE} )+")
 
 
@@ -560,6 +567,19 @@ def restacked(text, invisible):
     both first."""
     unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text)))
     return composed(SLASH_FACE.sub(' ', unseen), invisible)
+
+
+# And (gene #221 F2) a slash face with horizontal whitespace around its nose or its slash ("mom :- / would say",
+# "mom : / would say", "mom:- / ) would say"), alone or attached to a word, never a link's ": //" or a path's ": /x" or
+# ": \x". The message is read twice more, with these read plainly first: #217's readings stay as they are.
+SPACED_SLASH_FACE = re.compile(r"(?<![:;=])[:;=][ \t]*+(?:[-'^~][ \t]*+)?[/\\](?:[ \t]*+[)(\]\[|*]+)?(?![/\\\w])")
+
+
+@functools.lru_cache(maxsize=32)
+def spaced(text, invisible):
+    """restacked's reading (see there), with each slash face, whitespace inside it or not, a space instead."""
+    unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text)))
+    return composed(SPACED_SLASH_FACE.sub(' ', unseen), invisible)
 
 
 def spots_of(text, evidence):

@@ -1407,6 +1407,8 @@ class Store:
                 # they asked on Discord's clock, if known (HumanMint/fri#337).
                 from .fri_memory_store import record_erasure
                 record_erasure(db, user_id, time.time(), discord_at, removals)
+                # The floor the database kept as they went (HumanMint/gene#219) is in the erasure now.
+                db.execute('DELETE FROM personal_cutoff_floors WHERE user_id=?', (user_id,))
                 # Their deletions first, while their fences still say which messages were theirs (gene #145).
                 db.execute('DELETE FROM chat_turn_deletions WHERE user_id=? OR EXISTS (SELECT 1 FROM chat_turn_withdrawals '
                            'w WHERE w.user_id=? AND w.guild_id=chat_turn_deletions.guild_id AND '

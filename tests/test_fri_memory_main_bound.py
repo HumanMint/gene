@@ -3,7 +3,8 @@
 (7689069). And gene #198 only ever refuses more than #196 did (7e79220). And gene #201 only ever refuses more than
 #200 and #204 did (50008b5). And gene #207 and #201's item 4 only ever refuse more than #205 did (b1d4b88). And gene
 #212's items 1-3 only ever refuse more than #211 did (ba5a0a6, the same validator as 1d59371), with no exemption: its
-item 4 stays open (Sol round 1 of #217).
+item 4 stays open (Sol round 1 of #217). And gene #221's F1 and F2 only ever refuse more than #217 did (7914787),
+with no exemption.
 Each validator, kept verbatim beside this test as a reference, must keep every note this one keeps: for the reviewed
 repros, and for generated and fuzzed messages, with and without emoji, symbols, invisible characters and apostrophes
 spelled other ways."""
@@ -34,8 +35,9 @@ LATEST = reference('7e79220')  # #196 (#190), before #198 and #199.
 NEWEST = reference('50008b5')  # #200 (#198, #199) and #204 (#203), before #201.
 STACKED = reference('b1d4b88')  # #205 (#201), before #207.
 ASIDED = reference('ba5a0a6')  # #211 (#207, #201 item 4), before #212.
+HEDGED = reference('7914787')  # #217 (#212 items 1-3), before #221.
 BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST,
-          'b1d4b88': STACKED, 'ba5a0a6': ASIDED}
+          'b1d4b88': STACKED, 'ba5a0a6': ASIDED, '7914787': HEDGED}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -296,8 +298,10 @@ HEDGE_RESTS = ['', 'would say', 'when i win', 'if i win', 'my mom says', 'my mom
                'you win when we play', 'my opponent is good']
 
 
-def asided(messages, seed):
+def asided(messages, seed, faces=None, hedges=None):
+    """The messages with #212's shapes stacked around the evidence: SLASH_FACES and HEDGES, or `faces` and `hedges`."""
     rng = random.Random(seed)
+    faces, hedges = faces or SLASH_FACES, hedges or HEDGES
 
     def hidden():
         return rng.choice(HIDDEN)
@@ -307,11 +311,11 @@ def asided(messages, seed):
         part = re.sub(r"(?<=\w)(?=\w)", lambda _: (rng.choice('0123456789') + '\U0000FE0F' + hidden() + '\U000020E3')
                       if rng.random() < 0.02 else '', part)
         return re.sub(r'(?<=\w) ', lambda _: rng.choice(
-            [' ', ' ', ' ', (lambda face: face[0] + hidden() + face[1:])(rng.choice(SLASH_FACES)) + ' ',
-             ' ' + rng.choice(SLASH_FACES) + ' ',
-             f' {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} {rng.choice(HEDGE_RESTS)} '.replace('  ', ' '),
+            [' ', ' ', ' ', (lambda face: face[0] + hidden() + face[1:])(rng.choice(faces)) + ' ',
+             ' ' + rng.choice(faces) + ' ',
+             f' {rng.choice(KEPT_FACES)} {rng.choice(hedges)} {rng.choice(HEDGE_RESTS)} '.replace('  ', ' '),
              # Two runs in a row, where #211's reading and the wider one drop different faces (both are read).
-             f' {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} {rng.choice(KEPT_FACES)} {rng.choice(HEDGES)} ']), part)
+             f' {rng.choice(KEPT_FACES)} {rng.choice(hedges)} {rng.choice(KEPT_FACES)} {rng.choice(hedges)} ']), part)
 
     for category, evidence, text in messages:
         at = text.find(evidence)
@@ -322,6 +326,23 @@ def asided(messages, seed):
 def test_messages_with_212s_shapes_are_never_kept_where_a_bound_refuses_them(sha):
     messages = list(asided(itertools.chain(generated(6000, 212), condition_lines(6000, 2120),
                                            fuzzed(6000, 21200)), 212))
+    assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 1500
+    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
+    assert not leaks(messages, BOUNDS[sha])
+
+
+# gene #221's shapes: slash faces with horizontal whitespace around the nose or the slash (F2), and hedges past
+# modifiers outside #217's list, any word ending in -ly among them (F1), with #217's beside them.
+SPACED_FACES = [':- /', ': -/', ': - /', ': /', ':-\t/', ':- \\', ':- / )', '; - \\ ]', ':~ /', '=  /']
+MODIFIED_HEDGES = ['i probably think', 'i definitely believe', 'i firmly believe', 'i seriously think', 'i prob think',
+                   'i def believe', 'i really probably honestly think', 'we lowkey seriously know', "i'd probably say",
+                   'i genuinely guess', 'i believe', 'i guess']
+
+
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_messages_with_221s_shapes_are_never_kept_where_a_bound_refuses_them(sha):
+    messages = list(asided(itertools.chain(generated(6000, 221), condition_lines(6000, 2210), fuzzed(6000, 22100)),
+                           221, SPACED_FACES, MODIFIED_HEDGES))
     assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 1500
     assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
     assert not leaks(messages, BOUNDS[sha])
@@ -373,6 +394,16 @@ def test_the_bound_is_a_real_check():
             ('games', 'i like chess', 'i like chess, my mom would' + chr(0xFFF9) + 'say'),
             ('games', 'i like chess', 'i like chess, my mom would sa' + chr(0xFFFA) + 'y')):
         assert ASIDED({'category': category, 'evidence': evidence}, hidden) is not None
+        assert personal_note({'category': category, 'evidence': evidence}, hidden) is None
+    assert HEDGED is not personal_note and HEDGED not in (MAIN, CURRENT, PREVIOUS, LATEST, NEWEST, STACKED, ASIDED)
+    for category, evidence, hidden in (  # Pre-existing in #217, found in Sol round 2 of #217 (gene #221 F1, F2).
+            ('nickname', 'call me dan', 'if i win ;P i probably think\nplease call me dan'),
+            ('nickname', 'call me dan', 'if i win ;P i definitely believe\nplease call me dan'),
+            ('nickname', 'call me dan', 'if i win ;P i firmly believe\nplease call me dan'),
+            ('nickname', 'call me dan', 'if i win ;P i seriously think\nplease call me dan'),
+            ('games', 'i like chess', 'i like chess, my mom :- / would say'),
+            ('games', 'i like chess', 'i like chess, my mom : / would say')):
+        assert HEDGED({'category': category, 'evidence': evidence}, hidden) is not None
         assert personal_note({'category': category, 'evidence': evidence}, hidden) is None
     assert list(itertools.islice(generated(5, 1), 5)) == list(itertools.islice(generated(5, 1), 5))
 

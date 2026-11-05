@@ -633,13 +633,13 @@ def withdrawn(db, guild, user, conversation, message_id, saved):
 
 def named(db, guild, messages):
     """The members whose summary's record of what it read (see drew_on) names one of these messages. A record goes with
-    its summary, or with the summary it was of once that's replaced, by trigger, whichever controller does it."""
+    its summary, or with the summary it was of once that's replaced, by trigger, whichever controller does it. A
+    message's ID, quoted, only ever stands for an `id` in it: the rest are conversations (`public:`, `private:`) and
+    times."""
     users = set()
     for message in sorted({str(message) for message in messages if message}):
-        for row in db.execute('SELECT user_id,messages FROM fri_member_summary_sources WHERE guild_id=? AND '
-                              'instr(messages,?)>0', (guild, json.dumps(message))).fetchall():
-            if any(isinstance(item, dict) and str(item.get('id')) == message for item in json.loads(row['messages'])):
-                users.add(row['user_id'])
+        users |= {row[0] for row in db.execute('SELECT user_id FROM fri_member_summary_sources WHERE guild_id=? AND '
+                                               'instr(messages,?)>0', (guild, json.dumps(message))).fetchall()}
     return sorted(users)
 
 

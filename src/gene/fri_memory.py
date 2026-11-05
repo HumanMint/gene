@@ -315,14 +315,15 @@ def readings_of(text, evidence):
     with #212's faces and controls read plainly first; and (gene #221) with a face before a hedge past any modifier
     dropped, and twice more with slash faces with whitespace inside them read plainly first; and (gene #226) twice more
     with Unicode space separators read as a space and line breaks next to a face bridged; and (gene #231) twice more
-    with line breaks inside a report continuation joined too. Every reading #211, #217, #225 and #229 had is still
+    with line breaks inside a report continuation joined too; and (gene #236) twice more with report verbs outside the
+    vocabulary read as "say" and chained auxiliaries joined. Every reading #211, #217, #225, #229 and #235 had is still
     here, as it was, so each added one only ever refuses more. In this order, each once: which one
     refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
     time grow faster than its length (#211's first CI run)."""
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for transform in (composed, restacked, spaced, bridged, rejoined):
+    for transform in (composed, restacked, spaced, bridged, rejoined, widened):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
@@ -631,6 +632,81 @@ def rejoined(text, invisible):
     """bridged's reading (see there), with the whitespace inside each report continuation, line breaks included, one
     space first."""
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
+    unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
+    return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
+
+
+# And (gene #236) two more ways a report hid, in a reading of its own; rejoined's stays as it was.
+# - Report verbs outside the vocabulary (announce, explain, mention …): read as the same form of "say", which the report
+#   rules know, on one line or split. Only verbs that report something: not "post", "note", "message" or "promise",
+#   which are mostly something else, and those often nouns too only in their verb-only forms ("joked", not "jokes").
+# - A chained auxiliary or a modifier rejoined's run doesn't take ("would<LF>have<LF>said", "would<LF>often<LF>say",
+#   "has been<LF>saying"): the whole run of auxiliaries and modifiers before a report verb is one, scanned once.
+# Verbs often nouns too (a joke, the comments, a state, a report) are here only in their verb-only forms, and none that
+# a game uses for something else (conceding a match).
+SAY_FORMS = {
+    'say': 'announce explain mention declare reveal whisper argue confess suggest respond admit boast brag exclaim '
+           'mutter mumble scream imply assert allege acknowledge complain yell warn',
+    'says': 'announces explains mentions declares reveals whispers argues confesses suggests responds admits boasts '
+            'brags exclaims mutters mumbles screams implies asserts alleges acknowledges complains yells warns',
+    'said': 'announced explained mentioned declared revealed whispered argued confessed suggested replied commented '
+            'joked warned complained shouted yelled stated reported remarked responded tweeted admitted boasted bragged '
+            'exclaimed muttered mumbled screamed hinted implied emailed asserted alleged acknowledged',
+    'saying': 'announcing explaining mentioning declaring revealing whispering arguing confessing suggesting replying '
+              'commenting complaining shouting yelling stating reporting remarking responding tweeting admitting '
+              'boasting bragging exclaiming muttering mumbling screaming hinting implying emailing asserting alleging '
+              'acknowledging'}
+SAY_PHRASES = {'point out': 'say', 'points out': 'says', 'pointed out': 'said', 'pointing out': 'saying',
+               'bring up': 'say', 'brings up': 'says', 'brought up': 'said', 'bringing up': 'saying',
+               'let slip': 'said', 'lets slip': 'says', 'letting slip': 'saying'}
+SAID_AS = {word: say for say, words in SAY_FORMS.items() for word in words.split()}
+REPORTED_TOO = re.compile(r"(?i)\b(?:" + '|'.join(rf"{first}\s+{second}" for first, second in
+                                                 (phrase.split() for phrase in SAY_PHRASES)) +
+                          '|' + '|'.join(SAID_AS) + r")\b")
+CHAINED = r"would|will|could|should|might|must|may|can|does|did|do|has|have|had|having|be|been|being|is|was|were|am|are"
+RUN_MODIFIERS = rf"{HEDGE_MODIFIERS}|{MORE_MODIFIERS}|often|sometimes|ever|once|again|rarely|seldom|[^\W\d_]+ly"
+AUXILIARY_RUN = re.compile(rf"(?i)\b(?:{CHAINED})\b(?:\s++(?:{CHAINED}|{RUN_MODIFIERS})\b)*+")
+VERB_NEXT = re.compile(rf"(?i)\s++(?:{BARE}|{INFLECTED})\b")
+
+
+def chained(text):
+    """The text with the whitespace inside each run of auxiliaries and modifiers before a report verb, line breaks
+    included, one space. Each run is matched once, from its first auxiliary to its last word, so a long one is never
+    read again from each place in it."""
+    out, last = [], 0
+    for run in AUXILIARY_RUN.finditer(text):
+        if verb := VERB_NEXT.match(text, run.end()):
+            out += [text[last:run.start()], RUNS_OF_SPACE.sub(' ', text[run.start():verb.end()])]
+            last = verb.end()
+    return ''.join(out) + text[last:]
+
+
+# The member's own words with those verbs ("i mentioned it before", "we argued about openings") report no one else: the
+# verb is left as typed where its subject, past any auxiliaries and modifiers, is the member's.
+FIRST_PERSON = frozenset("i we i'm im i've ive i'd id i'll ill we're were we've weve we'd we'll".split())
+STEP_OVER = re.compile(rf"(?i)^(?:{CHAINED}|{RUN_MODIFIERS})$")
+WORDS_BEFORE = 6
+
+
+def reworded(m):
+    """A report verb outside the vocabulary, as the same form of "say", unless its subject is the member's own."""
+    words = WORD.findall(m.string, max(0, m.start() - 80), m.start())[-WORDS_BEFORE:]
+    for word in reversed(words):
+        if not STEP_OVER.match(word):
+            if word.lower().replace('’', "'") in FIRST_PERSON:
+                return m.group()
+            break
+    found = RUNS_OF_SPACE.sub(' ', m.group().lower())
+    return SAY_PHRASES.get(found) or SAID_AS[found]
+
+
+@functools.lru_cache(maxsize=32)
+def widened(text, invisible):
+    """rejoined's reading (see there), with each report verb outside the vocabulary the same form of "say", and each
+    run of auxiliaries and modifiers before a report verb joined, both first."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = chained(REPORTED_TOO.sub(reworded, unseen))
     unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
     unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
     return composed(LOOSE_SLASH.sub(' ', unseen), invisible)

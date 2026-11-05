@@ -313,14 +313,15 @@ def readings_of(text, evidence):
     times more with what's stacked read plainly first, two of them with a face before an aside dropped (gene #207), and
     eight times more (gene #212): those four with a face before a hedge from a wider vocabulary dropped too, and four
     with #212's faces and controls read plainly first; and (gene #221) with a face before a hedge past any modifier
-    dropped, and twice more with slash faces with whitespace inside them read plainly first. Every reading #211 and
-    #217 had is still here, as it was, so each added one only ever refuses more. In this order, each once: which one
+    dropped, and twice more with slash faces with whitespace inside them read plainly first; and (gene #226) twice more
+    with Unicode space separators read as a space, and twice more with line breaks next to a face too. Every reading
+    #211, #217 and #225 had is still here, as it was, so each added one only ever refuses more. In this order, each once: which one
     refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
     time grow faster than its length (#211's first CI run)."""
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for transform in (composed, restacked, spaced):
+    for transform in (composed, restacked, spaced, unspaced, bridged):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
@@ -580,6 +581,44 @@ def spaced(text, invisible):
     """restacked's reading (see there), with each slash face, whitespace inside it or not, a space instead."""
     unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text)))
     return composed(SPACED_SLASH_FACE.sub(' ', unseen), invisible)
+
+
+# And (gene #226 item 2) a Unicode space separator, where #225's reading takes only a space or a tab: inside a slash
+# face ("mom :-<U+00A0>/ would say"), or anywhere. Read as a plain space everywhere, in a reading of its own.
+SPACE_SEPARATORS = re.compile(r'[\U000000A0\U00001680\U00002000-\U0000200A\U0000202F\U0000205F\U00003000]')
+
+
+@functools.lru_cache(maxsize=32)
+def unspaced(text, invisible):
+    """spaced's reading (see there), with each Unicode space separator a plain space first."""
+    unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text)))
+    return composed(SPACED_SLASH_FACE.sub(' ', SPACE_SEPARATORS.sub(' ', unseen)), invisible)
+
+
+# And (gene #226 item 3) a line break next to a face where what follows continues the clause: a hedge of the member's
+# ("if i win ;P<LF>i probably think"), or the rest of a report ("mom :- /<LF>would say", "mom ;P<LF>told me", "according
+# ;P<LF>to my mom", "mom<LF>:- / would say"); and a line break inside a slash face ("mom :-<LF>/ would say"). What #225's
+# readings keep as two lines reads as one clause, in a reading of its own. One before anything else (a question, a
+# sentence of its own) stays a line break. Any line break: a newline, a carriage return, a vertical tab, a form feed,
+# U+0085, U+2028 or U+2029. Each run of whitespace is crossed once, from its start.
+BREAKS = r'\n\r\x0b\x0c\U00000085\U00002028\U00002029'
+LOOSE_SLASH_FACE = r"(?<![:;=])[:;=]\s*+(?:[-'^~]\s*+)?[/\\](?:\s*+[)(\]\[|*]+)?(?![/\\\w])"
+ANY_FACE = rf"(?:{FACE}|{LOOSE_SLASH_FACE})"
+GOES_ON = (rf"(?i:(?:i|we|i'd|we'd)\s+(?:(?:{HEDGE_MODIFIERS}|{MORE_MODIFIERS}|[^\W\d_]+ly)\s+)*+(?:{HEDGE_VERBS})\b"
+             rf"|(?:(?:would|will|could|should|might|must|may|can|does|has|have|had|{HEDGE_MODIFIERS}|{MORE_MODIFIERS}"
+             rf"|[^\W\d_]+ly)\s+)*+(?:{BARE}|{INFLECTED})\b|to\b)")
+FACE_THEN_BREAK = re.compile(rf"({ANY_FACE})[ \t]*+(?:[{BREAKS}][ \t]*+)++(?={GOES_ON})")
+BREAK_THEN_FACE = re.compile(rf"(?<![ \t{BREAKS}])[ \t]*+(?:[{BREAKS}][ \t]*+)++(?=(?:{ANY_FACE}[ \t]++)++{GOES_ON})")
+LOOSE_SLASH = re.compile(LOOSE_SLASH_FACE)
+
+
+@functools.lru_cache(maxsize=32)
+def bridged(text, invisible):
+    """unspaced's reading (see there), with each line break next to a face a space where the clause goes on after
+    it, and each slash face a space, whitespace and line breaks inside it included."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
+    return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
 
 
 def spots_of(text, evidence):

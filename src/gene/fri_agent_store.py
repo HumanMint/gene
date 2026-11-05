@@ -335,7 +335,7 @@ class AgentStore:
                            or self.store.deleted_anywhere(db, guild, [message['id']])}, key=int)
 
     def finish(self, batch_id, records, result, scanned, before, done, counters, error='', oldest=None, newest=None, newest_id=None,
-               scanned_ids=()):
+               scanned_ids=(), versions=None):
         now = time.time()
         if not isinstance(result.get('notes', []), list) or not isinstance(result.get('summary', ''), str):
             raise ValueError('Invalid summary output')
@@ -409,8 +409,12 @@ class AgentStore:
                     note = personal_note(candidate, r['text'])
                 if note:
                     from .fri_memory_store import save
+                    from .fri_source_versions import record_note, valid
                     if save(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'], note, r['at'],
                             sources=[r['id']]):  # So it goes if that message is withdrawn (gene #141).
+                        # With the version of it the pass read (HumanMint/fri#358).
+                        record_note(db, self.settings.guild_id, 'public:'+claim['channel_id'], r['user_id'], note,
+                                    valid(versions), [r['id']])
                         kept.append(f"{r['user_id']} / {note[0]}: {note[1]}")
             summary = clean(result.get('summary', ''), 600)
             if not accepted or len(accepted) != len(records):

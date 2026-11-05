@@ -1,5 +1,7 @@
 """Service-authenticated agent endpoints; owner-only behavior configuration."""
 
+from typing import Annotated
+
 from fastapi import HTTPException
 from pydantic import BaseModel, Field
 
@@ -94,6 +96,11 @@ class Finish(BaseModel):
     newest: float | None = Field(default=None, ge=0)
     newest_id: str | None = Field(default=None, pattern=r'^\d{1,25}$')
     scanned_ids: list[str] = Field(default_factory=list, max_length=25)
+    # Which version of each record's message the pass read, on Discord's clock (its edit time, or its creation time
+    # if never edited): a note learned from one is placed against an edit by these (HumanMint/fri#358). Beside the
+    # records, which the model reads, not in them. From a Fri offering withdrawal-edit-times; an older one sends none.
+    versions: dict[Annotated[str, Field(pattern=r'^\d{1,25}$')],
+                   Annotated[float, Field(gt=0, allow_inf_nan=False)]] = Field(default_factory=dict, max_length=40)
 
 
 def register(app, store, settings, auth, actor):

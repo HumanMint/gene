@@ -24,7 +24,6 @@ LOOP_UNDERWAY_SECONDS = 3 * 3600  # A game night stays visible while it's probab
 # A withdrawn message's fence: as long as a saved exchange is kept, far longer than any turn holding it still runs.
 WITHDRAWN_SECONDS = 7 * 86400
 MESSAGE_FENCES = 100000  # Fences by message ID alone kept at most, the oldest going first (gene #149).
-EDIT_SKEW = 5  # Seconds Discord's clock and this one may differ by, when an edit is placed against a save (fri #358).
 WITHDRAWN = 'That message was edited or deleted while Fri was replying.'
 SUMMARY_CHANGED = 'What Fri remembered about you changed while it was replying. Ask again for a fresh reply.'
 DEPENDENCY_CHANGED = 'Something Fri said earlier changed while it was replying. Ask again for a fresh reply.'
@@ -239,6 +238,8 @@ class Store:
             erasure_triggers(db)  # They act on later revision moves, an older controller's too; settling moves none.
             summary_triggers(db)  # And on later summaries going (gene #147); settling takes none.
             expiry_triggers(db)  # And on a summary lapsing under one that doesn't check (gene #176).
+            from .fri_source_versions import initialize as initialize_versions
+            initialize_versions(db)  # Which version of a message each save holds (HumanMint/fri#358).
             settle_summaries(db)
             self._settle_withdrawals(db)
             # Existing queued requests have never received intake approval. Fail closed
@@ -1200,7 +1201,7 @@ class Store:
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
                   *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=None,
                   reply_message_id=None, verbatim=False, audience='conversation', summary_generation=None,
-                  summary_dependencies=(), drew_on=()):
+                  summary_dependencies=(), drew_on=(), versions=None):
         # None: a legacy companion that doesn't track sources. A list, even empty, is complete attribution.
         attributed = provenance is not None
         if audience not in ('server', 'conversation') or (audience == 'server' and not channel_id.startswith('public:')):
@@ -1276,6 +1277,8 @@ class Store:
                            (guild_id, user_id, channel_id, guild_id, user_id, channel_id))
             from .fri_memory_store import SERVER, limit
             from .fri_memory_store import save as save_note
+            from .fri_source_versions import record, record_note, valid
+            versions = valid(versions)  # Of the messages it holds, on Discord's clock (HumanMint/fri#358).
             scope = SERVER if audience == 'server' else channel_id
             first, fresh = {}, set()  # Whether each scope had no notes before this turn; those it gave a first.
             def learned(evidence):
@@ -1296,8 +1299,12 @@ class Store:
                     first[where] = not db.execute('SELECT 1 FROM personal_notes WHERE guild_id=? AND channel_id=? '
                                                   'AND user_id=?', (guild_id, where, user_id)).fetchone()
                 # With the messages it came from, so it goes when one is withdrawn (gene #141).
-                if save_note(db, guild_id, where, user_id, note, time.time(), channel_id if where == SERVER else None,
-                             provenance if attributed else None, learned(note[1])) and first[where]:
+                kept_note = save_note(db, guild_id, where, user_id, note, time.time(),
+                                      channel_id if where == SERVER else None, provenance if attributed else None,
+                                      learned(note[1]))
+                if kept_note:  # With the version of its message it came from (HumanMint/fri#358).
+                    record_note(db, guild_id, where, user_id, note, versions, learned(note[1]) or ())
+                if kept_note and first[where]:
                     fresh.add(where)
             db.execute('DELETE FROM personal_notes WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM personal_notes WHERE guild_id=? AND channel_id=? '
@@ -1314,7 +1321,7 @@ class Store:
             dependencies = json.dumps([{'user_id': user, 'generation': g} for user, g in dependencies]) if dependencies \
                 else None
             drawn = sorted({str(message) for message in drew_on} - set(own))  # Its own go with it already.
-            db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
+            saved = db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
                        'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
                        'reply_message_id,verbatim,speaker_revision,attributed,audience,summary_generation,'
                        'summary_dependencies,drew_on) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
@@ -1323,6 +1330,7 @@ class Store:
                         reaction, allow_closing, json.dumps(burst), json.dumps(provenance), reply_message_id,
                         bool(verbatim), revision, attributed, audience, summary_generation, dependencies,
                         json.dumps(drawn) if drawn else None))
+            record(db, 'turn', saved.lastrowid, versions, own)
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',
@@ -1568,37 +1576,31 @@ class Store:
         _fence). Only a call that finds something, a deletion, or an edit during a learning batch takes the write lock;
         the rest read.
 
-        edited_at: when Discord says they were edited (HumanMint/fri#358). Only what was certainly saved before that
-        goes: a pin or an embed refresh repeats an earlier edit's time, and what was learned since is of what the message
-        says now. A message with something saved too close to the edit to tell which came first (EDIT_SKEW), or saved
-        both before and after it, keeps everything, as it may hold the very version saved: the answer names it as
-        unsure, for Fri to keep it out of use instead. A deletion takes everything, whatever its time."""
+        edited_at: when Discord says they were edited (HumanMint/fri#358), compared with the version of the message each
+        save holding it was made from, on Discord's clock too (see fri_source_versions.place), never with when the
+        controller saved it. One saved from an earlier version goes; one from that version or a later one stays, as a
+        pin or an embed refresh repeats an earlier edit's time. A message with saves of both kinds, or with one that
+        recorded no version of an old message, keeps everything: the answer names it as unsure, for Fri to keep it out
+        of use instead, and a summary of its author's that may have drawn on it is held back until it's read again
+        (Sol round 1 of fri #364). A deletion takes everything, whatever its time."""
+        from .fri_source_versions import place
         timed, every = edited_at is not None and not deleted, sorted(set(message_ids))
-        ids, unsure = json.dumps(every), []
-
-        def saves(db, message):  # When each exchange and note holding it was saved.
-            from .fri_memory_store import CURRENT
-            turns = db.execute(
-                "SELECT at FROM chat_turns t WHERE t.guild_id=? AND (json_extract(NULLIF(t.source,''),'$.id')=? OR "
-                "EXISTS (SELECT 1 FROM json_each(t.burst) b WHERE json_extract(b.value,'$.source.id')=?))",
-                (guild_id, message, message)).fetchall()
-            notes = db.execute(f'SELECT at FROM personal_notes WHERE guild_id=? AND {CURRENT} AND instr(sources,?)>0',
-                               (guild_id, json.dumps(message))).fetchall()
-            return [row[0] for row in turns+notes]
+        ids, unsure, authors = json.dumps(every), [], {}
 
         def sort_out(db):
-            """The messages to withdraw (as JSON), and those an edit's time can't be placed against (see above). One
-            whose every save came after the edit is neither: nothing of it goes."""
+            """The messages to withdraw (as JSON), and those an edit's time can't be placed against, with whose saves
+            hold them (see above). One whose every save was made from that version or a later one is neither."""
             if not timed:
-                return json.dumps(every), []
-            taken, unsure = [], []
+                return json.dumps(every), [], {}
+            taken, unsure, authors, now = [], [], {}, time.time()
             for message in every:
-                times = saves(db, message)
-                if all(at < edited_at-EDIT_SKEW for at in times):
+                how, users = place(db, guild_id, message, edited_at, now)
+                if how == 'withdraw':
                     taken.append(message)
-                elif not all(at > edited_at+EDIT_SKEW for at in times):
+                elif how == 'unsure':
                     unsure.append(message)
-            return json.dumps(taken), unsure
+                    authors[message] = users
+            return json.dumps(taken), unsure, authors
 
         def answer(removed):
             return {'ok': True, 'removed': removed, **({'unsure': unsure} if timed else {})}
@@ -1614,11 +1616,14 @@ class Store:
                 f'SELECT DISTINCT user_id FROM personal_notes WHERE guild_id=? AND {CURRENT} AND '
                 'instr(sources,?)>0 ORDER BY user_id', (guild_id, json.dumps(message)))]
         with self.connection() as db:
-            ids, unsure = sort_out(db)
-            if not (deleted or self._learning(db) is not None or held(db) or noted(db)):
+            ids, unsure, authors = sort_out(db)
+            if not (deleted or unsure or self._learning(db) is not None or held(db) or noted(db)):
                 return answer(0)
             db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
-            ids, unsure = sort_out(db)
+            ids, unsure, authors = sort_out(db)
+            from .fri_member_summary import hold_drawn
+            for message in unsure:
+                hold_drawn(db, guild_id, message, authors[message])
             holding = held(db)
             removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted)
                           for conversation, user, message in holding)

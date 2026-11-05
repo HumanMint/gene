@@ -154,6 +154,11 @@ class SummaryDependency(BaseModel):
     generation: int = Field(ge=0)
 
 
+# Discord message ID -> the version of it a save was made from, Discord's own time (HumanMint/fri#358).
+Versions = Annotated[dict[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')],
+                          Annotated[float, Field(gt=0, allow_inf_nan=False)]], Field(max_length=40)]
+
+
 class ChatTurn(ChatScope):
     source: ChatSource
     web_receipt: ResearchReceipt | None = None
@@ -189,6 +194,10 @@ class ChatTurn(ChatScope):
     # the check and keeps nothing at the save; withdrawn later, the saved reply keeps only a breadcrumb (gene #141). An
     # older Fri sends none: checked and kept as before.
     drew_on: Annotated[list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]], Field(max_length=1000)] = []
+    # Which version of its own messages (its source and burst) the turn answered, on Discord's clock: each one's edit
+    # time, or its creation time if never edited. An edit withdrawn by ID is placed against these (HumanMint/fri#358).
+    # From a Fri offering withdrawal-edit-times; an older one sends none, and its saves are placed as before.
+    versions: Versions = {}
 
     @model_validator(mode='after')
     def private_stays_private(self):
@@ -540,7 +549,7 @@ def create_app(settings: Settings | None = None):
                               reply_message_id=body.reply_message_id, verbatim=body.verbatim, audience=body.audience,
                               summary_generation=body.summary_generation,
                               summary_dependencies=[row.model_dump() for row in body.summary_dependencies],
-                              drew_on=body.drew_on)
+                              drew_on=body.drew_on, versions=body.versions)
 
     @app.post('/chat/turn/check', dependencies=[auth('fri')])
     def chat_turn_check(body: ChatTurn):

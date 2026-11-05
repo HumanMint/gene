@@ -524,6 +524,23 @@ def drawn(db, guild, user, summary):
     return drew_on(db, guild, user, summary['through']) or None
 
 
+def hold_drawn(db, guild, message, users):
+    """A message an edit couldn't be placed against, so nothing of it was withdrawn and Fri holds it back instead
+    (HumanMint/fri#358): a kept summary of one of these members (whose saves hold it) that drew on it, or may have, as
+    its sources aren't known, is held back until it's read again (see recheck). Nothing else in a later request may
+    name that message, as an exchange of it ages out of what other channels see, so the summary would still carry what
+    the edit took away (Sol round 1 of fri #364)."""
+    for user in sorted(set(users)):
+        row = kept(db, guild, user)
+        if not row or not row['body']:
+            continue
+        messages = drawn(db, guild, user, row)
+        if messages is None or any(str(item.get('id')) == str(message) for item in messages):
+            db.execute('INSERT INTO fri_member_summary_rechecks(guild_id,user_id,through,checked,held) VALUES '
+                       "(?,?,?,0,1) ON CONFLICT(guild_id, user_id) DO UPDATE SET through=excluded.through,held=1,"
+                       "claim='',claimed=0", (guild, user, row['through']))
+
+
 def identified(turn):
     """Whether every message an exchange answered can be named: its own and each of its burst's, a Discord message
     with an ID. One that can't goes into no build, as nothing could read it again (HumanMint/fri#357)."""

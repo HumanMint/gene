@@ -305,6 +305,29 @@ LIKES = re.compile(rf"(?i)^(?:i {ADVERB}(?:like|love|prefer|enjoy|play|usually|m
                    r"call me)\b")
 
 
+def readings_of(text, evidence):
+    """Each other way a message and its note's evidence are read, every one of which must keep the note, so each only
+    ever refuses more. Once more with each run of emoji as a space and each apostrophe inside a word as a plain one
+    (gene #190), and twice more with symbols, text faces, characters that show nothing and in-word emoji read plainly
+    (gene #198), and twice more as those, with what still hid a word in them read plainly first (gene #201), and four
+    times more with what's stacked read plainly first, two of them with a face before an aside dropped (gene #207), and
+    eight times more (gene #212): those four with a face before a hedge from a wider vocabulary dropped too, and four
+    with #212's faces and controls read plainly first. Every reading #211 had is still here, as it was, so each of
+    #212's only ever refuses more. In this order, each once: which one refuses first decides how much is read, and a
+    set's order, which changes with the text, made a longer message's time grow faster than its length (#211's first
+    CI run)."""
+    readings = [(plainly(text), plainly(evidence).strip())]
+    readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
+                 for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
+    for transform in (composed, restacked):
+        for invisible in ('', ' '):
+            said = plainer(transform(text, invisible), invisible)
+            note = plainer(transform(evidence, invisible), invisible)
+            readings += [(said, note.strip()), (asides_joined(said), asides_joined(note).strip()),
+                         (asides_joined(said, HEDGE), asides_joined(note, HEDGE).strip())]
+    return list(dict.fromkeys(reading for reading in readings if reading != (text, evidence)))
+
+
 def personal_note(candidate, text):
     """Keep a short exact self-disclosure, not a model-written biography/instruction."""
     if not isinstance(candidate, dict) or candidate.get('category') not in CATEGORIES:
@@ -321,20 +344,7 @@ def personal_note(candidate, text):
     source = Source(text)
     if not all(source.claims(at, evidence) for at in spots):
         return None
-    # Read once more with each run of emoji as a space and each apostrophe inside a word as a plain one, the evidence
-    # too (gene #190), and twice more with symbols, text faces, characters that show nothing and in-word emoji read
-    # plainly (gene #198), and twice more as those, with what still hid a word in them read plainly first (gene #201),
-    # and four times more with what's stacked read plainly first, two of them with a face before an aside dropped (gene
-    # #207). Every reading must keep it, so each only ever refuses more. They're read in this order, each once: which one
-    # refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
-    # time grow faster than its length (the linearity check, on this change's first CI run).
-    readings = [(plainly(text), plainly(evidence).strip())]
-    readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
-                 for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for invisible in ('', ' '):
-        said, note = plainer(composed(text, invisible), invisible), plainer(composed(evidence, invisible), invisible)
-        readings += [(said, note.strip()), (asides_joined(said), asides_joined(note).strip())]
-    for plain, said in dict.fromkeys(reading for reading in readings if reading != (text, evidence)):
+    for plain, said in readings_of(text, evidence):
         found, source = spots_of(plain, said) if said else [], Source(plain)
         if not found or len(found) > MAX_SPOTS or not all(source.claims(at, said) for at in found):
             return None
@@ -499,6 +509,13 @@ SLASHED = re.compile(r"(?<=\w)[:;=]-?/(?![/\w])")
 # The member's aside after a kept face: "i guess", "i swear", "we all know", "i mean".
 OWN_ASIDE = re.compile(r"(?i)(?:i|we)\s+(?:(?:all|just|really|kinda|lowkey|honestly|also)\s+)?"
                        r"(?:guess|swear|mean|know|bet|suppose|think|figure|admit|promise)\b")
+# And (gene #212) the other ordinary hedges ("i believe", "i reckon", "i'd say"), past any run of modifiers ("i really
+# honestly guess", "i absolutely believe"). A reading of its own, beside OWN_ASIDE's, which stays as it was.
+HEDGE_MODIFIERS = (r"all|just|really|kinda|sorta|lowkey|honestly|also|actually|literally|totally|truly|personally|"
+                   r"still|do|did|would|absolutely|strongly|certainly")
+HEDGE = re.compile(rf"(?i)(?:i|we|i'd|we'd)\s+(?:(?:{HEDGE_MODIFIERS})\s+)*+"
+                   r"(?:guess|swear|mean|know|bet|suppose|think|figure|admit|promise|believe|reckon|assume|imagine|"
+                   r"hope|presume|gather|expect|suspect|say)\b")
 KEPT_FACES = re.compile(rf"(?<= )(?:{FACE} )+")
 
 
@@ -510,21 +527,39 @@ def composed(text, invisible):
     return SLASHED.sub(' ', prepared(KEYCAP.sub(WHOLE_KEYCAP, unseen)))
 
 
-@functools.lru_cache(maxsize=32)
-def asides_joined(text):
+@functools.lru_cache(maxsize=64)
+def asides_joined(text, aside=OWN_ASIDE):
     """A reading (see plainer) with each run of faces it kept dropped where the member's clause after it, past fillers,
     is only an aside, and the aside too, as ASIDE_PHRASES blanks the member's others: what's around them reads as one
     clause ("if i win lol \\nplease call me dan", "my mom would say"). The fillers are crossed once for all the
-    message's runs."""
+    message's runs. `aside`: OWN_ASIDE, or HEDGE's wider vocabulary (gene #212), read as well, never instead."""
     ends, out, last = {}, [], 0
     for m in KEPT_FACES.finditer(text):
         if m.start() < last:
             continue
         at = past_fillers(text, m.end(), KEPT_FILLER, ends)
-        if aside := OWN_ASIDE.match(text, at):
+        if found := aside.match(text, at):
             out += [text[last:m.start()], text[m.end():at]]
-            last = aside.end()
+            last = found.end()
     return ''.join(out) + text[last:]
+
+
+# What #211's readings still let hide a word (gene #212): a slash face with a nose, a trailing bracket or a backslash
+# ("mom:^/ would say", "mom:/) would say", "mom:\ would say"), a "~" nose or a space before its brackets ("mom:~/ would
+# say", "mom:/ ) would say"), attached to a word or standing alone ("mom :-\ would say"), never a link's "://" or a
+# path's ":/x" or ":\x"; and the format controls that show nothing either, shorthand's and interlinear annotation's
+# ("mom:<U+1BCA0>P] would say", "would<U+FFF9>say"). The message is read twice more, with these read plainly first:
+# #211's readings stay as they are.
+CONTROLS = re.compile(r'[\U0001BCA0-\U0001BCA3\U0000FFF9-\U0000FFFB]')
+SLASH_FACE = re.compile(r"(?<![:;=])[:;=][-'^~]?[/\\](?:[ \t]*+[)(\]\[|*]+)?(?![/\\\w])")
+
+
+@functools.lru_cache(maxsize=32)
+def restacked(text, invisible):
+    """composed's reading (see there), with those format controls as `invisible` too, and each slash face a space,
+    both first."""
+    unseen = INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text)))
+    return composed(SLASH_FACE.sub(' ', unseen), invisible)
 
 
 def spots_of(text, evidence):

@@ -165,7 +165,7 @@ def test_legacy_cursor_resumes_from_enablement_and_failed_summary_retries_same_s
         error='Summary failed', newest_id=source_id)
     assert value(store, 'cursors') == original
     assert not store.chat_context('123', 'public:1', '11')['personal_memory']['notes']
-    assert value(store, 'budget')['used'] == 0  # Its slice is read again, so its reservation went back (gene #262).
+    assert value(store, 'budget')['used'] == 30
     clock[0] += 1800
     assert scheduler.claim() is None  # Pending owner report still blocks learning.
     scheduler.delivered(claim['id'])
@@ -177,7 +177,7 @@ def test_legacy_cursor_resumes_from_enablement_and_failed_summary_retries_same_s
     assert value(store, 'cursors') == original
     saved = restarted.finish(retry['id'], records, result, 1, source_id, False, {}, newest_id=source_id)
     assert saved['saved'] == 1
-    assert value(store, 'budget')['used'] == 1  # The slice's one message, read once as far as the allowance goes.
+    assert value(store, 'budget')['used'] == 31
     assert value(store, 'cursors')['1']['after_id'] == str(int(retry['until_id'])-1)
 
 

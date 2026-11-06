@@ -251,7 +251,9 @@ def with_guild(store, value):
         AgentStore.put(db, CLAIM, record)
 
 
-INVALID = [None, '', ' ', True, False, [], ['123'], {}, {'id': '123'}, 'abc', 1.5]
+INVALID = [None, '', ' ', True, False, [], ['123'], {}, {'id': '123'}, 'abc', 1.5,
+           # Sol round 1 of #264, S2: digits str.isdigit() takes that no server's ID is written in.
+           chr(0xB2), '12' + chr(0xB3), chr(0x661) + chr(0x662) + chr(0x663), chr(0xFF11) + chr(0xFF12) + chr(0xFF13)]
 
 
 @pytest.mark.parametrize('value', INVALID, ids=[repr(value) for value in INVALID])

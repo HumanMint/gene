@@ -907,12 +907,43 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, she explained it to everyone'),
     # gene #254 item 3: what only rejoined refuses, with the passive reading's own pipeline (the sixth such witness).
     ('nickname', 'call me dan', 'i was\nonce would\ntold hi\nplease call me dan'),
-    # gene #254 item 4 (pre-existing): a time, or anything else, before the claim isn't an object of its own.
+    # gene #254 item 4 (pre-existing): what follows "on" isn't what they were told about where the claim follows it.
     ('games', 'i like chess', 'i was reminded on monday that i like chess'),
     ('games', 'i like chess', 'i was reminded of it on monday that i like chess'),
     ('games', 'i like chess', 'i was advised by email to say i like chess'),
-    # gene #254 items 1 and 2: a longer object, or a perception, with the claim after it in its clause, or a pointer
-    # back at it.
+    # gene #254: refused more than main. A preposition alone, a pointer back at the claim, and a line break straight
+    # after "heard".
+    ('games', 'i like chess', 'i like chess, i was reminded of'),
+    ('games', 'i like chess', 'i heard about it, i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard about it'),
+    ('games', 'i like chess', 'i like chess, i heard\nabout the tournament'),
+    ('games', 'i like chess', 'i like chess, i heard\nyou'),
+    # Sol round 1 of #259: what its object exemption kept, and main refuses. A time, a manner or hearsay read as what was
+    # perceived; an attribution after the claim read as an object; and an object holding the whole claim.
+    ('games', 'i like chess', 'i like chess, i heard last week'),
+    ('games', 'i like chess', 'i like chess, i heard secondhand'),
+    ('games', 'i like chess', 'i heard a rumor from my mom, i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard la' + chr(0x17F) + 't week'),
+    ('games', 'i like chess', 'i like chess, i heard last' + chr(0xA0) + 'week'),
+    ('games', 'i like chess', 'i like chess, i was informed a few weeks ago'),
+    ('games', 'i like chess', 'i like chess, i was informed via a short letter'),
+    ('games', 'my favorite game remains chess', 'i was informed my favorite game remains chess'),
+    ('music', 'my fav band slowdive', 'i heard my fav band slowdive'),
+    # Round 0's witnesses, which main refuses too: where or from whom it was heard, an aside, "about" alone, a claim with
+    # a verb of its own, a source, a clause a colon carries on, letters read as ASCII ones, a determiner alone, a longer
+    # object or a perception with the claim after it in its clause, and a pointer back at it.
+    ('games', 'i like chess', 'i like chess, i heard from my mom'),
+    ('nickname', 'my nickname is dan', 'she heard on monday, my nickname is dan'),
+    ('games', 'i like chess', 'i heard lol, i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard about'),
+    ('nickname', 'my nickname is dan', 'i was informed my nickname is dan'),
+    ('games', 'i like chess', 'i was informed by my mom, i like chess'),
+    ('games', 'i like chess', 'i was informed via a short letter: i like chess'),
+    ('games', 'i like chess', 'i like chess, i heard ' + chr(0x131) + 't'),
+    ('games', 'i like chess', 'i heard the, i like chess'),
+    ('games', 'i like chess', 'i heard the new album: i like chess'),
+    ('games', 'i like chess', 'i heard music "i like chess"'),
+    ('games', 'i like chess', 'i hear birds - i like chess'),
     ('games', 'i like chess', 'i was informed via a short letter that i like chess'),
     ('games', 'i like chess', 'i was assured a refund for the ticket and that i like chess'),
     ('games', 'i like chess', 'i heard birds say i like chess'),
@@ -921,21 +952,6 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, i heard it'),
     ('games', 'i like chess', 'i like chess, i heard so from my mom'),
     ('games', 'i like chess', 'i heard from my mom that i like chess'),
-    # gene #254's mutation witnesses: where or from whom it was heard, an aside, "about" alone, a claim with a verb of
-    # its own, a source, a preposition alone, a clause a colon carries on, and letters read as ASCII ones.
-    ('games', 'i like chess', 'i like chess, i heard from my mom'),
-    ('nickname', 'my nickname is dan', 'she heard on monday, my nickname is dan'),
-    ('games', 'i like chess', 'i heard lol, i like chess'),
-    ('games', 'i like chess', 'i like chess, i heard about'),
-    ('nickname', 'my nickname is dan', 'i was informed my nickname is dan'),
-    ('games', 'i like chess', 'i was informed by my mom, i like chess'),
-    ('games', 'i like chess', 'i like chess, i was reminded of'),
-    ('games', 'i like chess', 'i was informed via a short letter: i like chess'),
-    ('games', 'i like chess', 'i like chess, i heard ' + chr(0x131) + 't'),
-    ('games', 'i like chess', 'i heard the, i like chess'),  # A determiner alone perceives nothing.
-    ('games', 'i like chess', 'i heard the new album: i like chess'),  # A colon, a quote or a dash carries it on.
-    ('games', 'i like chess', 'i heard music "i like chess"'),
-    ('games', 'i like chess', 'i hear birds - i like chess'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1156,23 +1172,15 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i was informed via email, i like chess'),
     ('games', 'i like chess', 'i hear you, i like chess'),
     ('games', 'i like chess', 'i like chess, i heard about the tournament'),
-    # gene #254 item 1: a perception of its own, as main keeps it.
-    ('games', 'i like chess', 'i hear birds, i like chess'),
-    ('games', 'i like chess', 'i like chess, i hear music'),
-    ('games', 'i like chess', 'i heard the new album yesterday, i like chess'),
+    # gene #254: what main keeps, its exceptions narrowed (refusing only more). What they were told about, whole, that
+    # ends its clause, at punctuation or a line break; and a short object of a report heard, on its line.
     ('games', 'i like chess', 'i like chess. i heard the new album'),
-    # gene #254 item 2: a longer object of its own that ends the clause, as main keeps it.
-    ('games', 'i like chess', 'i was informed via a short letter, i like chess'),
-    ('games', 'i like chess', 'i was assured a refund for the ticket, i like chess'),
     ('games', 'i like chess', 'i was reminded of the rules for the game, i like chess'),
-    # gene #254 item 4: a time that ends the clause is still an object of its own.
     ('games', 'i like chess', 'i was reminded on monday, i like chess'),
-    # And a line break ends one, as main keeps it (and a perception, item 1, as main before #245 does).
     ('games', 'i like chess', 'i hear birds\nok i like chess'),
     ('games', 'i like chess', 'i like chess\ni was reminded of the rules\nok'),
     ('games', 'i like chess', 'i like chess, i heard the album\nok'),
     ('games', 'i like chess', 'i like chess, i was reminded of the rules\nok'),
-    ('games', 'i like chess', 'i like chess, i heard birds\nok'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)

@@ -43,8 +43,8 @@ BRIDGED = reference('3bddd69')  # #229 (#226 items 2, 3), before #231.
 REJOINED = reference('dd7441e')  # #235 (#231 items 1, 3), before #236.
 # Main now: #238 (#236), and the same module at 571fb78. #245 only ever refuses more than it (Sol round 2 of #245).
 WIDENED = reference('2cdaffc')
-# Main now: #245 (#239), the same module at e9adf67. #254 only ever refuses more than it, but where its passive reading
-# keeps a perception or a longer object of its own.
+# Main now: #245 (#239), the same module at e9adf67. #254 only ever refuses more than it (Sol round 1 of #259: an
+# object exemption reopened reports).
 PASSIVE = reference('117db20')
 BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST,
           'b1d4b88': STACKED, 'ba5a0a6': ASIDED, '7914787': HEDGED, 'a5bdada': MODIFIED, '3bddd69': BRIDGED,
@@ -115,6 +115,10 @@ REVIEWED = [
     # follows.
     'i was\nonce would\ntold hi\nplease call me dan', 'i was reminded on monday that i like chess',
     'i was informed via a short letter that i like chess',
+    # Sol round 1 of #259: what its object exemption kept, and main refuses.
+    'i like chess, i heard last week', 'i like chess, i heard secondhand', 'i heard a rumor from my mom, i like chess',
+    'i like chess, i heard la' + chr(0x17F) + 't week', 'i like chess, i heard last' + chr(0xA0) + 'week',
+    'i like chess, i was informed a few weeks ago', 'i like chess, i was informed via a short letter',
 ]
 
 
@@ -493,12 +497,13 @@ def test_messages_with_239s_and_242s_shapes_are_never_kept_where_a_bound_refuses
     assert not leaks(messages, BOUNDS[sha])
 
 
-# gene #254 items 1 and 2: a report heard with a perception of its own ("i hear birds, …"), and a passive verb with a
-# longer object of its own ("informed via a short letter, …"), each ending its clause. Main's passive reading (#245)
-# refuses these, and is the only reading that does: every module before it keeps them (2cdaffc is main without that
-# reading), so they're bound by those, and by main for the reports among them.
-PERCEIVED = [' birds, ', ' music\n', ' the new album yesterday, ', ' birds\n', ' some music, ', ' the album. ']
-OWN_OBJECTS = [' via a short letter, ', ' a refund for the ticket, ', ' via a short letter\n']
+# gene #254 items 1 and 2's shapes: a report heard with something after it ("i hear birds, …"), and a passive verb with
+# a longer object ("informed via a short letter, …"), each ending its clause, with Sol round 1 of #259's: a time, a
+# manner, hearsay or an attribution after the verb. Main refuses most; this keeps none it refuses (refuse-only: an
+# object exemption can't tell an unrelated object from a time, a source, an attribution or the claim itself).
+PERCEIVED = [' birds, ', ' music\n', ' the new album yesterday, ', ' birds\n', ' some music, ', ' the album. ',
+             ' last week, ', ' secondhand\n', ' a rumor from my mom, ', ' last' + chr(0xA0) + 'week. ']
+OWN_OBJECTS = [' via a short letter, ', ' a refund for the ticket, ', ' via a short letter\n', ' a few weeks ago, ']
 
 
 def perceptions(count, seed):
@@ -514,24 +519,14 @@ def perceptions(count, seed):
         else:
             yield category, evidence, evidence + rng.choice([', ', '. ', '\n']) + rng.choice(HEARD_RUNS) + rng.choice(
                 [' music', ' birds', ' the new album', ' some birds yesterday', ' the album', ' it', ' that', ' so',
-                 ' on monday', ' from my mom', ' about it', ' lol', ' the'])
+                 ' on monday', ' from my mom', ' about it', ' lol', ' the', ' last week', ' secondhand'])
 
 
-@pytest.mark.parametrize('sha', [sha for sha in BOUNDS if sha != '117db20'])
-def test_messages_with_254s_objects_are_never_kept_where_a_bound_before_245_refuses_them(sha):
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_messages_with_254s_objects_are_never_kept_where_a_bound_refuses_them(sha):
     messages = list(asided(perceptions(6000, 254), 254, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS, CHAINED_REPORTS))
-    assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 500
+    assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 200
     assert not leaks(messages, BOUNDS[sha])
-
-
-def test_254s_objects_kept_where_main_refuses_them_are_refused_by_its_passive_reading_alone():
-    """What this keeps of them that main refuses, main refuses in its passive reading only (main without it keeps them),
-    and each has a perception or a longer object of its own: the claim is never what was heard or told."""
-    messages = list(asided(perceptions(6000, 254), 254, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS, CHAINED_REPORTS))
-    kept = leaks(messages, PASSIVE)
-    assert kept and not leaks(kept, WIDENED)
-    seen = ['music', 'birds', 'new album', 'album', 'short letter', 'refund for the ticket']  # Past what's inserted.
-    assert all(any(thing in re.sub(r"[^\w\s]", '', text) for thing in seen) for _, _, text in kept), kept
 
 def test_the_bound_is_a_real_check():
     """A validator that keeps what a bound refuses fails it: neither reference is this module under another name."""

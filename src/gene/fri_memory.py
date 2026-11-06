@@ -768,51 +768,44 @@ def widened(text, invisible):
 # auxiliaries and modifiers before them as "was", whatever their apostrophes (every one inside a word read as a plain
 # one first), in a reading of its own; every other reading stays as it was, so this one only ever refuses more. So is a
 # report heard ("i heard that ...", "i've heard", "i like chess, i heard"): the verb alone reads as "was told".
-# Not where an object of its own follows: past a modifier or two, what they were told about, or to do ("reminded of the
-# rules", "advised to rest"), or a thing ("assured a refund for the ticket", "informed via a short letter"); for a report
-# heard, anything perceived ("i hear birds", "heard the new album yesterday"), or "i hear you" (Sol rounds 1 to 3 of
-# #245; gene #254). An object of its own is a phrase of plain words that ends the clause, none of them one that starts a
-# clause of its own or points back at one, so the claim is never in it: "informed via email that i like chess", "reminded
-# on monday that i like chess" and "i hear that i like chess" are still reports, and so is "i like chess, i heard it".
+# Not where what follows is something else they were told about, or to do ("reminded of the rules", "advised to rest",
+# past a modifier or two), nor an object of its own that ends the clause ("assured a refund,", "informed via email."),
+# nor "i hear you" (Sol round 2 of #245, S1, S2): before punctuation or the message's end only, so one the claim follows
+# in the same clause is still a report.
 PASSIVE_VERBS = r"informed|reminded|notified|assured|advised|warned|told"
 PASSIVE_REPORT = re.compile(rf"(?i)(?:\b(?:was|were|been|be|being|is|are|am|got|get|gets|getting|im)\b"
                             rf"|['{chr(0x2019)}{chr(0x2018)}{chr(0x2BC)}](?:m|re|s)\b)(?:\s++(?:been|being)\b)?+"
                             rf"(?:\s++(?:{RUN_MODIFIERS})\b)*+\s++(?:{PASSIVE_VERBS})\b")
 HEARD_REPORT = re.compile(r"(?i)\b(?:heard|hears?)\b")  # The verb alone, so a run of modifiers is never rescanned.
+TOLD_OF = frozenset('to of about on for against with in at into over from'.split())
 STEPPED_OVER = frozenset('too once again before earlier already yesterday today lately always never often sometimes '
                          'ever still also just even lol lmao lmfao haha tho though fr ngl'.split())
 MODIFIERS_PAST = 3  # Modifiers read past after a passive verb, at most.
-# What an object of a passive verb opens with: what they were told about, or to do, or a determiner or "via". A
-# perception that opens with a determiner, or "about", needs a word after it too.
-DETERMINERS = frozenset('a an the some my your his her their our'.split())
-OPENERS = frozenset('to of about on for against with in at into over from via'.split()) | DETERMINERS
-# Words that start a clause of their own, point back at one, or make one (a verb's auxiliary or "is": "my nickname is
-# dan" is a claim, not an object of "informed"): a phrase with one of them may hold the claim, or be it.
+CLAUSE_DONE = r"[ \t]*+(?=[,.;!?\n]|$)"
+COMPLETE_OBJECT = re.compile(rf"(?i)\s++(?:a|an|the|some|my|your|his|her|their|our|via|about)(?:\s++[\w']++){{1,2}}"
+                             rf"{CLAUSE_DONE}")
+ACKNOWLEDGED = re.compile(rf"(?i)\s++(?:you|u|ya){CLAUSE_DONE}")
+# Each of those only ever refuses more since (gene #254): what they were told about, or the object, must run to the
+# clause's end with no word in it that starts a clause of its own, points back at one, or makes one, so "reminded on
+# monday that i like chess" and "i heard about it" are reports; a preposition alone ("i was reminded of") isn't
+# something they were told about; and a report heard keeps its exceptions only on its own line, not past a line break.
 CLAUSAL = frozenset("that thats that's this these those it its it's so same such as like than if whether because cause "
                     "cuz since and but or nor when while where what who whom which why how i im i'm ive i've id i'd "
                     "ill i'll me you u ya youre you're he hes he's him she shes she's we we're us they theyre they're "
                     "them is isnt isn't are arent aren't am was wasnt wasn't were werent weren't be been being do does "
                     "did dont don't doesnt doesn't didnt didn't has have had hasnt hasn't havent haven't will would wont "
                     "won't can cant can't could should shall may might must".split())
-CLAUSE_DONE = r"[ \t]*+(?=[,.;!?\n]|$)"
-ACKNOWLEDGED = re.compile(rf"(?i)\s++(?:you|u|ya){CLAUSE_DONE}")
-# Where something was heard, or when, or from whom, isn't what was: a perception never opens with one of these.
-PREPOSITIONS = frozenset('to of on for against with in at into over from by via during after before through around '
-                         'since until'.split())
 OBJECT_RUN = re.compile(r"[\w' \t]++")  # Plain words, on one line.
 OBJECT_WORD = re.compile(r"[\w']++")
-LINE_WORD = re.compile(r"[ \t]*+([\w']+)")
-# An object's first word, and whether another follows it on its line: a passive verb's, a line break before it too; a
-# perception, on the verb's own line.
-OPENING_ANYWHERE = re.compile(r"\s++([\w']++)(?=([ \t]++[\w'])?)")
-OPENING_HERE = re.compile(r"[ \t]++([\w']++)(?=([ \t]++[\w'])?)")
+FOLLOWED = re.compile(r"[ \t]++[\w']")  # A word after this one, on its line.
+SAME_LINE_WORD = re.compile(r"[ \t]++([\w']++)")
 
 
 @functools.lru_cache(maxsize=32)
 def objects(text):
-    """Where an object of its own may start, by each word's start: whether the words from it to the end of their run hold
-    none of CLAUSAL, and the run ends the clause, at punctuation, a line break or the message's end (CLAUSE_DONE). Read
-    once for a text, so each verb's object is looked up, never scanned again (Sol round 2 of #245, S3)."""
+    """Where what follows a passive verb or a report heard may start, by each word's start: whether the words from it to
+    the end of their run hold none of CLAUSAL, and the run ends the clause, at punctuation, a line break or the
+    message's end. Read once for a text, so each verb's is looked up, never scanned again (Sol round 2 of #245, S3)."""
     found = {}
     for run in OBJECT_RUN.finditer(text):
         end = run.end()
@@ -823,34 +816,29 @@ def objects(text):
     return found
 
 
-def stepped(text, end, word_at):
-    """Past a modifier or two after a verb (STEPPED_OVER, or a word in -ly): where what follows them starts."""
+def told_so(m):
+    """A passive report as "was told", unless something else follows it (see above), as narrowed since (gene #254)."""
+    end = m.end()
     for _ in range(MODIFIERS_PAST):
-        after = word_at.match(text, end)
+        after = NEXT_WORD.match(m.string, end)
         word = after.group(1).lower() if after else ''
         if word not in STEPPED_OVER and not (word.endswith('ly') and word.isalpha()):
             break
         end = after.end()
-    return end
-
-
-def told_so(m):
-    """A passive report as "was told", unless an object of its own follows it (see above), past a modifier or two: one
-    that opens with what they were told about, or to do, or with a determiner, and has a word after that."""
-    opener = OPENING_ANYWHERE.match(m.string, stepped(m.string, m.end(), NEXT_WORD))
-    if (opener and opener.group(2) and opener.group(1).translate(ASCII_CASES).lower() in OPENERS
-            and objects(m.string).get(opener.start(1))):
+    after = NEXT_WORD.match(m.string, end)
+    if after and objects(m.string).get(after.start(1)) and (
+            (after.group(1).lower() in TOLD_OF and FOLLOWED.match(m.string, after.end()))
+            or COMPLETE_OBJECT.match(m.string, end)):
         return m.group()
     return ('' if m.group()[0].isalpha() else ' ') + 'was told'
 
 
 def heard_so(m):
-    """A report heard as "was told", unless what's perceived follows it on its line, past a modifier or two (see above),
-    or it's "i hear you". Not where or when it was heard, or from whom; "about" or a determiner only with a word after."""
-    perceived = OPENING_HERE.match(m.string, stepped(m.string, m.end(), LINE_WORD))
-    word = perceived.group(1).translate(ASCII_CASES).lower() if perceived else ''
-    if ((perceived and word not in PREPOSITIONS and (word not in DETERMINERS | {'about'} or perceived.group(2))
-         and objects(m.string).get(perceived.start(1))) or ACKNOWLEDGED.match(m.string, m.end())):
+    """A report heard as "was told", unless an object of its own ends the clause, or it's "i hear you", on the verb's own
+    line (see above)."""
+    after = SAME_LINE_WORD.match(m.string, m.end())
+    if after and ((objects(m.string).get(after.start(1)) and COMPLETE_OBJECT.match(m.string, m.end()))
+                  or ACKNOWLEDGED.match(m.string, m.end())):
         return m.group()
     return 'was told'
 

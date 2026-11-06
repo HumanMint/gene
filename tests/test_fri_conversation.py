@@ -961,6 +961,11 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('conversation', 'i like people that are informed', 'i like people that are informed about it'),
     ('conversation', 'i like people that are informed', 'i like people that are informed about ' + chr(0x131) + 't'),
     ('hobbies', 'i like a bot that hears', 'i like a bot that hears\nthe album'),
+    # A pointer back or a clause's "that" with a word after it is no determiner (see JOINING): any claim after it is
+    # still in the clause.
+    ('games', 'i like chess', 'i heard about it yesterday, i like chess'),
+    ('music', 'my fav band is slowdive', 'i was reminded on monday that my fav band is slowdive'),
+    ('music', 'my fav band is slowdive', 'i was reminded about it, my fav band is slowdive'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1194,6 +1199,7 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     # end are what they were told about, as main reads them.
     ('games', 'i like chess', 'i was reminded about this tournament, i like chess'),
     ('games', 'i like chess', 'i was reminded about these rules, i like chess'),
+    ('games', 'i like chess', 'i was reminded about those rules, i like chess'),
     ('games', 'i like chess', 'i heard about this album, i like chess'),
     ('games', 'i like chess', 'i like chess, i was reminded of the rules and schedule'),
     ('games', 'i like chess', 'i like chess, i was reminded of the rules or schedule'),

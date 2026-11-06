@@ -324,7 +324,7 @@ def readings_of(text, evidence):
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for transform in (composed, restacked, spaced, bridged, rejoined, widened, passive):
+    for transform in (composed, restacked, spaced, bridged, rejoined, widened, passive, carried):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
@@ -819,6 +819,33 @@ def passive(text, invisible):
     unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
     unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
     return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
+
+
+# And (gene #260) a report's clause on the next line: "i was told" + a line break + "that i like chess". The report
+# rules end a clause at a line break, and so does every reading above but rejoined's runs of "say", so the claim read as
+# a sentence of its own. This reading carries a report verb's clause over: the space before a line that opens with
+# "that" (a line break, blank lines and spaces around it) is joined where the line before it has a report verb in it,
+# and the rest is read as passive reads it. Not after a line with none, so a claim and a line of its own after it
+# ("i like chess" + a line break + "that said, gg") stay two sentences. Every other reading stays as it was, so this one
+# only ever refuses more. Matched only where a run of space starts, and each line is read once, so it's linear.
+LINE_BEFORE_THAT = re.compile(r"(?<!\s)\s++(?=(?i:that)\b)")
+BARE_REPORT = re.compile(r"(?i)\b(?:say|tell|hear)\b")
+REPORTING = (REPORT, REPORTED_TOO, PASSIVE_REPORT, HEARD_REPORT, BARE_REPORT)
+
+
+def carry_over(m):
+    """The space before a line opening with "that", joined where the line before it has a report verb in it."""
+    if m.group().strip(' \t') == '':  # No line break in it.
+        return m.group()
+    line = m.string[m.string.rfind('\n', 0, m.start())+1:m.start()]
+    return ' ' if any(verb.search(line) for verb in REPORTING) else m.group()
+
+
+@functools.lru_cache(maxsize=32)
+def carried(text, invisible):
+    """passive's reading (see there), with a report verb's clause carried over a line break (see above)."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    return passive(LINE_BEFORE_THAT.sub(carry_over, unseen), invisible)
 
 
 def spots_of(text, evidence):

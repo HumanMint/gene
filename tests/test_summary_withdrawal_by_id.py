@@ -265,7 +265,8 @@ def test_258_a_claim_naming_no_server_by_any_value_is_called_off(store, tmp_path
     assert claim_of(store) is None
     from gene.fri_member_summary import finish
     conversations = sorted({row['conversation_id'] for row in offer['exchanges']})
-    assert finish(agent, offer['id'], 'they planned a raid', 'completed', conversations, False) != {'kept': True}
+    with pytest.raises(ValueError, match='expired'):
+        finish(agent, offer['id'], 'they planned a raid', 'completed', conversations, False)
     assert shown(store) is None
 
 

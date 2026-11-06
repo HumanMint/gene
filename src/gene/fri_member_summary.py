@@ -625,8 +625,9 @@ def withdrawn(db, guild, user, conversation, message_id, saved):
     if gone:  # A repeat finds no summary, so moves nothing.
         drop(db, guild, user)
     record = AgentStore.get(db, CLAIM)
-    # The build in flight may have been sent the summary as well as its own exchanges.
-    if record and record['user_id'] == user and (gone or drew(
+    # The build in flight may have been sent the summary as well as its own exchanges: this server's only (see ours),
+    # since another server's summary going says nothing of what it read (gene #258 item 2).
+    if record and record['user_id'] == user and ours(record, guild) and (gone or drew(
             {*record['sources'], *(record['previous'] or {}).get('origins', [])}, record['through'])):
         AgentStore.put(db, CLAIM, None)
 
@@ -645,8 +646,14 @@ def named(db, guild, messages):
 
 def ours(record, guild):
     """Whether a build in flight's claim is this server's (gene #253). One from before claims named their server, by an
-    older controller in a rollback window, can't be placed, so it counts as anyone's."""
-    return isinstance(record, dict) and str(record.get('guild_id', guild)) == str(guild)
+    older controller in a rollback window, can't be placed, so it counts as anyone's; and so does one whose server is no
+    server's ID, as no writer leaves it (null, blank, a boolean, a container: gene #258 item 1)."""
+    if not isinstance(record, dict):
+        return False
+    named = record.get('guild_id')
+    if not ((isinstance(named, str) and named.isdigit()) or (type(named) is int and named >= 0)):
+        return True
+    return str(named) == str(guild)
 
 
 def claimed(record, guild, messages):

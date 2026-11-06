@@ -455,10 +455,12 @@ class AgentStore:
                 if mode != 'explore':
                     cursors[claim['channel_id']] = cursor
                     self.put(db, 'cursors', cursors)
-                budget = self.get(db, 'budget', {})
-                if claim.get('budget_day') == budget.get('day'):
-                    budget['used'] = max(0, budget['used']-(claim['limit']-scanned))
-                    self.put(db, 'budget', budget)
+            # What the pass's reservation didn't use goes back: what it didn't scan, or, after an error (Fri stopped it,
+            # say), all of it, since its cursor stays and the next pass reads that slice again (gene #262).
+            budget = self.get(db, 'budget', {})
+            if claim.get('budget_day') == budget.get('day'):
+                budget['used'] = max(0, budget['used']-(claim['limit']-(0 if error else scanned)))
+                self.put(db, 'budget', budget)
             self.put(db, 'learning_claim', None)
             # Reports past their week still to be delivered go with this one, which says how many (gene #250): Fri sends
             # one a read, after each pass, so one ahead of each pass's own would keep every report a pass behind (Sol

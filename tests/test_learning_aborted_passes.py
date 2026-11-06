@@ -8,19 +8,25 @@ finish without one gives back what it didn't scan, as before.
 """
 from dataclasses import replace
 
-from gene.fri_agent_store import AgentStore
+from gene.fri_agent_store import AgentStore, snowflake_floor
 from tests.test_fri_learning import learning  # noqa: F401 (the fixture)
 
 STOPPED = 'A message it read was taken back; stopped before its model request.'
 
 
 def scheduled(learning):  # noqa: F811
+    """New messages in #1 to read, from an hour ago."""
     clock, store, settings, _ = learning
     scheduler = AgentStore(store, replace(settings, agent_history_channels='1'))
     with store.connection() as db:
         scheduler.put(db, 'started', clock[0]-7200)
-        scheduler.put(db, 'cursors', {'1': {'after_id': '100', 'done_at': clock[0]-3600}})
+        scheduler.put(db, 'cursors', {'1': {'after_id': snowflake_floor(clock[0]-3600), 'done_at': clock[0]-3600}})
     return scheduler
+
+
+def cursors(scheduler):
+    with scheduler.store.connection() as db:
+        return scheduler.get(db, 'cursors')
 
 
 def used(scheduler):
@@ -38,7 +44,7 @@ def test_the_repro_passes_stopped_in_a_row_leave_the_allowance_intact(learning):
     allowance shrank by a batch each time; now it's as before the first, and each read the same slice."""
     clock, _, _, _ = learning
     scheduler = scheduled(learning)
-    slices = []
+    before, slices = cursors(scheduler), []
     for _ in range(5):
         claim = scheduler.claim(manual=True)
         assert 'id' in claim, claim
@@ -47,7 +53,7 @@ def test_the_repro_passes_stopped_in_a_row_leave_the_allowance_intact(learning):
         delivered(scheduler)
         clock[0] += 301  # Past the owner's five minutes.
     assert used(scheduler) == 0
-    assert len(set(slices)) == 1  # Not marked done: each read the slice again.
+    assert len(set(slices)) == 1 and cursors(scheduler) == before  # Not marked done: each read the slice again.
 
 
 def test_a_pass_that_finishes_still_keeps_what_it_scanned(learning):  # noqa: F811

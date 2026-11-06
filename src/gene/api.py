@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
 from .config import Settings
 from .fri_context import ChatSource
@@ -225,6 +225,8 @@ class EditFingerprint(BaseModel):
     salt: str = Field(pattern=r'^[0-9a-f]{32}$')
     removed: list[Hashed] = Field(default=[], max_length=3000)
     kept: list[Hashed] = Field(default=[], max_length=3000)
+    # Whether `kept` is all of what it says now: only then is the controller's own copy read (Sol round 2 of #261, R2-B3).
+    complete: StrictBool = False
 
 
 class TurnWithdrawal(Actor):

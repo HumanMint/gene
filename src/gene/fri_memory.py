@@ -829,23 +829,34 @@ def passive(text, invisible):
 # ("i like chess" + a line break + "that said, gg") stay two sentences. Every other reading stays as it was, so this one
 # only ever refuses more. Matched only where a run of space starts, and each line is read once, so it's linear.
 LINE_BEFORE_THAT = re.compile(r"(?<!\s)\s++(?=(?i:that)\b)")
+LINE_BREAK = re.compile(r"[^\S \t]")  # Any space but a plain one or a tab: "\n", "\r", U+2028, a form feed and the rest.
 BARE_REPORT = re.compile(r"(?i)\b(?:say|tell|hear)\b")
 REPORTING = (REPORT, REPORTED_TOO, PASSIVE_REPORT, HEARD_REPORT, BARE_REPORT)
 
 
-def carry_over(m):
-    """The space before a line opening with "that", joined where the line before it has a report verb in it."""
-    if m.group().strip(' \t') == '':  # No line break in it.
-        return m.group()
-    line = m.string[m.string.rfind('\n', 0, m.start())+1:m.start()]
-    return ' ' if any(verb.search(line) for verb in REPORTING) else m.group()
+def carried_over(text):
+    """The text with the space before each line opening with "that" joined where the line before it has a report verb
+    in it. The line breaks are walked once beside the runs, so each line, from the last break of any kind before its
+    run, is read once (a search back for one from each run read a message of "\\r" lines again from its start)."""
+    out, last, start = [], 0, 0
+    breaks = LINE_BREAK.finditer(text)
+    ahead = next(breaks, None)
+    for run in LINE_BEFORE_THAT.finditer(text):
+        while ahead and ahead.start() < run.start():
+            start, ahead = ahead.end(), next(breaks, None)
+        if not (ahead and ahead.start() < run.end()):  # No line break in it.
+            continue
+        if any(verb.search(text, start, run.start()) for verb in REPORTING):
+            out += [text[last:run.start()], ' ']
+            last = run.end()
+    return ''.join(out) + text[last:]
 
 
 @functools.lru_cache(maxsize=32)
 def carried(text, invisible):
     """passive's reading (see there), with a report verb's clause carried over a line break (see above)."""
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
-    return passive(LINE_BEFORE_THAT.sub(carry_over, unseen), invisible)
+    return passive(carried_over(unseen), invisible)
 
 
 def spots_of(text, evidence):

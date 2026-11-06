@@ -246,8 +246,10 @@ def test_a_phone_number_a_house_number_or_a_year_with_words_beside_it_still_is(b
 @pytest.mark.parametrize('written, weight, plain', [
     ('1900', 1, True), ('1899', 2, False), ('2024', 1, True), ('2075', 1, True), ('1998 2020', 1, True),
     ('1530', 1, True), ('0959', 1, True), ('2359', 1, True), ('2400', 2, False), ('1260', 2, False),
-    ('12:30', 1, True), ('12:30:15', 1, True), ('9:30', 0, False), ('123', 0, False),
+    ('12:30', 1, True), ('12:30:15', 1, True), ('9:30', 0, False), ('123', 0, False), ('12:45', 1, True),
+    ('23:45:59', 1, True), ('23:45:60', 2, False), ('12:0:30', 2, False), ('023:30', 2, False), ('12:30:15:99', 2, False),
     ('2024-05-01', 1, True), ('2024-12-31', 1, True), ('2024-13-01', 2, False), ('2024-05-32', 2, False),
+    ('2024-00-01', 2, False), ('2024-05-00', 2, False),
     ('5/1/2024', 1, True), ('12/31/2024', 1, True), ('31/12/2024', 1, True), ('13/13/2024', 2, False),
     ('01.05.24', 1, True), ('32.05.24', 2, False), ('may 5, 2024', 1, True), ('2024 05', 1, True),
     ('05 2024', 1, True), ('12 31', 1, True), ('31 12', 1, True), ('20240501', 1, True), ('20241301', 2, False),

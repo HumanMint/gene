@@ -230,6 +230,9 @@ def test_a_year_a_time_or_a_date_alone_is_not_enough(before, unrelated):
 @pytest.mark.parametrize('before, quoting', [
     ('my diagnosis was in 2024, still processing it', 'your diagnosis was in 2024? thats a lot'),
     ('my diagnosis was in 2024, still processing it', 'a diagnosis in 2024 is still recent'),  # A rare word beside it.
+    # A run of common words and the year counts as the year, and a rare word beside it is enough.
+    ('my diagnosis was in 2024, still processing it', 'well it was in 2024, the diagnosis'),
+    ('my diagnosis, 2024, was rough', 'diagnosis, 2024? rough'),  # Beside it, as a pair.
     ('i leave for surgery at 12:30 on 2024-05-01', 'good luck with surgery at 12:30'),
     ('call me at 555-0199 after six', 'calling 5550199 now'),  # A phone number, written either way.
     ('call me at (212) 555-0199', 'is 2125550199 your number'),
@@ -251,7 +254,8 @@ def test_a_phone_number_a_house_number_or_a_year_with_words_beside_it_still_is(b
     ('2024-05-01', 1, True), ('2024-12-31', 1, True), ('2024-13-01', 2, False), ('2024-05-32', 2, False),
     ('2024-00-01', 2, False), ('2024-05-00', 2, False),
     ('5/1/2024', 1, True), ('12/31/2024', 1, True), ('31/12/2024', 1, True), ('13/13/2024', 2, False),
-    ('01.05.24', 1, True), ('32.05.24', 2, False), ('may 5, 2024', 1, True), ('2024 05', 1, True),
+    ('01.05.24', 1, True), ('32.05.24', 2, False), ('31.12.99', 1, True), ('12/31/99', 1, True), ('31.13.99', 2, False),
+    ('may 5, 2024', 1, True), ('2024 05', 1, True),
     ('05 2024', 1, True), ('12 31', 1, True), ('31 12', 1, True), ('20240501', 1, True), ('20241301', 2, False),
     ('1990s', 1, True), ('0930am', 1, True), ('4217b', 2, False), ('4217', 2, False), ('2468', 2, False),
     ('70815', 2, False), ('555 0199', 2, False), ('5550199', 2, False), ('(212) 555-0199', 2, False),

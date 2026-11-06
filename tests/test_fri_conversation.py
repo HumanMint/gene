@@ -932,6 +932,7 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, i was reminded of'),
     ('games', 'i like chess', 'i was informed via a short letter: i like chess'),
     ('games', 'i like chess', 'i like chess, i heard ' + chr(0x131) + 't'),
+    ('games', 'i like chess', 'i heard the, i like chess'),  # A determiner alone perceives nothing.
     ('games', 'i like chess', 'i heard the new album: i like chess'),  # A colon, a quote or a dash carries it on.
     ('games', 'i like chess', 'i heard music "i like chess"'),
     ('games', 'i like chess', 'i hear birds - i like chess'),

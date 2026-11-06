@@ -444,11 +444,11 @@ PASSIVE_RUNS = ['was ', 'were ', "'ve been ", 've been ', 'have been ', 'has bee
 PASSIVE_VERBS = ['informed', 'reminded', 'notified', 'assured', 'advised', 'warned', 'told', 'kindly informed']
 PASSIVE_AFTER = [' that ', ' ', ' by my mom that ', ', ', ' lol ', ' of this: ', ' about it: ', '\n',
                  ' yesterday to rest, ', ' yesterday of it: ', ' again that ']
-# gene #254: longer objects of their own, ending the clause or with the claim after, a time before the claim, and
-# perceptions with the claim in their clause (see PERCEIVED for those that end it).
-LONGER = [' via a short letter, ', ' via a short letter that ', ' a refund for the ticket, ',
-          ' a refund for the ticket that ', ' on monday that ', ' on monday, ', ' via email\nthat ', ' about it, ',
-          ' the album ', ' birds say ', ' of the rules and ', ' lol, ', ' from my mom, ']
+# gene #254: longer objects with the claim after them in their clause, a time before the claim, a pointer back at it,
+# an aside, a source, and perceptions with the claim in their clause (see OWN_OBJECTS for those that end it).
+LONGER = [' via a short letter that ', ' a refund for the ticket that ', ' on monday that ', ' on monday, ',
+          ' via email\nthat ', ' about it, ', ' the album ', ' birds say ', ' of the rules and ', ' lol, ',
+          ' from my mom, ', ' the, ']
 PASSIVE_AFTER += LONGER
 REPORT_AFTER = ['my score', 'that rule', 'it to everyone', 'it to me', 'i practice more', 'we play more',
                 'loudly about lag', 'about lag', 'that', 'it', 'me', 'to me that', '', 'so', 'my nickname is dan',
@@ -476,7 +476,7 @@ def passive_and_object_reports(count, seed):
             text = passive + rng.choice(PASSIVE_AFTER) + evidence
         elif shape == 1:
             text = evidence + rng.choice([', ', ', or so ', ' ', '\n', ' :- / ']) + passive + rng.choice(
-                ['', '', '', ' about the tournament', ' it', '\nlol', ' the album', ' on monday', ' lol', ' from jo'])
+                ['', '', '', ' it', '\nlol', ' on monday', ' lol', ' from jo', ' the'])
         elif shape == 2:
             text = evidence + rng.choice([', ', ' ', ', and ', '\n', '; ']) + report
         else:
@@ -493,39 +493,44 @@ def test_messages_with_239s_and_242s_shapes_are_never_kept_where_a_bound_refuses
     assert not leaks(messages, BOUNDS[sha])
 
 
-# gene #254 item 1: a report heard with a perception of its own that ends its clause ("i hear birds, …"). Main's passive
-# reading (#245) refuses these, and is the only reading that does: every module before it keeps them (2cdaffc is main
-# without that reading), so they're bound by those, and by main for the reports among them.
+# gene #254 items 1 and 2: a report heard with a perception of its own ("i hear birds, …"), and a passive verb with a
+# longer object of its own ("informed via a short letter, …"), each ending its clause. Main's passive reading (#245)
+# refuses these, and is the only reading that does: every module before it keeps them (2cdaffc is main without that
+# reading), so they're bound by those, and by main for the reports among them.
 PERCEIVED = [' birds, ', ' music\n', ' the new album yesterday, ', ' birds\n', ' some music, ', ' the album. ']
+OWN_OBJECTS = [' via a short letter, ', ' a refund for the ticket, ', ' via a short letter\n']
 
 
 def perceptions(count, seed):
     rng = random.Random(seed)
     for _ in range(count):
         category, evidence = rng.choice(CLAIMS)
-        heard = rng.choice(HEARD_RUNS)
-        if rng.randrange(2):
-            yield category, evidence, heard + rng.choice(PERCEIVED + LONGER) + evidence
+        shape = rng.randrange(3)
+        if shape == 0:
+            yield category, evidence, rng.choice(HEARD_RUNS) + rng.choice(PERCEIVED + LONGER) + evidence
+        elif shape == 1:
+            passive = rng.choice(PASSIVE_SUBJECTS) + rng.choice(PASSIVE_RUNS) + rng.choice(PASSIVE_VERBS)
+            yield category, evidence, passive + rng.choice(OWN_OBJECTS + LONGER) + evidence
         else:
-            yield category, evidence, evidence + rng.choice([', ', '. ', '\n']) + heard + rng.choice(
-                [' music', ' birds', ' the new album', ' some birds yesterday', ' it', ' that', ' so', ' on monday',
-                 ' from my mom', ' about it', ' lol'])
+            yield category, evidence, evidence + rng.choice([', ', '. ', '\n']) + rng.choice(HEARD_RUNS) + rng.choice(
+                [' music', ' birds', ' the new album', ' some birds yesterday', ' the album', ' it', ' that', ' so',
+                 ' on monday', ' from my mom', ' about it', ' lol', ' the'])
 
 
 @pytest.mark.parametrize('sha', [sha for sha in BOUNDS if sha != '117db20'])
-def test_messages_with_254s_perceptions_are_never_kept_where_a_bound_before_245_refuses_them(sha):
+def test_messages_with_254s_objects_are_never_kept_where_a_bound_before_245_refuses_them(sha):
     messages = list(asided(perceptions(6000, 254), 254, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS, CHAINED_REPORTS))
     assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 500
     assert not leaks(messages, BOUNDS[sha])
 
 
-def test_254s_perceptions_kept_where_main_refuses_them_are_refused_by_its_passive_reading_alone():
+def test_254s_objects_kept_where_main_refuses_them_are_refused_by_its_passive_reading_alone():
     """What this keeps of them that main refuses, main refuses in its passive reading only (main without it keeps them),
-    and each is heard with something perceived: the claim is never what was heard."""
+    and each has a perception or a longer object of its own: the claim is never what was heard or told."""
     messages = list(asided(perceptions(6000, 254), 254, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS, CHAINED_REPORTS))
     kept = leaks(messages, PASSIVE)
     assert kept and not leaks(kept, WIDENED)
-    seen = ['music', 'birds', 'the new album', 'the album']  # Each, past what the corpus inserts inside a word.
+    seen = ['music', 'birds', 'new album', 'album', 'short letter', 'refund for the ticket']  # Past what's inserted.
     assert all(any(thing in re.sub(r"[^\w\s]", '', text) for thing in seen) for _, _, text in kept), kept
 
 def test_the_bound_is_a_real_check():

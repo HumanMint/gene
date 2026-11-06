@@ -782,9 +782,10 @@ HEARD_REPORT = re.compile(r"(?i)\b(?:heard|hears?)\b")  # The verb alone, so a r
 STEPPED_OVER = frozenset('too once again before earlier already yesterday today lately always never often sometimes '
                          'ever still also just even lol lmao lmfao haha tho though fr ngl'.split())
 MODIFIERS_PAST = 3  # Modifiers read past after a passive verb, at most.
-# What an object of a passive verb opens with: what they were told about, or to do, or a determiner or "via".
-OPENERS = frozenset('to of about on for against with in at into over from a an the some my your his her their our '
-                    'via'.split())
+# What an object of a passive verb opens with: what they were told about, or to do, or a determiner or "via". A
+# perception that opens with a determiner, or "about", needs a word after it too.
+DETERMINERS = frozenset('a an the some my your his her their our'.split())
+OPENERS = frozenset('to of about on for against with in at into over from via'.split()) | DETERMINERS
 # Words that start a clause of their own, point back at one, or make one (a verb's auxiliary or "is": "my nickname is
 # dan" is a claim, not an object of "informed"): a phrase with one of them may hold the claim, or be it.
 CLAUSAL = frozenset("that thats that's this these those it its it's so same such as like than if whether because cause "
@@ -845,10 +846,10 @@ def told_so(m):
 
 def heard_so(m):
     """A report heard as "was told", unless what's perceived follows it on its line, past a modifier or two (see above),
-    or it's "i hear you". Not where or when it was heard, or from whom; "about" only with what it's about."""
+    or it's "i hear you". Not where or when it was heard, or from whom; "about" or a determiner only with a word after."""
     perceived = OPENING_HERE.match(m.string, stepped(m.string, m.end(), LINE_WORD))
     word = perceived.group(1).translate(ASCII_CASES).lower() if perceived else ''
-    if ((perceived and word not in PREPOSITIONS and (word != 'about' or perceived.group(2))
+    if ((perceived and word not in PREPOSITIONS and (word not in DETERMINERS | {'about'} or perceived.group(2))
          and objects(m.string).get(perceived.start(1))) or ACKNOWLEDGED.match(m.string, m.end())):
         return m.group()
     return 'was told'

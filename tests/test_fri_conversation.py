@@ -966,6 +966,9 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i heard about it yesterday, i like chess'),
     ('music', 'my fav band is slowdive', 'i was reminded on monday that my fav band is slowdive'),
     ('music', 'my fav band is slowdive', 'i was reminded about it, my fav band is slowdive'),
+    # And one with no word after it in its run points back, as "it" does.
+    ('games', 'i like chess', 'i like chess, i heard about this'),
+    ('games', 'i like chess', 'i was reminded of this, i like chess'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None

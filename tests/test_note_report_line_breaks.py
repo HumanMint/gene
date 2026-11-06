@@ -80,6 +80,17 @@ def test_a_report_after_the_claim_with_its_auxiliaries_over_lines_keeps_no_note(
     assert personal_note(NOTE, text) is None
 
 
+@pytest.mark.parametrize('category, evidence, text', [
+    # Main's passive reading reads "hears you" + a line break as "i hear you" in the message, and the verb alone in the
+    # evidence as "was told", so the two differ and it refuses; the carried one joins the "that" line and reads both
+    # alike. Every reading main has is still here, as it was, so it still refuses.
+    ('hobbies', 'i like a bot that hears', 'i like a bot that hears you\n\nthat way'),
+    ('conversation', 'i like people that are informed', 'i like people that are informed the day\n\tthat helps'),
+])
+def test_what_main_refuses_by_its_passive_reading_alone_stays_refused(category, evidence, text):
+    assert personal_note({'category': category, 'evidence': evidence}, text) is None
+
+
 @pytest.mark.parametrize('text', ['i was told\nthat i like chess', 'i was informed via email\nthat i like chess'])
 def test_they_keep_no_note_when_saved_or_after_a_restart(store, text):
     saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',

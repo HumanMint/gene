@@ -97,6 +97,9 @@ class Finish(BaseModel):
     newest: float | None = Field(default=None, ge=0)
     newest_id: str | None = Field(default=None, pattern=r'^\d{1,25}$')
     scanned_ids: list[str] = Field(default_factory=list, max_length=25)
+    # With an error: Fri stopped the pass before its model was asked, so its reservation goes back (gene #262, Sol round
+    # 1 of #264). An older Fri never sends it, and an older controller ignores it.
+    before_model: bool = False
 
 
 def register(app, store, settings, auth, actor):

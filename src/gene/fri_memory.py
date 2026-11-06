@@ -823,9 +823,10 @@ def passive(text, invisible):
 
 # And (gene #260) a report's clause on the next line: "i was told" + a line break + "that i like chess". The report
 # rules end a clause at a line break, and so does every reading above but rejoined's runs of "say", so the claim read as
-# a sentence of its own. This reading carries a report verb's clause over: the space before a line that opens with
-# "that" (a line break, blank lines and spaces around it) is joined where the line before it has a report verb in it,
-# and the rest is read as passive reads it. Not after a line with none, so a claim and a line of its own after it
+# a sentence of its own. This reading carries a report verb's clause over: with report verbs read as widened reads them
+# first, the space before a line that opens with "that" (a line break, blank lines and spaces around it) is joined
+# where the line before it has a report verb in it, and the rest is read as passive reads it (see carried). Not after
+# a line with none, so a claim and a line of its own after it
 # ("i like chess" + a line break + "that said, gg") stay two sentences. Every other reading stays as it was, so this one
 # only ever refuses more. Matched only where a run of space starts, and each line is read once, so it's linear.
 LINE_BEFORE_THAT = re.compile(r"(?<!\s)\s++(?=(?i:that)\b)")
@@ -846,13 +847,15 @@ def carry_over(m):
 
 @functools.lru_cache(maxsize=32)
 def carried(text, invisible):
-    """passive's reading (see there), with a report verb's clause carried over a line break (see above), and each report
-    verb outside the vocabulary read as "say" and each run of auxiliaries before one joined first, as widened reads them,
-    so "jo would mention" + a line break + "that i like chess" reads as the one line does. In every text alike, the
-    message and its evidence: read only where a line was joined, evidence holding such a verb ("i like to mention it",
-    never joined) read differently from its message, and was refused where main keeps it."""
+    """passive's reading (see there), with each report verb outside the vocabulary read as "say" and each run of
+    auxiliaries before one joined first, as widened reads them, and then a report verb's clause carried over a line
+    break (see above). So "jo would mention" + a line break + "that i like chess" reads as the one line does, and so
+    does a verb of two words split over lines ("jo would point" + a line break + "out"), whose line before "that" holds
+    no report verb until it's read as "say". In every text alike, the message and its evidence: read only where a line
+    was joined, evidence holding such a verb ("i like to mention it", never joined) read differently from its message,
+    and was refused where main keeps it."""
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
-    return passive(chained(REPORTED_TOO.sub(reworded, LINE_BEFORE_THAT.sub(carry_over, unseen))), invisible)
+    return passive(LINE_BEFORE_THAT.sub(carry_over, chained(REPORTED_TOO.sub(reworded, unseen))), invisible)
 
 
 def spots_of(text, evidence):

@@ -62,6 +62,24 @@ def test_a_claim_with_a_line_of_its_own_after_it_keeps_its_note(text):
     assert personal_note(NOTE, text) == ('games', 'i like chess')
 
 
+@pytest.mark.parametrize('category, evidence, text', [
+    # Evidence holding a verb the joined message reads as "say": read as "say" in both, or the two differ, and the note
+    # was refused where main keeps it.
+    ('hobbies', 'i like to mention it', 'i like to mention it\nthat way'),
+    ('hobbies', 'i like to explain it', 'i like to explain it\nthat way'),
+])
+def test_evidence_holding_a_reworded_verb_is_read_as_the_message_is(category, evidence, text):
+    assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
+
+
+@pytest.mark.parametrize('text', [
+    # A chain of auxiliaries no other reading joins, broken over lines before a "that" line.
+    'i like chess, jo were\nnever\ntell\nthat i heard i do', 'i like chess, jo were\nnever\ntell\r\nthat i heard i do',
+])
+def test_a_report_after_the_claim_with_its_auxiliaries_over_lines_keeps_no_note(text):
+    assert personal_note(NOTE, text) is None
+
+
 @pytest.mark.parametrize('text', ['i was told\nthat i like chess', 'i was informed via email\nthat i like chess'])
 def test_they_keep_no_note_when_saved_or_after_a_restart(store, text):
     saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',

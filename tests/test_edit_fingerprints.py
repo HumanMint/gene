@@ -163,6 +163,8 @@ EDITS = [
     ('my discord password is hunter2 lol jk', 'jk', ['hunter2 is a terrible password']),
     ('the wifi password for the stream house is bluefalcon77', 'ask me for the wifi password',
      ['the stream house wifi is bluefalcon77, got it']),
+    ('my diagnosis was in 2024, still processing it', 'still processing it', ['your diagnosis was in 2024? thats a lot']),
+    ('i leave for surgery at 12:30 on 2024-05-01', 'never mind', ['good luck with surgery at 12:30']),
 ]
 ELSEWHERE = [
     'the raid starts at nine, bring potions', 'lol same, rent is brutal everywhere', 'anyone up for ranked tonight',
@@ -172,6 +174,8 @@ ELSEWHERE = [
     'call me when you get home', 'the wifi is slow again', 'denver is cold this time of year',
     'my sister also plays this game', 'please dont tell anyone i lost', 'password resets are annoying',
     'is the chemistry lab open', 'lockheed has a booth at the expo', 'lets queue after six',
+    'the olympics were held in 2024', 'the raid starts at 12:30', 'the patch drops 2024-05-01',
+    'raid at 12:30 on 2024-05-01', 'season two ends may 5, 2024',
 ]
 
 
@@ -196,6 +200,93 @@ def test_quotes_and_close_paraphrases_hold_what_was_taken_out_and_replies_about_
 def test_one_name_a_typo_or_everyday_words_are_not_enough(before, after, reply):
     printed = fingerprint(before, after, salt())
     assert not holds(reply, printed['salt'], removed(printed))
+
+
+# Sol round 1, B1: a year, a time or a date alone weighed as much as a phone number, so an unrelated reply naming the
+# same one was retired. Each needs words beside it now; a phone number, a house number or a code is still enough alone.
+GENERIC = [
+    ('my diagnosis was in 2024', 'the olympics were held in 2024'),  # The repros.
+    ('i will leave at 12:30', 'the raid starts at 12:30'),
+    ('my surgery is on 2024-05-01', 'the patch drops 2024-05-01'),
+    ('my surgery is on 5/1/2024', 'the event is on 5/1/2024'),
+    ('my surgery is on 01.05.24', 'the event is on 01.05.24'),
+    ('my last day is may 5, 2024', 'the update ships may 5, 2024'),
+    ('my shift ends at 1530', 'the stream starts at 1530'),
+    ('my shift ends at 0930am', 'the stream starts at 0930am'),
+    ('my shift ends at 12:30:15', 'the timer says 12:30:15'),
+    ('i grew up in the 1990s', 'music peaked in the 1990s'),
+    ('i got married on 20240501', 'the build is from 20240501'),
+    ('i was born in 1998 and graduated in 2020', 'between 1998 and 2020 nothing happened'),
+    ('i leave at 12:30 on 2024-05-01', 'raid at 12:30 on 2024-05-01'),  # Two of them, and only common words between.
+]
+
+
+@pytest.mark.parametrize('before, unrelated', GENERIC, ids=[edit[1] for edit in GENERIC])
+def test_a_year_a_time_or_a_date_alone_is_not_enough(before, unrelated):
+    printed = fingerprint(before, 'never mind', salt())
+    assert not holds(unrelated, printed['salt'], removed(printed))
+
+
+@pytest.mark.parametrize('before, quoting', [
+    ('my diagnosis was in 2024, still processing it', 'your diagnosis was in 2024? thats a lot'),
+    ('my diagnosis was in 2024, still processing it', 'a diagnosis in 2024 is still recent'),  # A rare word beside it.
+    ('i leave for surgery at 12:30 on 2024-05-01', 'good luck with surgery at 12:30'),
+    ('call me at 555-0199 after six', 'calling 5550199 now'),  # A phone number, written either way.
+    ('call me at (212) 555-0199', 'is 2125550199 your number'),
+    ('my address is 4217 juniper crescent', 'number 4217 right?'),  # A house number: no year, no time.
+    ('the door code is 2468', 'the code 2468 worked'),
+    ('my pin is 70815', 'is it 70815'),
+    ('my locker is 4217b', 'locker 4217b'),
+])
+def test_a_phone_number_a_house_number_or_a_year_with_words_beside_it_still_is(before, quoting):
+    printed = fingerprint(before, 'never mind', salt())
+    assert holds(quoting, printed['salt'], removed(printed))
+
+
+def test_the_repro_an_edit_naming_a_year_retires_no_reply_about_another(world):  # noqa: F811
+    client, store = world
+    message = said(store, 'my diagnosis was in 2024')
+    nearby(store, message, 'the olympics were held in 2024', 'your diagnosis was in 2024? thats a lot')
+    withdraw(client, message, fingerprint=fingerprint('my diagnosis was in 2024', 'never mind', salt()))
+    assert replies(store) == ['the olympics were held in 2024', controller.DRAWN]
+
+
+# Sol round 1, B2 and B3: what the message says now, by the fingerprint's own kept list, was never taken out, whoever
+# says it was: Fri compared a long edit's first 500 characters only, and two queued edits back to the original kept the
+# first's removed list. The controller takes the kept list from all of it, its own copy included.
+def long_edit(key, before=BEFORE):
+    """As #388's round 0 sent an edit that only put 90 words before it: compared at 500 characters, kept in full."""
+    now = 'hello '*90 + before
+    printed = fingerprint(before, now[:500], key)
+    printed['kept'] = fingerprint(None, now, key)['kept']
+    return printed
+
+
+def round_trip(key):
+    """As #388's round 0 merged two edits queued before the first was taken: back to the original at the end."""
+    first, second = fingerprint(BEFORE, 'never mind', key), fingerprint('never mind', BEFORE, key)
+    return {'salt': key, 'kept': second['kept'], 'removed': sorted(set(first['removed']) | set(second['removed']))}
+
+
+@pytest.mark.parametrize('sent', [long_edit, round_trip])
+def test_what_the_message_says_now_is_never_taken_out(sent):
+    printed = sent(salt())  # Each says the message says all of BEFORE now: nothing of it was taken out.
+    assert removed(printed) == set()
+    assert removed(printed, [BEFORE]) == set()  # Nor by the controller's own copy.
+
+
+@pytest.mark.parametrize('how', ['by its exchange', 'by its ID'])
+@pytest.mark.parametrize('sent', [long_edit, round_trip])
+def test_the_repro_a_reply_quoting_what_the_message_still_says_stays(world, how, sent):  # noqa: F811
+    client, store = world
+    message = said(store) if how == 'by its exchange' else source(age=60, channel='51')['id']
+    nearby(store, message, QUOTE, UNRELATED)
+    printed = sent(salt())
+    if how == 'by its exchange':
+        withdraw(client, message, fingerprint=printed)
+    else:
+        withdraw_saved(client, message, fingerprints={message: printed})
+    assert replies(store) == [QUOTE, UNRELATED]
 
 
 def test_a_fingerprint_holds_no_words_and_differs_with_each_salt():

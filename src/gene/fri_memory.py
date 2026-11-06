@@ -846,15 +846,13 @@ def carry_over(m):
 
 @functools.lru_cache(maxsize=32)
 def carried(text, invisible):
-    """passive's reading (see there), with a report verb's clause carried over a line break (see above). Where one is,
-    each report verb outside the vocabulary is read as "say" and each run of auxiliaries before one joined first, as
-    widened reads them, so "jo would mention" + a line break + "that i like chess" reads as the one line does; where
-    none is, it's passive's reading as it is."""
+    """passive's reading (see there), with a report verb's clause carried over a line break (see above), and each report
+    verb outside the vocabulary read as "say" and each run of auxiliaries before one joined first, as widened reads them,
+    so "jo would mention" + a line break + "that i like chess" reads as the one line does. In every text alike, the
+    message and its evidence: read only where a line was joined, evidence holding such a verb ("i like to mention it",
+    never joined) read differently from its message, and was refused where main keeps it."""
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
-    joined = LINE_BEFORE_THAT.sub(carry_over, unseen)
-    if joined != unseen:
-        joined = chained(REPORTED_TOO.sub(reworded, joined))
-    return passive(joined, invisible)
+    return passive(chained(REPORTED_TOO.sub(reworded, LINE_BEFORE_THAT.sub(carry_over, unseen))), invisible)
 
 
 def spots_of(text, evidence):

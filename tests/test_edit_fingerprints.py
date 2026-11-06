@@ -11,7 +11,7 @@ nothing more goes than on main.
 import pytest
 
 from gene import store as controller
-from gene.fri_edit_fingerprint import fingerprint, holds, removed, salt
+from gene.fri_edit_fingerprint import fingerprint, holds, removed, salt, weighed
 from gene.fri_protocol import contract
 from tests.test_api import headers
 from tests.test_fri_endings import source
@@ -241,6 +241,24 @@ def test_a_year_a_time_or_a_date_alone_is_not_enough(before, unrelated):
 def test_a_phone_number_a_house_number_or_a_year_with_words_beside_it_still_is(before, quoting):
     printed = fingerprint(before, 'never mind', salt())
     assert holds(quoting, printed['salt'], removed(printed))
+
+
+@pytest.mark.parametrize('written, weight, plain', [
+    ('1900', 1, True), ('1899', 2, False), ('2024', 1, True), ('2075', 1, True), ('1998 2020', 1, True),
+    ('1530', 1, True), ('0959', 1, True), ('2359', 1, True), ('2400', 2, False), ('1260', 2, False),
+    ('12:30', 1, True), ('12:30:15', 1, True), ('9:30', 0, False), ('123', 0, False),
+    ('2024-05-01', 1, True), ('2024-12-31', 1, True), ('2024-13-01', 2, False), ('2024-05-32', 2, False),
+    ('5/1/2024', 1, True), ('12/31/2024', 1, True), ('31/12/2024', 1, True), ('13/13/2024', 2, False),
+    ('01.05.24', 1, True), ('32.05.24', 2, False), ('may 5, 2024', 1, True), ('2024 05', 1, True),
+    ('05 2024', 1, True), ('12 31', 1, True), ('31 12', 1, True), ('20240501', 1, True), ('20241301', 2, False),
+    ('1990s', 1, True), ('0930am', 1, True), ('4217b', 2, False), ('4217', 2, False), ('2468', 2, False),
+    ('70815', 2, False), ('555 0199', 2, False), ('5550199', 2, False), ('(212) 555-0199', 2, False),
+    ('a1b2c3d4', 2, False), ('hunter2', 1, False), ('juniper', 1, False), ('chess', 0, False),
+])
+def test_what_a_number_or_a_word_weighs_alone(written, weight, plain):
+    said, alone, dated = weighed(written)
+    assert (alone[-1], dated[-1]) == (weight, plain)
+    assert len(said) == (2 if written == 'may 5, 2024' else 1)
 
 
 def test_the_repro_an_edit_naming_a_year_retires_no_reply_about_another(world):  # noqa: F811

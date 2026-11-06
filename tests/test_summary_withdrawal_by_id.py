@@ -238,3 +238,58 @@ def test_the_live_gene_finishes_a_claim_this_one_made(store, tmp_path, extracted
                           env={**os.environ, 'PYTHONPATH': str(code)}, capture_output=True, text=True)
     assert done.returncode == 0, done.stderr[-2000:]
     assert json.loads(done.stdout.strip().splitlines()[-1]) == {'kept': True} and shown(store)
+
+
+# gene #258.
+
+def with_guild(store, value):
+    """The claim in flight, its server set to `value` as a writer might have left it."""
+    from gene.fri_agent_store import AgentStore
+    with store.connection() as db:
+        record = AgentStore.get(db, CLAIM)
+        record['guild_id'] = value
+        AgentStore.put(db, CLAIM, record)
+
+
+INVALID = [None, '', ' ', True, False, [], ['123'], {}, {'id': '123'}, 'abc', 1.5]
+
+
+@pytest.mark.parametrize('value', INVALID, ids=[repr(value) for value in INVALID])
+def test_258_a_claim_naming_no_server_by_any_value_is_called_off(store, tmp_path, value):
+    """gene #258 item 1: a claim whose server is no server's ID (null, blank, a boolean, a container) counted as
+    another's, so a withdrawal of its message under its real one left it, and its finish kept a visible summary. Like a
+    claim naming no server, it can't be placed: it's called off, and the build keeps nothing."""
+    agent, offer, message = in_flight(store, tmp_path)
+    with_guild(store, value)
+    store.withdraw_saved('123', [message], deleted=False)
+    assert claim_of(store) is None
+    from gene.fri_member_summary import finish
+    conversations = sorted({row['conversation_id'] for row in offer['exchanges']})
+    assert finish(agent, offer['id'], 'they planned a raid', 'completed', conversations, False) != {'kept': True}
+    assert shown(store) is None
+
+
+@pytest.mark.parametrize('value, kept', [(123, False), (777, True), ('123', False), ('777', True)])
+def test_258_a_servers_id_as_a_number_or_a_string_is_still_its_own(store, tmp_path, value, kept):
+    _, _, message = in_flight(store, tmp_path)
+    with_guild(store, value)
+    store.withdraw_saved('123', [message], deleted=False)
+    assert bool(claim_of(store)) is kept
+
+
+def test_258_another_servers_summary_dropped_by_where_and_when_leaves_this_ones_claim(store, tmp_path):
+    """gene #258 item 2 (pre-existing): member 20's build in flight here, and a summary of theirs under server 777 with
+    no record of what it read, beside an exchange of theirs there. Withdrawing that exchange's message by ID drops that
+    summary by where and when (see withdrawn), which then called off this server's claim as well, though it names
+    another message and server. It stays now."""
+    in_flight(store, tmp_path)
+    foreign = source(age=10, channel='7', guild='777')
+    store.save_chat('777', 'public:7', '20', 0, 'raid plans over there', 'ok', 'model', 'high', source=foreign,
+                    provenance=[])
+    with store.connection() as db:  # No fri_member_summary_sources row: an older controller's summary, made since.
+        db.execute("INSERT INTO fri_member_summaries VALUES ('777','20','raids',0,'[]','[\"public:7\"]',?,?)",
+                   (time.time(), time.time()+60))
+    store.withdraw_saved('777', [foreign['id']], deleted=False)
+    with store.connection() as db:
+        assert not db.execute("SELECT 1 FROM fri_member_summaries WHERE guild_id='777'").fetchone()
+    assert claim_of(store) and claim_of(store)['guild_id'] == '123'

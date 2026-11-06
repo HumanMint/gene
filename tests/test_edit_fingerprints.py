@@ -74,6 +74,27 @@ def test_the_controllers_own_copy_is_read_where_fri_had_no_text_from_before(worl
     assert replies(store) == [controller.DRAWN, UNRELATED]
 
 
+def test_an_earlier_message_of_a_burst_is_read_from_its_row(world):  # noqa: F811
+    """The message was the first of a burst Fri answered at once: the burst's row is the controller's copy of it."""
+    client, store = world
+    first, last = source(age=61, channel='51'), source(age=60, channel='51')
+    store.save_chat('123', 'public:51', '20', 0, 'anyway', 'noted', 'model', 'high', source=last, provenance=[],
+                    burst=[{'source': first, 'text': BEFORE}, {'source': last, 'text': 'anyway'}])
+    nearby(store, first['id'], QUOTE, UNRELATED)
+    withdraw(client, first['id'], fingerprint=fingerprint(None, AFTER, salt()))
+    assert replies(store) == [controller.DRAWN, UNRELATED]
+
+
+def test_by_id_a_message_only_replies_carried_goes_by_what_fri_says(world):  # noqa: F811
+    """Nothing saved holds the message itself, but Fri's view had it before the edit: replies holding what it took out
+    go, though an edit by ID otherwise only reads."""
+    client, store = world
+    message = source(age=60, channel='51')['id']
+    nearby(store, message, QUOTE, UNRELATED)
+    withdraw_saved(client, message, fingerprints={message: fingerprint(BEFORE, AFTER, salt())})
+    assert replies(store) == [controller.DRAWN, UNRELATED]
+
+
 @pytest.mark.parametrize('sent', ['what it says now only', 'nothing'])
 def test_with_no_text_from_before_anywhere_nothing_more_goes_than_on_main(world, sent):  # noqa: F811
     """Nothing saved holds the message, and Fri had no copy of it before the edit: the replies that carried it stay,
@@ -165,11 +186,16 @@ def test_quotes_and_close_paraphrases_hold_what_was_taken_out_and_replies_about_
     assert [reply for reply in ELSEWHERE if holds(reply, printed['salt'], taken)] == []
 
 
-def test_one_name_alone_or_a_typo_is_not_enough():
-    printed = fingerprint('i broke up with jordan last night', 'rough night', salt())
-    assert not holds('sorry about jordan', printed['salt'], removed(printed))
-    printed = fingerprint('teh raid is at nine tonight', 'the raid is at nine tonight', salt())
-    assert not holds('teh raid lol', printed['salt'], removed(printed))
+@pytest.mark.parametrize('before, after, reply', [
+    ('i broke up with jordan last night', 'rough night', 'sorry about jordan'),  # One name.
+    ('teh raid is at nine tonight', 'the raid is at nine tonight', 'teh raid lol'),  # A typo.
+    # A pair with one rare word in it, which counts once.
+    ('the wifi password for the stream house is bluefalcon77', 'ask me for the wifi password', 'stream house tour later'),
+    ('the house party music was loud', 'never mind', 'music at the house tonight?'),  # Two everyday words.
+])
+def test_one_name_a_typo_or_everyday_words_are_not_enough(before, after, reply):
+    printed = fingerprint(before, after, salt())
+    assert not holds(reply, printed['salt'], removed(printed))
 
 
 def test_a_fingerprint_holds_no_words_and_differs_with_each_salt():

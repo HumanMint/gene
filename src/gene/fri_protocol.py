@@ -17,7 +17,8 @@ OPTIONAL = ('reply-checks', 'member-profiles', 'requester-notices',
             'learning-withdrawals',
             'summary-sources', 'summary-rechecks',
             'history-cutoffs',
-            'channel-withdrawals')  # Advertised; a controller without them is still compatible.
+            'channel-withdrawals',
+            'edit-fingerprints')  # Advertised; a controller without them is still compatible.
 
 
 def contract():

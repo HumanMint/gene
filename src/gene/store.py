@@ -1488,7 +1488,8 @@ class Store:
             db.execute("UPDATE gene_controls SET user_id='deleted',payload='{}',state='cancelled',result='{}' WHERE user_id=?", (user_id,))
             self.advance_revision(db, user_id)
 
-    def withdraw_turn(self, guild_id, conversation_id, user_id, message_id, *, deleted=False, revision=None):
+    def withdraw_turn(self, guild_id, conversation_id, user_id, message_id, *, deleted=False, revision=None,
+                      fingerprint=None):
         """A member's message edited or deleted after Fri saved their exchange with it (fri #129): the exchanges
         holding it go, as erasure removes them, so its old words don't come back as history. Fri's reply goes too,
         since it may repeat them. Only that member's, in that conversation, and a repeat finds nothing. Not a
@@ -1499,14 +1500,17 @@ class Store:
         before, gene #150). A fence holding only the message's id keeps a save still on its way, or a learning batch
         reading it, from bringing it back (gene #90). revision: the member's privacy revision when the exchange was
         saved, from a Fri that knows it; once it moved (a "forget me", say), or with memory off, nothing new about them
-        is written, as a late save under it is refused anyway, though anything still holding the message goes."""
+        is written, as a late save under it is refused anyway, though anything still holding the message goes.
+        fingerprint: for an edit, from a Fri offering edit-fingerprints, what it took out (see _retire_quoting)."""
         with self.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             return {'ok': True, 'removed': self._withdraw_turn(db, guild_id, conversation_id, user_id, message_id,
-                                                               deleted=deleted, revision=revision)}
+                                                               deleted=deleted, revision=revision,
+                                                               fingerprint=fingerprint)}
 
     @staticmethod
-    def _withdraw_turn(db, guild_id, conversation_id, user_id, message_id, *, deleted=False, revision=None):
+    def _withdraw_turn(db, guild_id, conversation_id, user_id, message_id, *, deleted=False, revision=None,
+                       fingerprint=None):
         now = time.time()
         db.execute('DELETE FROM chat_turn_withdrawals WHERE at<?', (now-WITHDRAWN_SECONDS,))
         db.execute('DELETE FROM chat_turn_deletions WHERE at<?', (now-WITHDRAWN_SECONDS,))
@@ -1539,6 +1543,9 @@ class Store:
             if recorded:
                 Store._deleted(db, guild_id, message_id, now, user_id, current)
             Store._retire_drawn(db, guild_id, [message_id, *(turn['reply_message_id'] for turn in turns)])
+        elif fingerprint:  # Edited: only those holding what it took out, as its exchange said it before too.
+            Store._retire_quoting(db, guild_id, [message_id, *(turn['reply_message_id'] for turn in turns)],
+                                  fingerprint, Store._said(turns, message_id))
         from .fri_member_summary import withdrawn
         withdrawn(db, guild_id, user_id, conversation_id, message_id, [turn['at'] for turn in turns])
         return len(turns)
@@ -1571,9 +1578,10 @@ class Store:
         messages = {str(message) for message in messages if message}
         rows, seen = [], set()
         for message in sorted(messages):
-            for row in db.execute('SELECT id,user_id,reply_message_id,drew_on,json_extract(NULLIF(source,\'\'),\'$.id\') '
-                                  'AS source_id FROM chat_turns WHERE guild_id=? AND drew_on IS NOT NULL AND '
-                                  'instr(drew_on,?)>0', (guild_id, json.dumps(message))):
+            for row in db.execute('SELECT id,user_id,reply_message_id,drew_on,reply,'
+                                  'json_extract(NULLIF(source,\'\'),\'$.id\') AS source_id FROM chat_turns WHERE '
+                                  'guild_id=? AND drew_on IS NOT NULL AND instr(drew_on,?)>0',
+                                  (guild_id, json.dumps(message))):
                 if row['id'] not in seen and messages.intersection(json.loads(row['drew_on'])):
                     seen.add(row['id'])
                     rows.append(row)
@@ -1591,11 +1599,51 @@ class Store:
             asked |= found
             rows = Store._carrying(db, guild_id, batch)
             for row in rows:
-                db.execute('DELETE FROM chat_pending WHERE guild_id=? AND user_id=? AND source_id=?',
-                           (guild_id, row['user_id'], row['source_id']))
-                db.execute('UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL,summary_dependencies=NULL,'
-                           'drew_on=NULL WHERE id=?', (DRAWN, row['id']))
+                Store._retire(db, guild_id, row)
             found |= {row['reply_message_id'] for row in rows if row['reply_message_id']}
+
+    @staticmethod
+    def _retire(db, guild_id, row):
+        """A saved reply keeps only a breadcrumb (see _retire_drawn), and a question it left goes."""
+        db.execute('DELETE FROM chat_pending WHERE guild_id=? AND user_id=? AND source_id=?',
+                   (guild_id, row['user_id'], row['source_id']))
+        db.execute('UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL,summary_dependencies=NULL,'
+                   'drew_on=NULL WHERE id=?', (DRAWN, row['id']))
+
+    @staticmethod
+    def _said(turns, message_id):
+        """What the member's saved exchanges say the message said, before an edit: the exchange's own words where it's
+        the message, a burst's row where the message is one of its earlier ones."""
+        said = []
+        for turn in turns:
+            if turn['source_id'] == str(message_id):
+                said.append(turn['input'])
+            for row in json.loads(turn['burst'] or '[]'):
+                if isinstance(row, dict) and str((row.get('source') or {}).get('id')) == str(message_id):
+                    said.append(str(row.get('text') or ''))
+        return said
+
+    @staticmethod
+    def _retire_quoting(db, guild_id, messages, fingerprint, befores=()):
+        """Saved replies whose model request carried one of these messages, edited, keep a breadcrumb where they hold
+        enough of what the edit took out (gene #150, #246; see fri_edit_fingerprint): as the fingerprint says, and as
+        `befores` (the controller's own copies of the message from before) differ from what it says now. Then so do
+        those that carried Fri's reply in one of them and hold it too, and so on. A reply that doesn't stays, so an
+        unrelated one in the same channel isn't touched. Nothing here was taken out, or nothing says what: nothing goes,
+        as on main."""
+        from .fri_edit_fingerprint import holds, removed
+        taken = removed(fingerprint, befores)
+        if not taken:
+            return
+        found, asked = {str(message) for message in messages if message}, set()
+        while found-asked:
+            batch = sorted(found-asked)
+            asked |= found
+            for row in Store._carrying(db, guild_id, batch):
+                if holds(row['reply'], fingerprint['salt'], taken):
+                    Store._retire(db, guild_id, row)
+                    if row['reply_message_id']:
+                        found.add(row['reply_message_id'])
 
     @staticmethod
     def _settle_withdrawals(db):
@@ -1616,7 +1664,7 @@ class Store:
             db.execute(f'DELETE FROM personal_notes WHERE guild_id=? AND user_id=? AND {CURRENT} AND instr(sources,?)>0',
                        (guild, user, json.dumps(str(message))))
 
-    def withdraw_saved(self, guild_id, message_ids, *, deleted=False):
+    def withdraw_saved(self, guild_id, message_ids, *, deleted=False, fingerprints=None):
         """Messages edited or deleted that Fri can't place: it knows only the exchanges it saved since it started, so
         one saved before a restart, say, would keep its old words until it expires (fri #174). Each saved exchange
         holding one goes as withdraw_turn takes it, under the member and conversation it was saved with. So does a note
@@ -1627,9 +1675,15 @@ class Store:
         no such record goes by where and when, under an exchange holding the message, as before. One nothing holds
         costs nobody else their summary: Fri asks about every edit and delete it can't place, and an unrelated one
         shouldn't. A deletion of one still keeps a fence by its ID, and so does an edit while a learning batch reads
-        (gene #149; see _fence). Only a call that finds something, a deletion, or an edit during a learning batch takes
-        the write lock; the rest read."""
+        (gene #149; see _fence). An edit with a fingerprint (message ID -> what it took out, from a Fri offering
+        edit-fingerprints) retires the replies that carried it and hold what it took out (see _retire_quoting). Only a
+        call that finds something, a deletion, an edit during a learning batch, or one whose fingerprint a reply that
+        carried it holds, takes the write lock; the rest read."""
         ids = json.dumps(sorted(set(message_ids)))
+        fingerprints = {} if deleted else {str(i): value for i, value in (fingerprints or {}).items() if value}
+
+        def quoting(db):  # Replies an edit's fingerprint may retire: those that carried it.
+            return bool(fingerprints) and bool(self._carrying(db, guild_id, fingerprints))
         def held(db):
             return db.execute(
                 "SELECT DISTINCT t.channel_id,t.user_id,m.value FROM chat_turns t, json_each(?) m WHERE t.guild_id=? "
@@ -1646,7 +1700,7 @@ class Store:
         from .fri_member_summary import taken as summaries_taken
         with self.connection() as db:
             if not (deleted or self._learning(db) is not None or held(db) or noted(db)
-                    or naming(db, json.loads(ids)) or summaries_naming(db, guild_id, json.loads(ids))):
+                    or naming(db, json.loads(ids)) or summaries_naming(db, guild_id, json.loads(ids)) or quoting(db)):
                 return {'ok': True, 'removed': 0}
             db.execute('BEGIN IMMEDIATE')  # Read again once locked: a save may have landed in between.
             # A learning report, channel summary or archive observation that read one, whatever else holds it (gene
@@ -1654,9 +1708,13 @@ class Store:
             withdraw_learning(db, json.loads(ids))
             summaries_taken(db, guild_id, json.loads(ids))  # And a member summary or a build in flight (gene #249).
             holding = held(db)
-            removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted)
+            removed = sum(self._withdraw_turn(db, guild_id, conversation, user, message, deleted=deleted,
+                                              fingerprint=fingerprints.get(message))
                           for conversation, user, message in holding)
             placed = {message for _, _, message in holding}  # Fenced under their author already, or not at all.
+            for message, fingerprint in sorted(fingerprints.items()):  # One no exchange holds: as Fri says alone.
+                if message not in placed:
+                    self._retire_quoting(db, guild_id, [message], fingerprint)
             now = time.time()
             for user, message in noted(db):  # Its exchange went before: the note alone holds it now.
                 placed.add(message)

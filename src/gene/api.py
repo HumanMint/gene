@@ -215,6 +215,18 @@ class MessageSources(BaseModel):
     message_ids: list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]] = Field(min_length=1, max_length=10)
 
 
+Hashed = Annotated[str, Field(pattern=r'^[0-9a-f]{16}$')]
+
+
+class EditFingerprint(BaseModel):
+    """What an edit took out, hashed, never words (gene #150, #246; see fri_edit_fingerprint): its salt, what the
+    message said before that it doesn't now, and everything it says now."""
+    model_config = ConfigDict(extra='forbid')
+    salt: str = Field(pattern=r'^[0-9a-f]{32}$')
+    removed: list[Hashed] = Field(default=[], max_length=3000)
+    kept: list[Hashed] = Field(default=[], max_length=3000)
+
+
 class TurnWithdrawal(Actor):
     """A member's message edited or deleted after Fri saved their exchange with it (fri #129)."""
     model_config = ConfigDict(extra='forbid')
@@ -226,6 +238,9 @@ class TurnWithdrawal(Actor):
     # "forget me" writes nothing about them again. An older Fri sends neither: an edit, checked as before.
     deleted: bool = False
     revision: int | None = Field(default=None, ge=0)
+    # From a Fri offering edit-fingerprints, for an edit: replies that carried it retire where they hold what it took
+    # out (gene #150, #246). An older Fri sends none: an edit leaves them, as before.
+    fingerprint: EditFingerprint | None = None
 
 
 class SavedWithdrawal(BaseModel):
@@ -234,6 +249,14 @@ class SavedWithdrawal(BaseModel):
     guild_id: str = Field(pattern=r'^[0-9]{1,25}$')
     message_ids: list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]] = Field(min_length=1, max_length=10)
     deleted: bool = False  # As above: all of them deleted.
+    fingerprints: dict[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')], EditFingerprint] = Field(default={},
+                                                                                                 max_length=10)
+
+    @model_validator(mode='after')
+    def fingerprinted(self):
+        if set(self.fingerprints) - set(self.message_ids):
+            raise ValueError('A fingerprint names a message this withdrawal does not')
+        return self
 
 
 class ChannelWithdrawal(BaseModel):
@@ -590,13 +613,15 @@ def create_app(settings: Settings | None = None):
     def chat_turn_withdraw(body: TurnWithdrawal):
         chat_scope(body)
         return store.withdraw_turn(body.guild_id, body.conversation_id, body.user_id, body.message_id,
-                                   deleted=body.deleted, revision=body.revision)
+                                   deleted=body.deleted, revision=body.revision,
+                                   fingerprint=body.fingerprint.model_dump() if body.fingerprint else None)
 
     @app.post('/chat/turn/withdraw/saved', dependencies=[auth('fri')])
     def chat_turn_withdraw_saved(body: SavedWithdrawal):
         if body.guild_id != settings.guild_id and not (settings.test_guild_id and body.guild_id == settings.test_guild_id):
             raise HTTPException(403, 'Use Fri in a configured server')
-        return store.withdraw_saved(body.guild_id, body.message_ids, deleted=body.deleted)
+        return store.withdraw_saved(body.guild_id, body.message_ids, deleted=body.deleted,
+                                    fingerprints={i: value.model_dump() for i, value in body.fingerprints.items()})
 
     def fri_server(guild_id):
         if guild_id != settings.guild_id and not (settings.test_guild_id and guild_id == settings.test_guild_id):

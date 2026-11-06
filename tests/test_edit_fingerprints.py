@@ -126,6 +126,52 @@ def test_the_controller_offers_it_and_bounds_what_it_takes(world):  # noqa: F811
         'guild_id': '123', 'message_ids': ['1'], 'fingerprints': {'2': print_}}).status_code == 422  # Not one sent.
 
 
+# Made-up edits, each with what it says after, replies that quote or closely paraphrase what it took out, and replies in
+# the same channel about something else.
+EDITS = [
+    ('my new address is 4217 juniper crescent, come by friday', 'come by friday',
+     ['they said their new address is 4217 juniper crescent', 'so you live on juniper crescent now?']),
+    ("ugh my landlord raised the rent to 2400 a month, i'm so done", "ugh rent went up, i'm so done",
+     ['your landlord raised the rent to 2400? thats insane', 'rent at 2400 a month is wild']),
+    ('i think i failed my chemistry midterm, please dont tell my parents', 'i think the midterm went ok',
+     ["you think you failed the chemistry midterm? i won't tell your parents"]),
+    ('my sister gabriella starts chemotherapy on monday', 'never mind', ["hope gabriella's chemotherapy goes okay"]),
+    ("i'm moving to denver next month for the new job at lockheed", "i'm moving next month",
+     ['denver sounds great, congrats on lockheed', "you're moving to denver next month?"]),
+    ('call me at 555 0199 after six', 'call me after six', ['ok calling 555 0199 after six', 'your number is 5550199 right']),
+    ('my discord password is hunter2 lol jk', 'jk', ['hunter2 is a terrible password']),
+    ('the wifi password for the stream house is bluefalcon77', 'ask me for the wifi password',
+     ['the stream house wifi is bluefalcon77, got it']),
+]
+ELSEWHERE = [
+    'the raid starts at nine, bring potions', 'lol same, rent is brutal everywhere', 'anyone up for ranked tonight',
+    "i'm so done with this patch honestly", 'gg everyone, that was a good run', 'what time is the stream tomorrow',
+    'my cat knocked over my coffee again', 'come by friday works for me', 'that midterm sounds rough, good luck',
+    'next month is going to be busy', 'the new job sounds exciting', 'honestly i feel the same about mondays',
+    'call me when you get home', 'the wifi is slow again', 'denver is cold this time of year',
+    'my sister also plays this game', 'please dont tell anyone i lost', 'password resets are annoying',
+    'is the chemistry lab open', 'lockheed has a booth at the expo', 'lets queue after six',
+]
+
+
+@pytest.mark.parametrize('before, after, quoting', EDITS, ids=[edit[1] for edit in EDITS])
+def test_quotes_and_close_paraphrases_hold_what_was_taken_out_and_replies_about_something_else_dont(before, after,
+                                                                                                    quoting):
+    """The thresholds: a quoted run with a name or a number, a number, or two names or rare words is enough; one name, a
+    common phrase, or what the edit kept, isn't."""
+    printed = fingerprint(before, after, salt())
+    taken = removed(printed)
+    assert [reply for reply in quoting if not holds(reply, printed['salt'], taken)] == []
+    assert [reply for reply in ELSEWHERE if holds(reply, printed['salt'], taken)] == []
+
+
+def test_one_name_alone_or_a_typo_is_not_enough():
+    printed = fingerprint('i broke up with jordan last night', 'rough night', salt())
+    assert not holds('sorry about jordan', printed['salt'], removed(printed))
+    printed = fingerprint('teh raid is at nine tonight', 'the raid is at nine tonight', salt())
+    assert not holds('teh raid lol', printed['salt'], removed(printed))
+
+
 def test_a_fingerprint_holds_no_words_and_differs_with_each_salt():
     first, second = fingerprint(BEFORE, AFTER, salt()), fingerprint(BEFORE, AFTER, salt())
     for word in BEFORE.split():

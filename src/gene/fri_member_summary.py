@@ -647,11 +647,12 @@ def named(db, guild, messages):
 def ours(record, guild):
     """Whether a build in flight's claim is this server's (gene #253). One from before claims named their server, by an
     older controller in a rollback window, can't be placed, so it counts as anyone's; and so does one whose server is no
-    server's ID, as no writer leaves it (null, blank, a boolean, a container: gene #258 item 1)."""
+    server's ID, as no writer leaves it (null, blank, a boolean, a container: gene #258 item 1; digits other than ASCII
+    ones, "²" say, which str.isdigit() takes: Sol round 1 of #264, S2)."""
     if not isinstance(record, dict):
         return False
     named = record.get('guild_id')
-    if not ((isinstance(named, str) and named.isdigit()) or (type(named) is int and named >= 0)):
+    if not ((isinstance(named, str) and named.isascii() and named.isdigit()) or (type(named) is int and named >= 0)):
         return True
     return str(named) == str(guild)
 

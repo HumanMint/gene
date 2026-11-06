@@ -345,7 +345,7 @@ class AgentStore:
                            or self.store.deleted_anywhere(db, guild, [message['id']])}, key=int)
 
     def finish(self, batch_id, records, result, scanned, before, done, counters, error='', oldest=None, newest=None, newest_id=None,
-               scanned_ids=()):
+               scanned_ids=(), before_model=False):
         now = time.time()
         if not isinstance(result.get('notes', []), list) or not isinstance(result.get('summary', ''), str):
             raise ValueError('Invalid summary output')
@@ -455,11 +455,15 @@ class AgentStore:
                 if mode != 'explore':
                     cursors[claim['channel_id']] = cursor
                     self.put(db, 'cursors', cursors)
-            # What the pass's reservation didn't use goes back: what it didn't scan, or, after an error (Fri stopped it,
-            # say), all of it, since its cursor stays and the next pass reads that slice again (gene #262).
+            # What the pass's reservation didn't use goes back: what it didn't scan; or, after an error Fri says came
+            # before its model was asked (before_model: it stopped the pass), all of it, since its cursor stays and the
+            # next pass reads that slice again (gene #262). Any other error keeps it all, as before: the model may have
+            # read the batch, and passes ended by an incomplete answer would send it more than the day's allowance (Sol
+            # round 1 of #264, S1). An older Fri never says.
             budget = self.get(db, 'budget', {})
             if claim.get('budget_day') == budget.get('day'):
-                budget['used'] = max(0, budget['used']-(claim['limit']-(0 if error else scanned)))
+                back = claim['limit']-scanned if not error else claim['limit'] if before_model else 0
+                budget['used'] = max(0, budget['used']-back)
                 self.put(db, 'budget', budget)
             self.put(db, 'learning_claim', None)
             # Reports past their week still to be delivered go with this one, which says how many (gene #250): Fri sends

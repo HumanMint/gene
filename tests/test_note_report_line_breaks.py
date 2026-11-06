@@ -45,6 +45,9 @@ NOTE = {'category': 'games', 'evidence': 'i like chess'}
     'they say\nthat i like chess', 'my mom would tell you\nthat i like chess', 'i was told\rthat i like chess',
     'i was told' + chr(0x2029) + 'that i like chess', 'i was told\x0cthat i like chess', 'i was told\x85that i like chess',
     'gg\ni was told\nthat i like chess',
+    # A report verb of two words split over lines, read as "say" before its line is read for one.
+    'jo would point\nout\nthat i like chess', 'jo would bring\nup\nthat i like chess', 'they point\nout\nthat i like chess',
+    'my mom would always point\nout\nthat i like chess',
     # A report verb outside the vocabulary, as the one line reads it ("jo would mention that i like chess" keeps none).
     'jo would mention\nthat i like chess', 'jo would point out\nthat i like chess', 'jo would explain\nthat i like chess',
     'my mom keeps mentioning\nthat i like chess', 'jo would announce\nthat i like chess',

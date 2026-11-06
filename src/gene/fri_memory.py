@@ -829,27 +829,19 @@ def passive(text, invisible):
 # ("i like chess" + a line break + "that said, gg") stay two sentences. Every other reading stays as it was, so this one
 # only ever refuses more. Matched only where a run of space starts, and each line is read once, so it's linear.
 LINE_BEFORE_THAT = re.compile(r"(?<!\s)\s++(?=(?i:that)\b)")
-LINE_BREAK = re.compile(r"[^\S \t]")  # Any space but a plain one or a tab: "\n", "\r", U+2028, a form feed and the rest.
 BARE_REPORT = re.compile(r"(?i)\b(?:say|tell|hear)\b")
 REPORTING = (REPORT, REPORTED_TOO, PASSIVE_REPORT, HEARD_REPORT, BARE_REPORT)
 
 
-def carried_over(text):
-    """The text with the space before each line opening with "that" joined where the line before it has a report verb
-    in it. The line breaks are walked once beside the runs, so each line, from the last break of any kind before its
-    run, is read once (a search back for one from each run read a message of "\\r" lines again from its start)."""
-    out, last, start = [], 0, 0
-    breaks = LINE_BREAK.finditer(text)
-    ahead = next(breaks, None)
-    for run in LINE_BEFORE_THAT.finditer(text):
-        while ahead and ahead.start() < run.start():
-            start, ahead = ahead.end(), next(breaks, None)
-        if not (ahead and ahead.start() < run.end()):  # No line break in it.
-            continue
-        if any(verb.search(text, start, run.start()) for verb in REPORTING):
-            out += [text[last:run.start()], ' ']
-            last = run.end()
-    return ''.join(out) + text[last:]
+def carry_over(m):
+    """The space before a line opening with "that", joined where the line before it has a report verb in it. A line
+    ends at "\\n" only: the report rules read every other space ("\\r", U+2028, a form feed) as inside a clause, and
+    refuse across it already. So the search back from a run stops at the line break the run before it held, and each
+    line is read once (one that counted "\\r" read a message of "\\r" lines again from its start at each run)."""
+    if '\n' not in m.group():
+        return m.group()
+    line = m.string[m.string.rfind('\n', 0, m.start())+1:m.start()]
+    return ' ' if any(verb.search(line) for verb in REPORTING) else m.group()
 
 
 @functools.lru_cache(maxsize=32)
@@ -859,7 +851,7 @@ def carried(text, invisible):
     widened reads them, so "jo would mention" + a line break + "that i like chess" reads as the one line does; where
     none is, it's passive's reading as it is."""
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
-    joined = carried_over(unseen)
+    joined = LINE_BEFORE_THAT.sub(carry_over, unseen)
     if joined != unseen:
         joined = chained(REPORTED_TOO.sub(reworded, joined))
     return passive(joined, invisible)

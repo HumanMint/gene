@@ -786,15 +786,14 @@ COMPLETE_OBJECT = re.compile(rf"(?i)\s++(?:a|an|the|some|my|your|his|her|their|o
                              rf"{CLAUSE_DONE}")
 ACKNOWLEDGED = re.compile(rf"(?i)\s++(?:you|u|ya){CLAUSE_DONE}")
 # Each of those only ever refuses more since (gene #254): what they were told about, or the object, must run to the
-# clause's end with no word in it that starts a clause of its own, points back at one, or makes one, so "reminded on
-# monday that i like chess" and "i heard about it" are reports; a preposition alone ("i was reminded of") isn't
-# something they were told about; and a report heard keeps its exceptions only on its own line, not past a line break.
+# clause's end, at punctuation that ends one, with no word in it that starts a clause of its own or points back at one,
+# so "reminded on monday that i like chess", "told about the plan: i like chess" and "i heard about it" are reports; a
+# preposition alone ("i was reminded of") isn't something they were told about; and a report heard keeps its exceptions
+# only on its own line, not past a line break.
 CLAUSAL = frozenset("that thats that's this these those it its it's so same such as like than if whether because cause "
                     "cuz since and but or nor when while where what who whom which why how i im i'm ive i've id i'd "
                     "ill i'll me you u ya youre you're he hes he's him she shes she's we we're us they theyre they're "
-                    "them is isnt isn't are arent aren't am was wasnt wasn't were werent weren't be been being do does "
-                    "did dont don't doesnt doesn't didnt didn't has have had hasnt hasn't havent haven't will would wont "
-                    "won't can cant can't could should shall may might must".split())
+                    "them".split())
 OBJECT_RUN = re.compile(r"[\w' \t]++")  # Plain words, on one line.
 OBJECT_WORD = re.compile(r"[\w']++")
 FOLLOWED = re.compile(r"[ \t]++[\w']")  # A word after this one, on its line.

@@ -918,6 +918,7 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, i heard about it'),
     ('games', 'i like chess', 'i like chess, i heard\nabout the tournament'),
     ('games', 'i like chess', 'i like chess, i heard\nyou'),
+    ('games', 'i like chess', 'i was told about the plan: i like chess'),  # A colon carries the clause on.
     # Sol round 1 of #259: what its object exemption kept, and main refuses. A time, a manner or hearsay read as what was
     # perceived; an attribution after the claim read as an object; and an object holding the whole claim.
     ('games', 'i like chess', 'i like chess, i heard last week'),

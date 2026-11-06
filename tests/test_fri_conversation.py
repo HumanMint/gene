@@ -956,6 +956,11 @@ def test_casual_typing_keeps_every_other_rule(category, evidence, text):
     ('games', 'i like chess', 'i like chess, i heard it'),
     ('games', 'i like chess', 'i like chess, i heard so from my mom'),
     ('games', 'i like chess', 'i heard from my mom that i like chess'),
+    # Sol round 2 of #259 (R2-B1): evidence holding a passive verb or a report heard of its own. Main's passive reading
+    # reads it in the evidence alone, so the two differ and main refuses; round 1 read the message's the same way.
+    ('conversation', 'i like people that are informed', 'i like people that are informed about it'),
+    ('conversation', 'i like people that are informed', 'i like people that are informed about ' + chr(0x131) + 't'),
+    ('hobbies', 'i like a bot that hears', 'i like a bot that hears\nthe album'),
 ])
 def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None
@@ -1185,6 +1190,15 @@ def test_the_evidence_boundary_hides_no_report(category, evidence, text):
     ('games', 'i like chess', 'i like chess\ni was reminded of the rules\nok'),
     ('games', 'i like chess', 'i like chess, i heard the album\nok'),
     ('games', 'i like chess', 'i like chess, i was reminded of the rules\nok'),
+    # Sol round 2 of #259 (R2-S1, R2-S2): "this" or "these" before a noun, nouns joined by "and" or "or", and a CRLF line
+    # end are what they were told about, as main reads them.
+    ('games', 'i like chess', 'i was reminded about this tournament, i like chess'),
+    ('games', 'i like chess', 'i was reminded about these rules, i like chess'),
+    ('games', 'i like chess', 'i heard about this album, i like chess'),
+    ('games', 'i like chess', 'i like chess, i was reminded of the rules and schedule'),
+    ('games', 'i like chess', 'i like chess, i was reminded of the rules or schedule'),
+    ('games', 'i like chess', 'i like chess, i was reminded of the rules\r\nok'),
+    ('games', 'i like chess', 'i like chess, i heard the album\r\nok'),
 ])
 def test_a_plain_claim_keeps_its_note_whatever_the_boundary(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) == (category, evidence)
@@ -1360,6 +1374,17 @@ def test_the_same_words_too_many_times_keep_nothing():
     assert personal_note(note, ('blah ' * 90 + 'i like chess ') * 8) == ('games', 'i like chess')
     assert personal_note(note, 'i like chess. ' * 9) is None
     assert personal_note({'category': 'games', 'evidence': 'i play'}, ('i play ' * 572)[:4000]) is None
+
+
+def test_r2s_evidence_with_a_verb_of_its_own_keeps_no_note_when_saved_or_after_a_restart(store):
+    """Sol round 2 of #259 (R2-B1): round 1 kept these server-wide, where main refuses them."""
+    for category, evidence, text in [
+            ('conversation', 'i like people that are informed', 'i like people that are informed about it'),
+            ('hobbies', 'i like a bot that hears', 'i like a bot that hears\nthe album')]:
+        saved = store.save_chat('guild', 'public:1', 'one', 0, text, 'reply', 'model', 'high',
+                                notes=[{'category': category, 'evidence': evidence}])
+        assert not saved['first_memory']
+        assert not Store(store.path).chat_context('guild', 'public:1', 'one')['personal_memory']['notes']
 
 
 @pytest.mark.parametrize('text', ["i've been informed that i like chess", 'i was reminded that i like chess',

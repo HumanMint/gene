@@ -528,6 +528,36 @@ def test_messages_with_254s_objects_are_never_kept_where_a_bound_refuses_them(sh
     assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 200
     assert not leaks(messages, BOUNDS[sha])
 
+# Sol round 2 of #259 (R2-B1): evidence holding a passive verb or a report heard of its own, with what may follow it in
+# the message. CLAIMS hold none, and main's passive reading reads one in the evidence alone, so the two differ and main
+# refuses: a reading that read the message the same way would keep it.
+VERB_CLAIMS = [('conversation', 'i like people that are informed'), ('hobbies', 'i like a bot that hears'),
+               ('conversation', 'i like being reminded'), ('hobbies', 'i like music people have heard'),
+               ('conversation', 'i like being told the truth'), ('games', 'i like games where you get warned'),
+               ('conversation', 'i like friends who are assured'), ('hobbies', 'i like songs that i hear'),
+               ('conversation', 'i like being notified'), ('games', 'i like being advised')]
+VERB_TAILS = ['', ' about it', ' about ' + chr(0x131) + 't', '\nthe album', ' the album', ' of the rules', ' via email',
+              ' you', ' a refund', ' lol', ', ok', ' about this tournament', ' of the rules and schedule', '\r\nok',
+              ' on monday', ' that i like chess', ' about it\nok', ' of', ' about', ' the', ' it', ' birds', ' to rest',
+              ' about the plan: ok', ' of the rules\r\n', ' about this', ' via a short letter', ' a refund for the ticket']
+
+
+def evidence_with_verbs(count, seed):
+    rng = random.Random(seed)
+    for _ in range(count):
+        category, evidence = rng.choice(VERB_CLAIMS)
+        yield category, evidence, (rng.choice(['', 'ok ', 'lol\n', 'gg. ', 'i like chess, ']) + evidence +
+                                   rng.choice(VERB_TAILS) + rng.choice(['', '.', '\nlol', ' haha', ', i like chess']))
+
+
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_evidence_with_a_verb_of_its_own_is_never_kept_where_a_bound_refuses_it(sha):
+    messages = list(asided(evidence_with_verbs(4000, 259), 259, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS,
+                           CHAINED_REPORTS))
+    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 500
+    assert not leaks(messages, BOUNDS[sha])
+
+
 def test_the_bound_is_a_real_check():
     """A validator that keeps what a bound refuses fails it: neither reference is this module under another name."""
     assert MAIN is not personal_note and MAIN({'category': 'games', 'evidence': 'i like chess'},

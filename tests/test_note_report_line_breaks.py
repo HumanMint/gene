@@ -40,6 +40,11 @@ NOTE = {'category': 'games', 'evidence': 'i like chess'}
     'i was told\n' + chr(0x200B) + 'that i like chess', 'i was told\nThat i like chess', 'i was told\r\nthat i like chess',
     'i was informed via email\nthat i like chess', 'she was reminded\nthat i like chess', 'i heard\nthat i like chess',
     "i've heard\nthat i like chess", 'i was told by my mom\nthat i like chess', 'we were assured\nthat i like chess',
+    # Any report verb the report rules know, not just a passive one; and the other line breaks, which main refuses too.
+    'jo thinks\nthat i like chess', 'apparently\nthat i like chess', 'my mom would say\nthat i like chess',
+    'they say\nthat i like chess', 'my mom would tell you\nthat i like chess', 'i was told\rthat i like chess',
+    'i was told' + chr(0x2029) + 'that i like chess', 'i was told\x0cthat i like chess', 'i was told\x85that i like chess',
+    'gg\ni was told\nthat i like chess',
 ])
 def test_a_report_with_its_clause_on_the_next_line_keeps_no_note(text):
     assert personal_note(NOTE, text) is None
@@ -91,6 +96,8 @@ def test_line_broken_reports_are_never_kept_where_a_bound_refuses_them(sha):
 def test_a_line_before_that_is_joined_once_whatever_runs_before_it():
     """A run of space is crossed once (the pattern starts only where one does), and a run of reports or of "that" lines
     reads in linear time."""
-    for pad in ('\n', ' \n', 'was told\n', 'that\n', '\nthat ', 'i heard\n\n', 'was told\nthat '):
+    for pad in ('\n', ' \n', 'was told\n', 'that\n', '\nthat ', 'i heard\n\n', 'was told\nthat ', '\rthat ', ' \r that ',
+                chr(0x2028) + 'that ', chr(0x2029) + 'that ', '\x0bthat ', '\x0cthat ', '\x85that ', '\x1cthat ',
+                'gg\rthat ', 'gg' + chr(0x2028) + 'that '):
         assert_linear(lambda text: personal_note(NOTE, text), lambda length: (pad*length)[:length-12] + 'i like chess')
         assert_linear(lambda text: personal_note(NOTE, text), lambda length: 'i like chess' + (pad*length)[:length-12])

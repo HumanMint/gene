@@ -870,6 +870,13 @@ stage() {
   for name in "${names[@]}"; do
     [[ -f $STAGE/$name.tar && -f $STAGE/$name.tar.sha256 ]] || die "upload $STAGE/$name.tar and $name.tar.sha256 first"
     (cd "$STAGE" && sha256sum -c "$name.tar.sha256")
+    python3 - "$STAGE/$name.tar" "$([[ $name == gene ]] && echo "$G" || echo "$F")" <<'PYARCHIVE'
+import sys, tarfile
+with tarfile.open(sys.argv[1], 'r:') as archive:
+    commit = archive.pax_headers.get('comment')
+if commit != sys.argv[2]:
+    sys.exit('archive commit is missing or does not match requested SHA')
+PYARCHIVE
     mset "archives.$name" "$(cut -d' ' -f1 "$STAGE/$name.tar.sha256")"
   done
   if gene_changes; then [[ ! -e $ROOT/releases/$G ]] || die "$ROOT/releases/$G already exists; inspect it before staging"; fi
@@ -1493,7 +1500,26 @@ if (row and row[0]) or runs:
 PY
 }
 
+development_masked() {
+  [[ $(systemctl is-enabled gene-worker 2>/dev/null || true) == masked &&
+     $(systemctl is-enabled gene-deployer 2>/dev/null || true) == masked ]]
+}
+
+development_ready() {
+  if development_masked; then
+    ! systemctl is-active -q gene-worker && ! systemctl is-active -q gene-deployer
+  else
+    systemctl is-active -q gene-worker && systemctl is-active -q gene-deployer
+  fi
+}
+
 resume_services() {  # gene_sha
+  if development_masked; then
+    development_ready || die 'masked development units are still running'
+    NOTE='maintainer releases only: worker and deployer remain masked and stopped'
+    log "$NOTE"
+    return
+  fi
   systemctl start gene-worker gene-deployer || die 'the worker and deployer did not start'
   systemctl is-active -q gene-worker || die 'gene-worker did not start'
   systemctl is-active -q gene-deployer || die 'gene-deployer did not start'
@@ -1546,7 +1572,7 @@ gene_moved() {  # The live Gene isn't the old release: before a batch drains, on
   [[ $live =~ ^[0-9a-f]{40}$ && $live != "$OLD_G" ]]
 }
 resumed_as() {  # How development came back, for an exit message
-  if [[ -n $NOTE ]]; then echo "the worker and deployer are running again, but $NOTE"; else echo 'development resumed as it was'; fi
+  if [[ -n $NOTE ]]; then echo "$NOTE"; else echo 'development resumed as it was'; fi
 }
 
 write_result() {  # The deployer's receipt for this release; a repeat accepts the same receipt.
@@ -1592,7 +1618,7 @@ resume() {
   no_rollback
   if has resumed; then
     verify new any-work
-    if ! systemctl is-active -q gene-worker || ! systemctl is-active -q gene-deployer; then die 'resumed earlier, but the units are not running'; fi
+    development_ready || die 'resumed earlier, but development units do not match their mask state'
     log 'already resumed'
     return
   fi

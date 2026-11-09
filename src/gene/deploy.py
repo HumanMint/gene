@@ -115,8 +115,8 @@ class Deployer:
         stopped = time.time()
         # From the stop until a release proves healthy, nothing says which one is running (gene #48).
         self.runtime_unknown = True
-        self.compose('stop', 'red')
         try:
+            self.compose('stop', 'red')
             with tarfile.open(backup_dir / 'red.tar.gz', 'w:gz') as archive:
                 archive.add(self.root / 'data/red', arcname='red')
             started = time.time()

@@ -147,3 +147,55 @@ Data an older release would keep serving after its own change to what the data d
 ## After the release
 - The owner can DM Fri "fri health" and should see the watch running, the controller up at G, and a fresh Gene heartbeat.
 - Requests in review from before the release get stale notices, as after any deployment. Completing them needs a rebuild.
+
+## Maintainer releases only
+
+During the maintenance window, with no coding job or deployment in flight, disable
+both unattended services on the bot host. Masking is persistent across reboots and
+refuses explicit starts too. Release resume preserves both masks and leaves its
+development pause in place. Do not mask just one service.
+
+```bash
+sudo systemctl disable --now gene-worker.service gene-deployer.service
+# Locally installed unit files must be moved aside before systemd can mask them.
+for unit in gene-worker.service gene-deployer.service; do
+  path=/etc/systemd/system/$unit
+  if sudo test -f "$path" && ! sudo test -L "$path"; then
+    sudo mv --no-clobber "$path" "$path.maintainer-disabled"
+  fi
+done
+sudo systemctl daemon-reload
+sudo systemctl mask --now gene-worker.service gene-deployer.service
+sudo systemctl is-enabled gene-worker.service gene-deployer.service
+sudo systemctl is-active gene-worker.service gene-deployer.service
+```
+
+Verify both report `masked` and both report `inactive` (these checks return nonzero
+for those expected states). No coding container may remain: verify
+the following prints no containers (it includes older worker image pins):
+
+```bash
+sudo docker ps --format '{{.Image}} {{.Names}}' | awk '$1 ~ /^gene-worker:/ {print}'
+```
+If a job is still running, wait for it to finish before disabling; stopping the
+worker process alone does not prove its child container has stopped.
+
+To re-enable, in the window:
+
+```bash
+sudo systemctl unmask gene-worker.service gene-deployer.service
+for unit in gene-worker.service gene-deployer.service; do
+  path=/etc/systemd/system/$unit
+  if sudo test -f "$path.maintainer-disabled"; then
+    sudo mv --no-clobber "$path.maintainer-disabled" "$path"
+  fi
+done
+sudo systemctl daemon-reload
+sudo systemctl enable --now gene-worker.service gene-deployer.service
+sudo systemctl is-active gene-worker.service gene-deployer.service
+```
+
+Both must report `active`. If development remains paused, the owner uses the
+existing Resume control after reviewing queued requests. Masking does not clear
+queued work. No controller feature flag is needed: without these services no
+coding or automatic deployment runs.

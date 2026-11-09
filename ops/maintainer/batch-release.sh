@@ -2032,9 +2032,6 @@ case $PHASE in
   accept-evals) accept_evals ;;
   resume) resume ;;
   cleanup) cleanup ;;
-  retain-backups)
-    [[ ${4:---dry-run} == --dry-run || ${4:-} == --apply ]] || die 'use --dry-run or --apply'
-    python3 "$(dirname "$0")/retain-backups.py" "$ROOT" "$FRI_ROOT" "${4:---dry-run}" ;;
   status) state; if [[ -f $JOURNAL ]]; then cat "$JOURNAL"; fi ;;
   rollback-gene) need gene_attempted; check_manifest; rollback_gene ;;
   rollback-fri) rollback_fri ;;

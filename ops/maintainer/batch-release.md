@@ -199,22 +199,3 @@ Both must report `active`. If development remains paused, the owner uses the
 existing Resume control after reviewing queued requests. Masking does not clear
 queued work. No controller feature flag is needed: without these services no
 coding or automatic deployment runs.
-
-## Backup retention
-
-Upload `batch-release.sh` and the adjacent `retain-backups.py` together; the
-release script checksum changes and its approved copy must be uploaded again in
-the maintenance window. After resume, run the separate retention phase under the
-same batch lock, first with `--dry-run` (also the default):
-
-```bash
-sudo bash batch-release.sh retain-backups <gene-sha> <fri-sha> --dry-run
-sudo bash batch-release.sh retain-backups <gene-sha> <fri-sha> --apply
-```
-
-The dry run prints the exact backup directories eligible for removal. Apply
-recomputes the same policy and removes only its printed list. Each directory keeps
-the newest 10 backups and all backups from the last 14 days. Live and previous
-pair manifests, unfinished releases and Fri rollback records protect their backups
-regardless of age. Missing or malformed metadata refuses deletion; reconcile it
-before retrying. Run with no worker or independent Fri release in flight.

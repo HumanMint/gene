@@ -52,6 +52,9 @@ NOTE = {'category': 'games', 'evidence': 'i like chess'}
     'jo would mention\nthat i like chess', 'jo would point out\nthat i like chess', 'jo would explain\nthat i like chess',
     'my mom keeps mentioning\nthat i like chess', 'jo would announce\nthat i like chess',
     'jo would\nmention\nthat i like chess', 'my mom has\nbeen\nmentioning\nthat i like chess',
+    # A verb outside the vocabulary that reads as typed, not as "say" ("i never announce"): the join still knows it, as
+    # main refuses the one line.
+    'i never announce\nthat i like chess', 'if i was explain\r\nthat i like chess',
 ])
 def test_a_report_with_its_clause_on_the_next_line_keeps_no_note(text):
     assert personal_note(NOTE, text) is None

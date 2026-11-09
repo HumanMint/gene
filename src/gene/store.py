@@ -1571,31 +1571,84 @@ class Store:
         messages = {str(message) for message in messages if message}
         rows, seen = [], set()
         for message in sorted(messages):
-            for row in db.execute('SELECT id,user_id,reply_message_id,drew_on,json_extract(NULLIF(source,\'\'),\'$.id\') '
-                                  'AS source_id FROM chat_turns WHERE guild_id=? AND drew_on IS NOT NULL AND '
-                                  'instr(drew_on,?)>0', (guild_id, json.dumps(message))):
-                if row['id'] not in seen and messages.intersection(json.loads(row['drew_on'])):
+            for row in db.execute('SELECT id,user_id,channel_id,burst,reply_message_id,drew_on,'
+                                  'json_extract(NULLIF(source,\'\'),\'$.id\') AS source_id FROM chat_turns WHERE '
+                                  'guild_id=? AND drew_on IS NOT NULL AND instr(drew_on,?)>0',
+                                  (guild_id, json.dumps(message))):
+                if row['id'] not in seen and messages.intersection(Store._drew(row)):
                     seen.add(row['id'])
                     rows.append(row)
         return rows
+
+    @staticmethod
+    def _reading(db, guild_id, exchanges):
+        """Saved turns that read one of these exchanges back from the member's saved history (gene #149 item 1): each
+        is (member, conversation, one of its own messages), and Fri names saved context its requests carried by the
+        exchanges' own messages, never their replies (see _retire_drawn). Only the member's own turns in that
+        conversation, as only those read its history; one whose drew_on can't be read is left (see _drew)."""
+        rows, seen = [], set()
+        for user, conversation, message in sorted(exchanges):
+            for row in db.execute('SELECT id,user_id,channel_id,burst,reply_message_id,drew_on,'
+                                  'json_extract(NULLIF(source,\'\'),\'$.id\') AS source_id FROM chat_turns WHERE '
+                                  'guild_id=? AND user_id=? AND channel_id=? AND drew_on IS NOT NULL AND '
+                                  'instr(drew_on,?)>0', (guild_id, user, conversation, json.dumps(message))):
+                if row['id'] not in seen and message in Store._drew(row):
+                    seen.add(row['id'])
+                    rows.append(row)
+        return rows
+
+    @staticmethod
+    def _drew(row):
+        """A saved turn's drew_on, as strings; none where it can't be read, so a withdrawal never stops on one."""
+        try:
+            drew = json.loads(row['drew_on'])
+        except (TypeError, ValueError):
+            return set()
+        return {str(item) for item in drew} if isinstance(drew, list) else set()
+
+    @staticmethod
+    def _own(row):
+        """A saved turn's own messages: its source's, and its burst's (an unreadable burst adds none)."""
+        own = {str(row['source_id'])} if row['source_id'] else set()
+        try:
+            burst = json.loads(row['burst'] or '[]')
+        except (TypeError, ValueError):
+            burst = []
+        for item in burst if isinstance(burst, list) else ():
+            source = item.get('source') if isinstance(item, dict) else None
+            if isinstance(source, dict) and source.get('id'):
+                own.add(str(source['id']))
+        return own
 
     @staticmethod
     def _retire_drawn(db, guild_id, messages):
         """Saved replies whose model request carried one of these deleted messages keep a breadcrumb, not their words,
         as a reply drawn on a withdrawn summary does (gene #141): whoever's they are, in any conversation. Then so do
         those that carried Fri's reply in one of them, and so on. Not verbatim, so a reference to it fails closed, and
-        a question it left goes. The member's own words stay."""
+        a question it left goes. The member's own words stay.
+        And so does a later turn of the same member's conversation that read one of them back from their saved history
+        (gene #149 item 1): Fri names saved context its request carried by each exchange's own messages, not its reply,
+        so its drew_on names the retired exchange's source or burst, never the reply. Only that member's turns in that
+        conversation are read for it, as only those carry its history."""
         found, asked = {str(message) for message in messages if message}, set()
-        while found-asked:
-            batch = sorted(found-asked)
-            asked |= found
-            rows = Store._carrying(db, guild_id, batch)
+        exchanges, read = set(), set()  # (member, conversation, message) of each retired exchange, and those read.
+        while found-asked or exchanges-read:
+            rows = []
+            if found-asked:
+                batch = sorted(found-asked)
+                asked |= found
+                rows += Store._carrying(db, guild_id, batch)
+            if exchanges-read:
+                batch = exchanges-read
+                read |= batch
+                rows += Store._reading(db, guild_id, batch)
             for row in rows:
                 db.execute('DELETE FROM chat_pending WHERE guild_id=? AND user_id=? AND source_id=?',
                            (guild_id, row['user_id'], row['source_id']))
                 db.execute('UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL,summary_dependencies=NULL,'
                            'drew_on=NULL WHERE id=?', (DRAWN, row['id']))
             found |= {row['reply_message_id'] for row in rows if row['reply_message_id']}
+            exchanges |= {(row['user_id'], row['channel_id'], message) for row in rows for message in Store._own(row)}
 
     @staticmethod
     def _settle_withdrawals(db):

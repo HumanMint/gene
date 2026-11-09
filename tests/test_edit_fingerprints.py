@@ -176,6 +176,8 @@ EDITS = [
     ('my diagnosis was in 2024, still processing it', 'still processing it', ['your diagnosis was in 2024? thats a lot']),
     ('i leave for surgery at 12:30 on 2024-05-01', 'never mind', ['you leave for surgery at 12:30? good luck']),
     ('text me at (555) 010-9999 tonight', 'text me tonight', ['texting (555) 010-9999 now', 'is 5550109999 right']),
+    # A possessive's "'s" is dropped, so it reads as the name alone.
+    ("my sister gabriella's chemotherapy starts on monday", 'never mind', ['so gabriella chemotherapy starts on monday?']),
 ]
 ELSEWHERE = [
     'the raid starts at nine, bring potions', 'lol same, rent is brutal everywhere', 'anyone up for ranked tonight',
@@ -273,6 +275,11 @@ def test_the_r2_repros_retire_no_reply_about_another_date(world, how, before, un
     ('2024-05-01 12:30:15', False), ('2024-05-01T12:30:15', False), ('20240501123015', False), ('202405011230', False),
     ('1714521600', False), ('1714521600000', False), ('12:30:15', False), ('2024-05-01 1230', False),
     ('555\n0199', False),  # Over lines: two numbers.
+    # Each rule's edge: six digits; a group of one or five digits after the first; a first group of five; seven groups;
+    # a colon or a slash; dates day first or month first only, with a two-digit year, from 1900; and what's no date.
+    ('555-019', False), ('12 3 4567', False), ('555 01999', False), ('12345 555 0199', False),
+    ('12 34 56 78 90 12 345', False), ('1234/5678', False), ('1234:5678', False), ('31.12.2024', False),
+    ('12.31.2024', False), ('01.05.24 1230', False), ('19300501', False), ('13.13.2024', True), ('32.12.2024', True),
 ])
 def test_what_is_a_distinctive_number(written, distinctive):
     assert bool(numbers(written)) == distinctive
@@ -334,7 +341,10 @@ def test_the_repro_a_reply_quoting_what_the_message_still_says_stays(world, how,
 # them as taken out of its own copy. The fingerprint says whether its kept list is whole (complete), and the controller
 # reads its own copy only where it is.
 def test_a_kept_list_cut_short_says_so(monkeypatch):
-    monkeypatch.setattr(fri_edit_fingerprint, 'MOST', 3)
+    count = len(elements(BEFORE))
+    monkeypatch.setattr(fri_edit_fingerprint, 'MOST', count)
+    assert fingerprint(None, BEFORE, salt())['complete'] is True  # Exactly MOST: all of it.
+    monkeypatch.setattr(fri_edit_fingerprint, 'MOST', count-1)
     assert fingerprint(None, BEFORE, salt())['complete'] is False
     monkeypatch.undo()
     assert fingerprint(None, BEFORE, salt())['complete'] is True

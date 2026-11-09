@@ -77,7 +77,9 @@ def test_an_unreadable_drew_on_or_burst_never_stops_the_withdrawal(world):  # no
     taken, first = history(store)
     with store.connection() as db:
         db.execute("UPDATE chat_turns SET burst='{not json' WHERE input='what did they mean'")
-        db.execute("UPDATE chat_turns SET drew_on='{not json' WHERE input='anything else'")
+        # Cut short, but naming the exchange read back and the message withdrawn: a quick match finds it, and reading
+        # it fails. On main, the reply hop's own read raised on one like it.
+        db.execute('UPDATE chat_turns SET drew_on=? WHERE input=?', (f'["{first}", "{taken}"', 'anything else'))
     assert withdraw(client, taken, deleted=True).status_code == 200
     with store.connection() as db:  # Read as stored: a history read parses the burst, as main does.
         assert [row[0] for row in db.execute("SELECT reply FROM chat_turns WHERE user_id='30' ORDER BY id")] == [

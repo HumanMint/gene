@@ -172,7 +172,11 @@ sudo systemctl is-active gene-worker.service gene-deployer.service
 
 Verify both report `masked` and both report `inactive` (these checks return nonzero
 for those expected states). No coding container may remain: verify
-`sudo docker ps --filter ancestor=gene-worker:<current-gene-sha>` is empty.
+the following prints no containers (it includes older worker image pins):
+
+```bash
+sudo docker ps --format '{{.Image}} {{.Names}}' | awk '$1 ~ /^gene-worker:/ {print}'
+```
 If a job is still running, wait for it to finish before disabling; stopping the
 worker process alone does not prove its child container has stopped.
 

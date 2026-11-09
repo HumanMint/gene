@@ -141,7 +141,8 @@ class AgentStore:
             db.execute('DELETE FROM agent_summaries WHERE at<?', (time.time()-2*86400,))
             db.execute('DELETE FROM agent_sessions WHERE started<? AND until<?',
                        (time.time()-86400, time.time()))
-            db.execute('DELETE FROM agent_reports WHERE delivered=1 AND at<?', (time.time()-7*86400,))
+            from .fri_learning_sources import expire
+            expire(db, time.time())  # A report's week, delivered or not (gene #250).
             return {'config': self.config(db), 'version': self.get(db, 'version', 0),
                     'auto_repairs_enabled': self.store._setting(db, 'repair_policy') == 'existing-features-v1',
                     'learning_schedule': self.learning_schedule(db, time.time()),
@@ -263,8 +264,10 @@ class AgentStore:
                 return blocked('An owner-requested pass can run at most once every five minutes.')
             if not manual and now < self.get(db, 'next_learning', 0):
                 return None
-            # A report outage pauses learning, so the owner does not lose visibility.
-            if db.execute('SELECT 1 FROM agent_reports WHERE delivered=0').fetchone():
+            # A report outage pauses learning, so the owner does not lose visibility. For the report's week: past it,
+            # it keeps only a breadcrumb, which goes out with the next pass's report (gene #250, see reports).
+            from .fri_learning_sources import KEPT
+            if db.execute('SELECT 1 FROM agent_reports WHERE delivered=0 AND at>=?', (now-KEPT,)).fetchone():
                 return blocked('The previous learning report still needs to reach the owner.')
             if pending:
                 # Running inside its ten minutes, either way of a small clock step; one that can't be read is
@@ -342,7 +345,7 @@ class AgentStore:
                            or self.store.deleted_anywhere(db, guild, [message['id']])}, key=int)
 
     def finish(self, batch_id, records, result, scanned, before, done, counters, error='', oldest=None, newest=None, newest_id=None,
-               scanned_ids=()):
+               scanned_ids=(), before_model=False):
         now = time.time()
         if not isinstance(result.get('notes', []), list) or not isinstance(result.get('summary', ''), str):
             raise ValueError('Invalid summary output')
@@ -452,11 +455,23 @@ class AgentStore:
                 if mode != 'explore':
                     cursors[claim['channel_id']] = cursor
                     self.put(db, 'cursors', cursors)
-                budget = self.get(db, 'budget', {})
-                if claim.get('budget_day') == budget.get('day'):
-                    budget['used'] = max(0, budget['used']-(claim['limit']-scanned))
-                    self.put(db, 'budget', budget)
+            # What the pass's reservation didn't use goes back: what it didn't scan; or, after an error Fri says came
+            # before its model was asked (before_model: it stopped the pass), all of it, since its cursor stays and the
+            # next pass reads that slice again (gene #262). Any other error keeps it all, as before: the model may have
+            # read the batch, and passes ended by an incomplete answer would send it more than the day's allowance (Sol
+            # round 1 of #264, S1). An older Fri never says.
+            budget = self.get(db, 'budget', {})
+            if claim.get('budget_day') == budget.get('day'):
+                back = claim['limit']-scanned if not error else claim['limit'] if before_model else 0
+                budget['used'] = max(0, budget['used']-back)
+                self.put(db, 'budget', budget)
             self.put(db, 'learning_claim', None)
+            # Reports past their week still to be delivered go with this one, which says how many (gene #250): Fri sends
+            # one a read, after each pass, so one ahead of each pass's own would keep every report a pass behind (Sol
+            # round 1 of #256, B1). Wordless first, as they'd go out.
+            from .fri_learning_sources import KEPT, expire
+            expire(db, now)
+            missed = db.execute('UPDATE agent_reports SET delivered=1 WHERE delivered=0 AND at<?', (now-KEPT,)).rowcount
             dates = [r['at'] for r in records]
             if oldest is not None and newest is not None and claim['after'] <= oldest <= newest <= now:
                 dates = [oldest, newest]
@@ -493,6 +508,7 @@ class AgentStore:
                       + ('\nConversation summary: '+summary if summary else '')
                       + ('\nSaved disclosures:\n'+'\n'.join(kept) if kept else '')
                       + ('\nIssue: '+clean(error, 180) if error else '')
+                      + (f'\nEarlier reports that expired before they could be delivered: {missed}' if missed else '')
                       + '\nAsk me to change learning frequency, pause learning, or show settings.')
             db.execute('INSERT INTO agent_reports VALUES (?,?,?,0)', (batch_id, now, report))
             from .fri_learning_sources import record
@@ -588,9 +604,15 @@ class AgentStore:
               "s.item=r.id ")
 
     def reports(self):
+        """The outbox Fri delivers after each pass: one report a read, as it is then, since Fri sends what a read handed
+        it (Sol round 1 of #256, B1). The oldest still in its week first, so a newer report is never a read behind one
+        past its week (gene #250): learning waits on it. Those past it go with the next pass's report (see finish)."""
+        from .fri_learning_sources import KEPT, expire
+        now = time.time()
         with self.store.connection() as db:
+            expire(db, now)
             return [self.report_row(r) for r in db.execute(
-                self.REPORT+'WHERE r.delivered=0 ORDER BY r.at LIMIT 1')]
+                self.REPORT+'WHERE r.delivered=0 ORDER BY r.at<?, r.at LIMIT 1', (now-KEPT,))]
 
     @staticmethod
     def report_row(row):

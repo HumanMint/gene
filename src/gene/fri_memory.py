@@ -317,14 +317,16 @@ def readings_of(text, evidence):
     with Unicode space separators read as a space and line breaks next to a face bridged; and (gene #231) twice more
     with line breaks inside a report continuation joined too; and (gene #236) twice more with report verbs outside the
     vocabulary read as "say" and chained auxiliaries joined; and (gene #239) twice more with passive reports, and reports
-    heard, read as "was told". Every reading #211, #217, #225, #229, #235 and #238 had is still here, as it was, so each
-    added one only ever refuses more. In this order, each once: which one
+    heard, read as "was told"; and (gene #254) twice more with those readings' exceptions narrowed; and (gene #260)
+    twice more with a report verb's clause carried over a line break. Every reading #211, #217, #225, #229, #235, #238,
+    #245 and #259 had is still here, as it was, so each added one only ever refuses more. In this order, each once: which
+    one
     refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
     time grow faster than its length (#211's first CI run)."""
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for transform in (composed, restacked, spaced, bridged, rejoined, widened, passive, carried):
+    for transform in (composed, restacked, spaced, bridged, rejoined, widened, passive, narrowed, carried):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
@@ -816,6 +818,82 @@ def passive(text, invisible):
     unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
     unseen = APOSTROPHES.sub("'", unseen.replace(chr(0x2019), "'"))
     unseen = PASSIVE_REPORT.sub(told_so, HEARD_REPORT.sub(heard_so, unseen))
+    unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
+    unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
+    return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
+
+
+# And (gene #254) the passive reading once more with its exceptions narrowed, in a reading of its own: passive's stays
+# as it was, so this one only ever refuses more (Sol round 2 of #259: narrowed in passive's own reading, they read
+# evidence holding such a verb as the message reads it, where passive reads it in the evidence alone, and kept what main
+# refuses). What they were told about, or the object, must run to the clause's end, at punctuation that ends one, a line
+# break or the message's end, with no word in it that starts a clause of its own or points back at one, so "reminded on
+# monday that i like chess", "told about the plan: i like chess" and "i heard about it" are reports; a preposition alone
+# ("i was reminded of") isn't something they were told about; and a report heard keeps its exceptions only on its own
+# line, not past a line break. "this", "these", "those", "and" and "or" with another word after them in the run are a
+# determiner or a join of nouns ("about this tournament", "of the rules and schedule"), as a CRLF is a line end (R2-S1,
+# R2-S2).
+CLAUSAL = frozenset("that thats that's this these those it its it's so same such as like than if whether because cause "
+                    "cuz since and but or nor when while where what who whom which why how i im i'm ive i've id i'd "
+                    "ill i'll me you u ya youre you're he hes he's him she shes she's we we're us they theyre they're "
+                    "them".split())
+JOINING = frozenset('this these those and or'.split())
+OBJECT_RUN = re.compile(r"[\w' \t]++")  # Plain words, on one line.
+OBJECT_WORD = re.compile(r"[\w']++")
+FOLLOWED = re.compile(r"[ \t]++[\w']")  # A word after this one, on its line.
+SAME_LINE_WORD = re.compile(r"[ \t]++([\w']++)")
+
+
+@functools.lru_cache(maxsize=32)
+def objects(text):
+    """Where what follows a passive verb or a report heard may start, by each word's start: whether the words from it to
+    the end of their run hold none of CLAUSAL (but JOINING with a word after it), and the run ends the clause, at
+    punctuation, a line break or the message's end. Read once for a text, so each verb's is looked up, never scanned
+    again (Sol round 2 of #245, S3)."""
+    found = {}
+    for run in OBJECT_RUN.finditer(text):
+        end = run.end()
+        done, last = end == len(text) or text[end] in ',.;!?\n' or text.startswith('\r\n', end), True
+        for word in reversed(list(OBJECT_WORD.finditer(text, run.start(), end))):
+            said = word.group().translate(ASCII_CASES).lower()
+            done = done and (said not in CLAUSAL or (said in JOINING and not last))
+            found[word.start()], last = done, False
+    return found
+
+
+def told_narrowly(m):
+    """A passive report as "was told", unless what follows it is something else they were told about (see above)."""
+    end = m.end()
+    for _ in range(MODIFIERS_PAST):
+        after = NEXT_WORD.match(m.string, end)
+        word = after.group(1).lower() if after else ''
+        if word not in STEPPED_OVER and not (word.endswith('ly') and word.isalpha()):
+            break
+        end = after.end()
+    after = NEXT_WORD.match(m.string, end)
+    if after and objects(m.string).get(after.start(1)) and (
+            (after.group(1).lower() in TOLD_OF and FOLLOWED.match(m.string, after.end()))
+            or COMPLETE_OBJECT.match(m.string, end)):
+        return m.group()
+    return ('' if m.group()[0].isalpha() else ' ') + 'was told'
+
+
+def heard_narrowly(m):
+    """A report heard as "was told", unless an object of its own ends the clause, or it's "i hear you", on the verb's own
+    line (see above)."""
+    after = SAME_LINE_WORD.match(m.string, m.end())
+    if after and ((objects(m.string).get(after.start(1)) and COMPLETE_OBJECT.match(m.string, m.end()))
+                  or ACKNOWLEDGED.match(m.string, m.end())):
+        return m.group()
+    return 'was told'
+
+
+@functools.lru_cache(maxsize=32)
+def narrowed(text, invisible):
+    """passive's reading (see there), with its exceptions narrowed (see above)."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    unseen = APOSTROPHES.sub("'", unseen.replace(chr(0x2019), "'"))
+    unseen = PASSIVE_REPORT.sub(told_narrowly, HEARD_REPORT.sub(heard_narrowly, unseen))
     unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
     unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
     return composed(LOOSE_SLASH.sub(' ', unseen), invisible)

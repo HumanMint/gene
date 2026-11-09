@@ -43,9 +43,12 @@ BRIDGED = reference('3bddd69')  # #229 (#226 items 2, 3), before #231.
 REJOINED = reference('dd7441e')  # #235 (#231 items 1, 3), before #236.
 # Main now: #238 (#236), and the same module at 571fb78. #245 only ever refuses more than it (Sol round 2 of #245).
 WIDENED = reference('2cdaffc')
+# Main now: #245 (#239), the same module at e9adf67. #254 only ever refuses more than it (Sol round 1 of #259: an
+# object exemption reopened reports).
+PASSIVE = reference('117db20')
 BOUNDS = {'8aad087': MAIN, '8f0ac36': CURRENT, '7689069': PREVIOUS, '7e79220': LATEST, '50008b5': NEWEST,
           'b1d4b88': STACKED, 'ba5a0a6': ASIDED, '7914787': HEDGED, 'a5bdada': MODIFIED, '3bddd69': BRIDGED,
-          'dd7441e': REJOINED, '2cdaffc': WIDENED}
+          'dd7441e': REJOINED, '2cdaffc': WIDENED, '117db20': PASSIVE}
 CLAIMS = [('games', 'i like chess'), ('nickname', 'call me dan'), ('nickname', 'my nickname is dan'),
           ('music', 'my fav band is slowdive'), ('projects', 'im building a mod'), ('nickname', 'call me comet')]
 
@@ -108,6 +111,14 @@ REVIEWED = [
     'i like chess, she explained that much', 'i like chess, or so she would have already explained my plan',
     'she warned my mom that i like chess', 'she mentioned my belief that i like chess', 'announced my mom, i like chess',
     'i like chess, she joked that you really do',
+    # gene #254: rejoined's witness against the passive reading, a time before the claim, and longer objects the claim
+    # follows.
+    'i was\nonce would\ntold hi\nplease call me dan', 'i was reminded on monday that i like chess',
+    'i was informed via a short letter that i like chess',
+    # Sol round 1 of #259: what its object exemption kept, and main refuses.
+    'i like chess, i heard last week', 'i like chess, i heard secondhand', 'i heard a rumor from my mom, i like chess',
+    'i like chess, i heard la' + chr(0x17F) + 't week', 'i like chess, i heard last' + chr(0xA0) + 'week',
+    'i like chess, i was informed a few weeks ago', 'i like chess, i was informed via a short letter',
 ]
 
 
@@ -437,6 +448,12 @@ PASSIVE_RUNS = ['was ', 'were ', "'ve been ", 've been ', 'have been ', 'has bee
 PASSIVE_VERBS = ['informed', 'reminded', 'notified', 'assured', 'advised', 'warned', 'told', 'kindly informed']
 PASSIVE_AFTER = [' that ', ' ', ' by my mom that ', ', ', ' lol ', ' of this: ', ' about it: ', '\n',
                  ' yesterday to rest, ', ' yesterday of it: ', ' again that ']
+# gene #254: longer objects with the claim after them in their clause, a time before the claim, a pointer back at it,
+# an aside, a source, and perceptions with the claim in their clause (see OWN_OBJECTS for those that end it).
+LONGER = [' via a short letter that ', ' a refund for the ticket that ', ' on monday that ', ' on monday, ',
+          ' via email\nthat ', ' about it, ', ' the album ', ' birds say ', ' of the rules and ', ' lol, ',
+          ' from my mom, ', ' the, ']
+PASSIVE_AFTER += LONGER
 REPORT_AFTER = ['my score', 'that rule', 'it to everyone', 'it to me', 'i practice more', 'we play more',
                 'loudly about lag', 'about lag', 'that', 'it', 'me', 'to me that', '', 'so', 'my nickname is dan',
                 'it lol', 'this', 'that i', 'my', 'it to', 'loudly', 'she is moving', 'my fav band is',
@@ -462,7 +479,8 @@ def passive_and_object_reports(count, seed):
         if shape == 0:
             text = passive + rng.choice(PASSIVE_AFTER) + evidence
         elif shape == 1:
-            text = evidence + rng.choice([', ', ', or so ', ' ', '\n', ' :- / ']) + passive
+            text = evidence + rng.choice([', ', ', or so ', ' ', '\n', ' :- / ']) + passive + rng.choice(
+                ['', '', '', ' it', '\nlol', ' on monday', ' lol', ' from jo', ' the'])
         elif shape == 2:
             text = evidence + rng.choice([', ', ' ', ', and ', '\n', '; ']) + report
         else:
@@ -477,6 +495,68 @@ def test_messages_with_239s_and_242s_shapes_are_never_kept_where_a_bound_refuses
     assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 1500
     assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 5000
     assert not leaks(messages, BOUNDS[sha])
+
+
+# gene #254 items 1 and 2's shapes: a report heard with something after it ("i hear birds, …"), and a passive verb with
+# a longer object ("informed via a short letter, …"), each ending its clause, with Sol round 1 of #259's: a time, a
+# manner, hearsay or an attribution after the verb. Main refuses most; this keeps none it refuses (refuse-only: an
+# object exemption can't tell an unrelated object from a time, a source, an attribution or the claim itself).
+PERCEIVED = [' birds, ', ' music\n', ' the new album yesterday, ', ' birds\n', ' some music, ', ' the album. ',
+             ' last week, ', ' secondhand\n', ' a rumor from my mom, ', ' last' + chr(0xA0) + 'week. ']
+OWN_OBJECTS = [' via a short letter, ', ' a refund for the ticket, ', ' via a short letter\n', ' a few weeks ago, ']
+
+
+def perceptions(count, seed):
+    rng = random.Random(seed)
+    for _ in range(count):
+        category, evidence = rng.choice(CLAIMS)
+        shape = rng.randrange(3)
+        if shape == 0:
+            yield category, evidence, rng.choice(HEARD_RUNS) + rng.choice(PERCEIVED + LONGER) + evidence
+        elif shape == 1:
+            passive = rng.choice(PASSIVE_SUBJECTS) + rng.choice(PASSIVE_RUNS) + rng.choice(PASSIVE_VERBS)
+            yield category, evidence, passive + rng.choice(OWN_OBJECTS + LONGER) + evidence
+        else:
+            yield category, evidence, evidence + rng.choice([', ', '. ', '\n']) + rng.choice(HEARD_RUNS) + rng.choice(
+                [' music', ' birds', ' the new album', ' some birds yesterday', ' the album', ' it', ' that', ' so',
+                 ' on monday', ' from my mom', ' about it', ' lol', ' the', ' last week', ' secondhand'])
+
+
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_messages_with_254s_objects_are_never_kept_where_a_bound_refuses_them(sha):
+    messages = list(asided(perceptions(6000, 254), 254, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS, CHAINED_REPORTS))
+    assert sum(personal_note({'category': c, 'evidence': e}, t) is not None for c, e, t in messages) > 200
+    assert not leaks(messages, BOUNDS[sha])
+
+# Sol round 2 of #259 (R2-B1): evidence holding a passive verb or a report heard of its own, with what may follow it in
+# the message. CLAIMS hold none, and main's passive reading reads one in the evidence alone, so the two differ and main
+# refuses: a reading that read the message the same way would keep it.
+VERB_CLAIMS = [('conversation', 'i like people that are informed'), ('hobbies', 'i like a bot that hears'),
+               ('conversation', 'i like being reminded'), ('hobbies', 'i like music people have heard'),
+               ('conversation', 'i like being told the truth'), ('games', 'i like games where you get warned'),
+               ('conversation', 'i like friends who are assured'), ('hobbies', 'i like songs that i hear'),
+               ('conversation', 'i like being notified'), ('games', 'i like being advised')]
+VERB_TAILS = ['', ' about it', ' about ' + chr(0x131) + 't', '\nthe album', ' the album', ' of the rules', ' via email',
+              ' you', ' a refund', ' lol', ', ok', ' about this tournament', ' of the rules and schedule', '\r\nok',
+              ' on monday', ' that i like chess', ' about it\nok', ' of', ' about', ' the', ' it', ' birds', ' to rest',
+              ' about the plan: ok', ' of the rules\r\n', ' about this', ' via a short letter', ' a refund for the ticket']
+
+
+def evidence_with_verbs(count, seed):
+    rng = random.Random(seed)
+    for _ in range(count):
+        category, evidence = rng.choice(VERB_CLAIMS)
+        yield category, evidence, (rng.choice(['', 'ok ', 'lol\n', 'gg. ', 'i like chess, ']) + evidence +
+                                   rng.choice(VERB_TAILS) + rng.choice(['', '.', '\nlol', ' haha', ', i like chess']))
+
+
+@pytest.mark.parametrize('sha', BOUNDS)
+def test_evidence_with_a_verb_of_its_own_is_never_kept_where_a_bound_refuses_it(sha):
+    messages = list(asided(evidence_with_verbs(4000, 259), 259, SEPARATED_FACES, MODIFIED_HEDGES, BREAKS,
+                           CHAINED_REPORTS))
+    assert sum(BOUNDS[sha]({'category': c, 'evidence': e}, t) is None for c, e, t in messages) > 500
+    assert not leaks(messages, BOUNDS[sha])
+
 
 def test_the_bound_is_a_real_check():
     """A validator that keeps what a bound refuses fails it: neither reference is this module under another name."""

@@ -317,15 +317,16 @@ def readings_of(text, evidence):
     with Unicode space separators read as a space and line breaks next to a face bridged; and (gene #231) twice more
     with line breaks inside a report continuation joined too; and (gene #236) twice more with report verbs outside the
     vocabulary read as "say" and chained auxiliaries joined; and (gene #239) twice more with passive reports, and reports
-    heard, read as "was told"; and (gene #254) twice more with those readings' exceptions narrowed. Every reading #211,
-    #217, #225, #229, #235, #238 and #245 had is still here, as it was, so each added one only ever refuses more. In this
-    order, each once: which one
+    heard, read as "was told"; and (gene #254) twice more with those readings' exceptions narrowed; and (gene #260)
+    twice more with a report verb's clause carried over a line break. Every reading #211, #217, #225, #229, #235, #238,
+    #245 and #259 had is still here, as it was, so each added one only ever refuses more. In this order, each once: which
+    one
     refuses first decides how much is read, and a set's order, which changes with the text, made a longer message's
     time grow faster than its length (#211's first CI run)."""
     readings = [(plainly(text), plainly(evidence).strip())]
     readings += [(plainer(said, invisible), plainer(note, invisible).strip()) for invisible in ('', ' ')
                  for said, note in ((text, evidence), (prepared(text), prepared(evidence)))]
-    for transform in (composed, restacked, spaced, bridged, rejoined, widened, passive, narrowed):
+    for transform in (composed, restacked, spaced, bridged, rejoined, widened, passive, narrowed, carried):
         for invisible in ('', ' '):
             said = plainer(transform(text, invisible), invisible)
             note = plainer(transform(evidence, invisible), invisible)
@@ -896,6 +897,43 @@ def narrowed(text, invisible):
     unseen = REPORT_RUN.sub(lambda m: RUNS_OF_SPACE.sub(' ', m.group()), unseen)
     unseen = BREAK_THEN_FACE.sub(' ', FACE_THEN_BREAK.sub(r'\1 ', unseen))
     return composed(LOOSE_SLASH.sub(' ', unseen), invisible)
+
+
+# And (gene #260) a report's clause on the next line: "i was told" + a line break + "that i like chess". The report
+# rules end a clause at a line break, and so does every reading above but rejoined's runs of "say", so the claim read as
+# a sentence of its own. This reading carries a report verb's clause over: with report verbs read as widened reads them
+# first, the space before a line that opens with "that" (a line break, blank lines and spaces around it) is joined
+# where the line before it has a report verb in it, and the rest is read as passive reads it (see carried). Not after
+# a line with none, so a claim and a line of its own after it
+# ("i like chess" + a line break + "that said, gg") stay two sentences. Every other reading stays as it was, so this one
+# only ever refuses more. Matched only where a run of space starts, and each line is read once, so it's linear.
+LINE_BEFORE_THAT = re.compile(r"(?<!\s)\s++(?=(?i:that)\b)")
+BARE_REPORT = re.compile(r"(?i)\b(?:say|tell|hear)\b")
+REPORTING = (REPORT, REPORTED_TOO, PASSIVE_REPORT, HEARD_REPORT, BARE_REPORT)
+
+
+def carry_over(m):
+    """The space before a line opening with "that", joined where the line before it has a report verb in it. A line
+    ends at "\\n" only: the report rules read every other space ("\\r", U+2028, a form feed) as inside a clause, and
+    refuse across it already. So the search back from a run stops at the line break the run before it held, and each
+    line is read once (one that counted "\\r" read a message of "\\r" lines again from its start at each run)."""
+    if '\n' not in m.group():
+        return m.group()
+    line = m.string[m.string.rfind('\n', 0, m.start())+1:m.start()]
+    return ' ' if any(verb.search(line) for verb in REPORTING) else m.group()
+
+
+@functools.lru_cache(maxsize=32)
+def carried(text, invisible):
+    """passive's reading (see there), with each report verb outside the vocabulary read as "say" and each run of
+    auxiliaries before one joined first, as widened reads them, and then a report verb's clause carried over a line
+    break (see above). So "jo would mention" + a line break + "that i like chess" reads as the one line does, and so
+    does a verb of two words split over lines ("jo would point" + a line break + "out"), whose line before "that" holds
+    no report verb until it's read as "say". In every text alike, the message and its evidence: read only where a line
+    was joined, evidence holding such a verb ("i like to mention it", never joined) read differently from its message,
+    and was refused where main keeps it."""
+    unseen = SPACE_SEPARATORS.sub(' ', INVISIBLE.sub(invisible, SELECTORS.sub('', CONTROLS.sub(invisible, text))))
+    return passive(LINE_BEFORE_THAT.sub(carry_over, chained(REPORTED_TOO.sub(reworded, unseen))), invisible)
 
 
 def spots_of(text, evidence):

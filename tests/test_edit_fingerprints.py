@@ -177,7 +177,7 @@ EDITS = [
     ('i leave for surgery at 12:30 on 2024-05-01', 'never mind', ['you leave for surgery at 12:30? good luck']),
     ('text me at (555) 010-9999 tonight', 'text me tonight', ['texting (555) 010-9999 now', 'is 5550109999 right']),
     # A possessive's "'s" is dropped, so it reads as the name alone.
-    ("my sister gabriella's chemotherapy starts on monday", 'never mind', ['so gabriella chemotherapy starts on monday?']),
+    ("my sister gabriella's chemo starts monday", 'never mind', ['so gabriella chemo starts monday?']),
 ]
 ELSEWHERE = [
     'the raid starts at nine, bring potions', 'lol same, rent is brutal everywhere', 'anyone up for ranked tonight',

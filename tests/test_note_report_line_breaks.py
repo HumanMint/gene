@@ -92,6 +92,10 @@ def test_a_report_after_the_claim_with_its_auxiliaries_over_lines_keeps_no_note(
     # alike. Every reading main has is still here, as it was, so it still refuses.
     ('hobbies', 'i like a bot that hears', 'i like a bot that hears you\n\nthat way'),
     ('conversation', 'i like people that are informed', 'i like people that are informed the day\n\tthat helps'),
+    # And where #259's narrowed reading keeps it too ("the same" holds a word that points back, so its exception
+    # doesn't hold there): main's passive reading alone refuses these.
+    ('hobbies', 'i like a bot that hears', 'i like a bot that hears the same\nthat way'),
+    ('conversation', 'i like people that are informed', 'i like people that are informed the same\nthat way'),
 ])
 def test_what_main_refuses_by_its_passive_reading_alone_stays_refused(category, evidence, text):
     assert personal_note({'category': category, 'evidence': evidence}, text) is None

@@ -133,3 +133,28 @@ def test_invalid_receipt_never_claims_or_guesses_a_result(tmp_path):
         deployer.tick()
     deployer.api.post.assert_not_called()
     assert (tmp_path/'deploy-result.json').exists()
+
+
+def test_stop_that_takes_effect_then_errors_reactivates_previous_release(tmp_path):
+    previous = 'a' * 40
+    Store(tmp_path / 'data/controller/gene.sqlite3').bootstrap(previous)
+    deployer = Deployer.__new__(Deployer)
+    deployer.root = tmp_path
+    deployer.prepare = Mock()
+    running = [True]
+
+    def stop(*args):
+        running[0] = False
+        raise RuntimeError('stop timed out after stopping Red')
+
+    def activate(sha):
+        assert sha == previous
+        running[0] = True
+
+    deployer.compose = Mock(side_effect=stop)
+    deployer.activate = Mock(side_effect=activate)
+    deployer.healthy = Mock(return_value=True)
+    with pytest.raises(RuntimeError, match='previous code was restored'):
+        deployer.process({'id': 'stop-failed', 'proposal': {'sha': 'b'*40, 'base_sha': previous}})
+    assert running[0]
+    deployer.activate.assert_called_once_with(previous)

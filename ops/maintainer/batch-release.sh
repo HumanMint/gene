@@ -1737,7 +1737,7 @@ prune_images() {  # Release images nothing recent needs. Docker also keeps any a
   local keep repo tag
   # Kept: this release's old and new images; the images the live pins name, whichever release set them,
   # since an idle worker has no container to protect its image; the old and new images of the
-  # KEEP_RELEASES most recently resumed releases, so a rollback a few releases deep still finds them;
+  # KEEP_RELEASES most recently resumed, non-reverted releases, including the live release and its rollback;
   # and every image of a release that is not back in service yet.
   # Only the pin lines are read from the env files, and they are compared, never printed.
   keep=$(python3 - "$MANIFEST" "$ROOT/staging" "$KEEP_RELEASES" "$ROOT/release.env" GENE_RUNTIME_IMAGE \
@@ -1756,7 +1756,8 @@ for journal in glob.glob(staging+'/batch-*/journal'):
     with open(journal) as handle:
         marks = set(handle.read().split())
     path = os.path.dirname(journal)+'/manifest.json'
-    if 'resumed' in marks:
+    # Reverted attempts must not displace the live release's rollback images from the recent slots.
+    if 'resumed' in marks and 'resumed_old' not in marks:
         resumed.append((os.stat(journal).st_mtime, path))
     # Not yet back in service: staged, drained or switching, or mid-rollback. Its next phase checks
     # every image its manifest names, so all of them stay, however old.

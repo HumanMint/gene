@@ -1512,3 +1512,66 @@ def test_a_batch_stopped_after_its_fence_holds_retention_until_resume_old(batch_
     with pytest.raises(ValueError, match='Live Fri is not the release batch'):  # no longer in service
         retention.run(root, apply=True)
 
+
+
+@pytest.mark.parametrize('mode', ['paired', 'gene-only', 'fri-only'])
+def test_cleanup_keeps_live_rollback_after_two_reverted_attempts(tmp_path, mode):
+    """A -> B stays live after C and C attempt 2 resume, roll back and resume-old."""
+    root, fri_root = tmp_path / 'gene', tmp_path / 'fri'
+    for path in (root / 'staging', root / 'secrets', root / 'backups', fri_root / 'backups'):
+        path.mkdir(parents=True)
+    a = release_images(1)
+    b = release_images(2)
+    c = release_images(3)
+    unchanged = ('fri',) if mode == 'gene-only' else ('runtime', 'worker') if mode == 'fri-only' else ()
+    for role in unchanged:
+        b[role] = c[role] = a[role]
+
+    def batch(old, new, at, attempt=''):
+        stage = root / 'staging' / f'batch-{new["runtime"][0].split(":")[1]}-{new["fri"][0].split(":")[1]}{attempt}'
+        stage.mkdir()
+        (stage / 'manifest.json').write_text(json.dumps({
+            side: {role: {'tag': tag, 'id': image} for role, (tag, image) in images.items()}
+            for side, images in [('old', old), ('new', new)]
+        }))
+        (stage / 'journal').write_text('\n'.join(LIVE) + '\n')
+        os.utime(stage / 'journal', (at, at))
+        return stage
+
+    batch(a, b, 1)  # A -> B resumed.
+    for at, attempt in [(2, ''), (3, '-2')]:
+        stage = batch(b, c, at, attempt)
+        # Both attempts resumed C, then rollback-gene (or rollback-fri) and resume-old restored B.
+        rollback = ['intent:rollback', 'fri_rolled_back']
+        if mode != 'fri-only':
+            rollback += ['gene_rolled_back']
+        set_marks(stage, LIVE + rollback + ['resumed_old'])
+    (root / 'release.env').write_text(f'GENE_RUNTIME_IMAGE={b["runtime"][0]}\n')
+    (root / 'secrets/worker.env').write_text(f'GENE_WORKER_IMAGE={b["worker"][0]}\n')
+    (fri_root / 'release.env').write_text(f'FRI_RUNTIME_IMAGE={b["fri"][0]}\n')
+    tags = {tag for images in (a, b, c, release_images(0)) for tag, _ in images.values()}
+    image_list = tmp_path / 'images'
+    image_list.write_text('\n'.join(sorted(tags)) + '\n')
+    # Fake only Docker; cleanup and its keep-set calculation run exactly as committed.
+    body = r"""
+backup_dir() { echo none; }
+docker() {
+  case "$1 $2" in
+    'image ls') while read -r tag; do [[ $tag != "$5:"* ]] || echo "$tag"; done < "$IMAGE_LIST" ;;
+    'image rm') grep -Fxv -- "$3" "$IMAGE_LIST" > "$IMAGE_LIST.next"; mv "$IMAGE_LIST.next" "$IMAGE_LIST" ;;
+    'image prune') [[ $* == 'image prune -f' ]] ;;
+    *) return 1 ;;
+  esac
+}
+cleanup
+"""
+    rc, out = run_script(tmp_path, ['has', 'log', 'die', 'prune_images', 'cleanup'], body, {
+        'ROOT': str(root), 'FRI_ROOT': str(fri_root), 'STAGE': str(stage),
+        'JOURNAL': str(stage / 'journal'), 'MANIFEST': str(stage / 'manifest.json'),
+        'KEEP_RELEASES': '2', 'IMAGE_LIST': str(image_list),
+    })
+    assert rc == 0, out
+    remaining = set(image_list.read_text().splitlines())
+    required = {tag for images in (a, b) for tag, _ in images.values()}
+    assert required <= remaining, f'{mode}: live B or its rollback A lost {required - remaining}'
+    assert not {tag for tag, _ in release_images(0).values()} & remaining

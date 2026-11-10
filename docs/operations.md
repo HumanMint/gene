@@ -797,9 +797,8 @@ Questions about learning no longer go straight to the settings helper.
 Fri uses they/them. They answer pronoun questions briefly and can make a light correction
 in conversations they already participate in; this does not change attention/admission rules
 or cause them to interrupt unrelated messages. The compact voice foundation is
-`VOICE` in `src/gene/fri_chat.py`, shared with archive
-answers. It uses a few contrasting tone examples rather than retaining a full style
-quiz in every prompt. Owner voice notes remain a separate, versioned preference;
+defined by the separate Fri runtime. It uses a few contrasting tone examples rather
+than retaining a full style quiz in every prompt. Owner voice notes remain a separate, versioned preference;
 style examples never count as evidence of completed actions or bypass approval.
 
 Live chat requires an actual Discord `Message` or `Interaction` object at the
@@ -814,7 +813,7 @@ prove a member said something. The voice should stay brief for casual check-ins
 and verify disputed attribution rather than arguing from uncertain memory.
 
 Never call `Fri.talk` with fabricated owner messages for a live smoke test. Run
-`docker exec gene-fri-1 python -m gene.fri_eval` for six isolated voice/attribution
+`uv run python -m gene.fri_eval` for six isolated voice/attribution
 cases using fictional members. This evaluator calls `Chat.respond` directly with
 empty server facts, disabled personal memory and no actions. It has no conversation,
 note, settings, learning or Discord-message write path; only anonymous usage is
@@ -1054,7 +1053,7 @@ context. Memory opt-out erases their notes, member metadata and checked IDs, cle
 derived query terms, and invalidates an in-flight archive pass. Coverage metadata
 contains no raw message bodies; selected source excerpts remain private local data.
 
-`PLANNER` and `SUMMARIZER` in `src/gene/fri_explore.py` define this task's prompts.
+The separate Fri runtime defines this task's planning and summarization prompts.
 The owner can guide future exploration through versioned `learning_notes` previews
 without changing Fri's conversational voice or any authority boundary.
 

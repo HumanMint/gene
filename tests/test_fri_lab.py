@@ -1,17 +1,10 @@
-import asyncio
-import time
 from dataclasses import replace
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
 from gene.api import create_app
-from gene.fri_actions import Actions
-from gene.fri_agent import Agent
 from gene.fri_agent_store import AgentStore
 from tests.test_api import headers
-from tests.test_fri_actions import harness
 from tests.test_fri_agent import setup_agent as setup_agent
 
 
@@ -60,79 +53,3 @@ def test_lab_attention_admission_and_cooldowns_keep_separate_scope(setup_agent):
     assert client.post('/agent/admit', headers=headers('fri'), json={**scope, 'space': 'public'}).json()['allowed']
     assert agent.state()['history_channels'] == ['1', '2']
     assert agent.claim()['channel_id'] in ('1', '2')
-
-
-def test_lab_harness_observes_only_selected_channel_and_uses_its_guild(monkeypatch, tmp_path):
-    async def scenario():
-        fri, agent, channels, _ = harness(monkeypatch, tmp_path)
-        agent.state['test_scope'] = {'guild_id': '999', 'channel_id': '789'}
-        lab = channels[789] = SimpleNamespace(id=789, name='tests_n_stuff', guild=SimpleNamespace(id=999),
-            permissions_for=channels[1].permissions_for, history=channels[1].history)
-        fri._connection.user = SimpleNamespace(id=99)
-        agent.respond = AsyncMock()
-        fri.api = AsyncMock(return_value={'pending': False})
-        message = SimpleNamespace(guild=lab.guild, channel=lab, webhook_id=None, id=100,
-            author=SimpleNamespace(id=20, display_name='friend', bot=False), content='normal chat',
-            mentions=[], reference=None, reply=AsyncMock())
-        await agent.handle(message)
-        assert len(agent.recent[789]) == 1
-        agent.respond.assert_not_awaited()
-        message.content = 'fri what do you think?'
-        with patch('gene.fri_agent.asyncio.sleep', new=AsyncMock()):
-            await agent.handle(message)
-        agent.respond.assert_awaited_once()
-        assert agent.allowed(lab)
-        assert not agent.allowed(SimpleNamespace(id=790, parent_id=789, guild=lab.guild))
-        assert not agent.allowed(SimpleNamespace(id=789, guild=SimpleNamespace(id=1000)))
-        fri.api = AsyncMock(return_value={'enabled': True, 'revision': 0})
-        await Agent.profile(agent, 789, 20)
-        assert fri.api.await_args.args[2]['guild_id'] == '999'
-        actions = Actions(agent, 10, 789, True)
-        assert list(await actions.channels()) == ['789']
-        assert set(await actions.available()) == {'read_recent'}
-        agent.member.assert_awaited_with(10, fresh=False, guild_id=999)
-        assert 'blocked' in await actions.execute({'kind': 'read_recent', 'channel_id': '1'})
-        assert 'blocked' in await actions.execute({'kind': 'run_learning', 'channel_id': ''})
-        # Lab's Gene errors and owner-admin text cannot become FF work or expose reports.
-        fri.api.reset_mock()
-        message.author.id, message.author.bot = agent.gene_id, True
-        message.content = 'Track error: unavailable'
-        await agent.handle(message)
-        await agent.investigate(789, {'text': 'error'})
-        message.author.id = fri.owner_id
-        assert not await agent.owner_control(message, 'show usage')
-        fri.api.assert_not_awaited()
-        await fri.close()
-    asyncio.run(scenario())
-
-
-def test_membership_cache_never_reuses_ff_member_in_lab():
-    async def scenario():
-        ff = SimpleNamespace(fetch_member=AsyncMock(return_value=SimpleNamespace(id=20, guild='FF')))
-        lab = SimpleNamespace(fetch_member=AsyncMock(return_value=SimpleNamespace(id=20, guild='Lab')))
-        fri = SimpleNamespace(guild_id=123, get_guild=lambda gid: ff if gid == 123 else lab)
-        agent = Agent(fri)
-        assert (await agent.member(20)).guild == 'FF'
-        assert (await agent.member(20, guild_id=999)).guild == 'Lab'
-        assert (await agent.member(20)).guild == 'FF'
-        assert ff.fetch_member.await_count == lab.fetch_member.await_count == 1
-    asyncio.run(scenario())
-
-
-def test_lab_reply_dispatch_preserves_actual_guild(monkeypatch, tmp_path):
-    async def scenario():
-        fri, agent, _, _ = harness(monkeypatch, tmp_path)
-        agent.state['test_scope'] = {'guild_id': '999', 'channel_id': '789'}
-        from gene.fri_chat import ChatResult
-        fri.talk = AsyncMock(return_value=ChatResult(reply='yeah', draft='ignored draft', status='completed'))
-        channel = SimpleNamespace(id=789)
-        from unittest.mock import MagicMock
-        channel.typing = MagicMock(return_value=AsyncMock())
-        message = SimpleNamespace(guild=SimpleNamespace(id=999), channel=channel,
-            author=SimpleNamespace(id=20, display_name='friend'), reply=AsyncMock())
-        await agent.respond(message, 'hi')
-        assert fri.talk.await_args.args[0] == 999
-        assert message.reply.await_args.kwargs['view'] is None
-        assert agent.active[(789, 20)] > time.time()
-        await fri.close()
-    asyncio.run(scenario())

@@ -46,7 +46,7 @@ def test_the_repro_an_undelivered_report_keeps_no_words_past_its_week(learning, 
     assert pending['id'] == report_id and pending['body'].startswith(f'Learning pass {report_id[:8]}\nChannel: <#1>\n')
     assert pending['body'].endswith(EXPIRED) and 'Held back' not in pending['body']
     card = pending['card']
-    # Sol round 1's S1: the card says why it has no findings, where Fri shows a summary (fri_reports.summary).
+    # Sol round 1's S1: the card says why it has no findings, where Fri shows a summary.
     assert card['expired'] and card['summary'] == EXPIRED and card['findings'] == [] and card['term'] == ''
     assert 'held' not in card
     assert {key: value for key, value in card.items() if key not in {'summary', 'findings', 'term', 'expired'}} == {
@@ -79,7 +79,7 @@ def words_kept(store, report_id):
 
 
 def sent_by_fri(scheduler, during_first=None, passes=3):
-    """What Fri sends of the outbox after each pass, as main and 1.0.6 do (fri_agent._send_reports): each report one read
+    """What Fri sends of the outbox after each pass, as main and 1.0.6 do in the separate runtime: each report one read
     hands over, in turn, marked delivered after its send. `during_first`: what happens during the first send. Returns
     each read's reports."""
     reads, sends = [], 0

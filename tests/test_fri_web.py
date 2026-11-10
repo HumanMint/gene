@@ -1,19 +1,15 @@
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
-from gene.fri_actions import Actions
-from gene.fri_chat import Chat, ChatResult
+from gene.fri_chat import Chat
 from gene.fri_web import cite_reply, lookup
 from gene.web_policy import public_query
 from tests.test_api import actor, headers
-from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
-from tests.test_fri_runtime import event
 
 
 def search_events(kind='completed', *, searched=True, cited=True):
@@ -88,28 +84,6 @@ def test_search_action_requires_availability_and_current_exact_topic():
     assert result.action['query'] == 'Python release'
 
 
-def test_search_action_keeps_context_out_and_records_separate_usage(monkeypatch, tmp_path):
-    async def scenario():
-        fri, agent, _, _ = harness(monkeypatch, tmp_path)
-        agent.state['web_search_enabled'] = True
-        agent.record = AsyncMock()
-        actions = Actions(agent, 20, 1, True)
-        actions.message, actions.model, actions.effort = 'fri current Python release?', 'gpt-6.1-sol', 'high'
-        with patch('gene.fri_actions.lookup', new=AsyncMock(return_value=(
-                {'kind': 'web_search', 'sources': ['https://python.org']}, {'input_tokens': 100}, 'completed'))) as search:
-            assert 'web_search' in await actions.available()
-            assert 'blocked' in await actions.execute({'kind': 'web_search', 'query': 'private saved notes'})
-            search.assert_not_awaited()
-            result = await actions.execute({'kind': 'web_search', 'query': 'current Python release'})
-            assert result['kind'] == 'web_search'
-            search.assert_awaited_once_with(fri.chat, 'current Python release', 'gpt-6.1-sol', 'high')
-            agent.record.assert_awaited_with('web_search', 'gpt-6.1-sol', 'high', {'input_tokens': 100}, 'completed')
-            agent.member.return_value = None
-            assert not await actions.valid()
-        await fri.close()
-    asyncio.run(scenario())
-
-
 @pytest.mark.parametrize('status', ['completed', 'failed', 'incomplete', 'interrupted', 'invalid_output'])
 def test_web_usage_delivery_is_accepted_and_idempotent(client, status):
     report = {'attempt_id': 'a'*32, 'model': 'gpt-6.1-sol', 'effort': 'high', 'status': status,
@@ -118,66 +92,3 @@ def test_web_usage_delivery_is_accepted_and_idempotent(client, status):
         assert client.post('/chat/usage/report', headers=headers('fri'), json=report).status_code == 200
     usage = client.post('/agent/usage', headers=headers('fri'), json=actor()).json()
     assert usage[0]['role'] == 'web_search' and usage[0]['attempts'] == 1
-
-
-def test_web_reply_preserves_sources_and_keeps_only_a_neutral_receipt(monkeypatch, tmp_path):
-    async def scenario():
-        fri, agent, _, _ = harness(monkeypatch, tmp_path)
-        agent.state['web_search_enabled'] = True
-        calls = []
-        async def api(method, path, body=None):
-            calls.append((path, body))
-            if path == '/agent/admit':
-                return {'allowed': True}
-            if path == '/chat/context':
-                return {**CONTEXT, 'revision': 0}
-            return {'ok': True}
-        fri.api = api
-        fri.chat.respond = AsyncMock(side_effect=[
-            ChatResult(status='completed', action={'kind': 'web_search', 'query': 'Python release'}),
-            ChatResult(status='completed', reply='heres the [current release](https://python.org/downloads/)', draft='unexpected draft')])
-        receipt = {'kind': 'web_search', 'answer': 'public evidence', 'sources': ['https://python.org/downloads/'],
-                   'checked_at': '2026-10-19T20:00:00+00:00'}
-        with patch('gene.fri_actions.lookup', new=AsyncMock(return_value=(receipt, {'input_tokens': 20}, 'completed'))):
-            result = await fri.talk(123, 1, 20, 'fri Python release?', 'public',
-                event=event(user=20, channel=1, content='fri Python release?'))
-        assert 'http' not in result.reply and 'current release' in result.reply and result.draft is None
-        context = fri.chat.respond.await_args.args[1]
-        assert 'web_search' not in context['actions'] and 'web_refine' in context['actions']
-        assert context['action_result'] == {**receipt, 'outcome': 'completed'}
-        saved = next(body for path, body in calls if path == '/chat/turn')
-        assert saved['reply'].startswith('Earlier check: web_search') and 'public evidence' not in saved['reply']
-        assert saved['web_receipt'] == {k: receipt[k] for k in ('query', 'answer', 'sources', 'checked_at')}
-        roles = [body.get('role', 'conversation') for path, body in calls if path == '/chat/usage/report']
-        assert roles == ['conversation', 'web_search', 'conversation']
-        assert not list((tmp_path/'usage').glob('*.json'))
-        await fri.close()
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize('wording', ['share a link to a random sfw image featuring hatsune miku',
-    'send me the URL for Python downloads', 'where did you find that Python release, source?'])
-def test_first_request_for_a_link_is_fulfilled_without_an_extra_sources_turn(monkeypatch, tmp_path, wording):
-    async def scenario():
-        fri, agent, _, _ = harness(monkeypatch, tmp_path)
-        agent.state['web_search_enabled'] = True
-        async def api(method, path, body=None):
-            if path == '/agent/admit':
-                return {'allowed': True}
-            if path == '/chat/context':
-                return {**CONTEXT, 'revision': 0}
-            return {'ok': True}
-        fri.api = api
-        url = 'https://safebooru.donmai.us/posts/123'
-        fri.chat.respond = AsyncMock(side_effect=[
-            ChatResult(status='completed', action={'kind': 'web_search', 'query': wording}),
-            ChatResult(status='completed', reply=f'here’s the [artwork]({url})')])
-        receipt = {'answer': 'Selected public artwork', 'sources': [url], 'checked_at': '2026-10-22T00:00:00+00:00'}
-        try:
-            with patch('gene.fri_actions.lookup', new=AsyncMock(return_value=(receipt, {}, 'completed'))):
-                result = await fri.talk(123, 1, 20, wording, 'public', event=event(user=20, channel=1, content=wording))
-            assert result.reply == f'here’s the [artwork](<{url}>)'
-            assert fri.chat.respond.await_count == 2
-        finally:
-            await fri.close()
-    asyncio.run(scenario())

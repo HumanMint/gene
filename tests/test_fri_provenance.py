@@ -2,7 +2,7 @@ import asyncio
 import json
 import sqlite3
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -12,22 +12,8 @@ from gene.fri_context import ChatSource, discord_source
 from gene.fri_eval import evaluate
 from gene.store import Store
 from tests.test_api import actor, headers
-from tests.test_fri_actions import harness
 from tests.test_fri_chat import CONTEXT, response_event
-from tests.test_fri_runtime import configured, event
-
-
-def test_live_chat_rejects_synthetic_calls_before_reading_or_saving_anything(monkeypatch):
-    async def scenario():
-        fri = configured(monkeypatch)
-        fri.api = AsyncMock()
-        fri.chat.respond = AsyncMock()
-        with pytest.raises(ValueError, match='Discord event'):
-            await fri.talk(123, 456, 10, 'just finished work, absolutely cooked', 'public', 'humanmint')
-        fri.api.assert_not_awaited()
-        fri.chat.respond.assert_not_awaited()
-        await fri.close()
-    asyncio.run(scenario())
+from tests.test_fri_runtime import event
 
 
 @pytest.mark.parametrize('change', [{'user_id': 'other'}, {'channel_id': '2'}, {'guild_id': 'other'}])
@@ -100,30 +86,6 @@ def test_payload_has_current_id_nickname_and_attributed_past_turns():
     assert asyncio.run(chat.respond('who said that?', context)).status == 'completed'
 
 
-def test_runtime_uses_event_author_not_supplied_display_name_and_saves_source(monkeypatch, tmp_path):
-    async def scenario():
-        fri, agent, _, _ = harness(monkeypatch, tmp_path)
-        calls = []
-        async def api(method, path, body=None):
-            calls.append((path, body))
-            if path == '/agent/admit':
-                return {'allowed': True}
-            if path == '/chat/context':
-                return {**CONTEXT, 'revision': 0}
-            return {'ok': True}
-        fri.api = api
-        fri.chat.respond = AsyncMock(return_value=ChatResult(reply='yo', status='completed'))
-        source = event(user=20, channel=1, name='current nickname')
-        await fri.talk(123, 1, 20, 'yo', 'public', 'forged name', event=source)
-        context = fri.chat.respond.await_args.args[1]
-        assert context['speaker'] == {'user_id': '20', 'display_name': 'current nickname'}
-        saved = next(body for path, body in calls if path == '/chat/turn')
-        assert saved['source']['display_name'] == 'current nickname'
-        assert saved['source']['user_id'] == '20' and saved['source']['id'] == str(source.id)
-        await fri.close()
-    asyncio.run(scenario())
-
-
 def test_evaluation_has_no_actions_or_memory_and_only_records_usage(monkeypatch, tmp_path, capsys):
     from gene import fri_eval
     observed = []
@@ -169,22 +131,3 @@ def test_evaluation_usage_is_visible_without_identity(client):
     assert client.post('/chat/usage/report', headers=headers('fri'), json=report).status_code == 200
     usage = client.post('/agent/usage', headers=headers('fri'), json=actor()).json()
     assert usage[0]['role'] == 'evaluation' and usage[0]['input_tokens'] == 10
-
-
-def test_usage_delivery_tolerates_evaluator_delivering_the_same_receipt(monkeypatch, tmp_path):
-    async def scenario():
-        fri = configured(monkeypatch)
-        fri.data = tmp_path
-        path = tmp_path/'usage'/'receipt.json'
-        path.parent.mkdir()
-        path.write_text(json.dumps({'attempt_id': 'a'*32}))
-        async def deliver(*args):
-            path.unlink()  # Simulate the evaluator's successful delivery while Fri waits for its POST.
-        fri.api = AsyncMock(side_effect=deliver)
-        await fri.flush_usage()
-        assert fri.api.await_count == 1
-        with patch('pathlib.Path.glob', return_value=[path]):
-            await fri.flush_usage()  # Receipt disappeared between listing and reading.
-        assert fri.api.await_count == 1
-        await fri.close()
-    asyncio.run(scenario())

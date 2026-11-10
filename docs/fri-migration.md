@@ -19,12 +19,10 @@ obsolete companion code: `fri_agent_store`, `fri_context`, `fri_conversation`,
 `fri_pending`, `fri_research`, `fri_responses`, `fri_social_store`,
 `fri_workspace_store`, and their route modules.
 
-Old companion modules (`fri.py`, `fri_agent.py`, `fri_chat.py`, UI/tools/evaluators)
-remain as a frozen compatibility baseline plus a shared process lock for migration.
-They are not the production companion after cutover. Keep the prior immutable image
-and configuration for initial rollback. Future runtime fixes go to `HumanMint/fri`;
-controller contract fixes still go here. A later reviewed retirement can remove the
-legacy snapshot once old/new compatibility evidence is no longer needed.
+The unused companion entry point, orchestration and UI have been retired. Gene
+retains the dependencies of its documented evaluator commands and the live controller.
+Runtime fixes go to the separate Fri repository; controller contract fixes go here.
+Rollback continues to use prior immutable images and captured configuration.
 
 The additive `event-mention-chat` capability admits an explicit Discord mention in
 the configured main guild without adding the channel to any allowlist. The Fri-only

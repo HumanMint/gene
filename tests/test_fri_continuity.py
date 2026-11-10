@@ -9,17 +9,12 @@ import discord
 import pytest
 
 from gene.control_store import Controls
-from gene.fri_actions import Actions
-from gene.fri_chat import ChatResult
 from gene.fri_pending import research_query
 from gene.fri_research import start as start_research
-from gene.fri_runner import run
 from gene.gene_controls import requested
 from gene.store import Store
 from tests.test_api import headers
-from tests.test_fri_actions import harness
 from tests.test_fri_research import RECEIPT
-from tests.test_fri_runtime import event
 from tests.test_gene_controls import control_body, controls_api  # noqa: F401
 from tests.test_runtime_controls import runtime
 
@@ -127,39 +122,6 @@ def test_consumed_origin_cannot_replay_as_a_direct_command_even_after_erasure(st
         assert db.execute('SELECT count(*) FROM gene_controls').fetchone()[0] == 1
 
 
-@pytest.mark.parametrize('unavailable', ['inference', 'busy', 'cooldown'])
-def test_cancellation_clears_permission_without_inference_or_admission(monkeypatch, tmp_path, controls_api, unavailable):  # noqa: F811
-    async def scenario():
-        client, controls = controls_api
-        initial = origin()
-        pending = arm(controls.store, initial)
-        fri, _, _, _ = harness(monkeypatch, tmp_path)
-        async def api(method, path, body=None):
-            if path == '/agent/admit':
-                return {'allowed': unavailable != 'cooldown', 'until': time.time()+600}
-            result = client.request(method, path, headers=headers('fri'), json=body)
-            assert result.is_success, (path, result.text)
-            return result.json()
-        fri.api = api
-        fri.chat.respond = AsyncMock(return_value=ChatResult(status='failed', error='inference unavailable'))
-        if unavailable == 'busy':
-            fri.busy.add(20)
-        actual = event(user=20, channel=1, content='never mind')
-        actual.id = int(control_body()['source']['id'])
-        try:
-            result = await fri.talk(123, 1, 20, actual.content, 'public', event=actual)
-            assert result.status == 'completed'
-            fri.chat.respond.assert_not_awaited()
-            assert controls.store.chat_context('123', 'public:1', '20')['pending'] is None
-            with pytest.raises(ValueError):
-                controls.enqueue(answer(pending))
-            with pytest.raises(ValueError):
-                arm(controls.store, initial)  # A late reply/replayed event cannot rearm it.
-        finally:
-            await fri.close()
-    asyncio.run(scenario())
-
-
 def test_cancellation_requires_fresh_scoped_event_and_allows_a_new_request(controls_api):  # noqa: F811
     client, controls = controls_api
     pending = arm(controls.store)
@@ -248,27 +210,6 @@ def test_song_title_or_direct_mention_is_not_mistaken_for_a_cancellation(store, 
     assert Controls(store).enqueue(body)['id']
 
 
-@pytest.mark.parametrize('changed', ['edited', 'erased'])
-def test_pending_research_rechecks_source_before_any_web_export(monkeypatch, tmp_path, store, changed):
-    async def scenario():
-        pending = arm(store, origin(goal='web', text='how are the bills doing nowadays'), topic='how are the bills doing nowadays')
-        fri, agent, _, _ = harness(monkeypatch, tmp_path)
-        agent.state['web_search_enabled'] = True
-        actions = Actions(agent, 20, 1, True)
-        actions.pending, actions.message = pending, 'ya'
-        actions.scope = {'guild_id': '123', 'channel_id': '1', 'user_id': '20', 'conversation_id': 'public:1'}
-        actions.event = event(user=20, channel=1, content='ya')
-        old = SimpleNamespace(author=SimpleNamespace(id=20), webhook_id=None, content='edited request')
-        actions.event.channel.fetch_message = AsyncMock(return_value=old)
-        fri.api = AsyncMock(return_value={'revision': 0, 'pending': pending if changed == 'edited' else None})
-        with patch('gene.fri_actions.lookup', new=AsyncMock()) as lookup:
-            result = await actions.execute({'kind': 'web_search', 'query': pending['topic']})
-            assert 'blocked' in result
-            lookup.assert_not_awaited()
-        await fri.close()
-    asyncio.run(scenario())
-
-
 def test_public_research_confirmation_preserves_question_not_private_context(store):
     pending = arm(store, origin(goal='web', text='fri how are the bills doing nowadays'),
                   topic='how are the bills doing nowadays')
@@ -295,59 +236,6 @@ def test_research_correction_combines_only_explicit_public_excerpts(store):
         source=source, web_receipt={**RECEIPT, 'query': query})
 
 
-@pytest.mark.parametrize('song,message_text', [
-    ('blind melon no rain', 'blind melon no rain'),
-    ('Hold On by Wilson Phillips', 'fri play Hold On by Wilson Phillips'),
-    ('Nevermind by Nirvana', 'fri play Nevermind by Nirvana'),
-    ('Hold On by Wilson Phillips', 'Hold On by Wilson Phillips'),
-])
-def test_real_clarification_to_red_command_keeps_voice_checks_and_receipts(monkeypatch, tmp_path, controls_api, song, message_text):  # noqa: F811
-    async def scenario():
-        client, controls = controls_api
-        fri, agent, _, _ = harness(monkeypatch, tmp_path)
-        bot, runner, cog, _, member, channel, calls, message = await runtime()
-        original = copy.copy(message)
-        initial = origin(text='<@99> can you join the VC and play music')
-        original.id, original.content = int(initial['source']['id']), initial['request_text']
-        original.author = message.author = member
-        message.content = message_text
-        channel.fetch_message = AsyncMock(side_effect=lambda mid: original if mid == original.id else message)
-        async def api(method, path, body=None, role='fri'):
-            if path == '/agent/admit':
-                return {'allowed': True}
-            response = client.request(method, path, headers=headers(role), json=body)
-            assert response.is_success, (path, response.text)
-            return response.json()
-        fri.api = api
-        cog.api = lambda method, path, body=None: api(method, path, body, 'runtime')
-        fri.chat.respond = AsyncMock(side_effect=[
-            ChatResult(status='completed', action={'kind': 'clarify', 'goal': 'play', 'topic': '', 'question': 'what song?'}),
-            ChatResult(status='completed', action={'kind': 'gene_command', 'action': 'play', 'argument': song}),
-            ChatResult(status='completed', reply='queued it')])
-        member.voice = SimpleNamespace(channel=SimpleNamespace(id=8))
-        async def deliver(_):
-            claim = controls.poll(['play'])
-            assert claim
-            outcome = await runner.execute(cog, claim)
-            controls.finish(claim['id'], claim['lease'], outcome)
-        try:
-            result = await fri.talk(123, 1, 20, initial['request_text'], 'public', event=original)
-            assert result.reply == 'what song?' and calls == []
-            assert client.app.state.store.chat_context('123', 'public:1', '20')['pending']
-            with patch('gene.fri_actions.asyncio.sleep', new=deliver):
-                result = await fri.talk(123, 1, 20, message.content, 'public', event=message)
-            assert result.reply == 'queued it'
-            assert len(calls) == 1 and calls[0][1] == song
-            assert 'Track Enqueued' in fri.chat.respond.await_args.args[1]['action_result']['output']
-            assert controls.poll(['play']) is None
-            assert client.app.state.store.chat_context('123', 'public:1', '20')['pending'] is None
-        finally:
-            await runner.close()
-            await bot.close()
-            await fri.close()
-    asyncio.run(scenario())
-
-
 @pytest.mark.parametrize('tamper', ['edited', 'author', 'no_voice'])
 def test_runtime_rechecks_original_request_and_member_permissions(store, tamper):
     async def scenario():
@@ -372,67 +260,6 @@ def test_runtime_rechecks_original_request_and_member_permissions(store, tamper)
         finally:
             await runner.close()
             await bot.close()
-    asyncio.run(scenario())
-
-
-def test_irrelevant_research_can_refine_once_without_exporting_extra_context(monkeypatch, tmp_path):
-    async def scenario():
-        fri, agent, _, _ = harness(monkeypatch, tmp_path)
-        agent.state['web_search_enabled'] = True
-        agent.record = AsyncMock()
-        actions = Actions(agent, 20, 1, True)
-        actions.message, actions.model, actions.effort = 'how are the bills doing nowadays', 'model', 'high'
-        first = {**RECEIPT, 'answer': 'The league schedule is available; no team record established.'}
-        second = {**RECEIPT, 'answer': 'Fixture evidence: the specified team has a verified record.', 'sources': ['https://www.buffalobills.com/']}
-        replies = [ChatResult(action={'kind': 'web_refine', 'query': ''}), ChatResult(reply='heres how theyre doing', status='completed')]
-        fri.chat_once = AsyncMock(side_effect=replies)
-        with patch('gene.fri_actions.lookup', new=AsyncMock(side_effect=[(first, {}, 'completed'), (second, {}, 'completed')])) as lookup:
-            result, receipts, research = await run(fri, actions, actions.message, {'actions': {'web_search': {}}},
-                ChatResult(action={'kind': 'web_search', 'query': actions.message}))
-            assert result.reply == 'heres how theyre doing' and len(receipts) == 2
-            assert lookup.await_count == 2
-            assert lookup.await_args.kwargs['previous']['query'] == actions.message
-            assert research['sources'] == ['https://www.buffalobills.com/', 'https://www.python.org/downloads/']
-            assert fri.chat_once.await_args.args[1]['actions'] == {}
-            assert 'blocked' in await actions.execute({'kind': 'web_refine', 'query': ''})
-            assert 'blocked' in await actions.execute({'kind': 'web_search', 'query': actions.message})
-            assert lookup.await_count == 2
-        await fri.close()
-    asyncio.run(scenario())
-
-
-def test_read_history_cannot_be_persisted_as_a_clarification(monkeypatch, tmp_path, controls_api):  # noqa: F811
-    async def scenario():
-        client, _ = controls_api
-        fri, agent, channels, _ = harness(monkeypatch, tmp_path)
-        secret = 'Maple shared a private story about strawberry soda'
-        async def history(**kwargs):
-            yield SimpleNamespace(author=SimpleNamespace(id=30, bot=False, display_name='Maple'),
-                webhook_id=None, content=secret, jump_url='https://discord.com/channels/123/1/100',
-                created_at=dt.datetime.now(dt.timezone.utc))
-        channels[1].history = history
-        async def api(method, path, body=None):
-            if path == '/agent/admit':
-                return {'allowed': True}
-            result = client.request(method, path, headers=headers('fri'), json=body)
-            assert result.is_success, (path, result.text)
-            return result.json()
-        fri.api = api
-        text = 'fri play music. first read recent chat for suggestions'
-        fri.chat.respond = AsyncMock(side_effect=[
-            ChatResult(status='completed', action={'kind': 'read_recent', 'channel_id': '1'}),
-            ChatResult(status='completed', action={'kind': 'clarify', 'goal': 'play', 'topic': '',
-                                                 'question': 'what song? '+secret})])
-        actual = event(user=20, channel=1, content=text)
-        actual.id = int(control_body()['source']['id'])
-        try:
-            result = await fri.talk(123, 1, 20, text, 'public', event=actual)
-            assert secret not in result.reply and result.clarification is None
-            client.app.state.store.personal_control('30', 'disable')
-            context = client.app.state.store.chat_context('123', 'public:1', '20')
-            assert context['pending'] is None and secret not in str(context)
-        finally:
-            await fri.close()
     asyncio.run(scenario())
 
 

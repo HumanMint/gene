@@ -1,21 +1,15 @@
 """Exercise the real Discord iterator, controller API, and persisted learning scheduler offline."""
 
-import asyncio
 import datetime as dt
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import discord
 import pytest
-from fastapi.testclient import TestClient
 
-from gene.api import create_app
 from gene.config import Settings
-from gene.fri_agent import Agent
 from gene.fri_agent_store import AgentStore, snowflake_floor
 from gene.store import Store
-from tests.test_api import headers
 
 
 @pytest.fixture
@@ -62,85 +56,6 @@ class HistoryChannel(discord.abc.Messageable):
             created_at=dt.datetime.fromtimestamp(at, dt.timezone.utc))
         self.rows.append(row)
         return row.id
-
-
-def test_initial_scan_then_new_messages_drain_without_skips_after_restart(learning):
-    clock, store, settings, scheduler = learning
-    settings = replace(settings, agent_history_channels='1')
-    scheduler = AgentStore(store, settings)
-    scheduler.update({'history_batch': 5}, 1, 'owner')
-    channel = HistoryChannel()
-    old = channel.add(clock[0]-100)
-    store.personal_control('13', 'disable')
-    owner = SimpleNamespace(send=AsyncMock())
-    client = TestClient(create_app(settings))
-    requests, summaries = [], []
-
-    async def api(method, path, payload=None):
-        response = client.request(method, path, json=payload, headers=headers('fri'))
-        assert response.status_code == 200, response.text
-        requests.append((path, payload))
-        return response.json()
-
-    async def model(role, instructions, context, schema, model, effort):
-        assert (role, model, effort) == ('summary', 'gpt-6-luna', 'medium')
-        summaries.append(context['messages'])
-        return {'summary': 'Music chat.', 'notes': []}, {'input_tokens': 20, 'output_tokens': 5}, 'completed'
-
-    async def scenario():
-        fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456, api=api,
-            get_channel=lambda _: channel, get_user=lambda _: owner)
-        def runtime():
-            agent = Agent(fri)
-            agent.state = scheduler.state()
-            agent.member = AsyncMock(side_effect=lambda user: SimpleNamespace(
-                roles=[SimpleNamespace(id=90)] if user != 12 else []))
-            agent.profile = AsyncMock(side_effect=lambda channel, user: scheduler.context(str(channel), str(user)))
-            agent.run = model
-            return agent
-
-        agent = runtime()
-        first = await agent.learn()
-        assert first['scanned'] == first['eligible'] == 1
-        assert summaries[0][0]['id'] == str(old)
-        assert value(store, 'budget')['used'] == 1
-        assert value(store, 'cursors')['1']['done_at'] == clock[0]
-        # New messages include non-admins, bots and opted-out members. They move
-        # the scan cursor but never enter a model's summary/memory candidates.
-        new = [channel.add(clock[0]+i+1, user=user, bot=bot) for i, (user, bot) in enumerate(
-            [(11, False), (12, False), (11, True), (13, False), (11, False), (11, False), (11, False)])]
-        clock[0] += 1800
-        agent = runtime()  # The next runtime uses only persisted cursors.
-        second = await agent.learn()
-        assert (second['scanned'], second['eligible']) == (5, 2)
-        assert [r['id'] for r in summaries[1]] == [str(new[0]), str(new[4])]
-        assert value(store, 'cursors')['1']['after_id'] == str(new[4])
-        clock[0] += 1800
-        third = await agent.learn()
-        assert (third['scanned'], third['eligible']) == (2, 2)
-        assert [r['id'] for r in summaries[2]] == [str(new[5]), str(new[6])]
-        assert value(store, 'cursors')['1']['after_id'] == str(int(snowflake_floor(clock[0]))-1)
-        # A message in the exact snapshot millisecond must remain eligible.
-        boundary = channel.add(clock[0])
-        clock[0] += 1800
-        assert (await agent.learn())['scanned'] == 1
-        assert summaries[-1][0]['id'] == str(boundary)
-        clock[0] += 1800
-        empty = await agent.learn()
-        assert empty['scanned'] == 0
-        assert len(summaries) == 4  # Empty checks spend no model tokens.
-        assert value(store, 'budget')['used'] == 9
-        assert owner.send.await_count == 5 and not scheduler.reports()
-        # The mobile DM is concise; full usage remains available under Details.
-        assert 'no new notes' in owner.send.await_args.args[0]
-        assert 'Tokens:' not in owner.send.await_args.args[0]
-        assert 'input 0, output 0, reasoning 0' in scheduler.report(empty['report_id'])['body']
-        assert owner.send.await_args.kwargs['view'].is_persistent()
-        assert channel.reads[0]['after'] is None  # Backward initial scan.
-        assert all(read['after'] for read in channel.reads[1:])
-        finishes = [body for path, body in requests if path.endswith('/finish')]
-        assert all(not body['error'] for body in finishes)
-    asyncio.run(scenario())
 
 
 def test_legacy_cursor_resumes_from_enablement_and_failed_summary_retries_same_slice(learning):
@@ -258,25 +173,6 @@ def test_old_claim_refund_cannot_credit_another_budget_day(learning):
         scheduler.put(db, 'budget', {'day': 1, 'used': 40})
     scheduler.finish(claim['id'], [], {}, 0, None, True, {})
     assert value(store, 'budget') == {'day': 1, 'used': 40}
-
-
-@pytest.mark.parametrize('failure', [False, True])
-def test_heartbeat_records_actual_tick_outcome(learning, failure, monkeypatch):
-    monkeypatch.setattr('gene.fri_workspace.deliver_one', AsyncMock())
-    monkeypatch.setattr('gene.fri_social.deliver_one', AsyncMock())
-    clock, _, _, scheduler = learning
-    async def scenario():
-        fri = SimpleNamespace(owner_id=10, guild_id=123, workshop_id=456,
-            api=AsyncMock(return_value=scheduler.state()))
-        agent = Agent(fri)
-        agent.send_reports = AsyncMock()
-        agent.learn = AsyncMock(side_effect=ValueError('unavailable') if failure else None)
-        agent.attend = AsyncMock()
-        await agent.heartbeat.coro(agent)
-        assert agent.heartbeat_started == agent.heartbeat_finished == clock[0]
-        assert agent.heartbeat_status == ('deferred' if failure else 'ok')
-        assert agent.attend.await_count == (0 if failure else 1)
-    asyncio.run(scenario())
 
 
 INTERRUPTED = {'blocked': 'The previous pass was interrupted. Its report is pending; its allowance remains reserved.'}

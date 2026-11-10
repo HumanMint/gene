@@ -14,14 +14,12 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
-from gene.fri_chat import ChatResult
 from gene.fri_context import ChatSource
 from gene.fri_errors import ControllerRejected
 from gene.fri_social import SocialButton, component, deliver_one, execute, render, show_preview
 from gene.fri_social_store import Social, local_timestamp
 from gene.fri_workspace import send_once
 from gene.store import Store
-from tests.test_fri_actions import harness
 
 DM = {'guild_id': '123', 'user_id': '10', 'channel_id': '456', 'conversation_id': 'private:999'}
 PUBLIC = {**DM, 'conversation_id': 'public:456'}
@@ -307,60 +305,6 @@ def test_cards_use_bounded_persistent_buttons_and_disabled_pings(store):
     assert all(len(child.item.custom_id) < 100 for child in view.children)
     with store.connection() as db:
         assert db.execute('SELECT COUNT(*) FROM fri_plan_votes').fetchone()[0] == 0
-
-
-@pytest.mark.parametrize('failure', ['', 'edit', 'delete', 'expired', 'privacy', 'user', 'channel', 'cancel'])
-def test_reminder_short_clarification_through_real_fri_talk(api, tmp_path, monkeypatch, failure):
-    async def scenario():
-        client, call = api
-        fri, agent, _, _ = harness(monkeypatch, tmp_path)
-        fri.api = call
-        event = source()
-        original = Mock(spec=discord.Message, id=int(event.id), content='remind me tomorrow at 7 to update the mods',
-            author=SimpleNamespace(id=10, display_name='Member'), guild=None, webhook_id=None,
-            attachments=[], embeds=[], edited_at=None)
-        dm = Mock(spec=discord.DMChannel, id=999, history=Mock(return_value=AsyncMock()))
-        original.channel = dm
-        answer = Mock(spec=discord.Message, id=int(source(3).id), content='7 pm',
-            author=original.author, guild=None, webhook_id=None, channel=dm, attachments=[], embeds=[], edited_at=None)
-        if failure == 'expired':
-            original.id -= 301000 << 22
-        dm.fetch_message = AsyncMock(side_effect=lambda mid: original if mid == original.id else answer)
-        action = {'kind': 'reminder_prepare', 'body': 'update the mods', 'local_time': future(), 'timezone': 'UTC'}
-        fri.chat_once = AsyncMock(side_effect=[ChatResult(reply='7 am or 7 pm?', status='completed'),
-            ChatResult(action=action, status='completed'), ChatResult(reply='Ask again with the reminder details.', status='completed')])
-        try:
-            first = await fri.talk(123, 999, 10, original.content, 'private', event=original)
-            assert first.reply == '7 am or 7 pm?'
-            if failure == 'edit':
-                original.content = 'changed request'
-            elif failure == 'delete':
-                async def fetch(mid):
-                    if mid == original.id:
-                        raise discord.NotFound(SimpleNamespace(status=404, reason='deleted'), 'deleted')
-                    return answer
-                dm.fetch_message.side_effect = fetch
-            elif failure == 'privacy':
-                client.app.state.store.personal_control('10', 'disable')
-            elif failure == 'user':
-                answer.author = SimpleNamespace(id=11, display_name='Other member')
-            elif failure == 'channel':
-                dm = Mock(spec=discord.DMChannel, id=1000, fetch_message=AsyncMock(return_value=answer),
-                          history=Mock(return_value=AsyncMock()))
-                answer.channel = dm
-            elif failure == 'cancel':
-                answer.content = 'cancel'
-            result = await fri.talk(123, dm.id, answer.author.id, answer.content, 'private', event=answer)
-            rows = Social(client.app.state.store).reminder_list(DM)['items']
-            if not failure:
-                assert result.social_preview['kind'] == 'reminder'
-                assert rows[0]['state'] == 'pending'
-                assert Social(client.app.state.store).reminder_claim() is None
-            else:
-                assert result.social_preview is None and rows == []
-        finally:
-            await fri.close()
-    asyncio.run(scenario())
 
 
 def test_game_night_tool_publish_availability_and_rsvp_buttons_use_real_controller(api, tmp_path):

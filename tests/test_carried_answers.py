@@ -21,6 +21,7 @@ def test_second_and_third_hop_keep_question_only_turn(store):
     store.withdraw_saved('123', [a], deleted=True)
     store = Store(store.path)
     assert replies(store, '30')[0]['reply'] == DRAWN
+    assert replies(store, '30')[0]['answer_id'] is None
     assert replies(store, '40')[0]['reply'] == DRAWN
     assert replies(store, '50')[0]['reply'] == DRAWN
     assert replies(store, '60')[0]['reply'] == 'okay'
@@ -39,6 +40,7 @@ def test_old_fri_behavior(store):
     save(store, 'legacy C', user='40', drew_on=[replies(store, '30')[0]['source']['id']])
     store.withdraw_saved('123', [a], deleted=True)
     assert replies(store, '30')[0]['reply'] == DRAWN
+    assert replies(store, '30')[0]['answer_id'] is None
     assert replies(store, '40')[0]['reply'] == 'okay'
 
 
@@ -71,3 +73,14 @@ def test_api_malformed_field_keeps_save(world, value):  # noqa: F811
         'source': source(channel='51'), 'provenance': [], 'carried_answers': value})
     assert response.status_code == 200, response.text
     assert replies(store, '20')[0]['reply'] == 'okay'
+
+
+def test_fallback_identity_is_stable_and_never_reused(store):
+    message = save(store, 'first')
+    first = replies(store, '20')[0]['answer_id']
+    assert first.startswith('turn:')
+    store = Store(store.path)
+    assert replies(store, '20')[0]['answer_id'] == first
+    store.withdraw_saved('123', [message], deleted=True)
+    save(store, 'replacement')
+    assert replies(store, '20')[0]['answer_id'] != first

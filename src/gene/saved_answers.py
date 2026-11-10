@@ -17,6 +17,10 @@ def checked(value):
 
 def initialize(db):
     columns = {r['name'] for r in db.execute('PRAGMA table_info(chat_turns)')}
+    if 'answer_retired' not in columns:
+        db.execute('ALTER TABLE chat_turns ADD COLUMN answer_retired INTEGER NOT NULL DEFAULT 0')
+    db.execute('CREATE TRIGGER IF NOT EXISTS chat_answer_retired AFTER UPDATE OF reply ON chat_turns BEGIN '
+               'UPDATE chat_turns SET answer_retired=1 WHERE id=NEW.id; END')
     if 'answer_key' not in columns:
         db.execute('ALTER TABLE chat_turns ADD COLUMN answer_key TEXT')
     db.execute("UPDATE chat_turns SET answer_key='turn:'||lower(hex(randomblob(16))) WHERE answer_key IS NULL")

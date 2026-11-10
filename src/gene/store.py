@@ -789,7 +789,7 @@ class Store:
                     lapsed(db, guild_id, user)
             turns = [dict(row) for row in db.execute(
                 'SELECT id,input,reply,source,at,response_kind,reaction,allow_closing,burst,provenance,attributed,'
-                "user_id,summary_generation,summary_dependencies,coalesce(reply_message_id,answer_key) AS answer_id FROM chat_turns "
+                "user_id,summary_generation,summary_dependencies,CASE WHEN answer_retired=0 THEN coalesce(reply_message_id,answer_key) END AS answer_id FROM chat_turns "
                 'WHERE guild_id=? AND channel_id=? AND user_id=? '
                 'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
             turns = self._current_turns(db, turns)

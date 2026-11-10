@@ -4,7 +4,7 @@ PROTOCOL = 'gene-fri/1'
 CAPABILITIES = ('scoped-context', 'gene-controls', 'owner-reviews', 'privacy-revisions',
                 'workspace-outbox', 'social-outbox', 'research-receipts', 'agent-learning',
                 'event-mention-chat', 'turn-provenance')
-OPTIONAL = ('reply-checks', 'member-profiles', 'requester-notices',
+OPTIONAL = ('saved-answer-ids', 'reply-checks', 'member-profiles', 'requester-notices',
             'requester-notice-authorize',
             'usage-window', 'memory-moves', 'member-summaries',
             'author-fence', 'turn-withdrawal',

@@ -1,0 +1,157 @@
+name: release and storage checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'ops/**'
+      - 'src/gene/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/release-storage.yml'
+  workflow_dispatch:
+    inputs:
+      fri_ref:
+        description: Fri branch, tag, or SHA to test
+        default: main
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: release-storage-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  paths:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.filter.outputs.release }}
+      storage: ${{ steps.filter.outputs.storage }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PYTHON'
+          import os, subprocess
+          release = storage = os.environ['EVENT'] != 'pull_request'
+          if not release:
+              paths = subprocess.check_output([
+                  'git', 'diff', '--name-only', '-z', os.environ['BASE'], os.environ['HEAD'],
+              ]).decode().split('\0')
+              workflow = '.github/workflows/release-storage.yml' in paths
+              release = workflow or any(
+                  p.startswith('ops/') or p in ('src/gene/deploy.py', 'src/gene/fri_release.py')
+                  for p in paths
+              )
+              # Broad filters cover storage callers without maintaining a fragile file list.
+              storage = workflow or any(
+                  p.startswith(('src/gene/', 'tests/')) or p in ('pyproject.toml', 'uv.lock')
+                  for p in paths
+              )
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'release={str(release).lower()}\nstorage={str(storage).lower()}\n')
+          PYTHON
+  release-mocks:
+    needs: paths
+    if: needs.paths.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # The mocks execute historical rollback sources.
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: HumanMint/fri
+          ref: ${{ inputs.fri_ref || 'main' }}
+          path: fri
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install uv==0.11.30
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: release-mocks-uv-${{ runner.os }}-${{ hashFiles('uv.lock', 'fri/uv.lock') }}
+          restore-keys: release-mocks-uv-${{ runner.os }}-
+      - run: uv sync --frozen --extra red
+      - run: uv sync --frozen
+        working-directory: fri
+      - name: Prepare root git and UID 10001 access
+        run: |
+          sudo git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          sudo git config --global --add safe.directory "$GITHUB_WORKSPACE/fri"
+          # uv's managed Python/cache and the editable installs must be traversable by UID 10001.
+          chmod o+x "$HOME"
+          for directory in .venv fri/.venv "$HOME/.local/share/uv" "$HOME/.cache/uv"; do
+            if [[ -d "$directory" ]]; then chmod -R a+rX "$directory"; fi
+          done
+      - name: Run release mocks with one failed-test retry
+        shell: bash
+        run: |
+          mkdir -p mock-logs
+          run_mocks() {
+            sudo -E env PATH="$PATH" PROBE_WINDOW=120 FRI_REPO="$GITHUB_WORKSPACE/fri" \
+              ops/maintainer/test/run.sh "$@"
+          }
+          if run_mocks 2>&1 | tee mock-logs/initial.log; then
+            exit 0
+          fi
+          # Parallel mocks can flake under runner load (window/orphan timing and empty-reason unhealthy).
+          # Retry only the runner's failed tests once; setup errors and repeated failures still fail CI.
+          failed=$(sed -n 's/^FAILED: //p' mock-logs/initial.log)
+          [[ -n "$failed" ]] || exit 1
+          read -r -a tests <<< "$failed"
+          run_mocks "${tests[@]}" 2>&1 | tee mock-logs/retry.log
+      - name: Collect mock diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p mock-logs
+          while IFS= read -r directory; do
+            sudo cp -R "$directory" "mock-logs/$(basename "$directory")"
+          done < <(sed -n 's/^outputs in //p' mock-logs/*.log)
+          sudo chmod -R a+rX mock-logs
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: release-mock-logs
+          path: mock-logs/
+  sqlite-tests:
+    needs: paths
+    if: needs.paths.outputs.storage == 'true'
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.11-bookworm
+      # SQLite-heavy fixtures need file semantics, not slow runner-disk fsyncs.
+      options: --tmpfs /tmp:rw,exec,size=2g,mode=1777
+    timeout-minutes: 180
+    env:
+      # Keep uv on the container interpreter that supplies production's SQLite version.
+      UV_PYTHON: /usr/local/bin/python
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Assert production SQLite series
+        run: |
+          python -c 'import sqlite3; print(sqlite3.sqlite_version)' | tee /tmp/sqlite-version
+          grep -q '^3\.40\.' /tmp/sqlite-version
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python -m pip install uv==0.11.30
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: sqlite-uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: sqlite-uv-${{ runner.os }}-
+      - run: uv sync --frozen --extra red
+      - run: uv run pytest -q

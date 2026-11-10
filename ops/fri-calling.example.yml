@@ -1,0 +1,9 @@
+# Operator-installed only; neither launcher discovers this example automatically.
+services:
+  runtime:
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:18790:18790"
+    environment:
+      JPCALL_LISTEN_HOST: "0.0.0.0"
+      JPCALL_LISTEN_PORT: "18790"

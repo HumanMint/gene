@@ -11,6 +11,7 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import subprocess
 import tarfile
 import time
@@ -18,6 +19,18 @@ from pathlib import Path
 
 from . import maintenance
 from .private_files import private_json
+
+
+def calling_overlay(root):
+    path = Path(root) / 'compose.calling.yml'
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or stat.S_IMODE(info.st_mode) not in (0o600, 0o644)):
+        raise ValueError('Invalid Fri calling overlay; require a root-owned regular file, mode 0600 or 0644')
+    return path
 
 
 class FriRelease:
@@ -47,8 +60,9 @@ class FriRelease:
         return result.stdout.strip()
 
     def compose(self, *args):
+        overlay = calling_overlay(self.root)
         return self.run(['docker', 'compose', '--project-name', 'fri', '--env-file', str(self.env),
-                         '-f', str(self.compose_file), *args])
+                         '-f', str(self.compose_file), *(['-f', str(overlay)] if overlay else []), *args])
 
     def environment(self, sha):
         values = {'FRI_RELEASE_SHA': sha, 'FRI_RUNTIME_IMAGE': 'fri-runtime:'+sha,

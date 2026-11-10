@@ -199,3 +199,32 @@ Both must report `active`. If development remains paused, the owner uses the
 existing Resume control after reviewing queued requests. Masking does not clear
 queued work. No controller feature flag is needed: without these services no
 coding or automatic deployment runs.
+
+## Optional Fri calling overlay
+
+Both Fri launchers accept only `compose.calling.yml` under the existing Fri
+installation root (the default is defined in `gene.fri_release` and the batch script).
+There is no overlay-path setting; credentials stay in the existing private environment file. With that file absent, the Docker Compose command
+is unchanged. If present, it must be a regular, non-symlink file, owned by root,
+with mode 0600 or 0644. Any other type, owner, mode or inspection error refuses the
+Compose operation, including rollback; correct the operator configuration rather
+than bypassing validation. Make changes only with the runtime stopped and the
+maintainer's release/configuration ownership held.
+
+The [example](../fri-calling.example.yml) grants 30 seconds for graceful shutdown
+and publishes only host-loopback port 18790. Grace stays in the optional overlay so
+ordinary Fri's no-overlay configuration is unchanged. The call service listens on
+the container interface; a separate, approved TLS ingress supplies public HTTPS/WSS on port 443.
+The example does not install ingress, supply credentials, seed a budget or authorize
+a call. Install it as `compose.calling.yml` only during an explicitly approved
+maintenance-window configuration change, then validate the effective configuration
+without printing secret environment values. Do not edit the tracked base Compose
+file on the bot host. The launchers append the overlay after that base file.
+
+Before rolling back to a budget-unaware caller, independently disable calling in
+the private environment file used by both current and rollback releases: clear
+`JPCALL_OPENAI_API_KEY` and `JPCALL_ALLOWED_USER_IDS` through the existing private
+configuration procedure, and verify the effective disabled state. Keep that guard
+in place when restoring the older image; an overlay is not a disable guard because
+older launchers ignore it. Preserve the current calling budget, recovery records
+and installation markers. Never restore an older state snapshot or reset a ledger.

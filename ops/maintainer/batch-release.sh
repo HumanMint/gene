@@ -119,8 +119,23 @@ compose_gene() {
 }
 
 fri_compose() {  # Fri's own project, exactly as gene.fri_release runs it
-  local file=$ROOT/source/ops/fri-compose.yml
+  local file=$ROOT/source/ops/fri-compose.yml overlay
   [[ -f $file ]] || file=$(backup_dir)/installed-source/ops/fri-compose.yml
+  # This bootstrap path must also work before the new Gene module is installed.
+  overlay=$(python3 - "$FRI_ROOT/compose.calling.yml" <<'PY'
+import os, stat, sys
+try:
+    info = os.lstat(sys.argv[1])
+except FileNotFoundError:
+    pass
+else:
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
+            or stat.S_IMODE(info.st_mode) not in (0o600, 0o644)):
+        sys.exit('Invalid Fri calling overlay; require a root-owned regular file, mode 0600 or 0644')
+    print(sys.argv[1])
+PY
+  ) || die 'Could not validate Fri calling overlay'
+  [[ -z $overlay ]] || set -- -f "$overlay" "$@"
   docker compose --project-name fri --env-file "$FRI_ROOT/release.env" -f "$file" "$@"
 }
 

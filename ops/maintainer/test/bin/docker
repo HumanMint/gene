@@ -178,10 +178,16 @@ def run(rest):
 def compose(rest):
     project = rest[rest.index('--project-name')+1]
     values = env_file(rest[rest.index('--env-file')+1])
-    compose_file = rest[rest.index('-f')+1]
-    if not os.path.isfile(compose_file):
-        refuse('compose file missing '+compose_file)
-    action_at = rest.index('-f')+2
+    action_at = rest.index('-f')
+    files = []
+    while rest[action_at] == '-f':
+        compose_file = rest[action_at+1]
+        if not os.path.isfile(compose_file):
+            refuse('compose file missing '+compose_file)
+        files.append(compose_file)
+        action_at += 2
+    with open(M+'/compose-commands.jsonl', 'a') as out:
+        out.write(json.dumps({'project': project, 'files': files, 'action': rest[action_at]})+'\n')
     action, rest = rest[action_at], rest[action_at+1:]
     services = [a for a in rest if not a.startswith('-')]
     allowed = {'gene': {'controller', 'red'}, 'fri': {'runtime'}}[project]

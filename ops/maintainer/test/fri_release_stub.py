@@ -13,6 +13,11 @@ import sqlite3
 import subprocess
 import sys
 import time
+from pathlib import Path
+
+# Exercise the candidate's real command construction, not a second overlay implementation.
+sys.path.insert(0, str(Path(os.environ['GENE_PY']).parents[2] / 'src'))
+from gene.fri_release import FriRelease  # noqa: E402
 
 ROOT, FRI = os.environ['BATCH_ROOT'], os.environ['BATCH_FRI_ROOT']
 assert sys.argv[1:3] == ['-m', 'gene.fri_release'], sys.argv
@@ -27,8 +32,11 @@ def environment(release):
 
 
 def compose(*args):
-    subprocess.run(['docker', 'compose', '--project-name', 'fri', '--env-file', FRI+'/release.env',
-                    '-f', ROOT+'/source/ops/fri-compose.yml', *args], check=True)
+    release = FriRelease.__new__(FriRelease)
+    release.root, release.env = Path(FRI), Path(FRI+'/release.env')
+    release.compose_file = Path(ROOT+'/source/ops/fri-compose.yml')
+    release.run = lambda command: subprocess.run(command, check=True)
+    release.compose(*args)
 
 
 def write(path, data):

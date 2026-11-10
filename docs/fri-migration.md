@@ -374,10 +374,8 @@ separate `fri` project. Runtime mounts are only the existing Fri data/auth direc
 Its image label must match the reviewed SHA. The companion has no release API or
 host/Docker/GitHub credentials. Existing Gene job approvals cannot target Fri.
 
-Initial migration stops `gene-fri-1`, disables its restart policy and starts the new
-singleton. Both companion implementations acquire the same persistent data-directory
-lock. Later releases restart only Fri. Gene/Red/controller/audio and active workers
-are left alone by this coordinator. Gene's normal cog deploy/rollback never touches
+The initial migration is complete. Releases restart only Fri. Gene/Red/controller/audio
+and active workers are left alone by this coordinator. Gene's normal cog deploy/rollback never touches
 Fri's pins or service.
 
 Backups capture current controller/data state for disaster recovery. Automatic Fri

@@ -469,11 +469,7 @@ After transfer, the VM owns refreshes. Never overwrite a live rotated token with
 local copy. Reconnection is a new interactive authorization; stop Fri before replacing
 its session and mark/remove the transferred local credential. Keep the host identity.
 
-Add a distinct `GENE_FRI_TOKEN` to controller.env and fri.env. Fri's env also contains its
-Discord token and the configured guild/owner/workshop IDs. Create `/srv/gene/data/fri`
-owned by 10001. The compose `fri` profile is opt-in until setup is complete; start with
-`--profile fri up -d controller red fri`. Verify both bot heartbeats and a real subscription
-reply before retiring Gene's development controls. Never run two gateways for one token.
+Deploy Fri using the [separate Fri deployment guide](fri-migration.md#release-and-recovery).
 
 The runtime image pins Fri's trusted implementation under `src/gene/`; it does not mount
 mutable feature cogs, host files, the Docker socket, or development credentials. Fri's chat

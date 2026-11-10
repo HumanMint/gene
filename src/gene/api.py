@@ -188,6 +188,7 @@ class ChatTurn(ChatScope):
     # quotes, what a read showed, saved history), from a Fri offering withdrawal-sources. One withdrawn since refuses
     # the check and keeps nothing at the save; withdrawn later, the saved reply keeps only a breadcrumb (gene #141). An
     # older Fri sends none: checked and kept as before.
+    carried_answers: object = None  # Malformed optional metadata must not reject an otherwise valid save.
     drew_on: Annotated[list[Annotated[str, Field(pattern=r'^[0-9]{1,25}$')]], Field(max_length=1000)] = []
 
     @model_validator(mode='after')
@@ -570,7 +571,7 @@ def create_app(settings: Settings | None = None):
                               reply_message_id=body.reply_message_id, verbatim=body.verbatim, audience=body.audience,
                               summary_generation=body.summary_generation,
                               summary_dependencies=[row.model_dump() for row in body.summary_dependencies],
-                              drew_on=body.drew_on, parent=body.channel_id)
+                              drew_on=body.drew_on, carried_answers=body.carried_answers, parent=body.channel_id)
 
     @app.post('/chat/turn/check', dependencies=[auth('fri')])
     def chat_turn_check(body: ChatTurn):

@@ -235,6 +235,8 @@ class Store:
                 # none or an older Fri. One withdrawn retires the reply (see _retire_drawn). An older controller
                 # leaves it alone.
                 db.execute('ALTER TABLE chat_turns ADD COLUMN drew_on TEXT')
+            from .saved_answers import initialize as initialize_answers
+            initialize_answers(db)
             columns = {r['name'] for r in db.execute('PRAGMA table_info(chat_turn_deletions)')}
             for column, kind in (('user_id', 'TEXT'), ('revision', 'INTEGER')):  # A deletion's author (see _deleted).
                 if column not in columns:
@@ -787,7 +789,7 @@ class Store:
                     lapsed(db, guild_id, user)
             turns = [dict(row) for row in db.execute(
                 'SELECT id,input,reply,source,at,response_kind,reaction,allow_closing,burst,provenance,attributed,'
-                'user_id,summary_generation,summary_dependencies FROM chat_turns '
+                "user_id,summary_generation,summary_dependencies,coalesce(reply_message_id,answer_key) AS answer_id FROM chat_turns "
                 'WHERE guild_id=? AND channel_id=? AND user_id=? '
                 'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
             turns = self._current_turns(db, turns)
@@ -798,6 +800,7 @@ class Store:
                     turn.pop(key)
                 if drew and holding(db, guild_id, drew):  # Withheld while a summary it drew on is (HumanMint/fri#355).
                     turn['reply'], drew = HELD_REPLY, []
+                    turn.pop('answer_id', None)
                 if dependencies and drew:
                     turn['summaries'] = drew
                 turn['burst'] = json.loads(turn['burst'])
@@ -1245,7 +1248,7 @@ class Store:
                   input_tokens=None, output_tokens=None, notes=(), source=None, web_receipt=None, clarification=None,
                   *, response_kind='reply', reaction=None, allow_closing=False, burst=(), provenance=None,
                   reply_message_id=None, verbatim=False, audience='conversation', summary_generation=None,
-                  summary_dependencies=(), drew_on=(), parent=None):
+                  summary_dependencies=(), drew_on=(), carried_answers=(), parent=None):
         # None: a legacy companion that doesn't track sources. A list, even empty, is complete attribution.
         attributed = provenance is not None
         if audience not in ('server', 'conversation') or (audience == 'server' and not channel_id.startswith('public:')):
@@ -1302,7 +1305,9 @@ class Store:
             fenced = fenced or turn_withdrawn(db, guild_id, channel_id, source and source.model_dump(), burst, parent)
             # Nor one whose model request carried a message deleted by now (gene #141): its reply may repeat it, so
             # it keeps nothing, though the member's own message stands, so it settles what was pending as usual.
-            stale = (fenced or self.deleted_anywhere(db, guild_id, drew_on) or
+            from .saved_answers import ancestors
+            answer_ancestors = ancestors(db, guild_id, carried_answers)
+            stale = (answer_ancestors is None or fenced or self.deleted_anywhere(db, guild_id, drew_on) or
                      predates(db, guild_id, channel_id, user_id, first))
             # One from before memory was last turned off keeps no exchange or note either (HumanMint/fri#331), and,
             # with memory on again, leaves no question pending: that would carry its words to the member's next turn
@@ -1371,6 +1376,9 @@ class Store:
                         reaction, allow_closing, json.dumps(burst), json.dumps(provenance), reply_message_id,
                         bool(verbatim), revision, attributed, audience, summary_generation, dependencies,
                         json.dumps(drawn) if drawn else None))
+            turn_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+            db.executemany('INSERT INTO chat_answer_ancestors VALUES (?,?,?,?)',
+                           [(guild_id, turn_id, answer, depth) for answer, depth in answer_ancestors.items()])
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
                        'AND id NOT IN (SELECT id FROM chat_turns WHERE guild_id=? AND channel_id=? '
                        'AND user_id=? ORDER BY id DESC LIMIT 6)',
@@ -1516,7 +1524,7 @@ class Store:
             db.execute('INSERT INTO chat_turn_withdrawals VALUES (?,?,?,?) ON CONFLICT(guild_id,user_id,message_id) '
                        'DO UPDATE SET at=excluded.at', (guild_id, user_id, message_id, now))
         turns = db.execute(
-            "SELECT id,json_extract(NULLIF(source,''),'$.id') AS source_id,at,input,burst,reply_message_id "
+            "SELECT id,json_extract(NULLIF(source,''),'$.id') AS source_id,at,input,burst,reply_message_id,answer_key "
             "FROM chat_turns WHERE guild_id=? "
             "AND channel_id=? AND user_id=? AND (json_extract(NULLIF(source,''),'$.id')=? OR EXISTS (SELECT 1 "
             "FROM json_each(chat_turns.burst) b WHERE json_extract(b.value,'$.source.id')=?))",
@@ -1538,7 +1546,7 @@ class Store:
         if deleted:  # Others' replies that carried it, or Fri's reply to it, which may repeat it.
             if recorded:
                 Store._deleted(db, guild_id, message_id, now, user_id, current)
-            Store._retire_drawn(db, guild_id, [message_id, *(turn['reply_message_id'] for turn in turns)])
+            Store._retire_drawn(db, guild_id, [message_id, *(turn['reply_message_id'] or turn['answer_key'] for turn in turns)])
         from .fri_member_summary import withdrawn
         withdrawn(db, guild_id, user_id, conversation_id, message_id, [turn['at'] for turn in turns])
         return len(turns)
@@ -1566,15 +1574,23 @@ class Store:
 
     @staticmethod
     def _carrying(db, guild_id, messages):
-        """Saved turns whose drew_on holds any of these messages. A substring test on the JSON first, so the rest of
-        the turns' lists are never parsed, then each one found is checked exactly."""
+        """Saved turns reached through exact, indexed message IDs or saved-answer IDs."""
         messages = {str(message) for message in messages if message}
         rows, seen = [], set()
         for message in sorted(messages):
-            for row in db.execute('SELECT id,user_id,reply_message_id,drew_on,json_extract(NULLIF(source,\'\'),\'$.id\') '
-                                  'AS source_id FROM chat_turns WHERE guild_id=? AND drew_on IS NOT NULL AND '
-                                  'instr(drew_on,?)>0', (guild_id, json.dumps(message))):
-                if row['id'] not in seen and messages.intersection(json.loads(row['drew_on'])):
+            for row in db.execute('SELECT t.id,t.user_id,t.reply_message_id,t.answer_key,'
+                                  "json_extract(NULLIF(t.source,''),'$.id') AS source_id "
+                                  'FROM chat_drawn_messages d JOIN chat_turns t ON t.id=d.turn_id '
+                                  'WHERE d.guild_id=? AND d.message_id=?', (guild_id, message)):
+                if row['id'] not in seen:
+                    seen.add(row['id'])
+                    rows.append(row)
+        for message in sorted(messages):
+            for row in db.execute('SELECT t.id,t.user_id,t.reply_message_id,t.answer_key,'
+                                  "json_extract(NULLIF(t.source,''),'$.id') AS source_id "
+                                  'FROM chat_answer_ancestors a JOIN chat_turns t ON t.id=a.turn_id '
+                                  'WHERE a.guild_id=? AND a.answer_id=?', (guild_id, message)):
+                if row['id'] not in seen:
                     seen.add(row['id'])
                     rows.append(row)
         return rows
@@ -1586,16 +1602,20 @@ class Store:
         those that carried Fri's reply in one of them, and so on. Not verbatim, so a reference to it fails closed, and
         a question it left goes. The member's own words stay."""
         found, asked = {str(message) for message in messages if message}, set()
+        retired = set()
         while found-asked:
             batch = sorted(found-asked)
             asked |= found
             rows = Store._carrying(db, guild_id, batch)
             for row in rows:
+                if row['id'] in retired:
+                    continue
+                retired.add(row['id'])
                 db.execute('DELETE FROM chat_pending WHERE guild_id=? AND user_id=? AND source_id=?',
                            (guild_id, row['user_id'], row['source_id']))
                 db.execute('UPDATE chat_turns SET reply=?,verbatim=0,summary_generation=NULL,summary_dependencies=NULL,'
                            'drew_on=NULL WHERE id=?', (DRAWN, row['id']))
-            found |= {row['reply_message_id'] for row in rows if row['reply_message_id']}
+            found |= {row['reply_message_id'] or row['answer_key'] for row in rows}
 
     @staticmethod
     def _settle_withdrawals(db):

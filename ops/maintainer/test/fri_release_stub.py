@@ -17,6 +17,7 @@ from pathlib import Path
 
 # Exercise the candidate's real command construction, not a second overlay implementation.
 sys.path.insert(0, str(Path(os.environ['GENE_PY']).parents[2] / 'src'))
+from gene.fri_overlay import snapshot_overlay  # noqa: E402
 from gene.fri_release import FriRelease  # noqa: E402
 
 ROOT, FRI = os.environ['BATCH_ROOT'], os.environ['BATCH_FRI_ROOT']
@@ -35,6 +36,7 @@ def compose(*args):
     release = FriRelease.__new__(FriRelease)
     release.root, release.env = Path(FRI), Path(FRI+'/release.env')
     release.compose_file = Path(ROOT+'/source/ops/fri-compose.yml')
+    release._calling_overlay = snapshot_overlay(FRI, sys.argv[5])
     release.run = lambda command: subprocess.run(command, check=True)
     release.compose(*args)
 

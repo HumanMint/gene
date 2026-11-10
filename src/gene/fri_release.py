@@ -11,26 +11,14 @@ import json
 import os
 import re
 import sqlite3
-import stat
 import subprocess
 import tarfile
 import time
 from pathlib import Path
 
 from . import maintenance
+from .fri_overlay import snapshot_overlay
 from .private_files import private_json
-
-
-def calling_overlay(root):
-    path = Path(root) / 'compose.calling.yml'
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return None
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != 0
-            or stat.S_IMODE(info.st_mode) not in (0o600, 0o644)):
-        raise ValueError('Invalid Fri calling overlay; require a root-owned regular file, mode 0600 or 0644')
-    return path
 
 
 class FriRelease:
@@ -60,7 +48,7 @@ class FriRelease:
         return result.stdout.strip()
 
     def compose(self, *args):
-        overlay = calling_overlay(self.root)
+        overlay = self._calling_overlay
         return self.run(['docker', 'compose', '--project-name', 'fri', '--env-file', str(self.env),
                          '-f', str(self.compose_file), *(['-f', str(overlay)] if overlay else []), *args])
 
@@ -168,6 +156,8 @@ class FriRelease:
             legacy_sha = health['sha']
         if not self.permitted():
             raise RuntimeError('The maintenance window closed before the Fri switch; nothing was changed')
+        state = getattr(self, 'calling_state', None)
+        self._calling_overlay = snapshot_overlay(self.root, state or backup, capture=state is None)
         stopped = False
         try:
             stopped = True  # Even a partially failed stop needs recovery.
@@ -238,6 +228,7 @@ def main():
     parser.add_argument('sha', help='full maintainer-reviewed Fri commit; earlier compatible SHAs can roll back')
     parser.add_argument('--root', type=Path, default=Path('/srv/fri'))
     parser.add_argument('--gene-root', type=Path, default=Path('/srv/gene'))
+    parser.add_argument('--calling-state', type=Path, help='existing batch snapshot; never an operator overlay path')
     args = parser.parse_args()
     exception = os.environ.get('MAINTENANCE_EXCEPTION', '').strip()
     previous = recorded(args.root)
@@ -250,6 +241,7 @@ def main():
         raise SystemExit(f'Outside the maintenance window {maintenance.WINDOW}; nothing was changed. '
                          'Only a rollback to the previous Fri runs at any hour.')
     release, started, outcome = FriRelease(args.root, args.gene_root), time.time(), 'failed'
+    release.calling_state = args.calling_state
     release.permitted = lambda: permitted(args.sha, args.root, exception)
     try:
         result = release.deploy(args.sha)

@@ -4,7 +4,7 @@
 # resulting state. Tests run in parallel; outputs stay in the temp dir for inspection.
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-BASE=$(mktemp -d); chmod 755 "$BASE"
+BASE=$(mktemp -d /opt/gene-release-mocks.XXXXXX); chmod 755 "$BASE"
 export OLD_SRC_ROOT=$BASE/old-src
 tests=("$@"); (( ${#tests[@]} )) || mapfile -t tests < <(cd "$HERE" && find . -maxdepth 1 -name 't_*.sh' | sed 's|^\./||; s/\.sh$//' | sort)
 for old in '' 7d6e36a0e4621bbce75dd9c404b4864b90699b19 34dbbb3799715328772b0ae68ab2fb1d81a68fdb G; do  # Each old release's code, once.

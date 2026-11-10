@@ -13,6 +13,24 @@ from gene.store import Store
 from tests.test_api import headers
 
 
+@pytest.fixture(autouse=True)
+def trusted_test_files(monkeypatch):
+    # Local tests cannot chown to root; descriptor traversal and no-follow stay real.
+    original = __import__("os").fstat
+
+    def fstat(fd):
+        import os
+        import stat
+
+        fields = list(original(fd))
+        fields[4] = 0
+        if stat.S_ISDIR(fields[0]):
+            fields[0] &= ~0o022
+        return os.stat_result(fields)
+
+    monkeypatch.setattr("os.fstat", fstat)
+
+
 def test_contract_requires_fri_identity_and_unknown_version_blocks_before_work(client):
     assert client.get('/fri/contract').status_code == 401
     for identity in ('runtime', 'worker', 'deploy'):

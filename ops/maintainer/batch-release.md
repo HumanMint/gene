@@ -202,14 +202,25 @@ coding or automatic deployment runs.
 
 ## Optional Fri calling overlay
 
-Both Fri launchers accept only `compose.calling.yml` under the existing Fri
-installation root (the default is defined in `gene.fri_release` and the batch script).
-There is no overlay-path setting; credentials stay in the existing private environment file. With that file absent, the Docker Compose command
-is unchanged. If present, it must be a regular, non-symlink file, owned by root,
-with mode 0600 or 0644. Any other type, owner, mode or inspection error refuses the
-Compose operation, including rollback; correct the operator configuration rather
-than bypassing validation. Make changes only with the runtime stopped and the
-maintainer's release/configuration ownership held.
+Both Fri launchers capture the fixed `compose.calling.yml` under the existing
+Fri installation root before stopping anything. Descriptor traversal rejects
+symlinked ancestors and directories that are not root-owned or are group/world
+writable. The operator file must be regular, non-symlink, root-owned, and mode
+0600 or0644; it is opened once and read from that descriptor. Credentials stay
+in the existing private environment file.
+
+The batch captures this configuration at baseline in its protected staging
+directory; the standalone deploy captures it in its own backup/state directory.
+A root-owned0600 snapshot and an explicit absence record are fsynced before the
+stop. Every subsequent Compose command, including rollback and recovery, uses
+that snapshot, never the operator file. Batch-to-Python release calls pass the
+existing protected state directory with `--calling-state`; it cannot recapture
+operator configuration. A missing/corrupt expected snapshot refuses the operation.
+Later operator-file changes take effect only in the next release. Snapshot absence
+leaves the Docker Compose argv unchanged. Preserve snapshots through recovery;
+never delete them or recapture the operator file to resume an interrupted release.
+The batch script embeds the same standard-library helper for bootstrap before
+new Gene code is installed; a test keeps both copies identical.
 
 The [example](../fri-calling.example.yml) grants 30 seconds for graceful shutdown
 and publishes only host-loopback port 18790. Grace stays in the optional overlay so

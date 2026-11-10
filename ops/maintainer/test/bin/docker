@@ -195,6 +195,16 @@ def compose(rest):
         refuse(f'compose {action} {services} in project {project}')
     names = {'controller': 'gene-controller-1', 'red': 'gene-red-1', 'runtime': 'fri-runtime-1'}
     if action == 'stop':
+        if project == 'fri' and os.environ.get('MOCK_OVERLAY_MUTATION'):
+            from pathlib import Path
+            overlay = Path(os.environ['BATCH_FRI_ROOT']) / 'compose.calling.yml'
+            overlay.unlink(missing_ok=True)
+            mutation = os.environ['MOCK_OVERLAY_MUTATION']
+            if mutation == 'dangling':
+                overlay.symlink_to(overlay.with_name('missing'))
+            elif mutation in ('mode', 'replaced'):
+                overlay.write_text('services: {}')
+                overlay.chmod(0o666 if mutation == 'mode' else 0o600)
         for s in services:
             if names[s] in st['containers']:
                 st['containers'][names[s]]['running'] = False

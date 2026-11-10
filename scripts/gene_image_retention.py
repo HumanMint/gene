@@ -32,7 +32,7 @@ BATCH_DIR = re.compile(r'batch-([0-9a-f]{40})(?:-([0-9a-f]{40})(?:-([0-9]+))?)?'
 TERMINAL = {'failed', 'rejected', 'deployed', 'cancelled'}
 GRACE = 24 * 60 * 60
 ROLLBACK_DEPTH = 2  # complete rollback configurations kept behind the live release
-KEEP_RELEASES = 3  # batch-release.sh cleanup keeps the images of this many recently resumed batches
+KEEP_RELEASES = 3  # Timer protection depth, independent of batch-release.sh cleanup.
 ROLES = {'runtime', 'worker', 'fri'}
 LIVE = {'gene_recorded', 'fri_switched', 'resumed'}
 # What batch-release.sh's rollback-gene and resume-old read from a batch, besides its manifest and images.

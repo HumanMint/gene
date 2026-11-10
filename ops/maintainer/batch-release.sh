@@ -27,7 +27,7 @@ JOURNAL=$STAGE/journal
 MANIFEST=$STAGE/manifest.json
 BASELINE=$STAGE/baseline.json
 RESULT=$ROOT/maintainer-$G-$F${BATCH_ATTEMPT:+-$BATCH_ATTEMPT}-result.json  # One per attempt, like STAGE
-KEEP_RELEASES=${KEEP_RELEASES:-3}  # cleanup keeps the old and new images of this many recent releases
+KEEP_RELEASES=${KEEP_RELEASES:-2}  # cleanup keeps the old and new images of this many recent releases
 CONTROLLER=gene-controller-1
 RED=gene-red-1
 FRI=fri-runtime-1
@@ -1782,7 +1782,17 @@ PY
 cleanup() {
   has resumed || has resumed_old || die 'resume first'
   rm -rf "$STAGE/fri-src" "$STAGE/gene-src" "$STAGE/cogs-ready" "$STAGE/dbtest" "$STAGE"/*.tar "$STAGE"/*.tar.sha256
-  if [[ ${KEEP_IMAGES:-} == 1 ]]; then log 'KEEP_IMAGES=1: no images removed'; else prune_images; fi
+  if [[ ${KEEP_IMAGES:-} == 1 ]]; then
+    log 'KEEP_IMAGES=1: no images removed'
+  else
+    prune_images
+    local pruned
+    if pruned=$(docker image prune -f 2>&1); then
+      log "dangling image prune: $pruned"
+    else
+      log "WARNING: dangling image prune failed: $pruned"
+    fi
+  fi
   log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); the live release's images and the old and new images of the last $KEEP_RELEASES releases"
   # Backups hold copies of member data, so removing them is the owner's call.
   local dir

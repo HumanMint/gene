@@ -130,8 +130,11 @@ jobs:
     needs: paths
     if: needs.paths.outputs.storage == 'true'
     runs-on: ubuntu-latest
-    container: python:3.11-bookworm
-    timeout-minutes: 30
+    container:
+      image: python:3.11-bookworm
+      # SQLite-heavy fixtures need file semantics, not slow runner-disk fsyncs.
+      options: --tmpfs /tmp:rw,exec,size=2g,mode=1777
+    timeout-minutes: 180
     env:
       # Keep uv on the container interpreter that supplies production's SQLite version.
       UV_PYTHON: /usr/local/bin/python

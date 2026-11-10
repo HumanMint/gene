@@ -1,13 +1,15 @@
-name: release mocks
+name: release and storage checks
 on:
   push:
     branches: [main]
   pull_request:
     paths:
       - 'ops/**'
-      - 'src/gene/deploy.py'
-      - 'src/gene/fri_release.py'
-      - '.github/workflows/release-mocks.yml'
+      - 'src/gene/**'
+      - 'tests/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/release-storage.yml'
   workflow_dispatch:
     inputs:
       fri_ref:
@@ -17,10 +19,48 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: release-mocks-${{ github.ref }}
+  group: release-storage-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
+  paths:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.filter.outputs.release }}
+      storage: ${{ steps.filter.outputs.storage }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          python3 - <<'PYTHON'
+          import os, subprocess
+          release = storage = os.environ['EVENT'] != 'pull_request'
+          if not release:
+              paths = subprocess.check_output([
+                  'git', 'diff', '--name-only', '-z', os.environ['BASE'], os.environ['HEAD'],
+              ]).decode().split('\0')
+              workflow = '.github/workflows/release-storage.yml' in paths
+              release = workflow or any(
+                  p.startswith('ops/') or p in ('src/gene/deploy.py', 'src/gene/fri_release.py')
+                  for p in paths
+              )
+              # Broad filters cover storage callers without maintaining a fragile file list.
+              storage = workflow or any(
+                  p.startswith(('src/gene/', 'tests/')) or p in ('pyproject.toml', 'uv.lock')
+                  for p in paths
+              )
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'release={str(release).lower()}\nstorage={str(storage).lower()}\n')
+          PYTHON
   release-mocks:
+    needs: paths
+    if: needs.paths.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -86,3 +126,29 @@ jobs:
         with:
           name: release-mock-logs
           path: mock-logs/
+  sqlite-tests:
+    needs: paths
+    if: needs.paths.outputs.storage == 'true'
+    runs-on: ubuntu-latest
+    container: python:3.11-bookworm
+    timeout-minutes: 30
+    env:
+      # Keep uv on the container interpreter that supplies production's SQLite version.
+      UV_PYTHON: /usr/local/bin/python
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Assert production SQLite series
+        run: |
+          python -c 'import sqlite3; print(sqlite3.sqlite_version)' | tee /tmp/sqlite-version
+          grep -q '^3\.40\.' /tmp/sqlite-version
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python -m pip install uv==0.11.30
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/uv
+          key: sqlite-uv-${{ runner.os }}-${{ hashFiles('uv.lock') }}
+          restore-keys: sqlite-uv-${{ runner.os }}-
+      - run: uv sync --frozen --extra red
+      - run: uv run pytest -q

@@ -101,7 +101,7 @@ jobs:
         run: |
           mkdir -p mock-logs
           run_mocks() {
-            sudo -E env PATH="$PATH" PROBE_WINDOW=120 FRI_REPO="$GITHUB_WORKSPACE/fri" \
+            sudo -E env PATH="$PATH" PROBE_WINDOW=120 ALLOW_OPS_DIFF=1 FRI_REPO="$GITHUB_WORKSPACE/fri" \
               ops/maintainer/test/run.sh "$@"
           }
           if run_mocks 2>&1 | tee mock-logs/initial.log; then

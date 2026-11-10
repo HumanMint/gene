@@ -788,13 +788,18 @@ class Store:
                 for user in sorted(drew):
                     lapsed(db, guild_id, user)
             turns = [dict(row) for row in db.execute(
-                'SELECT id,input,reply,source,at,response_kind,reaction,allow_closing,burst,provenance,attributed,'
+                'SELECT id,input,reply,verbatim,answer_messages_unknown,source,at,response_kind,reaction,allow_closing,burst,provenance,attributed,'
                 "user_id,summary_generation,summary_dependencies,CASE WHEN answer_retired=0 THEN coalesce(reply_message_id,answer_key) END AS answer_id FROM chat_turns "
                 'WHERE guild_id=? AND channel_id=? AND user_id=? '
                 'ORDER BY id DESC LIMIT 6', (guild_id, channel_id, user_id))][::-1]
             turns = self._current_turns(db, turns)
             from .fri_member_summary import HELD_REPLY, holding
+            from .saved_answers import UNKNOWN, retirement_markers
             for turn in turns:
+                if not turn.pop('verbatim') and turn['reply'] in retirement_markers():
+                    turn['answer_id'] = None
+                if turn.pop('answer_messages_unknown'):
+                    turn['reply'], turn['answer_id'] = UNKNOWN, None
                 drew = summaries_of(turn)
                 for key in ('user_id', 'summary_generation', 'summary_dependencies'):
                     turn.pop(key)
@@ -1005,7 +1010,7 @@ class Store:
         with self.connection() as db:
             def turn(message_id):
                 return db.execute('SELECT user_id,provenance,verbatim,speaker_revision,summary_generation,'
-                                  'summary_dependencies FROM chat_turns WHERE guild_id=? AND reply_message_id=?',
+                                  'summary_dependencies,answer_messages_unknown FROM chat_turns WHERE guild_id=? AND reply_message_id=?',
                                   (guild_id, message_id)).fetchone()
             for message_id in message_ids:
                 row = turn(message_id)
@@ -1027,7 +1032,7 @@ class Store:
                 # answer stays as it was. One drawn on a summary held back until it's read again isn't verbatim
                 # meanwhile, so Fri neither repeats it nor answers it as said (HumanMint/fri#355), and it says it's
                 # held, not retired, so Fri keeps its copy for when that checks out (Sol round 1's S1).
-                if summaries(row) and holding(db, guild_id, summaries(row)):
+                if row['answer_messages_unknown'] or (summaries(row) and holding(db, guild_id, summaries(row))):
                     found[message_id] = {'verbatim': False, 'held': True, 'provenance': sources}
                     continue
                 found[message_id] = {'verbatim': bool(row['verbatim']), 'provenance': sources,
@@ -1305,9 +1310,10 @@ class Store:
             fenced = fenced or turn_withdrawn(db, guild_id, channel_id, source and source.model_dump(), burst, parent)
             # Nor one whose model request carried a message deleted by now (gene #141): its reply may repeat it, so
             # it keeps nothing, though the member's own message stands, so it settles what was pending as usual.
-            from .saved_answers import ancestors
+            from .saved_answers import UNKNOWN, ancestors, inherited_messages
             answer_ancestors = ancestors(db, guild_id, carried_answers)
-            stale = (answer_ancestors is None or fenced or self.deleted_anywhere(db, guild_id, drew_on) or
+            inherited, ancestry_unknown = inherited_messages(db, guild_id, carried_answers)
+            stale = (answer_ancestors is None or fenced or self.deleted_anywhere(db, guild_id, [*drew_on, *inherited]) or
                      predates(db, guild_id, channel_id, user_id, first))
             # One from before memory was last turned off keeps no exchange or note either (HumanMint/fri#331), and,
             # with memory on again, leaves no question pending: that would carry its words to the member's next turn
@@ -1317,7 +1323,7 @@ class Store:
             # A withdrawn message's late save leaves what's pending as it is: a newer turn may have left a question.
             if response_kind == 'reply' and not fenced:
                 save_pending(db, guild_id, channel_id, user_id, revision, text, source,
-                             None if stale or back_on else clarification, provenance if attributed else None)
+                             None if stale or back_on or ancestry_unknown else clarification, provenance if attributed else None)
             profile = self._personal_context(db, guild_id, channel_id, user_id)
             if not profile['enabled'] or stale or erased:
                 return {'ok': True, 'first_memory': False, 'kept': False}
@@ -1370,13 +1376,15 @@ class Store:
             db.execute('INSERT INTO chat_turns(guild_id,channel_id,user_id,input,reply,model,effort,at,'
                        'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
                        'reply_message_id,verbatim,speaker_revision,attributed,audience,summary_generation,'
-                       'summary_dependencies,drew_on) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                       (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
+                       'summary_dependencies,drew_on,answer_messages_unknown) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                       (guild_id, channel_id, user_id, clean(text, 4000), clean(UNKNOWN if ancestry_unknown else reply, 3500), model, effort,
                         time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind,
                         reaction, allow_closing, json.dumps(burst), json.dumps(provenance), reply_message_id,
-                        bool(verbatim), revision, attributed, audience, summary_generation, dependencies,
-                        json.dumps(drawn) if drawn else None))
+                        bool(verbatim) and not ancestry_unknown, revision, attributed, audience, summary_generation, dependencies,
+                        json.dumps(drawn) if drawn else None, ancestry_unknown))
             turn_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
+            db.executemany('INSERT INTO chat_answer_messages VALUES (?,?,?)',
+                           [(guild_id, message, turn_id) for message in inherited])
             db.executemany('INSERT INTO chat_answer_ancestors VALUES (?,?,?,?)',
                            [(guild_id, turn_id, answer, depth) for answer, depth in answer_ancestors.items()])
             db.execute('DELETE FROM chat_turns WHERE guild_id=? AND channel_id=? AND user_id=? '
@@ -1590,6 +1598,14 @@ class Store:
                                   "json_extract(NULLIF(t.source,''),'$.id') AS source_id "
                                   'FROM chat_answer_ancestors a JOIN chat_turns t ON t.id=a.turn_id '
                                   'WHERE a.guild_id=? AND a.answer_id=?', (guild_id, message)):
+                if row['id'] not in seen:
+                    seen.add(row['id'])
+                    rows.append(row)
+        for message in sorted(messages):
+            for row in db.execute('SELECT t.id,t.user_id,t.reply_message_id,t.answer_key,'
+                                  "json_extract(NULLIF(t.source,''),'$.id') AS source_id "
+                                  'FROM chat_answer_messages a JOIN chat_turns t ON t.id=a.turn_id '
+                                  'WHERE a.guild_id=? AND a.message_id=?', (guild_id, message)):
                 if row['id'] not in seen:
                     seen.add(row['id'])
                     rows.append(row)

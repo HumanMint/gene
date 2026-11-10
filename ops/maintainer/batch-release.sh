@@ -27,7 +27,7 @@ JOURNAL=$STAGE/journal
 MANIFEST=$STAGE/manifest.json
 BASELINE=$STAGE/baseline.json
 RESULT=$ROOT/maintainer-$G-$F${BATCH_ATTEMPT:+-$BATCH_ATTEMPT}-result.json  # One per attempt, like STAGE
-KEEP_RELEASES=${KEEP_RELEASES:-3}  # cleanup keeps the old and new images of this many recent releases
+KEEP_RELEASES=${KEEP_RELEASES:-2}  # cleanup keeps the old and new images of this many recent releases
 CONTROLLER=gene-controller-1
 RED=gene-red-1
 FRI=fri-runtime-1
@@ -1737,7 +1737,7 @@ prune_images() {  # Release images nothing recent needs. Docker also keeps any a
   local keep repo tag
   # Kept: this release's old and new images; the images the live pins name, whichever release set them,
   # since an idle worker has no container to protect its image; the old and new images of the
-  # KEEP_RELEASES most recently resumed releases, so a rollback a few releases deep still finds them;
+  # KEEP_RELEASES most recently resumed, non-reverted releases, including the live release and its rollback;
   # and every image of a release that is not back in service yet.
   # Only the pin lines are read from the env files, and they are compared, never printed.
   keep=$(python3 - "$MANIFEST" "$ROOT/staging" "$KEEP_RELEASES" "$ROOT/release.env" GENE_RUNTIME_IMAGE \
@@ -1756,7 +1756,8 @@ for journal in glob.glob(staging+'/batch-*/journal'):
     with open(journal) as handle:
         marks = set(handle.read().split())
     path = os.path.dirname(journal)+'/manifest.json'
-    if 'resumed' in marks:
+    # Reverted attempts must not displace the live release's rollback images from the recent slots.
+    if 'resumed' in marks and 'resumed_old' not in marks:
         resumed.append((os.stat(journal).st_mtime, path))
     # Not yet back in service: staged, drained or switching, or mid-rollback. Its next phase checks
     # every image its manifest names, so all of them stay, however old.
@@ -1782,7 +1783,17 @@ PY
 cleanup() {
   has resumed || has resumed_old || die 'resume first'
   rm -rf "$STAGE/fri-src" "$STAGE/gene-src" "$STAGE/cogs-ready" "$STAGE/dbtest" "$STAGE"/*.tar "$STAGE"/*.tar.sha256
-  if [[ ${KEEP_IMAGES:-} == 1 ]]; then log 'KEEP_IMAGES=1: no images removed'; else prune_images; fi
+  if [[ ${KEEP_IMAGES:-} == 1 ]]; then
+    log 'KEEP_IMAGES=1: no images removed'
+  else
+    prune_images
+    local pruned
+    if pruned=$(docker image prune -f 2>&1); then
+      log "dangling image prune: $pruned"
+    else
+      log "WARNING: dangling image prune failed: $pruned"
+    fi
+  fi
   log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); the live release's images and the old and new images of the last $KEEP_RELEASES releases"
   # Backups hold copies of member data, so removing them is the owner's call.
   local dir

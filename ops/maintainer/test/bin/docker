@@ -247,6 +247,10 @@ elif args[:3] == ['image', 'ls', '--format']:
     for tag in st['images']:
         if tag.split(':')[0] == args[4]:
             print(tag)
+elif args == ['image', 'prune', '-f']:
+    if os.environ.get('MOCK_IMAGE_PRUNE_FAIL') == '1':
+        refuse('simulated image prune failure')
+    print('Deleted Images:\nsha256:dangling\nTotal reclaimed space: 1000B')
 elif args[:2] == ['image', 'rm'] and len(args) == 3:
     tag = resolve(args[2])
     image = st['images'][tag]['id']

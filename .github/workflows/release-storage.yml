@@ -7,6 +7,7 @@ on:
       - 'ops/**'
       - 'src/gene/**'
       - 'tests/**'
+      - 'scripts/**'
       - 'pyproject.toml'
       - 'uv.lock'
       - '.github/workflows/release-storage.yml'
@@ -43,7 +44,7 @@ jobs:
           release = storage = os.environ['EVENT'] != 'pull_request'
           if not release:
               paths = subprocess.check_output([
-                  'git', 'diff', '--name-only', '-z', os.environ['BASE'], os.environ['HEAD'],
+                  'git', 'diff', '--name-only', '-z', f"{os.environ['BASE']}...{os.environ['HEAD']}",
               ]).decode().split('\0')
               workflow = '.github/workflows/release-storage.yml' in paths
               release = workflow or any(
@@ -52,7 +53,7 @@ jobs:
               )
               # Broad filters cover storage callers without maintaining a fragile file list.
               storage = workflow or any(
-                  p.startswith(('src/gene/', 'tests/')) or p in ('pyproject.toml', 'uv.lock')
+                  p.startswith(('src/gene/', 'tests/', 'scripts/')) or p in ('pyproject.toml', 'uv.lock')
                   for p in paths
               )
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:

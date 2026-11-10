@@ -15,5 +15,14 @@ for tag in "gene-runtime:$G" "gene-worker:$G" "fri-runtime:$F" "gene-runtime:$OL
 done
 [[ $images != *1111111111* && $images != *2222222222* ]] || fail "cleanup kept an older release's images: $images"
 output_has 'kept image fri-runtime:3333'
+# Exact arguments exclude -a and every broader prune command.
+[[ $(grep 'prune' "$MOCK/docker.log") == 'image prune -f' ]] || fail 'unexpected prune call'
+output_has 'sha256:dangling'
+output_has 'Total reclaimed space: 1000B'
+KEEP_IMAGES=1 run 0 cleanup 4
+[[ $(grep -c 'prune' "$MOCK/docker.log") == 1 ]] || fail 'KEEP_IMAGES did not skip prune'
+output_has 'KEEP_IMAGES=1: no images removed'
+MOCK_IMAGE_PRUNE_FAIL=1 run 0 cleanup 4
+output_has 'WARNING: dangling image prune failed'
 purges 0
 finish

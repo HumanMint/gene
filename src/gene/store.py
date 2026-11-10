@@ -1310,7 +1310,7 @@ class Store:
             fenced = fenced or turn_withdrawn(db, guild_id, channel_id, source and source.model_dump(), burst, parent)
             # Nor one whose model request carried a message deleted by now (gene #141): its reply may repeat it, so
             # it keeps nothing, though the member's own message stands, so it settles what was pending as usual.
-            from .saved_answers import UNKNOWN, ancestors, inherited_messages
+            from .saved_answers import ancestors, inherited_messages
             answer_ancestors = ancestors(db, guild_id, carried_answers)
             inherited, ancestry_unknown = inherited_messages(db, guild_id, carried_answers)
             stale = (answer_ancestors is None or fenced or self.deleted_anywhere(db, guild_id, [*drew_on, *inherited]) or
@@ -1377,10 +1377,10 @@ class Store:
                        'input_tokens,output_tokens,source,response_kind,reaction,allow_closing,burst,provenance,'
                        'reply_message_id,verbatim,speaker_revision,attributed,audience,summary_generation,'
                        'summary_dependencies,drew_on,answer_messages_unknown) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
-                       (guild_id, channel_id, user_id, clean(text, 4000), clean(UNKNOWN if ancestry_unknown else reply, 3500), model, effort,
+                       (guild_id, channel_id, user_id, clean(text, 4000), clean(reply, 3500), model, effort,
                         time.time(), input_tokens, output_tokens, source.model_dump_json() if source else '', response_kind,
                         reaction, allow_closing, json.dumps(burst), json.dumps(provenance), reply_message_id,
-                        bool(verbatim) and not ancestry_unknown, revision, attributed, audience, summary_generation, dependencies,
+                        bool(verbatim), revision, attributed, audience, summary_generation, dependencies,
                         json.dumps(drawn) if drawn else None, ancestry_unknown))
             turn_id = db.execute('SELECT last_insert_rowid()').fetchone()[0]
             db.executemany('INSERT INTO chat_answer_messages VALUES (?,?,?)',

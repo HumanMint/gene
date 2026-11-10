@@ -152,7 +152,9 @@ def test_answer_message_cap_marks_unknown_and_holds_reuse(store, monkeypatch):
         assert turn['answer_id'] is None and turn['reply'] == saved_answers.UNKNOWN
         assert store.message_sources('123', [answer])[answer]['verbatim'] is False
         with store.connection() as db:
-            assert db.execute('SELECT answer_messages_unknown FROM chat_turns WHERE user_id=?', (user,)).fetchone()[0]
+            kept = db.execute('SELECT reply,verbatim,answer_messages_unknown FROM chat_turns WHERE user_id=?',
+                              (user,)).fetchone()
+            assert tuple(kept) == ('okay', 1, 1)  # Mark uncertainty without discarding the delivered answer.
             assert db.execute('SELECT count(*) FROM chat_answer_messages a JOIN chat_turns t ON t.id=a.turn_id '
                               'WHERE t.user_id=?', (user,)).fetchone()[0] <= 2
     # Question-only input does not inherit either a bounded set or its unknown marker.

@@ -1,46 +1,18 @@
-import asyncio
 import gc
 import re
 import string
 import time
 from dataclasses import replace
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
-from gene.fri_addressing import addressed_text
-from gene.fri_chat import ChatResult
 from gene.fri_memory import memory_intent, personal_note, plainer
 from gene.store import Conflict, Store
 from tests.test_api import actor, headers
 from tests.test_fri_endings import source
-from tests.test_fri_runtime import configured, event
-
-
-@pytest.mark.parametrize('text,expected', [
-    ('hey fri can you help?', True), ('what do you think, Fri?', True),
-    ('can fri help with this', True), ('friday night', False), ('fried rice', False),
-    ('https://example.com/fri', False), ('`fri deploy now`', False), ('> fri deploy now', False),
-    ('hello everyone', False), ('<@99> hi', True),
-])
-def test_invitation_only_and_no_passive_collection(text, expected):
-    message = SimpleNamespace(content=text, mentions=[SimpleNamespace(id=99)] if '<@99>' in text else [])
-    assert (asyncio.run(addressed_text(message, 99)) is not None) == expected
-
-
-def test_reply_without_ping_checks_actual_author():
-    async def scenario():
-        message = SimpleNamespace(content='yeah that works', mentions=[],
-            reference=SimpleNamespace(message_id=3, resolved=None),
-            channel=SimpleNamespace(fetch_message=AsyncMock(return_value=SimpleNamespace(author=SimpleNamespace(id=99)))))
-        assert await addressed_text(message, 99) == 'yeah that works'
-        message.channel.fetch_message.return_value.author.id = 8
-        assert await addressed_text(message, 99) is None
-    asyncio.run(scenario())
 
 
 def test_profile_is_persistent_scoped_and_updates_only_current_speaker(tmp_path):
@@ -1533,23 +1505,6 @@ def test_notes_expire_on_idle_health_and_erasure(store):
     assert not store.chat_context('guild', 'public:1', 'one')['personal_memory']['enabled']
 
 
-def test_natural_privacy_controls_work_while_busy_without_inference(monkeypatch):
-    async def scenario():
-        fri = configured(monkeypatch)
-        fri.busy.add(10)
-        fri.api = AsyncMock(return_value={'ok': True})
-        fri.chat.respond = AsyncMock()
-        result = await fri.talk(123, 456, 10, 'Fri, forget me please', 'public', event=event(content='Fri, forget me please'))
-        # The parser accepts friendly trailing "please" too.
-        assert 'erased' in result.reply
-        assert fri.api.call_args.args[1] == '/chat/memory/control'
-        assert fri.api.call_args.args[2]['user_id'] == '10'
-        fri.chat.respond.assert_not_awaited()
-        await fri.close()
-    asyncio.run(scenario())
-    assert memory_intent('fri says "forget me"') is None
-
-
 @pytest.mark.parametrize('text,expected', [
     ('Fri, forget me please', 'disable'), ('forget me, fri!', 'disable'), ('forget me ,, fri', 'disable'),
     ('forget me\n\nfri', 'disable'), ('forget me \u2003 please', 'disable'), ('hey fri, show my memory, please.', 'show'),
@@ -1568,27 +1523,6 @@ def test_a_long_separator_run_is_crossed_once(separator):
         for _ in range(10):  # Microseconds each; ten make a read long enough to time.
             assert memory_intent(text) is None
     assert_linear(read, lambda length: 'x' + (separator * length)[:length - 2] + 'x')
-
-
-def test_public_replies_are_plain_and_scoped(monkeypatch):
-    async def scenario():
-        fri = configured(monkeypatch)
-        fri._connection.user = SimpleNamespace(id=99)
-        fri.talk = AsyncMock(return_value=ChatResult(reply='eh yeah, fair', status='completed'))
-        channel = SimpleNamespace(id=456, typing=MagicMock(return_value=AsyncMock()))
-        message = SimpleNamespace(author=SimpleNamespace(id=1, bot=False, display_name='friend'),
-            guild=SimpleNamespace(id=123), channel=channel, content='hey fri', mentions=[], reply=AsyncMock())
-        await fri.on_message(message)
-        assert message.reply.await_args.args[0] == 'eh yeah, fair'
-        assert 'embed' not in message.reply.await_args.kwargs
-        assert message.reply.await_args.kwargs['allowed_mentions'].everyone is False
-        assert fri.talk.await_count == 1
-        for guild, channel_id in [(999, 456), (123, 111)]:
-            message.guild.id, message.channel.id = guild, channel_id
-            await fri.on_message(message)
-        assert fri.talk.await_count == 1
-        await fri.close()
-    asyncio.run(scenario())
 
 
 def test_controller_keeps_gene_production_and_fri_lab_authority_separate(tmp_path):

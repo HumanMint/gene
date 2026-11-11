@@ -469,11 +469,7 @@ After transfer, the VM owns refreshes. Never overwrite a live rotated token with
 local copy. Reconnection is a new interactive authorization; stop Fri before replacing
 its session and mark/remove the transferred local credential. Keep the host identity.
 
-Add a distinct `GENE_FRI_TOKEN` to controller.env and fri.env. Fri's env also contains its
-Discord token and the configured guild/owner/workshop IDs. Create `/srv/gene/data/fri`
-owned by 10001. The compose `fri` profile is opt-in until setup is complete; start with
-`--profile fri up -d controller red fri`. Verify both bot heartbeats and a real subscription
-reply before retiring Gene's development controls. Never run two gateways for one token.
+Deploy Fri using the [separate Fri deployment guide](fri-migration.md#release-and-recovery).
 
 The runtime image pins Fri's trusted implementation under `src/gene/`; it does not mount
 mutable feature cogs, host files, the Docker socket, or development credentials. Fri's chat
@@ -797,9 +793,8 @@ Questions about learning no longer go straight to the settings helper.
 Fri uses they/them. They answer pronoun questions briefly and can make a light correction
 in conversations they already participate in; this does not change attention/admission rules
 or cause them to interrupt unrelated messages. The compact voice foundation is
-`VOICE` in `src/gene/fri_chat.py`, shared with archive
-answers. It uses a few contrasting tone examples rather than retaining a full style
-quiz in every prompt. Owner voice notes remain a separate, versioned preference;
+defined by the separate Fri runtime. It uses a few contrasting tone examples rather
+than retaining a full style quiz in every prompt. Owner voice notes remain a separate, versioned preference;
 style examples never count as evidence of completed actions or bypass approval.
 
 Live chat requires an actual Discord `Message` or `Interaction` object at the
@@ -814,7 +809,7 @@ prove a member said something. The voice should stay brief for casual check-ins
 and verify disputed attribution rather than arguing from uncertain memory.
 
 Never call `Fri.talk` with fabricated owner messages for a live smoke test. Run
-`docker exec gene-fri-1 python -m gene.fri_eval` for six isolated voice/attribution
+`uv run python -m gene.fri_eval` for six isolated voice/attribution
 cases using fictional members. This evaluator calls `Chat.respond` directly with
 empty server facts, disabled personal memory and no actions. It has no conversation,
 note, settings, learning or Discord-message write path; only anonymous usage is
@@ -1054,7 +1049,7 @@ context. Memory opt-out erases their notes, member metadata and checked IDs, cle
 derived query terms, and invalidates an in-flight archive pass. Coverage metadata
 contains no raw message bodies; selected source excerpts remain private local data.
 
-`PLANNER` and `SUMMARIZER` in `src/gene/fri_explore.py` define this task's prompts.
+The separate Fri runtime defines this task's planning and summarization prompts.
 The owner can guide future exploration through versioned `learning_notes` previews
 without changing Fri's conversational voice or any authority boundary.
 

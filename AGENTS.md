@@ -5,9 +5,8 @@ commands and music. A separate controller owns requests, approved context, usage
 and releases. Fri is the separate chat and request companion. The controller remains the only deployment authority.
 
 Fri's active companion runtime now lives in `HumanMint/fri`. This repository retains
-its controller contracts/state and a temporary legacy companion snapshot for rollback
-and compatibility tests. See `docs/fri-migration.md`. Do not redirect Gene job approvals
-or expand feature-job paths to the Fri repository.
+its controller contracts/state and the dependencies of documented evaluators. See
+`docs/fri-migration.md`. Do not redirect Gene job approvals or expand feature-job paths to the Fri repository.
 
 ## Working here
 

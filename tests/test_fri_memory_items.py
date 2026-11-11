@@ -1,18 +1,11 @@
-import asyncio
-import copy
 import sqlite3
 import time
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
 
-import discord
 import pytest
 
-from gene.fri_memory_panel import EditMemory, MemoryLauncher, MemoryView, allowed, memory_component
 from gene.fri_memory_store import edit, entries, save
 from gene.store import Conflict, Store
 from tests.test_api import headers
-from tests.test_fri_actions import harness
 from tests.test_gene_controls import control_body, controls_api  # noqa: F401
 
 
@@ -216,57 +209,3 @@ def test_memory_api_requires_fri_scope_fresh_actor_and_revision(controls_api):  
     assert client.post(path, headers=headers('fri'), json={**body, 'source': {**source(), 'user_id': '30'}}).status_code == 400
     assert client.post(path, headers=headers('fri'), json=body).status_code == 200
     assert client.post(path, headers=headers('fri'), json=body).status_code == 400
-
-
-def test_memory_controls_bind_member_audience_and_modal_and_send_exact_evidence(monkeypatch, tmp_path):
-    async def scenario():
-        fri, agent, channels, _ = harness(monkeypatch, tmp_path)
-        fri._connection.user = SimpleNamespace(id=99)
-        state = {'enabled': True, 'revision': 2, 'entries': [
-            {'id': 7, 'category': 'games', 'evidence': 'I like chess', 'expires_at': time.time()+90*86400}]}
-        scope = {'guild_id': '123', 'user_id': '20', 'channel_id': '1', 'conversation_id': 'public:1'}
-        interaction = Mock(spec=discord.Interaction, id=int(source()['id']), guild_id=123, channel_id=1,
-            channel=channels[1], user=SimpleNamespace(id=20, display_name='friend'),
-            message=SimpleNamespace(author=fri.user), response=SimpleNamespace(send_modal=AsyncMock()))
-        launcher = MemoryLauncher(fri, scope)
-        view = MemoryView(fri, scope, state, selected=7)
-        try:
-            assert await launcher.interaction_check(interaction)
-            wrong = copy.copy(interaction)
-            wrong.user = SimpleNamespace(id=30)
-            assert not await view.interaction_check(wrong)
-            wrong = copy.copy(interaction)
-            wrong.channel_id = 2
-            assert not await view.interaction_check(wrong)
-            await view.replace(interaction)
-            modal = interaction.response.send_modal.await_args.args[0]
-            assert isinstance(modal, EditMemory)
-            modal.preference._value = 'I prefer Terraria'
-            fri.api = AsyncMock(return_value={**state, 'revision': 3})
-            agent.forget = Mock()
-            with patch('gene.fri_memory_panel.show', new=AsyncMock()) as show:
-                await modal.on_submit(interaction)
-            body = fri.api.await_args.args[2]
-            assert body['evidence'] == 'I prefer Terraria' and body['revision'] == 2
-            assert body['source']['user_id'] == '20' and body['conversation_id'] == 'public:1'
-            agent.forget.assert_called_once_with(20)
-            show.assert_awaited_once()
-            agent.member.return_value = None
-            assert not await allowed(fri, interaction, scope)
-        finally:
-            await fri.close()
-    asyncio.run(scenario())
-
-
-def test_dm_memory_dispatch_only_admits_our_components_and_bound_modal():
-    interaction = SimpleNamespace(guild_id=None, type=SimpleNamespace(value=3),
-        message=SimpleNamespace(author=SimpleNamespace(id=99)),
-        data={'custom_id': 'fri:memory:open:'+'a'*32})
-    assert memory_component(interaction, 99)
-    interaction.message.author.id = 30
-    assert not memory_component(interaction, 99)
-    interaction.type.value = 5
-    interaction.data['custom_id'] = 'fri:memory:edit:'+'a'*32
-    assert memory_component(interaction, 99)  # The registered modal independently binds its member and scope.
-    interaction.data['custom_id'] = 'other:memory:edit:'+'a'*32
-    assert not memory_component(interaction, 99)

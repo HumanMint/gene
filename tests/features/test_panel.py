@@ -15,7 +15,6 @@ from cogs.gene.panel import (
     sessions,
     show_queue,
 )
-from gene.fri_panel import ApprovalView, ModelsView
 
 
 def environment(*, ephemeral=False, message_id=5, interaction_id=789):
@@ -98,34 +97,6 @@ def test_music_dispatch_uses_clicker_and_normal_red_pipeline_without_mutating_me
         interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         with pytest.raises(ValueError):
             await music_command(cog, interaction, interaction.message, 'eval', 'anything')
-    asyncio.run(scenario())
-
-
-def test_approval_button_submits_only_the_complete_commit_shown_for_review():
-    async def scenario():
-        cog, interaction = environment()
-        sha = 'b' * 40
-        view = ApprovalView(cog, 10, 'job', sha)
-        assert await view.interaction_check(interaction)
-        await view.approve.callback(interaction)
-        cog.api.assert_awaited_once_with('POST', '/requests/job/approve',
-            {'guild_id': '123', 'user_id': '10', 'sha': sha})
-        assert view.approve.disabled
-        assert interaction.edit_original_response.call_args.kwargs['view'] is view
-    asyncio.run(scenario())
-
-
-def test_old_effort_menu_cannot_silently_revert_a_new_model_selection():
-    async def scenario():
-        cog, interaction = environment()
-        state = {'selected': 'model-a', 'models': [
-            {'id': 'model-a', 'name': 'Model A', 'efforts': ['medium', 'high']}]}
-        view = ModelsView(cog, 10, state)
-        effort = next(item for item in view.children if getattr(item, 'placeholder', '') == 'Choose reasoning effort')
-        effort._values = ['high']
-        cog.api.return_value = {'selected': 'model-b'}
-        await effort.callback(interaction)
-        cog.api.assert_awaited_once_with('POST', '/models', {'guild_id': '123', 'user_id': '10'})
     asyncio.run(scenario())
 
 

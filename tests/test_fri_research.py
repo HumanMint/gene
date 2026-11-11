@@ -1,14 +1,10 @@
-import asyncio
 import time
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from gene.fri_actions import Actions
 from gene.fri_research import ResearchReceipt
 from gene.fri_web import cite_reply
 from gene.store import Conflict, Store
-from tests.test_fri_actions import harness
 from tests.test_gene_controls import control_body
 
 RECEIPT = {'query': 'Python release', 'answer': 'Public facts only.',
@@ -91,21 +87,6 @@ def test_requested_links_are_clear_and_only_from_verified_receipt():
     inline = cite_reply(f'[the artwork]({url}) and [invented](https://evil.example/)', receipt, include_sources=True)
     assert inline.count(url) == 1 and 'evil.example' not in inline
     assert 'view original artwork' not in inline  # No redundant sources footer.
-
-
-def test_source_followup_uses_saved_receipt_and_never_runs_another_search(monkeypatch, tmp_path):
-    async def scenario():
-        fri, agent, _, _ = harness(monkeypatch, tmp_path)
-        actions = Actions(agent, 20, 1, True)
-        actions.web_research = [RECEIPT]
-        with patch('gene.fri_actions.lookup', new=AsyncMock()) as search:
-            assert 'web_sources' in await actions.available()
-            result = await actions.execute({'kind': 'web_sources', 'query': ''})
-            assert result['checked_at'] == RECEIPT['checked_at'] and result['sources'] == RECEIPT['sources']
-            assert 'blocked' in await actions.execute({'kind': 'web_sources', 'query': 'other conversation'})
-            search.assert_not_awaited()
-        await fri.close()
-    asyncio.run(scenario())
 
 
 def test_database_research_validation_has_no_model_or_auth_dependencies(tmp_path):

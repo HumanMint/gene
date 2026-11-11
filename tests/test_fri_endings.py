@@ -1,24 +1,20 @@
 import asyncio
-import copy
 import datetime as dt
 import itertools
 import json
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
 
 import discord
 import httpx
 import pytest
 
-from gene.fri_agent import Agent
-from gene.fri_chat import Chat, ChatResult
+from gene.fri_chat import Chat
 from gene.fri_responses import quick_closure
 from gene.store import Conflict, Store
 from tests.test_api import headers
 from tests.test_fri_chat import response_event
 from tests.test_fri_continuity import arm, origin
-from tests.test_fri_runtime import configured, event
 
 # Distinct synthetic events made in the same millisecond get distinct IDs, as Discord's own sequence bits do: two
 # sources sharing an ID are one message to Gene (its owner check refuses another member's press with it, #232).
@@ -168,104 +164,3 @@ def test_controller_roundtrip_requires_fri_and_valid_nontext_shape(client):
     for invalid in ({'reply': 'done'}, {'reaction': '<:custom:123>'}, {'response_kind': 'reply'},
                     {'allow_closing': True}, {'notes': [{'category': 'music', 'evidence': 'I love trance'}]}):
         assert client.post('/chat/turn', headers=headers('fri'), json={**body, **invalid}).status_code == 400
-
-
-def test_obvious_closing_avoids_model_and_records_typed_decision(monkeypatch):
-    async def scenario():
-        fri = configured(monkeypatch)
-        fri._connection.user = SimpleNamespace(id=99)
-        fri.agent = Agent(fri)
-        fri.agent.config['enabled'] = True
-        ctx = context()
-        async def api(method, path, body):
-            if path == '/agent/admit':
-                return {'allowed': True}
-            if path == '/chat/context':
-                return ctx
-            assert path == '/chat/turn'
-            assert body['response_kind'] == 'react' and body['reply'] == ''
-            assert body['model'] == 'local-closing' and body['output_tokens'] == 0
-            return {'ok': True}
-        fri.api = AsyncMock(side_effect=api)
-        fri.chat.respond = AsyncMock()
-        msg = event(user=20, content='gotcha gotcha')
-        msg.id = int(ctx['source']['id'])
-        result = await fri.talk(123, 456, 20, msg.content, 'public', event=msg)
-        assert result.response_kind == 'react'
-        fri.chat.respond.assert_not_awaited()
-        await fri.close()
-    asyncio.run(scenario())
-
-
-def delivery():
-    fri = SimpleNamespace(guild_id=123, owner_id=10, workshop_id=456, user=SimpleNamespace(id=99))
-    from gene.fri_notices import WaitingNotices
-    fri.waiting_notices = WaitingNotices(set())
-    agent = Agent(fri)
-    agent.config['enabled'] = True
-    permissions = SimpleNamespace(view_channel=True, read_message_history=True, add_reactions=True, send_messages=True)
-    channel = SimpleNamespace(id=456, permissions_for=lambda _: permissions,
-                              typing=MagicMock(return_value=AsyncMock()))
-    message = SimpleNamespace(id=int(source()['id']), content='gotcha',
-        author=SimpleNamespace(id=20, display_name='friend', bot=False),
-        guild=SimpleNamespace(id=123, me=object()), channel=channel, reactions=[],
-        webhook_id=None, add_reaction=AsyncMock(), reply=AsyncMock())
-    channel.fetch_message = AsyncMock(return_value=message)
-    return fri, agent, message, permissions
-
-
-def test_reaction_delivery_once_no_timer_extension_and_banter_still_replies():
-    async def scenario():
-        fri, agent, message, _ = delivery()
-        fri.talk = AsyncMock(return_value=ChatResult(status='completed', response_kind='react', reaction='👍'))
-        agent.active[(456, 20)] = expires = time.time()+60
-        agent.last_spoke[456] = spoke = time.time()-20
-        await agent.respond(message, message.content)
-        await agent.respond(message, message.content)
-        message.add_reaction.assert_awaited_once_with('👍')
-        message.reply.assert_not_awaited()
-        assert agent.active[(456, 20)] == expires and agent.last_spoke[456] == spoke
-        message.id += 1
-        await agent.respond(message, message.content)  # another acknowledgment is quiet during cooldown
-        assert message.add_reaction.await_count == 1
-        fri.talk.return_value = ChatResult(status='completed', response_kind='quiet')
-        await agent.respond(message, message.content)
-        assert agent.active[(456, 20)] == expires
-        fri.talk.return_value = ChatResult(status='completed', reply='unfortunately, so did the car door.')
-        await agent.respond(message, 'you always get me')
-        assert message.reply.await_args.args[0] == 'unfortunately, so did the car door.'
-        assert agent.active[(456, 20)] > expires
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize('change', ['read_only', 'other_channel', 'disabled', 'old', 'edited',
-                                  'already_reacted', 'deleted', 'failed', 'nonmember_dm'])
-def test_reaction_delivery_respects_permissions_edits_and_failure(change):
-    async def scenario():
-        fri, agent, message, permissions = delivery()
-        if change == 'read_only':
-            permissions.send_messages = False
-        elif change == 'other_channel':
-            message.channel.id = 999
-        elif change == 'disabled':
-            agent.config['enabled'] = False
-        elif change == 'old':
-            message.id = int(source(600)['id'])
-        elif change == 'edited':
-            edited = copy.copy(message)
-            edited.content = 'actually it is broken'
-            message.channel.fetch_message.return_value = edited
-        elif change == 'already_reacted':
-            message.reactions = [SimpleNamespace(me=True)]
-        elif change in ('deleted', 'failed'):
-            error = discord.HTTPException(SimpleNamespace(status=404 if change == 'deleted' else 500, reason='test'), 'test')
-            (message.channel.fetch_message if change == 'deleted' else message.add_reaction).side_effect = error
-        else:
-            message.guild = None
-            agent.config['support_dms'] = True
-            agent.member = AsyncMock(return_value=None)
-        await agent.acknowledge(message, '👍')
-        await agent.acknowledge(message, '👍')
-        assert message.add_reaction.await_count == (1 if change == 'failed' else 0)
-        message.reply.assert_not_awaited()
-    asyncio.run(scenario())

@@ -19,12 +19,10 @@ obsolete companion code: `fri_agent_store`, `fri_context`, `fri_conversation`,
 `fri_pending`, `fri_research`, `fri_responses`, `fri_social_store`,
 `fri_workspace_store`, and their route modules.
 
-Old companion modules (`fri.py`, `fri_agent.py`, `fri_chat.py`, UI/tools/evaluators)
-remain as a frozen compatibility baseline plus a shared process lock for migration.
-They are not the production companion after cutover. Keep the prior immutable image
-and configuration for initial rollback. Future runtime fixes go to `HumanMint/fri`;
-controller contract fixes still go here. A later reviewed retirement can remove the
-legacy snapshot once old/new compatibility evidence is no longer needed.
+The unused companion entry point, orchestration and UI have been retired. Gene
+retains the dependencies of its documented evaluator commands and the live controller.
+Runtime fixes go to the separate Fri repository; controller contract fixes go here.
+Rollback continues to use prior immutable images and captured configuration.
 
 The additive `event-mention-chat` capability admits an explicit Discord mention in
 the configured main guild without adding the channel to any allowlist. The Fri-only
@@ -376,10 +374,8 @@ separate `fri` project. Runtime mounts are only the existing Fri data/auth direc
 Its image label must match the reviewed SHA. The companion has no release API or
 host/Docker/GitHub credentials. Existing Gene job approvals cannot target Fri.
 
-Initial migration stops `gene-fri-1`, disables its restart policy and starts the new
-singleton. Both companion implementations acquire the same persistent data-directory
-lock. Later releases restart only Fri. Gene/Red/controller/audio and active workers
-are left alone by this coordinator. Gene's normal cog deploy/rollback never touches
+The initial migration is complete. Releases restart only Fri. Gene/Red/controller/audio
+and active workers are left alone by this coordinator. Gene's normal cog deploy/rollback never touches
 Fri's pins or service.
 
 Backups capture current controller/data state for disaster recovery. Automatic Fri

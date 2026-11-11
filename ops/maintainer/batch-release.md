@@ -13,7 +13,7 @@ It upgrades from whatever is live. Before `baseline` that is read from `release.
 
 Only one batch command runs at a time on the host: each takes `/srv/gene/batch-release.lock` (except `status`), and every command it starts inherits the lock. So if a batch shell is killed, anything it left running keeps the lock until it ends, and a rollback refuses rather than racing it. `fuser -v /srv/gene/batch-release.lock` shows the holder.
 
-It never prints secrets: env files are passed to Docker, copied or compared, never echoed. It never starts the legacy `fri` service in Gene's compose or `gene-fri-1`.
+It never prints secrets: env files are passed to Docker, copied or compared, never echoed. Fri runs in its separate Compose project.
 
 ## Maintenance window
 Owner policy, 2026-10-27, widened 2026-10-28: production changes start only in [03:30, 07:30) America/Los_Angeles, following daylight saving, and one production batch runs per local calendar day across both routes: a batch that drains here, or one approved automatic feature or repair deployment, which counts once the controller claims it, whatever its outcome. Whichever comes first uses the day. The script checks before anything else, so a refused command takes no lock, creates no staging dir and writes nothing but its log line. It exits 4 and names the batch's safe path.

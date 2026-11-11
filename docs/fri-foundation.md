@@ -71,7 +71,7 @@ active plans per organizer, ten per server, and 100 respondents per plan; plans
 expire one day after their latest option. Privacy erasure removes the member’s
 responses and cancels/removes their own stored plans; posted cards are separate.
 
-`tests/test_fri_images.py` and `tests/test_fri_social.py` exercise these workflows
+`tests/test_fri_image_share.py` and `tests/test_fri_social.py` exercise these workflows
 with fake model/Discord transports and real controller persistence, without network
 access or credentials. They do not establish live Discord delivery or actual model
 date interpretation.

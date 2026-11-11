@@ -1,31 +1,25 @@
 """Requested artwork exercises download, real decoding, selection and reply boundaries offline."""
 
 import asyncio
-import copy
 import datetime as dt
 import io
-import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import discord
 import httpx
 import pytest
 from PIL import Image, PngImagePlugin
 
-from gene.fri_actions import Actions
 from gene.fri_chat import ChatResult
 from gene.fri_image_share import (
     API,
-    MAX_BYTES,
-    ImageShare,
     PreparedImage,
     cdn_url,
     normalize,
     read,
     send_reply,
 )
-from tests.test_fri_actions import harness
 from tests.test_fri_social import api, source  # noqa: F401
 
 QUERY = 'share a random sfw image featuring hatsune miku from danbooru'
@@ -54,36 +48,6 @@ def post(number=1, **changes):
             'tag_string_artist': 'some_artist', **changes}
 
 
-def setup(monkeypatch, tmp_path):
-    fri, agent, channels, _ = harness(monkeypatch, tmp_path)
-    agent.state['web_search_enabled'] = True
-    event = Mock(spec=discord.Message)
-    event.id = int(source(public=True).id)
-    event.created_at = dt.datetime.now(dt.timezone.utc)
-    event.content, event.edited_at, event.webhook_id = QUERY, None, None
-    event.author = SimpleNamespace(id=10, bot=False)
-    event.channel = channels[456]
-    event.channel.fetch_message = AsyncMock(return_value=event)
-    event.guild = event.channel.guild
-    event.guild.me = SimpleNamespace(id=99)
-    event.channel.permissions_for = lambda _: SimpleNamespace(view_channel=True,
-        read_message_history=True, send_messages=True, attach_files=True)
-    event.reply = AsyncMock()
-    event.reference = None
-    event.attachments = []
-    a = Actions(agent, 10, 456, True)
-    a.message, a.event, a.media_allowed = QUERY, event, True
-    a.scope = {'guild_id': '123', 'user_id': '10', 'channel_id': '456', 'conversation_id': 'public:456'}
-    async def controller(method, path, body=None):
-        if path == '/agent/state':
-            return agent.state
-        if path == '/chat/context':
-            return {'revision': 0}
-        return {'ok': True}
-    fri.api = controller
-    return fri, agent, event, a
-
-
 def provider(posts, *, body=None, status=200, headers=None):
     calls = []
     def handle(request):
@@ -96,123 +60,6 @@ def provider(posts, *, body=None, status=200, headers=None):
         assert str(request.url) == CDN
         return httpx.Response(status, content=body or pixels(), headers=headers or {'content-type': 'image/png'})
     return httpx.MockTransport(handle), calls
-
-
-@pytest.mark.parametrize('request_text', [LINK_QUERY, 'https://example.com/'+'a'*240+' '+QUERY])
-def test_long_request_link_does_not_break_accepted_image_receipt(monkeypatch, tmp_path, request_text):
-    async def scenario():
-        from gene.fri_research import ResearchReceipt
-        fri, agent, event, actions = setup(monkeypatch, tmp_path)
-        actions.message = event.content = request_text
-        agent.run = AsyncMock(side_effect=[({'tag': 'hatsune_miku'}, {}, 'completed'),
-            ({'verdict': 'accept', 'description': 'relevant safe image'}, {}, 'completed')])
-        transport, calls = provider([post()])
-        try:
-            receipt = await actions.image_share.execute('', transport=transport)
-            assert receipt.get('image_status') == 'prepared', receipt
-            assert actions.image_share.prepared is not None and len(calls) == 2
-            assert receipt['query'] in request_text and len(receipt['query']) <= 240
-            ResearchReceipt(**{key: receipt[key] for key in ('query', 'answer', 'sources', 'checked_at')})
-            assert all(call.args[2]['request'] == request_text for call in agent.run.call_args_list)
-        finally:
-            await fri.close()
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize('verdicts,expected', [(['accept'], 1), (['reject', 'accept'], 2),
-    (['uncertain', 'reject', 'accept'], 3), (['reject']*3, 0), (['uncertain']*3, 0)])
-def test_inspects_exact_uploaded_bytes_and_retries_at_most_three(monkeypatch, tmp_path, verdicts, expected):
-    async def scenario():
-        fri, agent, event, a = setup(monkeypatch, tmp_path)
-        transport, requests = provider([post(i) for i in range(1, 7)])
-        inspected = []
-        async def analyze(role, instruction, data, schema, **kwargs):
-            assert role == 'image_lookup' and data == {'request': QUERY}
-            assert 'memory' not in str(data)
-            if 'images' not in kwargs:
-                return {'tag': 'hatsune_miku'}, {}, 'completed'
-            inspected.extend(kwargs['images'])
-            return {'verdict': verdicts[len(inspected)-1], 'description': 'a teal-haired character'}, {}, 'completed'
-        agent.run = analyze
-        try:
-            receipt = await a.image_share.execute(QUERY, transport=transport)
-            assert len(inspected) == (expected or 3)
-            assert len(requests) == len(inspected)+1
-            if expected:
-                import base64
-                media = a.image_share.prepared
-                assert base64.b64decode(inspected[-1].split(',')[1]) == media.body
-                assert receipt['image_status'] == 'prepared'
-                assert receipt['sources'] == [API+f'/posts/{expected}']
-                assert 'data:image' not in json.dumps(receipt) and CDN not in json.dumps(receipt)
-                sent = []
-                async def reply(text, **kwargs):
-                    sent.append((text, kwargs['file'].fp.read()))
-                    assert kwargs['allowed_mentions'].everyone is False
-                event.reply = reply
-                result = ChatResult(reply='this one fits.', media=media)
-                expected_bytes = media.body
-                await send_reply(event, result, allowed_mentions=discord.AllowedMentions.none())
-                assert len(sent) == 1 and sent[0][1] == expected_bytes
-                assert 'view original artwork' in sent[0][0] and 'some artist' in sent[0][0]
-                assert result.media is None and not media.body
-            else:
-                assert 'error' in receipt and a.image_share.prepared is None
-            assert 'blocked' in await a.image_share.execute(QUERY, transport=transport)
-        finally:
-            await fri.close()
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize('changes', [{'rating': 's'}, {'is_banned': True}, {'is_deleted': True},
-    {'file_size': MAX_BYTES+1}, {'image_width': 1000000}, {'file_url': 'http://127.0.0.1/token'}])
-def test_ineligible_metadata_never_downloaded(monkeypatch, tmp_path, changes):
-    async def scenario():
-        fri, agent, _, a = setup(monkeypatch, tmp_path)
-        agent.run = AsyncMock(return_value=({'tag': 'hatsune_miku'}, {}, 'completed'))
-        transport, calls = provider([post(**changes)])
-        try:
-            assert 'error' in await a.image_share.execute(QUERY, transport=transport)
-            assert len(calls) == 1 and agent.run.await_count == 1
-        finally:
-            await fri.close()
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize('change', ['ambient', 'private_evidence', 'not_requested', 'not_current', 'edited', 'deleted', 'disabled', 'not_member', 'revision'])
-def test_no_fetch_for_unapproved_or_stale_request(monkeypatch, tmp_path, change):
-    async def scenario():
-        fri, agent, event, a = setup(monkeypatch, tmp_path)
-        transport, calls = provider([post()])
-        agent.run = AsyncMock()
-        query = QUERY
-        if change == 'ambient':
-            a.media_allowed = False
-        elif change == 'private_evidence':
-            a.private_evidence = True
-        elif change == 'not_requested':
-            a.message = query = 'i once saw a miku picture'
-        elif change == 'not_current':
-            a.message = 'what did another member like'
-        elif change == 'edited':
-            fresh = copy.copy(event)
-            fresh.content = 'never mind'
-            event.channel.fetch_message.return_value = fresh
-        elif change == 'deleted':
-            event.channel.fetch_message.side_effect = discord.NotFound(SimpleNamespace(status=404, reason='gone'), 'gone')
-        elif change == 'disabled':
-            agent.state['web_search_enabled'] = False
-        elif change == 'not_member':
-            agent.member.return_value = None
-        else:
-            a.revision = 1
-        try:
-            assert 'blocked' in await a.image_share.execute(query, transport=transport)
-            agent.run.assert_not_awaited()
-            assert not calls
-        finally:
-            await fri.close()
-    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize('url', ['https://cdn.donmai.us.evil.example/original/a.png',
@@ -294,99 +141,6 @@ def test_delivery_failure_is_truthful_and_never_retries_ambiguous_upload(mode):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('query,tool_query', [(QUERY, QUERY), (DETAILED_QUERY, DETAILED_QUERY),
-                                            (DETAILED_QUERY, ''),
-                                            (DETAILED_QUERY, 'image featuring hatsune miku')],
-                         ids=['short', 'full-brief', 'harness-brief', 'short-excerpt-keeps-details'])
-@pytest.mark.parametrize('fault', ['', 'final_model', 'recording', 'edit_before_send'])
-def test_complete_chat_tool_selection_persistence_and_upload(api, monkeypatch, tmp_path, fault, query, tool_query):  # noqa: F811
-    from gene.fri_chat import Chat
-    from tests.test_fri_chat import response_event
-    async def scenario():
-        client, call = api
-        fri, agent, event, _ = setup(monkeypatch, tmp_path)
-        event.content = query
-        event.author.display_name = 'Member'
-        event.channel.typing = Mock(return_value=AsyncMock())
-        async def empty_history(**kwargs):
-            for row in []:
-                yield row
-        event.channel.history = empty_history
-        async def controller(method, path, body=None):
-            if path == '/agent/state':
-                return agent.state
-            if path == '/chat/turn' and fault == 'recording':
-                raise commands.UserFeedbackCheckFailure('recording unavailable')
-            return await call(method, path, body)
-        fri.api = controller
-        network, _ = provider([post()])
-        real_find = ImageShare.find
-        async def find(self, query, **kwargs):
-            return await real_find(self, query, transport=network)
-        monkeypatch.setattr(ImageShare, 'find', find)
-        async def inspect(role, instruction, data, schema, **kwargs):
-            assert data['request'] == query  # Keep even the requirements after character 240.
-            return (({'verdict': 'accept', 'description': 'teal-haired character'} if kwargs.get('images')
-                     else {'tag': 'hatsune_miku'}), {}, 'completed')
-        agent.run = AsyncMock(side_effect=inspect)
-        seen = []
-        def respond(request):
-            payload = json.loads(request.content)
-            seen.append(payload)
-            if len(seen) == 1:
-                assert 'image_search' in json.loads(payload['input'][-1]['content'])['available_actions']
-                output = {'reply': '', 'request_draft': None, 'notes': [],
-                          'action': {'kind': 'image_search', 'query': tool_query}}
-            else:
-                if fault == 'final_model':
-                    return httpx.Response(503)
-                output = {'reply': 'this one fits.', 'request_draft': None, 'notes': []}
-            return httpx.Response(200, text='data: '+json.dumps(response_event(content=json.dumps(output)))+'\n\n')
-        fri.chat = Chat(SimpleNamespace(access_token=lambda: 'test'), httpx.MockTransport(respond))
-        try:
-            result = await fri.talk(123, 456, 10, query, 'public', event=event)
-            if fault == 'recording':
-                assert result.media is None
-            else:
-                assert result.media is not None
-                if fault == 'edit_before_send':
-                    changed = copy.copy(event)
-                    changed.content = 'never mind'
-                    event.channel.fetch_message.return_value = changed
-                await send_reply(event, result, allowed_mentions=discord.AllowedMentions.none())
-                if fault == 'edit_before_send':
-                    event.reply.assert_not_awaited()
-                else:
-                    assert 'file' in event.reply.await_args.kwargs
-            saved = client.app.state.store.chat_context('123', 'public:456', '10')
-            assert 'data:image' not in str(saved) and 'cdn.donmai.us' not in str(saved)
-            assert 'teal-haired' not in str(saved['turns'])
-            if fault != 'recording':
-                assert saved['web_research'][0]['sources'] == [API+'/posts/1']
-            assert len(seen) == 2
-        finally:
-            await fri.close()
-    from redbot.core import commands
-    asyncio.run(scenario())
-
-
-@pytest.mark.parametrize('private', ['password=not-public', 'https://127.0.0.1/private',
-    'http://internal.local/admin', '<@123456789012345678>', 'sk-'+'a'*24])
-def test_full_image_brief_blocks_private_content_after_safe_excerpt(monkeypatch, tmp_path, private):
-    async def scenario():
-        fri, agent, event, a = setup(monkeypatch, tmp_path)
-        a.message = event.content = QUERY+'\n'+private
-        agent.run = AsyncMock()
-        network, calls = provider([post()])
-        try:
-            assert 'blocked' in await a.image_share.execute(QUERY, transport=network)
-            assert not calls
-            agent.run.assert_not_awaited()
-        finally:
-            await fri.close()
-    asyncio.run(scenario())
-
-
 def test_image_brief_bounds_and_ordinary_web_limits_stay_separate():
     from gene.fri_image_request import MAX_REQUEST, image_request, receipt_query
     from gene.fri_research import ResearchReceipt
@@ -401,27 +155,3 @@ def test_image_brief_bounds_and_ordinary_web_limits_stay_separate():
     assert public_query(label, DETAILED_QUERY)
     ResearchReceipt(query=label, answer='verified image', sources=[API+'/posts/1'],
                     checked_at=dt.datetime.now(dt.timezone.utc).isoformat())
-
-
-def test_dm_disable_cancels_prepared_image_delivery(monkeypatch, tmp_path):
-    async def scenario():
-        fri, agent, event, _ = setup(monkeypatch, tmp_path)
-        event.guild = None
-        event.channel = Mock(spec=discord.DMChannel, id=999,
-                             fetch_message=AsyncMock(return_value=event))
-        a = Actions(agent, 10, 999, False)
-        a.event, a.message, a.media_allowed = event, QUERY, True
-        a.scope = {'guild_id': '123', 'user_id': '10', 'channel_id': '456', 'conversation_id': 'private:999'}
-        a.image_share.source_text, a.image_share.source_edited = QUERY, None
-        agent.config['support_dms'] = True
-        try:
-            assert await a.image_share.current()
-            media = PreparedImage(pixels(), 'artwork.png', API+'/posts/1', '', a.image_share)
-            result = ChatResult(reply='here it is', media=media)
-            agent.config['support_dms'] = False
-            await send_reply(event, result)
-            event.reply.assert_not_awaited()
-            assert not media.body and result.media is None
-        finally:
-            await fri.close()
-    asyncio.run(scenario())

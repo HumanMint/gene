@@ -80,9 +80,8 @@ Verify actual audible playback; a loaded title or queued track alone is insuffic
 ## Optional Fri and coding workflow
 
 Use the separate [Fri repository](https://github.com/HumanMint/fri) and its operations
-guide. It requires this controller's `gene-fri/1` contract. Do not launch the legacy
-Fri Compose profile for a new installation. Add only Fri's own bot/service credential
-and existing subscription directory to that runtime.
+guide. It requires this controller's `gene-fri/1` contract. Add only Fri's own bot/service
+credential and existing subscription directory to that runtime.
 
 For coding jobs, follow the worker setup in the [operator runbook](operations.md):
 create the dedicated account/tools/login, repository-specific Git access and host

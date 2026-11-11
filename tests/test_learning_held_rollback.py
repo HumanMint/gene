@@ -90,7 +90,7 @@ def test_the_repro_a_held_report_and_summary_keep_no_words_where_an_older_contro
 
 
 def test_a_held_cards_counts_and_fields_stay_for_fri_to_render(learning):  # noqa: F811
-    """Fri's report card reads its counts, channel, range and next check (fri_reports.summary): they all stay."""
+    """Fri's report card reads its counts, channel, range and next check: they all stay."""
     scheduler, _, before = held(learning)
     [after] = scheduler.reports()
     words = {'summary', 'findings', 'term'}

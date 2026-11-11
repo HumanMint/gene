@@ -12,10 +12,8 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.config import Settings
-from gene.fri_chat import ChatResult
 from gene.fri_context import ChatSource
 from gene.fri_errors import ControllerRejected
-from gene.fri_runner import run
 from gene.fri_workspace import capabilities, deliver_one, execute, post_component, send_once
 from gene.fri_workspace_store import Workspace
 from gene.store import Conflict, Store
@@ -247,19 +245,6 @@ def test_read_member_history_cannot_be_saved(monkeypatch):
         result = await execute(actions, {'kind': 'work_save'})
         assert 'blocked' in result
         assert actions.fri.api.await_count == 1
-    asyncio.run(scenario())
-
-
-def test_bounded_runner_can_recover_and_prepare_work_without_sending():
-    async def scenario():
-        kinds = ['work_list', 'work_read', 'channel_capabilities', 'prepare_post']
-        outputs = [ChatResult(action={'kind': kind}, status='completed') for kind in kinds]
-        fri = SimpleNamespace(chat_once=AsyncMock(side_effect=outputs[1:]))
-        actions = SimpleNamespace(execute=AsyncMock(side_effect=[{'items': []}, {'body': 'hello'}, {'channels': []}, {'post_preview': {'id': 'p'}}]))
-        result, receipts, _ = await run(fri, actions, 'send my saved intro', {'actions': dict.fromkeys(kinds, {})}, outputs[0])
-        assert result.post_preview == {'id': 'p'}
-        assert len(receipts) == 4 and actions.execute.await_count == 4
-        assert fri.chat_once.await_args.args[1]['action_results'] == receipts[:3]
     asyncio.run(scenario())
 
 

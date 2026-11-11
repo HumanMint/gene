@@ -49,31 +49,3 @@ services:
       timeout: 5s
       start_period: 90s
       retries: 3
-
-  fri:
-    image: ${GENE_RUNTIME_IMAGE:-gene-runtime:bootstrap}
-    command: ["python", "-m", "gene.fri"]
-    profiles: [fri]
-    env_file: /srv/gene/secrets/fri.env
-    environment:
-      GENE_CONTROLLER_URL: http://controller:8787
-      GENE_RELEASE_SHA: ${GENE_RELEASE_SHA:?Set the immutable release SHA}
-      FRI_DATA: /data
-      FRI_CHATGPT_AUTH: /auth/session.json
-    volumes:
-      - /srv/gene/data/fri:/data
-      - /srv/gene/secrets/fri-chatgpt:/auth
-    restart: unless-stopped
-    init: true
-    read_only: true
-    tmpfs: [/tmp]
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    mem_limit: 384m
-    cpus: 0.5
-    healthcheck:
-      test: ["CMD", "python", "-c", "import json,time; h=json.load(open('/data/fri-health.json')); assert h['guild_connected'] and time.time()-h['at']<30"]
-      interval: 20s
-      timeout: 5s
-      start_period: 90s
-      retries: 3

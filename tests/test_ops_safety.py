@@ -18,7 +18,9 @@ def test_embedded_archive_identity(tmp_path, commit):
         item = tarfile.TarInfo('synthetic')
         item.size = 1
         tar.addfile(item, io.BytesIO(b'x'))
-    result = subprocess.run(['python3', '-c', body, str(archive), 'a'*40], capture_output=True)
+    result = subprocess.run(['python3', '-c', body, str(archive), 'a'*40, 'fri',
+                             'a'*40, 'b'*40, str(tmp_path/'installed-compose.yml')],
+                            capture_output=True)
     assert (result.returncode == 0) == (commit == 'a'*40)
 
 

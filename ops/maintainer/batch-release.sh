@@ -125,12 +125,17 @@ fri_compose() {  # Fri's own project, exactly as gene.fri_release runs it
 }
 
 old_fri_compose_file() {
-  local file=$ROOT/source/ops/fri-compose.yml
+  local file=$ROOT/source/ops/fri-compose.yml copy
   if gene_changes && [[ $(source_state) != "$(jget "$BASELINE" source)" ]]; then
     file=$(backup_dir)/installed-source/ops/fri-compose.yml
   fi
   [[ -f $file ]] || die 'previous Compose missing: restore installed-source/ops/fri-compose.yml in the release backup before retrying recovery; Fri was not stopped'
-  echo "$file"
+  copy=$(mktemp "$STAGE/old-fri-compose.XXXXXX") || die 'could not prepare a private previous Compose copy; no further Fri stop was attempted'
+  if ! cat "$file" > "$copy"; then
+    rm -f "$copy" || true
+    die 'could not read previous Compose: restore installed-source/ops/fri-compose.yml in the release backup before retrying recovery; no further Fri stop was attempted'
+  fi
+  echo "$copy"
 }
 
 db_owner() {  # uid:gid of the controller DB; its directory must agree, since SQLite creates files there
@@ -879,12 +884,18 @@ stage() {
   for name in "${names[@]}"; do
     [[ -f $STAGE/$name.tar && -f $STAGE/$name.tar.sha256 ]] || die "upload $STAGE/$name.tar and $name.tar.sha256 first"
     (cd "$STAGE" && sha256sum -c "$name.tar.sha256")
-    python3 - "$STAGE/$name.tar" "$([[ $name == gene ]] && echo "$G" || echo "$F")" <<'PYARCHIVE'
+    python3 - "$STAGE/$name.tar" "$([[ $name == gene ]] && echo "$G" || echo "$F")" \
+      "$name" "$F" "$OLD_F" "$ROOT/source/ops/fri-compose.yml" <<'PYARCHIVE'
 import sys, tarfile
+from pathlib import Path
 with tarfile.open(sys.argv[1], 'r:') as archive:
     commit = archive.pax_headers.get('comment')
-if commit != sys.argv[2]:
-    sys.exit('archive commit is missing or does not match requested SHA')
+    if commit != sys.argv[2]:
+        sys.exit('archive commit is missing or does not match requested SHA')
+    if sys.argv[3] == 'gene' and sys.argv[4] == sys.argv[5]:
+        compose = archive.extractfile('ops/fri-compose.yml')
+        if compose is None or compose.read() != Path(sys.argv[6]).read_bytes():
+            sys.exit('a Fri Compose change must ship with a Fri release')
 PYARCHIVE
     mset "archives.$name" "$(cut -d' ' -f1 "$STAGE/$name.tar.sha256")"
   done

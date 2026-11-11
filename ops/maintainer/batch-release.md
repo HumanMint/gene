@@ -50,7 +50,9 @@ Retrying the same G and F after a rollback is a new batch, so it waits for a lat
 
 If Gene deployed a member's request since the last maintainer release, `release.env` names that request's SHA while the runtime image and worker pin still carry the maintainer release, and `baseline` refuses (`runtime_label`, `worker_pin`). Make sure the request is in G, then reconcile by hand.
 
-Fri recovery uses the previous `installed-source/ops/fri-compose.yml` from the batch backup while Gene's new source is installed. Fri-only releases use the unchanged installed source. Standalone `gene.fri_release` captures Compose before stopping Fri; after a separate Gene source switch, pass `--previous-compose` with the previous backup's Compose path. A missing previous file refuses before any further stop: restore that file and retry recovery rather than guessing an older release's configuration.
+Fri recovery uses the previous `installed-source/ops/fri-compose.yml` from the batch backup while Gene's new source is installed. Fri-only releases use the unchanged installed source. Standalone `gene.fri_release` captures Compose before stopping Fri; after a separate Gene source switch, pass `--previous-compose` with the previous backup's Compose path. A missing previous file refuses before any further stop: restore that file and retry recovery rather than guessing an older release's configuration. Recovery first reads the selected file into a private staging copy; a read error refuses before any further Fri stop.
+
+A Fri Compose change must ship with a Fri release: `stage` rejects a Gene-only batch whose archived `ops/fri-compose.yml` differs from the installed file, before recording the archive or building or switching anything. `ALLOW_OPS_DIFF=1` does not bypass this rule; a Gene+Fri batch remains allowed with the explicit ops-diff acknowledgment. Once the port-bearing Compose is deployed, port 18790 must stay reserved for Fri: rolling back to that release uses its port-bearing Compose.
 
 ## Phases
 | Phase | Member impact | What it does |

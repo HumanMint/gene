@@ -50,6 +50,8 @@ Retrying the same G and F after a rollback is a new batch, so it waits for a lat
 
 If Gene deployed a member's request since the last maintainer release, `release.env` names that request's SHA while the runtime image and worker pin still carry the maintainer release, and `baseline` refuses (`runtime_label`, `worker_pin`). Make sure the request is in G, then reconcile by hand.
 
+Fri recovery uses the previous `installed-source/ops/fri-compose.yml` from the batch backup while Gene's new source is installed. Fri-only releases use the unchanged installed source. Standalone `gene.fri_release` captures Compose before stopping Fri; after a separate Gene source switch, pass `--previous-compose` with the previous backup's Compose path. A missing previous file refuses before any further stop: restore that file and retry recovery rather than guessing an older release's configuration.
+
 ## Phases
 | Phase | Member impact | What it does |
 |---|---|---|

@@ -1421,3 +1421,28 @@ def test_host_editable_rewrite_resolves_aliases_and_refuses_other_layouts(tmp_pa
         assert out.returncode == 0, out.stderr
         assert pth.read_text().strip() == str(live/'src')
         assert json.loads(direct.read_text())['url'] == live.as_uri()
+
+
+@pytest.mark.parametrize('partial', [True, False])
+def test_host_venv_admission_includes_stage_and_clears_partial(tmp_path, partial):
+    target = tmp_path / 'host-venvs/batch-test'
+    if partial:
+        target.mkdir(parents=True)
+    script = functions('build_host_venv') + r'''
+measure() { printf -v "$1" '%s' 1073741824; }
+clear_interrupted() { rm -rf "$1"; }
+disk_admission() {
+  [[ ! -e $ROOT/host-venvs/batch-test ]] || exit 21
+  [[ "$*" == *"docker="* && "$*" == *"host_venv="* ]] || exit 22
+  exit 42
+}
+build_host_venv "docker=$ROOT:3221225472"
+'''
+    bindir = tmp_path / 'bin'
+    bindir.mkdir()
+    (bindir / 'uv').touch()
+    (bindir / 'uv').chmod(0o755)
+    out = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
+                         env={**os.environ, 'ROOT': str(tmp_path), 'STAGE': 'batch-test',
+                              'PATH': str(bindir) + ':' + os.environ['PATH']})
+    assert out.returncode == 42, out.stdout + out.stderr

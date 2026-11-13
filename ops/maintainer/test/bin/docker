@@ -277,6 +277,8 @@ elif args[0] == 'inspect':
 elif args[0] == 'info':
     print(M+'/docker')
 elif args[0] == 'build':
+    if os.environ.get('MOCK_BUILD_FAIL') == '1':
+        sys.exit(1)
     tag = args[args.index('-t')+1]
     label = None
     for i, a in enumerate(args):

@@ -331,7 +331,8 @@ def batch_record(name, match, manifest, marks, at, words=None, lines=None):
     old_fri = manifest.get('old_fri')  # batch-<G>: read from its backup's Fri pins when it is a rollback step
     if old_fri is not None and not is_sha(old_fri):
         raise bad('invalid old Fri release')
-    return {'name': name, 'gene': match[1], 'fri': manifest['fri'], 'old_gene': old_gene, 'old_fri': old_fri,
+    return {**{key: manifest[key] for key in ('host_venv', 'old_host_venv') if key in manifest},
+            'name': name, 'gene': match[1], 'fri': manifest['fri'], 'old_gene': old_gene, 'old_fri': old_fri,
             'images': images, 'marks': marks, 'at': at, 'backup': manifest.get('backup'),
             'old_pair': 'old_gene' in manifest and 'old_fri' in manifest, 'downgrades': manifest.get('downgrades'),
             'gene_changes': match[1] != old_gene,

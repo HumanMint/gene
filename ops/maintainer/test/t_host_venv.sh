@@ -22,5 +22,5 @@ run 0 rollback-gene 2
 expect old true down
 run 0 rollback-gene 0
 run 0 resume-old 0; run 0 cleanup 0
-[[ -x $BATCH_ROOT/host-venvs/${ST##*/}/bin/python ]] || fail 'cleanup removed retained environment'
+[[ ! -e $BATCH_ROOT/host-venvs/${ST##*/} ]] || fail 'cleanup kept an unused rolled-back environment'
 finish

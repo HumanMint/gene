@@ -804,9 +804,9 @@ build_host_venv() {
   local target=$ROOT/host-venvs/${STAGE##*/} size
   mkdir -p "$ROOT/host-venvs"; chmod 755 "$ROOT/host-venvs"
   command -v uv > /dev/null || die 'dependency updates need uv on the bot host'
-  measure size "$(readlink -f "$ROOT/venv")"
-  disk_admission "host_venv=$ROOT/host-venvs:$(( 2*size ))"
   clear_interrupted "$target"
+  measure size "$(readlink -f "$ROOT/venv")"
+  disk_admission "$@" "host_venv=$ROOT/host-venvs:$(( 2*size ))"
   python3 - "$STAGE/gene-src/uv.lock" <<'PYLOCK'
 import sys, tomllib
 with open(sys.argv[1], 'rb') as handle:
@@ -1005,6 +1005,7 @@ PYARCHIVE
     measure fri_size "$ROOT/data/fri"
     disk+=("fri_backup=$FRI_ROOT/backups:$(( fri_size + db_size ))")
   fi
+  if gene_changes; then clear_interrupted "$ROOT/host-venvs/${STAGE##*/}"; fi
   disk_admission "${disk[@]}"
   for name in "${names[@]}"; do
     clear_interrupted "$STAGE/$name-src"
@@ -1018,7 +1019,7 @@ PYARCHIVE
     installs_same "$ROOT/source/pyproject.toml" "$STAGE/gene-src/pyproject.toml" || install_change=$?
     [[ $install_change == 0 || $install_change == 3 ]] || die 'unsupported host venv plan; source is untouched'
     if ! cmp -s "$ROOT/source/uv.lock" "$STAGE/gene-src/uv.lock" || [[ $install_change == 3 ]]; then
-      build_host_venv
+      build_host_venv "${disk[@]}"
     fi
     for file in ops/compose.yml ops/fri-compose.yml ops/gene-worker.service ops/gene-deployer.service; do
       if ! cmp -s "$ROOT/source/$file" "$STAGE/gene-src/$file"; then
@@ -1876,6 +1877,41 @@ PY
   done
 }
 
+prune_host_venvs() {
+  python3 - "$ROOT" "$KEEP_RELEASES" <<'PYVENVS'
+import json, os, pathlib, shutil, sys
+root = pathlib.Path(sys.argv[1])
+envs = root / 'host-venvs'
+if envs.is_symlink():
+    sys.exit('refusing symlinked host-venvs')
+# Backups are retained until the owner removes them, independently of KEEP_RELEASES.
+keep = {os.path.realpath(root / 'venv')}
+for saved in (root / 'backups').glob('*/installed-venv'):
+    keep.add(os.path.realpath(saved))
+resumed = []
+for journal in (root / 'staging').glob('batch-*/journal'):
+    marks = set(journal.read_text().split())
+    if 'resumed' in marks and 'resumed_old' not in marks:
+        resumed.append((journal.stat().st_mtime, journal.parent / 'manifest.json'))
+for _, path in sorted(resumed, reverse=True)[:int(sys.argv[2])]:
+    manifest = json.loads(path.read_text())
+    for key in ('host_venv', 'old_host_venv'):
+        if key in manifest:
+            keep.add(os.path.realpath(manifest[key]))
+# Decide everything before deleting; unreadable retained records refuse cleanup.
+for target in envs.iterdir() if envs.exists() else []:
+    if os.path.realpath(target) in keep:
+        continue
+    if target.is_symlink():
+        target.unlink()
+    elif target.is_dir():
+        shutil.rmtree(target)
+    else:
+        continue
+    print('removed host environment '+target.name)
+PYVENVS
+}
+
 cleanup() {
   has resumed || has resumed_old || die 'resume first'
   rm -rf "$STAGE/fri-src" "$STAGE/gene-src" "$STAGE/cogs-ready" "$STAGE/dbtest" "$STAGE"/*.tar "$STAGE"/*.tar.sha256
@@ -1891,7 +1927,7 @@ cleanup() {
     fi
   fi
   log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); the live release's images and the old and new images of the last $KEEP_RELEASES releases"
-  log 'kept: host-venvs/ environments, like source backups; live and backup aliases may still use them'
+  prune_host_venvs
   # Backups hold copies of member data, so removing them is the owner's call.
   local dir
   for dir in "$ROOT/backups" "$FRI_ROOT/backups"; do

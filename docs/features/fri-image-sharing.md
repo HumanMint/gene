@@ -36,7 +36,7 @@ one; they do not claim to have shown or inspected an unseen image.
   request, with a 180-second deadline. Actual stream bytes and decoded image
   dimensions are checked. Images are resized to fit 1600 pixels and re-encoded
   without metadata. The exact re-encoded bytes inspected are the bytes attached.
-- All image data remains in memory on Hostinger for the turn. No image cache,
+- All image data remains in memory on the bot host for the turn. No image cache,
   files, raw pixels, local paths or data URLs enter chat memory. The selected
   public post link and short visual result use the existing expiring research
   receipt, scoped to that member/conversation and covered by memory erasure.

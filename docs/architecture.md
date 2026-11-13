@@ -78,7 +78,7 @@ The main modules:
 | Fri's stores | `fri_*_store.py`, `fri_memory*.py`, `fri_context.py`, `fri_conversation.py`, `fri_pending.py`, `fri_research.py` |
 | Gene commands Fri can run | `control_api.py`, `gene_controls.py`, `runtime_controls.py` |
 | Jobs, reviews, releases | `worker.py`, `deploy.py`, `repair_*.py`, `reviews.py`, `policy.py`, `fri_release.py`, `maintenance.py` |
-| Red integration and audio | `runtime.py`, `runtime_audio.py`, `audio_resolver.py`, `audio_relay_server.py` |
+| Red integration and audio | `runtime.py`; `runtime_audio.py`, `audio_resolver.py` and `audio_relay_server.py` preserve imports for the separate [red-audio-adapter](https://github.com/HumanMint/red-audio-adapter) package |
 
 Some older `fri_*` modules here are the companion as it ran before Fri moved to its own
 repository, kept as a compatibility baseline.
@@ -121,9 +121,9 @@ grant approval. The [operator runbook](operations.md) covers production.
 | Path | What |
 | --- | --- |
 | `cogs/gene/`, `cogs/numbers/` | Red cogs: the Gene panel and commands, meme highlights |
-| `src/gene/` | controller, worker, deployer, Red integration, audio adapters |
+| `src/gene/` | controller, worker, deployer, Red integration, audio compatibility imports |
 | `scripts/` | local development (`dev.py`), setup and host install, audio and history tools |
 | `ops/` | Dockerfiles, Compose files, systemd units, maintainer release script |
-| `audio-plugin/` | the Lavalink source plugin and playback probes |
+| [red-audio-adapter](https://github.com/HumanMint/red-audio-adapter) (separate repository) | the Lavalink source plugin, audio services and playback probes |
 | `tests/` | state, authorization, persistence and failure-recovery tests |
 | `docs/` | this guide, setup, operations, Fri boundary and feature notes |

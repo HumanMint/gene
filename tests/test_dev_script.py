@@ -122,3 +122,9 @@ def test_fri_env_needs_the_ids_fri_reads_at_startup(tmp_path):
     path = initialized(tmp_path)
     with pytest.raises(SystemExit, match='GENE_GUILD_ID, GENE_OWNER_ID, GENE_WORKSHOP_CHANNEL_ID'):
         dev.main(['--env', str(path), 'fri-env'])
+
+
+def test_red_without_the_pinned_audio_hook_explains_setup_before_reading_config(tmp_path, monkeypatch):
+    monkeypatch.setattr(dev.importlib.util, 'find_spec', lambda name: None if name == 'red_audio_adapter' else object())
+    with pytest.raises(SystemExit, match='scripts/install_audio_adapter.py'):
+        dev.main(['--env', str(tmp_path / 'missing.env'), 'red'])

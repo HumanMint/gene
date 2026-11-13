@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Only the host venv build is mocked; assert the locked production install contract.
+set -euo pipefail
+if [[ "$*" == "lock --check --project $ST/gene-src" ]]; then exit 0; fi
+[[ "$*" == "sync --project $ST/gene-src --frozen --no-dev --no-default-groups --extra red --no-cache --python $BATCH_ROOT/venv/bin/python" ]]
+echo "$*" >> "$MOCK/uv.log"
+mkdir -p "$UV_PROJECT_ENVIRONMENT"/{bin,lib/python3.11/site-packages/gene_control-0.1.0.dist-info}
+cp "$(dirname "$0")/../fri_release_stub.py" "$UV_PROJECT_ENVIRONMENT/bin/python"
+chmod +x "$UV_PROJECT_ENVIRONMENT/bin/python"
+if [[ ${MOCK_UV_FAIL:-} == 1 ]]; then exit 1; fi
+printf '%s/src\n' "$ST/gene-src" > "$UV_PROJECT_ENVIRONMENT/lib/python3.11/site-packages/_editable_impl_gene_control.pth"
+printf '{"dir_info":{"editable":true},"url":"file://%s"}' "$ST/gene-src" > "$UV_PROJECT_ENVIRONMENT/lib/python3.11/site-packages/gene_control-0.1.0.dist-info/direct_url.json"

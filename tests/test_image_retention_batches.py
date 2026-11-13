@@ -1565,7 +1565,7 @@ docker() {
 }
 cleanup
 """
-    rc, out = run_script(tmp_path, ['has', 'log', 'die', 'prune_images', 'cleanup'], body, {
+    rc, out = run_script(tmp_path, ['has', 'log', 'die', 'prune_images', 'prune_host_venvs', 'cleanup'], body, {
         'ROOT': str(root), 'FRI_ROOT': str(fri_root), 'STAGE': str(stage),
         'JOURNAL': str(stage / 'journal'), 'MANIFEST': str(stage / 'manifest.json'),
         'KEEP_RELEASES': '2', 'IMAGE_LIST': str(image_list),
@@ -1575,3 +1575,63 @@ cleanup
     required = {tag for images in (a, b) for tag, _ in images.values()}
     assert required <= remaining, f'{mode}: live B or its rollback A lost {required - remaining}'
     assert not {tag for tag, _ in release_images(0).values()} & remaining
+
+
+@pytest.mark.parametrize('available', [True, False])
+def test_dependency_rollback_needs_its_saved_environment(tmp_path, available):
+    backup = tmp_path / 'backup'
+    tree = backup / 'installed-source'
+    tree.mkdir(parents=True)
+    (tree / '.release-sha').write_text(gene(1))
+    target = tmp_path / 'host-venvs/old'
+    (target / 'bin').mkdir(parents=True)
+    if available:
+        (target / 'bin/python').touch()
+    (backup / 'installed-venv').symlink_to(target, target_is_directory=True)
+    step = {'record': {'gene': gene(2), 'host_venv': 'new-environment'},
+            'baseline': {'source': gene(1)}, 'backup': backup}
+    failures, _, _ = retention.restore_source(step, {'source_tree': None})
+    assert bool(failures) is not available
+
+
+def test_parsed_dependency_environment_blocks_unsafe_retention(batch_host):
+    root = batch_host.root
+    path = stage_of(root, 4) / 'manifest.json'
+    manifest = json.loads(path.read_text())
+    manifest.update(host_venv=str(root / 'host-venvs/new'), old_host_venv=str(root / 'host-venvs/old'))
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='installed-venv'):
+        retention.run(root)
+    record = next(r for r in retention.batch_records(root) if r['gene'] == gene(4))
+    assert record['host_venv'] == manifest['host_venv']
+    assert record['old_host_venv'] == manifest['old_host_venv']
+    assert not (root / 'maintenance/image-retention-plan.json').exists()
+
+
+def test_cleanup_reclaims_only_unreferenced_host_environments(tmp_path):
+    root = tmp_path / 'root'
+    envs = root / 'host-venvs'
+    for name in ('live', 'rollback', 'recent', 'abandoned'):
+        (envs / name).mkdir(parents=True)
+    (root / 'venv').symlink_to(envs / 'live')
+    backup = root / 'backups/retained'
+    backup.mkdir(parents=True)
+    (backup / 'installed-venv').symlink_to(envs / 'rollback')
+    stage = root / 'staging/batch-recent'
+    stage.mkdir(parents=True)
+    (stage / 'journal').write_text('resumed\n')
+    (stage / 'manifest.json').write_text(json.dumps({'host_venv': str(envs / 'recent')}))
+    names = ['cleanup']
+    if 'prune_host_venvs() {' in SCRIPT.read_text():
+        names.append('prune_host_venvs')
+    rc, out = run_script(tmp_path, names, '''
+has() { return 0; }
+log() { :; }
+backup_dir() { echo backup; }
+cleanup
+''', {
+        'ROOT': str(root), 'FRI_ROOT': str(root), 'KEEP_RELEASES': '1', 'KEEP_IMAGES': '1',
+        'STAGE': str(stage),
+    })
+    assert rc == 0, out
+    assert {p.name for p in envs.iterdir()} == {'live', 'rollback', 'recent'}

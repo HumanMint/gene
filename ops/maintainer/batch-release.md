@@ -54,7 +54,7 @@ If Gene deployed a member's request since the last maintainer release, `release.
 | Phase | Member impact | What it does |
 |---|---|---|
 | `baseline` | none | Requires the tools it uses, a controller DB whose directory and journal files share its owner, and a healthy live pair at OLD_G / OLD_F: settings, pins, images, labels, a source tree that is unmarked or marked with the old release, fresh heartbeats with a presence, controls, connections. Records it, plus the exact running image IDs, in `baseline.json` and `manifest.json`. |
-| `stage` | none | Walks a probe directory through staging, `releases/`, the source tree's parent and the backups dir by plain `rename(2)`, and refuses if any hop fails. A matching device number isn't enough, since a bind mount shares one and still refuses renames. It also reads the kernel's mount table and refuses a mount point at or under the source tree or either staged tree, since a bind mount there looks like a plain directory. Every tree move in the switch and its rollback is then a single rename that fails rather than copying. Disk admission on every filesystem it will write: Docker, staging, both backup dirs, `releases/` and the source tree. Checks the archive hashes and extracts into fresh dirs. Refuses a changed `uv.lock`, a `pyproject.toml` change in anything the host venv installs from, and ops diffs (`ALLOW_OPS_DIFF=1` after review). The venv is an editable install of the source tree, so `pyproject.toml` is compared parsed: only metadata may differ (`description`, `readme`, `license`, `license-files`, `authors`, `maintainers`, `keywords`, `classifiers`, `urls`, and the `[tool.ruff]` and `[tool.pytest]` settings). Everything else must match, including `build-system`, the dependencies, optional dependencies and dependency groups, `requires-python`, `version`, `scripts` and `[tool.uv]`. Values match only with the same type and as written: `1` isn't `true`, and the same instant at another offset is a change. It relies on the host `python3` having `tomllib` (Python 3.11 or later): without it, or with a file it can't parse, it refuses. Prepares the immutable cog tree and records its hash. Builds the labelled images and records their IDs. Runs isolated import checks, the controller contract on synthetic state, a check that Fri accepts that contract, and a test of the audio player snapshot. |
+| `stage` | none | Walks a probe directory through staging, `releases/`, the source tree's parent and the backups dir by plain `rename(2)`, and refuses if any hop fails. A matching device number isn't enough, since a bind mount shares one and still refuses renames. It also reads the kernel's mount table and refuses a mount point at or under the source tree or either staged tree, since a bind mount there looks like a plain directory. Every tree move in the switch and its rollback is then a single rename that fails rather than copying. Disk admission on every filesystem it will write: Docker, staging, both backup dirs, `releases/` and the source tree. Checks the archive hashes and extracts into fresh dirs. A changed `uv.lock` or install-relevant project dependencies, extras, version, scripts or dev group builds a new host venv before downtime (see below). Unsupported Python, build-system, packaging or uv configuration changes still refuse; malformed TOML and ops diffs refuse too (`ALLOW_OPS_DIFF=1` after review). Metadata changes alone reuse the existing venv byte for byte. Prepares the immutable cog tree and records its hash. Builds the labelled images and records their IDs. Runs isolated import checks, the controller contract on synthetic state, a check that Fri accepts that contract, and a test of the audio player snapshot. |
 | `rehearse` | none | Works out which downgrades a rollback needs and records them in the manifest: each module in `DOWNGRADE_MODULES` that G has and the old release lacks. A feature the old release already has is never downgraded, since that would delete data it reads. Both images are asked with a probe that answers yes or no, so a container that fails to start stops the phase rather than skipping a step. Then it copies the live DB twice into a private dir that is always removed. Migrates one copy with G, starts the exact rollback image on it, and writes a request with old code. Migrates the other and runs the recorded downgrades with the controller's env. For `gene.profile_downgrade` the copy holds one profile removal, so a `controller.env` without the configured channels (which the downgrade needs to keep removals) stops here instead of halfway through a rollback. Then it starts the rollback image on it. |
 | `drain` | development pauses | The fence: pause (audited), wait for building/deploying work and `deploy-result.json` to clear, stop gene-worker and gene-deployer, recheck. If someone else paused development before the batch touched it, the fence journals the stop before it happens (`intent:pause`, then `skipped:pause`, so the pause stays theirs): if the fence dies after the stop, `resume-old` starts the units again. |
 | `gene` | Red ~1 min, controller seconds | Re-runs the fence, verifies the old pair and the cog, rename and disk checks (a size it can't measure stops it, or once the attempt is journaled rolls back), then waits until the audio node reports zero players. Players left idle in voice are a stop: ask the owner. It verifies the old pair again and writes a complete backup into a unique dir: a DB copy, Red's data, and the four pin files with their modes kept. Only then does it journal the attempt. It renames the cogs into place, takes a fresh player snapshot, stops Red, swaps the source, and pins `release.env` and the worker image. It starts controller and red, probes health against the baseline guild and presence, then records `active_sha` / `previous_sha` plus an audit row in one guarded transaction. Any failure after the attempt is journaled runs `rollback-gene`. |
@@ -107,7 +107,7 @@ Data an older release would keep serving after its own change to what the data d
 - a rollback after resume, after a member removed a profile note, whose removal the downgrade keeps in the configured channel
 - a rollback to a release with member summaries but not summary dependencies (`34dbbb3`), which runs no downgrade: the old controller withdraws a member's message, and the database's triggers retire another member's reply, pending question, draft and reminder depending on that member's summary there and then
 - a controller env without the configured channels, which the rehearsal refuses
-- `stage` refusing a `pyproject.toml` change in what the venv installs, a changed `uv.lock` and a `pyproject.toml` it can't parse, each before building; a difference in metadata alone goes through to a full release. The mock's live source tree holds OLD_G's own `pyproject.toml` and `uv.lock`
+- `stage` planning dependency and lock changes, refusing unsupported Python/build configuration changes and a `pyproject.toml` it can't parse, each before building; a difference in metadata alone goes through to a full release. The mock's live source tree holds OLD_G's own `pyproject.toml` and `uv.lock`
 - a downgrade probe that fails to run, which stops the rehearsal rather than skipping a downgrade; the rollback then runs the recorded list without probing
 - a rollback after resume with the controller down
 - a crash right after a mutation, then rollback
@@ -199,3 +199,39 @@ Both must report `active`. If development remains paused, the owner uses the
 existing Resume control after reviewing queued requests. Masking does not clear
 queued work. No controller feature flag is needed: without these services no
 coding or automatic deployment runs.
+
+## Host dependency plan
+
+The host install uses Python 3.11, the `red` extra and no dependency groups. The
+bootstrap operations instructions previously omitted extras; `red` follows the
+runtime Dockerfile and setup instructions. `audio` is not selected.
+
+When installation inputs change, stage checks lock freshness with `uv lock --check`,
+then runs `uv sync --frozen --no-dev --no-default-groups --extra red --no-cache`
+using the existing host interpreter. uv checks downloaded registry artifacts against
+the lock hashes; the plan refuses unhashed artifacts and non-registry dependency
+sources. This requires uv on the bot host. Python requirements, build-system and
+packaging/uv configuration changes need a separate plan and still refuse.
+
+Each environment has a stable path under `host-venvs/batch-<G>-<F>[-attempt]`.
+Stage admits twice the current venv size together with the remaining stage costs,
+summed per filesystem with the normal 2 GiB reserve. A retry removes its interrupted
+build before measuring free space, then rebuilds it. Hatch's editable
+path and direct-url metadata are checked and rewritten to the final `source/src`
+and `source` locations. The project imports from the switched source, and script
+shebangs keep the stable venv path. Stage never changes the live venv.
+
+Under the existing development fence, Gene renames source as before, journals
+`intent:venv_swap`, renames the old venv entry into `installed-venv` in the backup,
+and creates the live `venv` symlink. Every failure or interrupted switch recovers
+both entries before restarting old services. Fri runs through the live alias.
+The first switch supports the original plain venv directory; later backups retain
+symlinks to earlier stable environments. Workers must remain fenced during recovery.
+
+Cleanup removes abandoned environments while retaining the live target, the old
+and new targets of the latest `KEEP_RELEASES` non-reverted releases, and every
+target referenced by a retained backup. Backups remain until the owner removes them. Image retention
+removes only Docker images and checks that a planned rollback's saved environment
+is available. Do not manually remove these targets while a live or backup alias
+references them. Unchanged install inputs create no environment and preserve the
+existing venv bytes and switch behavior.

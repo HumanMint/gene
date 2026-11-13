@@ -331,7 +331,8 @@ def batch_record(name, match, manifest, marks, at, words=None, lines=None):
     old_fri = manifest.get('old_fri')  # batch-<G>: read from its backup's Fri pins when it is a rollback step
     if old_fri is not None and not is_sha(old_fri):
         raise bad('invalid old Fri release')
-    return {'name': name, 'gene': match[1], 'fri': manifest['fri'], 'old_gene': old_gene, 'old_fri': old_fri,
+    return {**{key: manifest[key] for key in ('host_venv', 'old_host_venv') if key in manifest},
+            'name': name, 'gene': match[1], 'fri': manifest['fri'], 'old_gene': old_gene, 'old_fri': old_fri,
             'images': images, 'marks': marks, 'at': at, 'backup': manifest.get('backup'),
             'old_pair': 'old_gene' in manifest and 'old_fri' in manifest, 'downgrades': manifest.get('downgrades'),
             'gene_changes': match[1] != old_gene,
@@ -604,6 +605,12 @@ def restore_source(step, state):
     """
     record, baseline, backup = step['record'], step['baseline'], step['backup']
     tree, failing = state['source_tree'], []
+    # Venvs stay at stable paths; backups contain the old directory or its alias. Never infer a
+    # usable rollback configuration from source alone when that environment has gone missing.
+    if 'host_venv' in record:
+        saved = backup / 'installed-venv'
+        if not (saved / 'bin/python').is_file():
+            failing.append('installed-venv is missing or its stable target is unavailable')
     if tree is not None and source_state(tree) == record['gene']:  # [[ -f marker && $(cat marker) == "$G" ]]
         failed = backup / 'failed-source'
         if os.path.lexists(failed) and not failed.exists():  # [[ ! -e ]] picks it, then rename_tree refuses

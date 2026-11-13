@@ -1328,8 +1328,12 @@ def test_stage_lets_a_metadata_only_pyproject_change_through(tmp_path, name):
 @pytest.mark.parametrize('name', sorted(INSTALL_CHANGES))
 def test_stage_refuses_a_pyproject_change_in_what_the_venv_installs(tmp_path, name):
     out = installs_same(tmp_path, edited(INSTALL_CHANGES[name]))
-    assert out.returncode != 0
-    assert 'pyproject.toml changes what the host venv installs:' in out.stderr and name in out.stderr
+    if name in {'project.dependencies', 'project.optional-dependencies', 'project.version',
+                'project.scripts', 'dependency-groups.dev'}:
+        assert out.returncode == 3
+    else:
+        assert out.returncode == 1
+        assert 'unsupported host venv change:' in out.stderr and name in out.stderr
 
 
 def test_stage_refuses_a_pyproject_it_cant_parse_or_compare(tmp_path):
@@ -1348,7 +1352,7 @@ def test_stage_refuses_a_pyproject_it_cant_parse_or_compare(tmp_path):
 ])
 def test_stage_refuses_a_setting_that_only_changed_type(tmp_path, live, staged):
     out = installs_same(tmp_path, PYPROJECT + '\n' + live, staged=PYPROJECT + '\n' + staged)
-    assert out.returncode != 0 and 'pyproject.toml changes what the host venv installs:' in out.stderr
+    assert out.returncode != 0 and 'unsupported host venv change:' in out.stderr
 
 
 STAMP = '[tool.hatch.build.hooks.custom]\nbuilt = {}\n'
@@ -1365,7 +1369,7 @@ STAMP = '[tool.hatch.build.hooks.custom]\nbuilt = {}\n'
 ])
 def test_stage_refuses_a_timestamp_written_differently(tmp_path, live, staged):
     out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(live), staged=PYPROJECT + '\n' + STAMP.format(staged))
-    assert out.returncode != 0 and 'changes what the host venv installs: tool.hatch' in out.stderr
+    assert out.returncode != 0 and 'unsupported host venv change: tool.hatch' in out.stderr
 
 
 @pytest.mark.parametrize('live, staged', [
@@ -1385,10 +1389,60 @@ def test_stage_lets_an_unchanged_timestamp_through(tmp_path, live, staged):
 @pytest.mark.parametrize('live, staged', [('0.0', '-0.0'), ('-0.0', '0.0'), ('nan', '-nan'), ('{a = [0.0]}', '{a = [-0.0]}')])
 def test_stage_refuses_a_float_that_changed_sign(tmp_path, live, staged):
     out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(live), staged=PYPROJECT + '\n' + STAMP.format(staged))
-    assert out.returncode != 0 and 'changes what the host venv installs: tool.hatch' in out.stderr
+    assert out.returncode != 0 and 'unsupported host venv change: tool.hatch' in out.stderr
 
 
 @pytest.mark.parametrize('value', ['nan', '-nan', 'inf', '0.0', '-0.0', '{a = [nan]}'])
 def test_stage_lets_an_unchanged_float_through(tmp_path, value):
     out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(value), staged=PYPROJECT + '\n' + STAMP.format(value))
     assert out.returncode == 0, out.stderr
+
+
+@pytest.mark.parametrize('bad_path', [False, True])
+def test_host_editable_rewrite_resolves_aliases_and_refuses_other_layouts(tmp_path, bad_path):
+    staged = tmp_path/'staged source'
+    (staged/'src').mkdir(parents=True)
+    alias = tmp_path/'alias'
+    alias.symlink_to(staged, target_is_directory=True)
+    live = tmp_path/'source'
+    site = tmp_path/'venv/lib/python3.11/site-packages'
+    info = site/'gene_control-0.1.0.dist-info'
+    info.mkdir(parents=True)
+    pth = site/'_editable_impl_gene_control.pth'
+    pth.write_text(str(tmp_path/'unexpected' if bad_path else staged/'src'))
+    direct = info/'direct_url.json'
+    direct.write_text(json.dumps({'dir_info': {'editable': True}, 'url': alias.as_uri()}))
+    code = functions('build_host_venv').split("<<'PYVENV'\n")[1].split('\nPYVENV')[0]
+    out = subprocess.run([sys.executable, '-', str(tmp_path/'venv'), str(alias), str(live)],
+                         input=code, text=True, capture_output=True, timeout=10)
+    if bad_path:
+        assert out.returncode != 0 and 'unsupported editable layout' in out.stderr
+    else:
+        assert out.returncode == 0, out.stderr
+        assert pth.read_text().strip() == str(live/'src')
+        assert json.loads(direct.read_text())['url'] == live.as_uri()
+
+
+@pytest.mark.parametrize('partial', [True, False])
+def test_host_venv_admission_includes_stage_and_clears_partial(tmp_path, partial):
+    target = tmp_path / 'host-venvs/batch-test'
+    if partial:
+        target.mkdir(parents=True)
+    script = functions('build_host_venv') + r'''
+measure() { printf -v "$1" '%s' 1073741824; }
+clear_interrupted() { rm -rf "$1"; }
+disk_admission() {
+  [[ ! -e $ROOT/host-venvs/batch-test ]] || exit 21
+  [[ "$*" == *"docker="* && "$*" == *"host_venv="* ]] || exit 22
+  exit 42
+}
+build_host_venv "docker=$ROOT:3221225472"
+'''
+    bindir = tmp_path / 'bin'
+    bindir.mkdir()
+    (bindir / 'uv').touch()
+    (bindir / 'uv').chmod(0o755)
+    out = subprocess.run(['bash', '-c', script], capture_output=True, text=True,
+                         env={**os.environ, 'ROOT': str(tmp_path), 'STAGE': 'batch-test',
+                              'PATH': str(bindir) + ':' + os.environ['PATH']})
+    assert out.returncode == 42, out.stdout + out.stderr

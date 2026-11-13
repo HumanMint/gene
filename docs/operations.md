@@ -41,7 +41,16 @@ are never included in repository files, tool output, or Discord messages.
    add <public-key-file> --allow-write`. Install known GitHub host keys from an already
    trusted SSH configuration. Never disable host key checking.
 5. Build `gene-runtime:bootstrap` and `gene-worker:bootstrap` from `ops/Dockerfile`.
-   Create the host Python 3.11 environment from `uv.lock` at `/srv/gene/venv`.
+   Create the host Python 3.11 environment from `uv.lock` at `/srv/gene/venv`
+   with `uv sync --frozen --no-dev --no-default-groups --extra red` (set
+   `UV_PROJECT_ENVIRONMENT=/srv/gene/venv` and use `/srv/gene/source` as the project).
+   The host uses the `red` extra, without `audio` or dev dependencies, matching
+   the runtime image. Keep uv installed for maintainer dependency releases.
+   Batch stage builds changed dependencies in stable `host-venvs/` paths, checks
+   lock freshness and artifact hashes, and redirects the editable install to the
+   final source path. Gene switches the live `venv` alias with source under its
+   development fence; rollback restores both. Cleanup keeps live, recent release and
+   backup-referenced environments and removes abandoned builds. See `ops/maintainer/batch-release.md` for paths and recovery.
 6. Archive the initial tested maintainer commit's cogs into `releases/<sha>/cogs`, write
    `GENE_RELEASE_SHA=<sha>` into `/srv/gene/release.env`, and bootstrap `Store` with
    that SHA. Start the controller and Red with the compose command below.

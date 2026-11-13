@@ -829,7 +829,7 @@ PYLOCK
   # final source location; direct_url is updated too so tooling reports the same editable source.
   python3 - "$target" "$STAGE/gene-src" "$ROOT/source" <<'PYVENV'
 import json, pathlib, sys
-venv, staged, live = map(pathlib.Path, sys.argv[1:])
+venv, staged, live = (pathlib.Path(arg).resolve() for arg in sys.argv[1:])
 site, = venv.glob('lib/python*/site-packages')
 pth = site / '_editable_impl_gene_control.pth'
 if pth.read_text().strip() != str(staged / 'src'):

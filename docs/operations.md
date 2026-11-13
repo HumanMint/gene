@@ -49,8 +49,8 @@ are never included in repository files, tool output, or Discord messages.
    Batch stage builds changed dependencies in stable `host-venvs/` paths, checks
    lock freshness and artifact hashes, and redirects the editable install to the
    final source path. Gene switches the live `venv` alias with source under its
-   development fence; rollback restores both. Cleanup retains these environments
-   with source backups. See `ops/maintainer/batch-release.md` for paths and recovery.
+   development fence; rollback restores both. Cleanup keeps live, recent release and
+   backup-referenced environments and removes abandoned builds. See `ops/maintainer/batch-release.md` for paths and recovery.
 6. Archive the initial tested maintainer commit's cogs into `releases/<sha>/cogs`, write
    `GENE_RELEASE_SHA=<sha>` into `/srv/gene/release.env`, and bootstrap `Store` with
    that SHA. Start the controller and Red with the compose command below.

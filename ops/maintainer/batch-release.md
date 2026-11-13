@@ -213,9 +213,10 @@ the lock hashes; the plan refuses unhashed artifacts and non-registry dependency
 sources. This requires uv on the bot host. Python requirements, build-system and
 packaging/uv configuration changes need a separate plan and still refuse.
 
-Each environment lives permanently under `host-venvs/batch-<G>-<F>[-attempt]`.
-Stage admits twice the current venv size on that filesystem, retaining the normal
-2 GiB reserve. An interrupted build is removed and rebuilt on retry. Hatch's editable
+Each environment has a stable path under `host-venvs/batch-<G>-<F>[-attempt]`.
+Stage admits twice the current venv size together with the remaining stage costs,
+summed per filesystem with the normal 2 GiB reserve. A retry removes its interrupted
+build before measuring free space, then rebuilds it. Hatch's editable
 path and direct-url metadata are checked and rewritten to the final `source/src`
 and `source` locations. The project imports from the switched source, and script
 shebangs keep the stable venv path. Stage never changes the live venv.
@@ -227,8 +228,9 @@ both entries before restarting old services. Fri runs through the live alias.
 The first switch supports the original plain venv directory; later backups retain
 symlinks to earlier stable environments. Workers must remain fenced during recovery.
 
-Cleanup retains stable environments alongside source backups, including reverted
-attempts; it does not remove a target another backup may reference. Image retention
+Cleanup removes abandoned environments while retaining the live target, the old
+and new targets of the latest `KEEP_RELEASES` non-reverted releases, and every
+target referenced by a retained backup. Backups remain until the owner removes them. Image retention
 removes only Docker images and checks that a planned rollback's saved environment
 is available. Do not manually remove these targets while a live or backup alias
 references them. Unchanged install inputs create no environment and preserve the

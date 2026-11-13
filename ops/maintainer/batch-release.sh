@@ -805,7 +805,7 @@ build_host_venv() {
   mkdir -p "$ROOT/host-venvs"; chmod 755 "$ROOT/host-venvs"
   command -v uv > /dev/null || die 'dependency updates need uv on the bot host'
   measure size "$(readlink -f "$ROOT/venv")"
-  disk_admission "host_venv=$ROOT:$(( 2*size ))"
+  disk_admission "host_venv=$ROOT/host-venvs:$(( 2*size ))"
   clear_interrupted "$target"
   python3 - "$STAGE/gene-src/uv.lock" <<'PYLOCK'
 import sys, tomllib

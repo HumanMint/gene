@@ -418,7 +418,7 @@ PY
 }
 
 verify() {  # old|new [any-work]: everything running, pinned and recorded agrees with one release
-  if has host_venv_built; then
+  if python3 -c 'import json, sys; sys.exit("host_venv" not in json.load(open(sys.argv[1])))' "$MANIFEST"; then
     local expected
     if [[ $1 == new ]]; then expected=$(jget "$MANIFEST" host_venv); else expected=$(jget "$MANIFEST" old_host_venv); fi
     [[ -x $ROOT/venv/bin/python && $(readlink -f "$ROOT/venv") == "$expected" ]] || die 'host venv does not match source release'
@@ -823,6 +823,7 @@ for package in lock['package']:
 PYLOCK
   open_for 'the host venv build'
   uv lock --check --project "$STAGE/gene-src"
+  open_for 'the locked host venv sync'
   UV_PROJECT_ENVIRONMENT=$target uv sync --project "$STAGE/gene-src" --frozen --no-dev --no-default-groups --extra red --no-cache --python "$ROOT/venv/bin/python"
   # uv verifies registry artifacts against uv.lock hashes. Hatch's editable .pth must refer to the
   # final source location; direct_url is updated too so tooling reports the same editable source.
@@ -1448,6 +1449,7 @@ rollback_gene() {
   log 'rollback: pins'
   restore_file "$B/release.env" "$ROOT/release.env"
   restore_file "$B/worker.env" "$ROOT/secrets/worker.env"
+  restore_host_venv
   log 'rollback: source'
   if [[ -f $ROOT/source/.release-sha && $(cat "$ROOT/source/.release-sha") == "$G" ]]; then
     local failed=$B/failed-source
@@ -1459,7 +1461,6 @@ rollback_gene() {
     rename_tree "$B/installed-source" "$ROOT/source"
   fi
   [[ $(source_state) == "$(jget "$BASELINE" source)" ]] || die 'old source not in place'
-  restore_host_venv
   log 'rollback: old controller and Red'
   if [[ $(container_image "$CONTROLLER") == "$old_id" && $(container_image "$RED") == "$old_id" ]] \
      && container_running "$CONTROLLER" && container_running "$RED" && probe_gene "$OLD_G" 0 "$old_id"; then

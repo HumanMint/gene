@@ -1575,3 +1575,20 @@ cleanup
     required = {tag for images in (a, b) for tag, _ in images.values()}
     assert required <= remaining, f'{mode}: live B or its rollback A lost {required - remaining}'
     assert not {tag for tag, _ in release_images(0).values()} & remaining
+
+
+@pytest.mark.parametrize('available', [True, False])
+def test_dependency_rollback_needs_its_saved_environment(tmp_path, available):
+    backup = tmp_path / 'backup'
+    tree = backup / 'installed-source'
+    tree.mkdir(parents=True)
+    (tree / '.release-sha').write_text(gene(1))
+    target = tmp_path / 'host-venvs/old'
+    (target / 'bin').mkdir(parents=True)
+    if available:
+        (target / 'bin/python').touch()
+    (backup / 'installed-venv').symlink_to(target, target_is_directory=True)
+    step = {'record': {'gene': gene(2), 'host_venv': 'new-environment'},
+            'baseline': {'source': gene(1)}, 'backup': backup}
+    failures, _, _ = retention.restore_source(step, {'source_tree': None})
+    assert bool(failures) is not available

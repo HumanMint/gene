@@ -1396,3 +1396,28 @@ def test_stage_refuses_a_float_that_changed_sign(tmp_path, live, staged):
 def test_stage_lets_an_unchanged_float_through(tmp_path, value):
     out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(value), staged=PYPROJECT + '\n' + STAMP.format(value))
     assert out.returncode == 0, out.stderr
+
+
+@pytest.mark.parametrize('bad_path', [False, True])
+def test_host_editable_rewrite_resolves_aliases_and_refuses_other_layouts(tmp_path, bad_path):
+    staged = tmp_path/'staged source'
+    (staged/'src').mkdir(parents=True)
+    alias = tmp_path/'alias'
+    alias.symlink_to(staged, target_is_directory=True)
+    live = tmp_path/'source'
+    site = tmp_path/'venv/lib/python3.11/site-packages'
+    info = site/'gene_control-0.1.0.dist-info'
+    info.mkdir(parents=True)
+    pth = site/'_editable_impl_gene_control.pth'
+    pth.write_text(str(tmp_path/'unexpected' if bad_path else staged/'src'))
+    direct = info/'direct_url.json'
+    direct.write_text(json.dumps({'dir_info': {'editable': True}, 'url': alias.as_uri()}))
+    code = functions('build_host_venv').split("<<'PYVENV'\n")[1].split('\nPYVENV')[0]
+    out = subprocess.run([sys.executable, '-', str(tmp_path/'venv'), str(alias), str(live)],
+                         input=code, text=True, capture_output=True, timeout=10)
+    if bad_path:
+        assert out.returncode != 0 and 'unsupported editable layout' in out.stderr
+    else:
+        assert out.returncode == 0, out.stderr
+        assert pth.read_text().strip() == str(live/'src')
+        assert json.loads(direct.read_text())['url'] == live.as_uri()

@@ -829,6 +829,7 @@ PYLOCK
   # final source location; direct_url is updated too so tooling reports the same editable source.
   python3 - "$target" "$STAGE/gene-src" "$ROOT/source" <<'PYVENV'
 import json, pathlib, sys
+from urllib.parse import unquote, urlsplit
 venv, staged, live = (pathlib.Path(arg).resolve() for arg in sys.argv[1:])
 site, = venv.glob('lib/python*/site-packages')
 pth = site / '_editable_impl_gene_control.pth'
@@ -837,7 +838,10 @@ if pth.read_text().strip() != str(staged / 'src'):
 pth.write_text(str(live / 'src')+'\n')
 url, = site.glob('gene_control-*.dist-info/direct_url.json')
 record = json.loads(url.read_text())
-if record != {'dir_info': {'editable': True}, 'url': staged.as_uri()}:
+origin = urlsplit(record.get('url', ''))
+if (set(record) != {'dir_info', 'url'} or record['dir_info'] != {'editable': True}
+        or origin.scheme != 'file' or origin.netloc
+        or pathlib.Path(unquote(origin.path)).resolve() != staged):
     sys.exit('unsupported editable install metadata')
 record['url'] = live.as_uri()
 url.write_text(json.dumps(record))

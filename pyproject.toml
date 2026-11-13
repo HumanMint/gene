@@ -20,10 +20,10 @@ red = [
     "pillow>=13,<14",
     "pip>=25,<27",
 ]
-audio = ["yt-dlp[default]==2026.8.19"]
+audio = ["yt-dlp[default]==2026.10.26"]
 
 [dependency-groups]
-dev = ["pytest>=8,<9", "ruff>=0.11,<1"]
+dev = ["pytest>=9.0.3,<10", "ruff>=0.11,<1"]
 
 [project.scripts]
 gene-controller = "gene.api:main"

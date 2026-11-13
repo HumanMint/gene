@@ -1282,7 +1282,7 @@ INSTALL_CHANGES = {
     'project.version': ('version = "0.1.0"', 'version = "0.1.1"'),
     'project.scripts': ('gene-deployer = "gene.deploy:main"', 'gene-deployer = "gene.deploy:run"'),
     'build-system.requires': ('hatchling==1.27.0', 'hatchling==1.26.3'),
-    'dependency-groups.dev': ('"pytest>=8,<9"', '"pytest>=8,<10"'),
+    'dependency-groups.dev': ('"pytest>=9.0.3,<10"', '"pytest>=9.0.3,<11"'),
     'tool.hatch': ('packages = ["src/gene"]', 'packages = ["src/gene", "src/other"]'),
     'tool.uv': '\n[tool.uv]\nindex-url = "https://example.invalid/simple"\n',
 }

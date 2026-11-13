@@ -1328,8 +1328,12 @@ def test_stage_lets_a_metadata_only_pyproject_change_through(tmp_path, name):
 @pytest.mark.parametrize('name', sorted(INSTALL_CHANGES))
 def test_stage_refuses_a_pyproject_change_in_what_the_venv_installs(tmp_path, name):
     out = installs_same(tmp_path, edited(INSTALL_CHANGES[name]))
-    assert out.returncode != 0
-    assert 'pyproject.toml changes what the host venv installs:' in out.stderr and name in out.stderr
+    if name in {'project.dependencies', 'project.optional-dependencies', 'project.version',
+                'project.scripts', 'dependency-groups.dev'}:
+        assert out.returncode == 3
+    else:
+        assert out.returncode == 1
+        assert 'unsupported host venv change:' in out.stderr and name in out.stderr
 
 
 def test_stage_refuses_a_pyproject_it_cant_parse_or_compare(tmp_path):
@@ -1348,7 +1352,7 @@ def test_stage_refuses_a_pyproject_it_cant_parse_or_compare(tmp_path):
 ])
 def test_stage_refuses_a_setting_that_only_changed_type(tmp_path, live, staged):
     out = installs_same(tmp_path, PYPROJECT + '\n' + live, staged=PYPROJECT + '\n' + staged)
-    assert out.returncode != 0 and 'pyproject.toml changes what the host venv installs:' in out.stderr
+    assert out.returncode != 0 and 'unsupported host venv change:' in out.stderr
 
 
 STAMP = '[tool.hatch.build.hooks.custom]\nbuilt = {}\n'
@@ -1365,7 +1369,7 @@ STAMP = '[tool.hatch.build.hooks.custom]\nbuilt = {}\n'
 ])
 def test_stage_refuses_a_timestamp_written_differently(tmp_path, live, staged):
     out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(live), staged=PYPROJECT + '\n' + STAMP.format(staged))
-    assert out.returncode != 0 and 'changes what the host venv installs: tool.hatch' in out.stderr
+    assert out.returncode != 0 and 'unsupported host venv change: tool.hatch' in out.stderr
 
 
 @pytest.mark.parametrize('live, staged', [
@@ -1385,7 +1389,7 @@ def test_stage_lets_an_unchanged_timestamp_through(tmp_path, live, staged):
 @pytest.mark.parametrize('live, staged', [('0.0', '-0.0'), ('-0.0', '0.0'), ('nan', '-nan'), ('{a = [0.0]}', '{a = [-0.0]}')])
 def test_stage_refuses_a_float_that_changed_sign(tmp_path, live, staged):
     out = installs_same(tmp_path, PYPROJECT + '\n' + STAMP.format(live), staged=PYPROJECT + '\n' + STAMP.format(staged))
-    assert out.returncode != 0 and 'changes what the host venv installs: tool.hatch' in out.stderr
+    assert out.returncode != 0 and 'unsupported host venv change: tool.hatch' in out.stderr
 
 
 @pytest.mark.parametrize('value', ['nan', '-nan', 'inf', '0.0', '-0.0', '{a = [nan]}'])

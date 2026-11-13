@@ -418,6 +418,11 @@ PY
 }
 
 verify() {  # old|new [any-work]: everything running, pinned and recorded agrees with one release
+  if has host_venv_built; then
+    local expected
+    if [[ $1 == new ]]; then expected=$(jget "$MANIFEST" host_venv); else expected=$(jget "$MANIFEST" old_host_venv); fi
+    [[ -x $ROOT/venv/bin/python && $(readlink -f "$ROOT/venv") == "$expected" ]] || die 'host venv does not match source release'
+  fi
   python3 - "$(state)" "$1" "${2:-}" "$MANIFEST" "$BASELINE" "$G" "$F" "$OLD_G" "$OLD_F" <<'PY'
 import json, sys
 s, which, mode, manifest, baseline = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3], json.load(open(sys.argv[4])), json.load(open(sys.argv[5]))
@@ -494,6 +499,14 @@ checks = {
     'fri image': s['fri_container']['image'] in (old['fri']['id'], new['fri']['id'], 'none'),
     'source': (s['source'], os.path.isdir(B+'/installed-source')) in ((baseline['source'], False), (G, True), ('missing', True)),
 }
+if 'host_venv' in manifest:
+    current = root+'/venv'
+    saved_venv = B+'/installed-venv'
+    old_venv = manifest['old_host_venv']
+    checks['host venv'] = (
+        (os.path.realpath(current) == old_venv and os.path.exists(current))
+        or (os.path.realpath(current) == manifest['host_venv'] and os.path.exists(saved_venv))
+        or (not os.path.lexists(current) and os.path.exists(saved_venv)))
 bad = [k for k, v in checks.items() if not v]
 def fields(data):
     return dict(line.split('=', 1) for line in data.decode(errors='replace').splitlines() if '=' in line)
@@ -697,7 +710,7 @@ rename_preflight() {  # backup_dir: walk a probe dir through every directory the
 import os, re, sys, uuid
 root, stage, *hops = sys.argv[1:]
 # A bind mount on the same filesystem looks like a plain directory to stat, so read the mount table.
-trees = [os.path.realpath(p) for p in (root+'/source', stage+'/gene-src', stage+'/cogs-ready') if os.path.exists(p)]
+trees = [os.path.realpath(p) for p in (root+'/source', root+'/venv', stage+'/gene-src', stage+'/cogs-ready') if os.path.exists(p)]
 with open('/proc/self/mountinfo') as info:
     for line in info:
         point = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), line.split()[4])
@@ -773,10 +786,86 @@ def changed(old, new):  # dotted names of the top-level keys and table entries t
             names.append(key)
     return names
 (live, live_meta), (staged, staged_meta) = parts(sys.argv[1]), parts(sys.argv[2])
-if changed(live, staged):
-    sys.exit('pyproject.toml changes what the host venv installs: '+', '.join(changed(live, staged)))
+differences = changed(live, staged)
+if differences:
+    supported = {'project.dependencies', 'project.optional-dependencies', 'project.version', 'project.scripts',
+                 'dependency-groups.dev'}
+    unsupported = set(differences) - supported
+    if unsupported:
+        sys.exit('unsupported host venv change: '+', '.join(sorted(unsupported)))
+    sys.exit(3)  # Supported, but needs a new environment.
+
 print('pyproject.toml differs only in metadata:', ', '.join(changed(live_meta, staged_meta)) or 'formatting')
 PY
+}
+
+build_host_venv() {
+  # Never relocate a venv: its scripts contain absolute interpreter paths. Only the live alias moves.
+  local target=$ROOT/host-venvs/${STAGE##*/} size
+  mkdir -p "$ROOT/host-venvs"; chmod 755 "$ROOT/host-venvs"
+  command -v uv > /dev/null || die 'dependency updates need uv on the bot host'
+  measure size "$(readlink -f "$ROOT/venv")"
+  disk_admission "host_venv=$ROOT:$(( 2*size ))"
+  clear_interrupted "$target"
+  python3 - "$STAGE/gene-src/uv.lock" <<'PYLOCK'
+import sys, tomllib
+with open(sys.argv[1], 'rb') as handle:
+    lock = tomllib.load(handle)
+for package in lock['package']:
+    source = package['source']
+    if source == {'editable': '.'} and package['name'] == 'gene-control':
+        continue
+    if set(source) != {'registry'}:
+        sys.exit('unsupported host venv lock source: only hashed registry dependencies are supported')
+    artifacts = package.get('wheels', []) + ([package['sdist']] if 'sdist' in package else [])
+    if not artifacts or any(not item.get('hash', '').startswith('sha256:') for item in artifacts):
+        sys.exit('host venv dependencies need SHA256 hashes in uv.lock')
+PYLOCK
+  open_for 'the host venv build'
+  uv lock --check --project "$STAGE/gene-src"
+  UV_PROJECT_ENVIRONMENT=$target uv sync --project "$STAGE/gene-src" --frozen --no-dev --no-default-groups --extra red --no-cache --python "$ROOT/venv/bin/python"
+  # uv verifies registry artifacts against uv.lock hashes. Hatch's editable .pth must refer to the
+  # final source location; direct_url is updated too so tooling reports the same editable source.
+  python3 - "$target" "$STAGE/gene-src" "$ROOT/source" <<'PYVENV'
+import json, pathlib, sys
+venv, staged, live = map(pathlib.Path, sys.argv[1:])
+site, = venv.glob('lib/python*/site-packages')
+pth = site / '_editable_impl_gene_control.pth'
+if pth.read_text().strip() != str(staged / 'src'):
+    sys.exit('unsupported editable layout: expected Hatch path file')
+pth.write_text(str(live / 'src')+'\n')
+url, = site.glob('gene_control-*.dist-info/direct_url.json')
+record = json.loads(url.read_text())
+if record != {'dir_info': {'editable': True}, 'url': staged.as_uri()}:
+    sys.exit('unsupported editable install metadata')
+record['url'] = live.as_uri()
+url.write_text(json.dumps(record))
+PYVENV
+  chmod -R a+rX,go-w "$target"
+  mset old_host_venv "$(readlink -f "$ROOT/venv")"
+  mset host_venv "$target"
+  mark host_venv_built
+}
+
+switch_host_venv() {
+  has host_venv_built || return 0
+  local target
+  target=$(jget "$MANIFEST" host_venv)
+  [[ -x $target/bin/python ]] || die 'planned host venv is missing'
+  mark intent:venv_swap
+  rename_tree "$ROOT/venv" "$B/installed-venv"
+  ln -s "$target" "$ROOT/venv"
+}
+
+restore_host_venv() {
+  has intent:venv_swap || return 0
+  if [[ -e $B/installed-venv || -L $B/installed-venv ]]; then
+    if [[ -L $ROOT/venv && $(readlink "$ROOT/venv") == "$(jget "$MANIFEST" host_venv)" ]]; then
+      rm "$ROOT/venv"
+    fi
+    rename_tree "$B/installed-venv" "$ROOT/venv"
+  fi
+  [[ -x $ROOT/venv/bin/python ]] || die 'old host venv is missing'
 }
 
 check_manifest() {  # Every phase after baseline runs against the same G, F and images.
@@ -920,11 +1009,11 @@ PYARCHIVE
   done
   if gene_changes; then
     echo "$G" > "$STAGE/gene-src/.release-sha"
-    # The host venv is an editable install of the source tree: the lock must match byte for byte, and
-    # pyproject.toml in everything but metadata.
-    cmp -s "$ROOT/source/uv.lock" "$STAGE/gene-src/uv.lock" || die 'uv.lock changed: the host venv needs its own plan'
-    if ! cmp -s "$ROOT/source/pyproject.toml" "$STAGE/gene-src/pyproject.toml"; then
-      installs_same "$ROOT/source/pyproject.toml" "$STAGE/gene-src/pyproject.toml" || die 'the host venv needs its own plan'
+    local install_change=0
+    installs_same "$ROOT/source/pyproject.toml" "$STAGE/gene-src/pyproject.toml" || install_change=$?
+    [[ $install_change == 0 || $install_change == 3 ]] || die 'unsupported host venv plan; source is untouched'
+    if ! cmp -s "$ROOT/source/uv.lock" "$STAGE/gene-src/uv.lock" || [[ $install_change == 3 ]]; then
+      build_host_venv
     fi
     for file in ops/compose.yml ops/fri-compose.yml ops/gene-worker.service ops/gene-deployer.service; do
       if ! cmp -s "$ROOT/source/$file" "$STAGE/gene-src/$file"; then
@@ -1221,6 +1310,7 @@ gene() {
   mark intent:source_swap
   rename_tree "$ROOT/source" "$B/installed-source"
   rename_tree "$STAGE/gene-src" "$ROOT/source"
+  switch_host_venv
   mark intent:env
   cp -p "$ROOT/release.env" "$ROOT/release.env.tmp"
   printf 'GENE_RELEASE_SHA=%s\nGENE_ROOT=%s\nGENE_RUNTIME_IMAGE=gene-runtime:%s\n' "$G" "$ROOT" "$G" > "$ROOT/release.env.tmp"
@@ -1369,6 +1459,7 @@ rollback_gene() {
     rename_tree "$B/installed-source" "$ROOT/source"
   fi
   [[ $(source_state) == "$(jget "$BASELINE" source)" ]] || die 'old source not in place'
+  restore_host_venv
   log 'rollback: old controller and Red'
   if [[ $(container_image "$CONTROLLER") == "$old_id" && $(container_image "$RED") == "$old_id" ]] \
      && container_running "$CONTROLLER" && container_running "$RED" && probe_gene "$OLD_G" 0 "$old_id"; then
@@ -1795,6 +1886,7 @@ cleanup() {
     fi
   fi
   log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); the live release's images and the old and new images of the last $KEEP_RELEASES releases"
+  log 'kept: host-venvs/ environments, like source backups; live and backup aliases may still use them'
   # Backups hold copies of member data, so removing them is the owner's call.
   local dir
   for dir in "$ROOT/backups" "$FRI_ROOT/backups"; do

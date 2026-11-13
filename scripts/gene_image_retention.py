@@ -604,6 +604,12 @@ def restore_source(step, state):
     """
     record, baseline, backup = step['record'], step['baseline'], step['backup']
     tree, failing = state['source_tree'], []
+    # Venvs stay at stable paths; backups contain the old directory or its alias. Never infer a
+    # usable rollback configuration from source alone when that environment has gone missing.
+    if 'host_venv' in record:
+        saved = backup / 'installed-venv'
+        if not (saved / 'bin/python').is_file():
+            failing.append('installed-venv is missing or its stable target is unavailable')
     if tree is not None and source_state(tree) == record['gene']:  # [[ -f marker && $(cat marker) == "$G" ]]
         failed = backup / 'failed-source'
         if os.path.lexists(failed) and not failed.exists():  # [[ ! -e ]] picks it, then rename_tree refuses

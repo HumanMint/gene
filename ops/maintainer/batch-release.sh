@@ -124,6 +124,20 @@ fri_compose() {  # Fri's own project, exactly as gene.fri_release runs it
   docker compose --project-name fri --env-file "$FRI_ROOT/release.env" -f "$file" "$@"
 }
 
+old_fri_compose_file() {
+  local file=$ROOT/source/ops/fri-compose.yml copy
+  if gene_changes && [[ $(source_state) != "$(jget "$BASELINE" source)" ]]; then
+    file=$(backup_dir)/installed-source/ops/fri-compose.yml
+  fi
+  [[ -f $file ]] || die 'previous Compose missing: restore installed-source/ops/fri-compose.yml in the release backup before retrying recovery; Fri was not stopped'
+  copy=$(mktemp "$STAGE/old-fri-compose.XXXXXX") || die 'could not prepare a private previous Compose copy; no further Fri stop was attempted'
+  if ! cat "$file" > "$copy"; then
+    rm -f "$copy" || true
+    die 'could not read previous Compose: restore installed-source/ops/fri-compose.yml in the release backup before retrying recovery; no further Fri stop was attempted'
+  fi
+  echo "$copy"
+}
+
 db_owner() {  # uid:gid of the controller DB; its directory must agree, since SQLite creates files there
   local owner
   owner=$(stat -c %u:%g "$DB")
@@ -870,12 +884,18 @@ stage() {
   for name in "${names[@]}"; do
     [[ -f $STAGE/$name.tar && -f $STAGE/$name.tar.sha256 ]] || die "upload $STAGE/$name.tar and $name.tar.sha256 first"
     (cd "$STAGE" && sha256sum -c "$name.tar.sha256")
-    python3 - "$STAGE/$name.tar" "$([[ $name == gene ]] && echo "$G" || echo "$F")" <<'PYARCHIVE'
+    python3 - "$STAGE/$name.tar" "$([[ $name == gene ]] && echo "$G" || echo "$F")" \
+      "$name" "$F" "$OLD_F" "$ROOT/source/ops/fri-compose.yml" <<'PYARCHIVE'
 import sys, tarfile
+from pathlib import Path
 with tarfile.open(sys.argv[1], 'r:') as archive:
     commit = archive.pax_headers.get('comment')
-if commit != sys.argv[2]:
-    sys.exit('archive commit is missing or does not match requested SHA')
+    if commit != sys.argv[2]:
+        sys.exit('archive commit is missing or does not match requested SHA')
+    if sys.argv[3] == 'gene' and sys.argv[4] == sys.argv[5]:
+        compose = archive.extractfile('ops/fri-compose.yml')
+        if compose is None or compose.read() != Path(sys.argv[6]).read_bytes():
+            sys.exit('a Fri Compose change must ship with a Fri release')
 PYARCHIVE
     mset "archives.$name" "$(cut -d' ' -f1 "$STAGE/$name.tar.sha256")"
   done
@@ -1286,8 +1306,9 @@ restore_old_fri() {
   # controller must be back. This puts the pre-switch pins and record back byte for byte, so it
   # also reconciles an interrupted Fri release, and it needs no healthy controller.
   if old_fri_pinned; then log "Fri $OLD_F is pinned and running; its health is checked once Gene is restored"; return 0; fi
-  local B
+  local B old_compose
   B=$(backup_dir)
+  old_compose=$(old_fri_compose_file) || return 1
   log "restoring Fri $OLD_F from the switch backup"
   mark intent:fri_restore
   restore_file "$B/fri-release.env" "$FRI_ROOT/release.env"
@@ -1295,7 +1316,7 @@ restore_old_fri() {
   ! container_running "$FRI" || die 'Fri did not stop'
   restore_file "$B/fri-release.json" "$FRI_ROOT/release.json"
   set_fri_active "$OLD_F"
-  fri_compose up -d --no-deps --force-recreate runtime
+  docker compose --project-name fri --env-file "$FRI_ROOT/release.env" -f "$old_compose" up -d --no-deps --force-recreate runtime
   old_fri_pinned || die 'Fri restore finished but its state does not match the old release'
   mark fri_restored
 }
@@ -1415,9 +1436,10 @@ fri() {
     die 'the window closed before the Fri switch; development resumed at the old release'
   fi
   mark intent:fri
-  local switching
+  local switching old_compose
+  old_compose=$(old_fri_compose_file) || return 1
   switching=$(date +%s 2>/dev/null || true)
-  if ! "$ROOT/venv/bin/python" -m gene.fri_release "$F"; then
+  if ! "$ROOT/venv/bin/python" -m gene.fri_release "$F" --previous-compose "$old_compose"; then
     repair_sidecars
     echo 'FAIL: Fri release failed. State for reconciliation:' >&2
     state

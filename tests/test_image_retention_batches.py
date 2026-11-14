@@ -1635,3 +1635,61 @@ cleanup
     })
     assert rc == 0, out
     assert {p.name for p in envs.iterdir()} == {'live', 'rollback', 'recent'}
+
+
+@pytest.mark.parametrize('gene_only', [False, True])
+@pytest.mark.parametrize('stacked', [1, 3])
+def test_cleanup_preserves_retention_levels_with_stacked_fri_batches(batch_host, tmp_path, gene_only, stacked):
+    host = batch_host
+    root, images = host.root, host.images
+    latest = stage_of(root, 4)
+    # Paired batch 3, then Fri-only batches on Gene 3, then batch 4 (paired or Gene-only).
+    previous_fri, before_fri = 3, 2
+    for n in range(7, 7 + stacked):
+        write_fri_only(root, images, 3, n, previous_fri, NOW - (1.9 - (n - 7) * 0.1) * DAY,
+                       record={'sha': fri(previous_fri), 'previous': fri(before_fri)})
+        previous_fri, before_fri = n, previous_fri
+    edit_manifest(latest, lambda m: [m.update(old_fri=fri(previous_fri)),
+                                     m['old']['fri'].update(tag='fri-runtime:' + fri(previous_fri),
+                                                           id=iid(FRI + previous_fri))])
+    (backup_of(latest) / 'fri-release.env').write_text(
+        f'FRI_RELEASE_SHA={fri(previous_fri)}\nFRI_RUNTIME_IMAGE=fri-runtime:{fri(previous_fri)}\n')
+    (backup_of(latest) / 'fri-release.json').write_text(json.dumps({'sha': fri(previous_fri), 'previous': fri(3 if stacked == 1 else previous_fri - 1)}))
+    if gene_only:
+        edit_manifest(latest, lambda m: [m.update(fri=fri(previous_fri)),
+                                         m['new'].update(fri=m['old']['fri'])])
+        renamed = latest.with_name(f'batch-{gene(4)}-{fri(previous_fri)}')
+        latest.rename(renamed)
+        latest = renamed
+        live_fri(host, previous_fri, previous=3 if stacked == 1 else previous_fri - 1)
+    else:
+        live_fri(host, 4, previous=previous_fri)
+    # Run the actual shell keep-set code, replacing only Docker's inventory/removal.
+    image_list = tmp_path / 'image-list'
+    image_list.write_text('\n'.join(tag for row in images.values() for tag in row['tags']) + '\n')
+    rc, out = run_script(tmp_path, ['prune_images'], r'''
+die() { echo "$*"; exit 1; }
+log() { :; }
+docker() {
+  case "$1 $2" in
+    'image ls') while read -r tag; do [[ $tag != "$5:"* ]] || echo "$tag"; done < "$IMAGE_LIST" ;;
+    'image rm') grep -Fxv -- "$3" "$IMAGE_LIST" > "$IMAGE_LIST.next"; mv "$IMAGE_LIST.next" "$IMAGE_LIST" ;;
+    *) return 1 ;;
+  esac
+}
+prune_images
+''', {'ROOT': str(root), 'FRI_ROOT': str(host.fri_root), 'KEEP_RELEASES': '2',
+      'MANIFEST': str(latest / 'manifest.json'), 'IMAGE_LIST': str(image_list)})
+    assert rc == 0, out
+    remaining = set(image_list.read_text().splitlines())
+    for side in json.loads((stage_of(root, 3) / 'manifest.json').read_text()).values():
+        if isinstance(side, dict) and 'runtime' in side:
+            assert all(entry['tag'] in remaining for entry in side.values())
+    assert 'gene-worker:' + gene(0) not in remaining  # Cleanup still removes unneeded history.
+    for image in list(images):
+        images[image]['tags'] = [tag for tag in images[image]['tags'] if tag in remaining]
+        if not images[image]['tags']:
+            del images[image]
+    result = retention.snapshot(root, host.policy)
+    assert sum(not step.get('fri_only', False) for step in result['lineage']) == retention.ROLLBACK_DEPTH
+    assert sum(step.get('fri_only', False) for step in result['lineage']) == stacked

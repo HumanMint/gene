@@ -4,6 +4,8 @@
 # as the old script would have, unless the owner paused after it. resume-old; resume-old with an owner pause,
 # which stays; then resume after a full release.
 . "$(dirname "$0")/common.sh"
+# Isolate this test from dependency changes since the fixed old release.
+git -C "$REPO" archive "$G" pyproject.toml uv.lock | tar -x -C "$BATCH_ROOT/source"
 LEGACY=$MOCK/legacy-batch-release.sh
 git -C "$REPO" show 8deef142e571c2e2126605f0a5e84d1cc35eee5f:ops/maintainer/batch-release.sh > "$LEGACY"
 legacy_prep() {  # baseline to drain with the old script

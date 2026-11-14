@@ -3,6 +3,8 @@
 # its build or Python settings, and a pyproject.toml it can't parse, each before building anything,
 # and names what changed. A difference in metadata alone (license, description) goes through to a full release.
 . "$(dirname "$0")/common.sh"
+# Isolate this test from dependency changes since the fixed old release.
+git -C "$REPO" archive "$G" pyproject.toml uv.lock | tar -x -C "$BATCH_ROOT/source"
 LIVE=$BATCH_ROOT/source
 cp "$LIVE/pyproject.toml" "$MOCK/pyproject.toml.live"; cp "$LIVE/uv.lock" "$MOCK/uv.lock.live"
 refused() {  # text: stage stops before building anything and says why; then the live manifests go back

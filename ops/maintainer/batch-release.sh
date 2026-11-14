@@ -1869,8 +1869,8 @@ for _, path in sorted(resumed, reverse=True):
         break
     m = json.load(open(path))
     keep |= images(path)
-    gene = m.get('gene', m['new']['worker']['tag'].removeprefix('gene-worker:'))
-    old_gene = m.get('old_gene', m['old']['worker']['tag'].removeprefix('gene-worker:'))
+    gene = m.get('gene') or m['new']['worker']['tag'].removeprefix('gene-worker:')
+    old_gene = m.get('old_gene') or m.get('old', {}).get('worker', {}).get('tag', '').removeprefix('gene-worker:')
     levels += gene != old_gene
 for path in unfinished:
     keep |= images(path)

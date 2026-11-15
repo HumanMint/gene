@@ -3,6 +3,8 @@
 # its build or Python settings, and a pyproject.toml it can't parse, each before building anything,
 # and names what changed. A difference in metadata alone (license, description) goes through to a full release.
 . "$(dirname "$0")/common.sh"
+# Isolate this test from dependency changes since the fixed old release.
+git -C "$REPO" archive "$G" pyproject.toml uv.lock | tar -x -C "$BATCH_ROOT/source"
 LIVE=$BATCH_ROOT/source
 cp "$LIVE/pyproject.toml" "$MOCK/pyproject.toml.live"; cp "$LIVE/uv.lock" "$MOCK/uv.lock.live"
 refused() {  # text: stage stops before building anything and says why; then the live manifests go back
@@ -14,9 +16,10 @@ refused() {  # text: stage stops before building anything and says why; then the
 }
 run 0 baseline 0; upload
 # The live release's manifests differ from the candidate's, as each change would leave them.
-sed -i 's/^requires-python = .*/requires-python = ">=3.11,<3.13"/' "$LIVE/pyproject.toml"
+# Each edit adds to the candidate's own value, so it differs whatever HEAD pins (gene #279).
+sed -i 's/^requires-python = "\(.*\)"/requires-python = "\1,!=3.11.0"/' "$LIVE/pyproject.toml"
 refused 'unsupported host venv change: project.requires-python'
-sed -i 's/hatchling==1.27.0/hatchling==1.26.3/' "$LIVE/pyproject.toml"
+sed -i '0,/^requires = \[/s//requires = ["mock-build-extra==1.0", /' "$LIVE/pyproject.toml"
 refused 'unsupported host venv change: build-system.requires'
 printf '\n[tool.uv]\nindex-url = "https://example.invalid/simple"\n' >> "$LIVE/pyproject.toml"
 refused 'unsupported host venv change: tool.uv'

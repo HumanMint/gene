@@ -27,7 +27,7 @@ JOURNAL=$STAGE/journal
 MANIFEST=$STAGE/manifest.json
 BASELINE=$STAGE/baseline.json
 RESULT=$ROOT/maintainer-$G-$F${BATCH_ATTEMPT:+-$BATCH_ATTEMPT}-result.json  # One per attempt, like STAGE
-KEEP_RELEASES=${KEEP_RELEASES:-2}  # cleanup keeps the old and new images of this many recent releases
+KEEP_RELEASES=${KEEP_RELEASES:-2}  # image cleanup keeps this many Gene rollback levels (Fri-only batches take no slot)
 CONTROLLER=gene-controller-1
 RED=gene-red-1
 FRI=fri-runtime-1
@@ -1834,7 +1834,7 @@ prune_images() {  # Release images nothing recent needs. Docker also keeps any a
   local keep repo tag
   # Kept: this release's old and new images; the images the live pins name, whichever release set them,
   # since an idle worker has no container to protect its image; the old and new images of the
-  # KEEP_RELEASES most recently resumed, non-reverted releases, including the live release and its rollback;
+  # KEEP_RELEASES most recent Gene rollback levels, with Fri-only batches stacked above each;
   # and every image of a release that is not back in service yet.
   # Only the pin lines are read from the env files, and they are compared, never printed.
   keep=$(python3 - "$MANIFEST" "$ROOT/staging" "$KEEP_RELEASES" "$ROOT/release.env" GENE_RUNTIME_IMAGE \
@@ -1860,11 +1860,20 @@ for journal in glob.glob(staging+'/batch-*/journal'):
     # every image its manifest names, so all of them stay, however old.
     if 'resumed_old' not in marks and ('resumed' not in marks or 'intent:rollback' in marks):
         unfinished.append(path)
-for path in [path for _, path in sorted(resumed, reverse=True)[:int(depth)]] + unfinished:
-    try:
-        keep |= images(path)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        pass  # An unreadable manifest only means fewer images are kept for its phases.
+# snapshot() counts the live Gene-changing batch as rollback level 1: KEEP_RELEASES must
+# be >= ROLLBACK_DEPTH (2), not depth + 1. batch_step()/fri_step() need every old/new
+# image; Fri-only batches above a kept Gene level do not consume a level.
+levels = 0
+for _, path in sorted(resumed, reverse=True):
+    if levels >= int(depth):
+        break
+    m = json.load(open(path))
+    keep |= images(path)
+    gene = m.get('gene') or m['new']['worker']['tag'].removeprefix('gene-worker:')
+    old_gene = m.get('old_gene') or m.get('old', {}).get('worker', {}).get('tag', '').removeprefix('gene-worker:')
+    levels += gene != old_gene
+for path in unfinished:
+    keep |= images(path)
 print('\n'.join(sorted(keep)))
 PY
   ) || die 'could not work out which images the live and recent releases need; no images removed'
@@ -1926,7 +1935,7 @@ cleanup() {
       log "WARNING: dangling image prune failed: $pruned"
     fi
   fi
-  log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); the live release's images and the old and new images of the last $KEEP_RELEASES releases"
+  log "kept: journal, manifest, baseline and evals in $STAGE; backup $(backup_dir 2>/dev/null || echo none); the live release's images and the old and new images of the last $KEEP_RELEASES Gene rollback levels and their stacked Fri-only batches"
   prune_host_venvs
   # Backups hold copies of member data, so removing them is the owner's call.
   local dir

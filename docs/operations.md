@@ -298,8 +298,11 @@ image IDs, and its switch backup's pins name the same pair. Otherwise it superse
 containers), the current pins and running services' images, every image of both rollback levels,
 pending proposal/approval versions, holds, configured references, audio and other repositories.
 It also keeps every image in the manifests of the three most recently resumed batches and of any
-unfinished batch, which is `batch-release.sh cleanup`'s own keep rule (`KEEP_RELEASES`, default 3),
-so the two tools never disagree about a rollback. Reactivation renews the grace period.
+unfinished batch. Separately, `batch-release.sh cleanup` keeps the old and new images of the
+`KEEP_RELEASES` (default 2) most recent resumed, non-reverted Gene rollback levels, including
+every Fri-only batch above a kept level without consuming a slot. The live Gene-changing batch
+is level one; keep `KEEP_RELEASES` at least 2 to preserve the timer's two complete rollback levels.
+Reactivation renews the grace period.
 
 Ownership between the two cleanups (owner request, gene #76):
 

@@ -27,8 +27,11 @@ def environment(release):
 
 
 def compose(*args):
+    file = ROOT+'/source/ops/fri-compose.yml'
+    if args[0] == 'up' and open(FRI+'/release.env', 'rb').read() == old_env and len(sys.argv) > 5:
+        file = sys.argv[5]
     subprocess.run(['docker', 'compose', '--project-name', 'fri', '--env-file', FRI+'/release.env',
-                    '-f', ROOT+'/source/ops/fri-compose.yml', *args], check=True)
+                    '-f', file, *args], check=True)
 
 
 def write(path, data):

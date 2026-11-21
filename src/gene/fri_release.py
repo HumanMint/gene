@@ -35,6 +35,7 @@ class FriRelease:
         self.db = self.gene / 'data/controller/gene.sqlite3'
         self.compose_file = self.gene / 'source/ops/fri-compose.yml'
         self.record = self.root / 'release.json'
+        self.previous_compose = None
         self.run = self._run
         self.restart_s = None
         self.permitted = lambda: True  # main() checks the maintenance window here, right before the switch
@@ -46,9 +47,9 @@ class FriRelease:
             raise RuntimeError('Fri release command failed: '+args[0])
         return result.stdout.strip()
 
-    def compose(self, *args):
+    def compose(self, *args, file=None):
         return self.run(['docker', 'compose', '--project-name', 'fri', '--env-file', str(self.env),
-                         '-f', str(self.compose_file), *args])
+                         '-f', str(file or self.compose_file), *args])
 
     def environment(self, sha):
         values = {'FRI_RELEASE_SHA': sha, 'FRI_RUNTIME_IMAGE': 'fri-runtime:'+sha,
@@ -132,9 +133,26 @@ class FriRelease:
             # A killed coordinator can leave the new env beside the previous
             # record. Never turn that partial state into a rollback baseline.
             raise ValueError('Inconsistent Fri release pins; reconcile before continuing')
+        # A batch supplies the source it moved aside; standalone releases still
+        # have the deployed Gene source in place. Read it before stopping anything.
+        previous_compose = Path(self.previous_compose or (before or {}).get('compose') or self.compose_file)
+        try:
+            old_compose = previous_compose.read_bytes()
+        except OSError as exc:
+            raise ValueError('Previous Compose missing; restore installed-source/ops/fri-compose.yml '
+                             'and pass --previous-compose before retrying; Fri was not stopped') from exc
+        target_compose = self.compose_file
+        if before and before.get('previous') == sha:
+            target_compose = Path(before['backup'])/'installed-source/ops/fri-compose.yml'
+            if not target_compose.is_file():
+                raise ValueError('Rollback Compose missing; restore installed-source/ops/fri-compose.yml '
+                                 'before retrying; Fri was not stopped')
         content = self.environment(sha)
         backup = self.root/'backups'/(str(time.time_ns())+'-'+sha)
         backup.mkdir(parents=True, mode=0o700)
+        saved_compose = backup/'installed-source/ops/fri-compose.yml'
+        saved_compose.parent.mkdir(parents=True)
+        self.write(saved_compose, old_compose)
         private_json(backup/'before.json', before)
         if old_env:
             self.write(backup/'release.env', old_env)
@@ -172,13 +190,13 @@ class FriRelease:
             (backup/'controller.sqlite3').chmod(0o600)
             self.write(self.env, content)
             started = time.time()
-            self.compose('up', '-d', '--no-deps', '--force-recreate', 'runtime')
+            self.compose('up', '-d', '--no-deps', '--force-recreate', 'runtime', file=target_compose)
             if not self.healthy(sha, started):
                 raise RuntimeError('New Fri failed its health checks')
             self.restart_s = time.time() - started
             self.audit(sha, 'deployed')
             private_json(self.record, {'sha': sha, 'previous': before['sha'] if before else None,
-                'legacy_sha': legacy_sha, 'backup': str(backup), 'at': time.time()})
+                'legacy_sha': legacy_sha, 'backup': str(backup), 'compose': str(target_compose), 'at': time.time()})
             return {'sha': sha, 'backup': str(backup), 'success': True}
         except BaseException:
             recovered = not stopped
@@ -189,7 +207,7 @@ class FriRelease:
                 restored = time.time()
                 if old_env:
                     self.write(self.env, old_env)
-                    self.compose('up', '-d', '--no-deps', '--force-recreate', 'runtime')
+                    self.compose('up', '-d', '--no-deps', '--force-recreate', 'runtime', file=saved_compose)
                     recovered = self.healthy(before['sha'], restored)
                 elif legacy:
                     self.env.unlink(missing_ok=True)
@@ -224,6 +242,7 @@ def main():
     parser.add_argument('sha', help='full maintainer-reviewed Fri commit; earlier compatible SHAs can roll back')
     parser.add_argument('--root', type=Path, default=Path('/srv/fri'))
     parser.add_argument('--gene-root', type=Path, default=Path('/srv/gene'))
+    parser.add_argument('--previous-compose', type=Path, help='previously deployed Compose from the batch backup')
     args = parser.parse_args()
     exception = os.environ.get('MAINTENANCE_EXCEPTION', '').strip()
     previous = recorded(args.root)
@@ -236,6 +255,7 @@ def main():
         raise SystemExit(f'Outside the maintenance window {maintenance.WINDOW}; nothing was changed. '
                          'Only a rollback to the previous Fri runs at any hour.')
     release, started, outcome = FriRelease(args.root, args.gene_root), time.time(), 'failed'
+    release.previous_compose = args.previous_compose
     release.permitted = lambda: permitted(args.sha, args.root, exception)
     try:
         result = release.deploy(args.sha)

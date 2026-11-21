@@ -7,7 +7,14 @@ COPY pyproject.toml uv.lock ./
 # Source edits must reuse the locked third-party environment, not reinstall Red.
 RUN uv sync --frozen --extra red --no-dev --no-install-project --no-cache
 
-FROM dependencies AS runtime
+FROM dependencies AS audio-dependencies
+COPY ops/audio-adapter.json /opt/audio-adapter-pin.json
+COPY scripts/install_audio_adapter.py /tmp/install_audio_adapter.py
+# The Red/worker images need this bundle; the host controller wrappers do not.
+# Keeping it outside the managed site-packages preserves exact core syncs.
+RUN /app/.venv/bin/python /tmp/install_audio_adapter.py --pin /opt/audio-adapter-pin.json --target /opt/red-audio-adapter
+
+FROM audio-dependencies AS runtime
 COPY src ./src
 RUN uv sync --frozen --extra red --no-dev --no-cache
 ENV PATH="/app/.venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
@@ -22,7 +29,7 @@ CMD ["gene-controller"]
 FROM node:24-bookworm-slim AS codex
 RUN npm install -g @openai/codex@0.160.1 --ignore-scripts
 
-FROM dependencies AS worker-dependencies
+FROM audio-dependencies AS worker-dependencies
 # Worker tools and development dependencies must also survive source-only edits.
 RUN uv sync --frozen --extra red --no-install-project --no-cache
 ENV PATH="/app/.venv/bin:$PATH" PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

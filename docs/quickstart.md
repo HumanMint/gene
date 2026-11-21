@@ -120,7 +120,8 @@ access; that part is in Fri's guide.
 Gene's own bot runs Red with this repository's cogs: the `/gene menu` panel, Red's
 commands and meme highlights. It also runs the Gene commands Fri queues for members.
 
-1. Install Red: `uv sync --frozen --extra red`.
+1. Install Red: `uv sync --frozen --extra red`, then install its pinned audio hook
+   with `uv run --no-sync python scripts/install_audio_adapter.py`.
 2. In the [Discord Developer Portal](https://discord.com/developers/applications),
    create a new application for Gene (not Fri's). Under **Bot**, reset and copy the
    token, and turn on **Message Content Intent**. Leave Server Members and Presence off.
@@ -137,7 +138,7 @@ commands and meme highlights. It also runs the Gene commands Fri queues for memb
 5. With the controller running, start Red in another terminal:
 
    ```sh
-   uv run python scripts/dev.py red
+   uv run --no-sync python scripts/dev.py red
    ```
 
 Red keeps its instance under `.state/red/`, not in your home directory. It answers only
@@ -157,6 +158,7 @@ The full suite needs the Red extra and runs without credentials or network acces
 
 ```sh
 uv sync --frozen --extra red
+uv run --no-sync python scripts/install_audio_adapter.py
 uv run --no-sync pytest -q
 uv run --no-sync ruff check .
 ```

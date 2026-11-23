@@ -438,7 +438,7 @@ maintainer authority, select a policy verdict or authorize its own deployment.
 
 ### Models and subscription usage
 
-Both chat and new coding jobs use `gpt-6.2-sol`, high effort. Owner settings in `/fri`
+A fresh install defaults chat and new coding jobs to `gpt-6.2-sol`, high effort; an existing install keeps its saved selection until the owner picks another. Owner settings in `/fri`
 provide **Chat model** and **Coding model** with separate catalogs. Chat refresh uses the
 subscription's official `/v1/models` endpoint; coding refresh uses Codex app-server
 `model/list` between jobs, even while paused. Neither creates an inference turn.

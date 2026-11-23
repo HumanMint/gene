@@ -438,7 +438,7 @@ maintainer authority, select a policy verdict or authorize its own deployment.
 
 ### Models and subscription usage
 
-Both chat and new coding jobs use `gpt-6.1-sol`, high effort. Owner settings in `/fri`
+A fresh install defaults chat and new coding jobs to `gpt-6.2-sol`, high effort; an existing install keeps its saved selection until the owner picks another. Owner settings in `/fri`
 provide **Chat model** and **Coding model** with separate catalogs. Chat refresh uses the
 subscription's official `/v1/models` endpoint; coding refresh uses Codex app-server
 `model/list` between jobs, even while paused. Neither creates an inference turn.
@@ -1282,8 +1282,8 @@ an earlier enqueue from a later denied attempt; they never prove audible playbac
 Erasure removes these receipts. A proposal based on an older release gets an
 informational notice with its saved diff, without an active approval button.
 
-Attention still uses Luna. Investigations use `gpt-6.1-sol` at `xhigh`; the conversation
-and coding defaults remain `gpt-6.1-sol` at `high`. The investigation prompt still gets
+Attention still uses Luna. Investigations use `gpt-6.2-sol` at `xhigh`; the conversation
+and coding defaults remain `gpt-6.2-sol` at `high`. The investigation prompt still gets
 bounded error evidence and release state, with no added shell or log-reading authority.
 
 

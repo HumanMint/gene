@@ -30,7 +30,7 @@ def source(age=0, user='20', channel='456', guild='123'):
 def context():
     return {'facts': [], 'turns': [{'input': 'what does that mean', 'reply': 'it means the team won.',
              'allow_closing': True, 'source': source(40)}], 'source': source(),
-            'acknowledgments_enabled': True, 'model': 'gpt-6.1-sol', 'effort': 'high', 'revision': 0}
+            'acknowledgments_enabled': True, 'model': 'gpt-6.2-sol', 'effort': 'high', 'revision': 0}
 
 
 def test_exact_closing_shortcut_preserves_banter_and_real_requests():

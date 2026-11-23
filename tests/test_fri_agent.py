@@ -24,7 +24,7 @@ def setup_agent(tmp_path):
         'worker-'+'x'*32, 'deploy-'+'x'*32, workshop_channel_id='workshop',
         fri_token='fri-'+'x'*32, agent_channels='1,2,3', agent_history_channels='1,2', agent_role_id='admin')
     store = Store(settings.db)
-    store.update_chat_models(['gpt-6-luna', 'gpt-6.1-sol'])
+    store.update_chat_models(['gpt-6-luna', 'gpt-6.2-sol'])
     agent = AgentStore(store, settings)
     agent.update({'enabled': True}, 0, 'owner')
     return store, settings, agent
@@ -66,7 +66,7 @@ def test_settings_cannot_change_authority_or_silently_overwrite_newer_revision(s
     with pytest.raises(ValueError, match='fresh preview'):
         agent.update({'voice_notes': 'stale'}, 1, 'owner')
     assert agent.state()['config']['voice_notes'] == 'dry humor'
-    assert store.status()['chat_model'] == 'gpt-6.1-sol'
+    assert store.status()['chat_model'] == 'gpt-6.2-sol'
     with store.connection() as db:
         assert db.execute('SELECT count(*) FROM audit WHERE action="fri_behavior_changed"').fetchone()[0] == 2
 

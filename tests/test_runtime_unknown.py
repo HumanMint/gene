@@ -241,7 +241,7 @@ def test_the_deployer_reports_it_and_the_owner_sees_it_in_status(tmp_path):
     with api_client(tmp_path) as client:
         store = client.app.state.store
         store.bootstrap('a'*40)
-        store.update_models([{'id': 'gpt-6.1-sol', 'name': 'Sol', 'efforts': ['high'], 'default_effort': 'high'}])
+        store.update_models([{'id': 'gpt-6.2-sol', 'name': 'Sol', 'efforts': ['high'], 'default_effort': 'high'}])
         store.set_paused(False, 'owner')
         job = proposed(store)
         store.approve(job['id'], 'b'*40, 'owner')
@@ -343,7 +343,7 @@ def test_a_receipt_an_older_controller_committed_replays_after_the_upgrade(tmp_p
     with api_client(tmp_path) as client:
         store = client.app.state.store
         store.bootstrap('a'*40)
-        store.update_models([{'id': 'gpt-6.1-sol', 'name': 'Sol', 'efforts': ['high'], 'default_effort': 'high'}])
+        store.update_models([{'id': 'gpt-6.2-sol', 'name': 'Sol', 'efforts': ['high'], 'default_effort': 'high'}])
         store.set_paused(False, 'owner')
         job = deploying(store)
         # The older controller committed the failure, ignoring runtime_unknown; its acknowledgement was lost.

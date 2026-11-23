@@ -103,7 +103,7 @@ def test_evaluation_has_no_actions_or_memory_and_only_records_usage(monkeypatch,
     def handle(request):
         paths.append((request.method, request.url.path))
         if request.url.path == '/status':
-            return httpx.Response(200, json={'chat_model': 'gpt-6.1-sol', 'chat_effort': 'high', 'effort': 'low'})
+            return httpx.Response(200, json={'chat_model': 'gpt-6.2-sol', 'chat_effort': 'high', 'effort': 'low'})
         if request.url.path == '/agent/state':
             return httpx.Response(200, json={'config': {'voice_notes': 'brief'}})
         assert request.url.path == '/chat/usage/report' and request.method == 'POST'
@@ -122,11 +122,11 @@ def test_evaluation_has_no_actions_or_memory_and_only_records_usage(monkeypatch,
 
 
 async def _collect_evals(chat):
-    return [case async for case in evaluate(chat, 'gpt-6.1-sol', 'high')]
+    return [case async for case in evaluate(chat, 'gpt-6.2-sol', 'high')]
 
 
 def test_evaluation_usage_is_visible_without_identity(client):
-    report = {'attempt_id': 'b'*32, 'role': 'evaluation', 'model': 'gpt-6.1-sol', 'effort': 'high',
+    report = {'attempt_id': 'b'*32, 'role': 'evaluation', 'model': 'gpt-6.2-sol', 'effort': 'high',
               'status': 'completed', 'counters': {'input_tokens': 10}}
     assert client.post('/chat/usage/report', headers=headers('fri'), json=report).status_code == 200
     usage = client.post('/agent/usage', headers=headers('fri'), json=actor()).json()

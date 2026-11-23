@@ -20,7 +20,7 @@ def learning(tmp_path, monkeypatch):
         'worker-'+'x'*32, 'deploy-'+'x'*32, workshop_channel_id='456',
         fri_token='fri-'+'x'*32, agent_channels='1,2', agent_history_channels='1,2', agent_role_id='90')
     store = Store(settings.db)
-    store.update_chat_models(['gpt-6-luna', 'gpt-6.1-sol'])
+    store.update_chat_models(['gpt-6-luna', 'gpt-6.2-sol'])
     agent = AgentStore(store, settings)
     agent.update({'enabled': True}, 0, 'owner')
     return clock, store, settings, agent

@@ -64,7 +64,7 @@ def test_no_change_preserves_agent_explanation_without_publication(tmp_path, mon
             'type': 'agent_message', 'text': 'History import needs a maintainer change. No code was changed.'}}))
     monkeypatch.setattr('gene.worker.run_sandbox', sandbox)
     monkeypatch.setattr('gene.worker.validate_checkout', Mock(side_effect=NoFeatureChanges))
-    worker.process({'id': 'job', 'lease': 'lease', 'model': 'gpt-6.1-sol', 'effort': 'high',
+    worker.process({'id': 'job', 'lease': 'lease', 'model': 'gpt-6.2-sol', 'effort': 'high',
                     'base_sha': 'a' * 40, 'body': 'Import history', 'source_url': '', 'memories': []})
     finish = worker.api.post.call_args.args[1]
     assert finish['outcome'] == 'needs_attention'

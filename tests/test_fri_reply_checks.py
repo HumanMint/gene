@@ -26,7 +26,7 @@ def setup(tmp_path):
                         'deploy-'+'x'*32, workshop_channel_id='456', fri_token='fri-'+'x'*32,
                         agent_channels='1,2,777777')
     store = Store(settings.db)
-    store.update_chat_models(['gpt-6-luna', 'gpt-6.1-sol'])
+    store.update_chat_models(['gpt-6-luna', 'gpt-6.2-sol'])
     agent = AgentStore(store, settings)
     agent.update({'enabled': True, 'reply_check_enabled': True}, 0, '10')
     with store.connection() as db:  # As if checks were switched on yesterday.

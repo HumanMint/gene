@@ -9,7 +9,7 @@ from tests.test_api import actor, headers
 def report(client, attempt, at, role='conversation', tokens=10):
     with patch('gene.store.time.time', return_value=at):
         assert client.post('/chat/usage/report', headers=headers('fri'), json={
-            'attempt_id': attempt*32, 'role': role, 'model': 'gpt-6.1-sol', 'effort': 'high', 'status': 'completed',
+            'attempt_id': attempt*32, 'role': role, 'model': 'gpt-6.2-sol', 'effort': 'high', 'status': 'completed',
             'counters': {'input_tokens': tokens, 'output_tokens': 1, 'cached_input_tokens': 4,
                          'reasoning_output_tokens': 0}}).status_code == 200
 

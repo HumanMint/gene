@@ -83,9 +83,9 @@ class Store:
                 INSERT OR IGNORE INTO settings VALUES ('paused', 'true');
                 INSERT OR IGNORE INTO settings VALUES ('active_sha', '');
                 INSERT OR IGNORE INTO settings VALUES ('previous_sha', '');
-                INSERT OR IGNORE INTO settings VALUES ('code_model', 'gpt-6.1-sol');
+                INSERT OR IGNORE INTO settings VALUES ('code_model', 'gpt-6.2-sol');
                 INSERT OR IGNORE INTO settings VALUES ('code_effort', 'high');
-                INSERT OR IGNORE INTO settings VALUES ('chat_model', 'gpt-6.1-sol');
+                INSERT OR IGNORE INTO settings VALUES ('chat_model', 'gpt-6.2-sol');
                 INSERT OR IGNORE INTO settings VALUES ('chat_effort', 'high');
                 INSERT OR IGNORE INTO settings VALUES ('models_requested_at', '1');
                 INSERT OR IGNORE INTO settings VALUES ('models_refreshed_at', '0');

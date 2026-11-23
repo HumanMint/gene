@@ -60,7 +60,7 @@ def test_completion_survives_connection_loss_and_deployer_restart(tmp_path, succ
     with TestClient(create_app(settings)) as client:
         store = client.app.state.store
         store.bootstrap('a'*40)
-        store.update_models([{'id': 'gpt-6.1-sol', 'name': 'Sol',
+        store.update_models([{'id': 'gpt-6.2-sol', 'name': 'Sol',
                               'efforts': ['high'], 'default_effort': 'high'}])
         store.set_paused(False, 'owner')
         job = proposed(store)

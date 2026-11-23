@@ -36,7 +36,7 @@ def test_live_lookup_uses_subscription_and_only_public_topic():
         assert len(data['input']) == 1 and 'Python release' in data['input'][0]['content']
         return httpx.Response(200, text=''.join('data: '+json.dumps(e)+'\n\n' for e in search_events()))
     chat = Chat(SimpleNamespace(access_token=lambda: 'plan-token'), httpx.MockTransport(handle))
-    result, counters, status = asyncio.run(lookup(chat, 'Python release', 'gpt-6.1-sol', 'high'))
+    result, counters, status = asyncio.run(lookup(chat, 'Python release', 'gpt-6.2-sol', 'high'))
     assert status == 'completed' and result['live_access'] and counters['input_tokens'] == 120
     assert result['sources'] == ['https://www.python.org/downloads/']
     reply = cite_reply('x'*1800, result)
@@ -86,7 +86,7 @@ def test_search_action_requires_availability_and_current_exact_topic():
 
 @pytest.mark.parametrize('status', ['completed', 'failed', 'incomplete', 'interrupted', 'invalid_output'])
 def test_web_usage_delivery_is_accepted_and_idempotent(client, status):
-    report = {'attempt_id': 'a'*32, 'model': 'gpt-6.1-sol', 'effort': 'high', 'status': status,
+    report = {'attempt_id': 'a'*32, 'model': 'gpt-6.2-sol', 'effort': 'high', 'status': status,
               'role': 'web_search', 'counters': {'input_tokens': 100}}
     for _ in range(2):
         assert client.post('/chat/usage/report', headers=headers('fri'), json=report).status_code == 200

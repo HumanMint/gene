@@ -9,7 +9,7 @@ from .reviews import request_reference
 
 POLICY = 'existing-features-v1'
 ACTOR = 'policy:' + POLICY
-REVIEW_MODEL, REVIEW_EFFORT = 'gpt-6.1-sol', 'xhigh'
+REVIEW_MODEL, REVIEW_EFFORT = 'gpt-6.2-sol', 'xhigh'
 PROTECTED = {'__init__', 'cog_check', 'interaction_check', 'authorized', 'eligible', 'api',
              'actor', 'health', 'before_health', 'red_delete_data_for_user', 'forgetme',
              'music_command', 'cog_load', 'cog_unload', 'is_private', 'key'}

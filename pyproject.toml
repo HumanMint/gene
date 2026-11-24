@@ -20,7 +20,7 @@ red = [
     "pillow>=13,<14",
     "pip>=25,<27",
 ]
-audio = ["yt-dlp[default]==2026.10.26"]
+audio = ["yt-dlp[default]==2026.11.23"]
 
 [dependency-groups]
 dev = ["pytest>=9.0.3,<10", "ruff>=0.11,<1"]

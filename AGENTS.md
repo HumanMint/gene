@@ -18,6 +18,12 @@ its controller contracts/state and the dependencies of documented evaluators. Se
 - Keep Discord tokens, Codex auth, raw history, databases, and private user context
   out of Git. Use `.secrets/`, `.state/`, and `.env.local` locally.
 - Use small imperative commits and `codex/` branch names.
+- Scratch space (owner, 2026-11-24): remove each review or experiment worktree or clone when its task
+  ends, keeping only logs, results and evidence. Share one dependency cache (uv's default cache;
+  reuse an existing environment through `UV_PROJECT_ENVIRONMENT` when the lockfile matches) instead
+  of a full venv per worktree. Don't keep pytest caches, test databases or other generated test
+  output after a run (`-p no:cacheprovider`). Check free disk space before large runs (the full
+  suite, image builds) and don't start one with under 20 GB free.
 - Credit substantive Codex-authored code, tests and documentation with
   `Co-authored-by: Codex <noreply@openai.com>` in the commit message. Keep the human
   author and other accurate co-authors. Record review-only assistance in the PR's

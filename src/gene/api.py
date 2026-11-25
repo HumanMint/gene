@@ -125,7 +125,7 @@ class UsageReport(Lease):
     model: str = Field(max_length=100)
     counters: dict
     provider: Literal['chatgpt', 'claude'] | None = None
-    cost_micros: int | None = Field(default=None, ge=0)
+    cost_micros: int | None = Field(default=None, ge=0, le=1_000_000_000)
 
 
 class ModelSelection(Actor):
@@ -302,8 +302,8 @@ class ChatUsage(BaseModel):
     # Which provider answered, its cost in integer micro-dollars and, on an attempt that handed over to the other
     # provider, why. An older controller ignores all three (as purpose).
     provider: Literal['chatgpt', 'claude'] | None = None
-    cost_micros: int | None = Field(default=None, ge=0)
-    failover: str | None = Field(default=None, pattern=r'^[a-z_]{1,40}$')
+    cost_micros: int | None = Field(default=None, ge=0, le=1_000_000_000)
+    failover: Literal['rate_limited', 'overloaded', 'billing', 'auth', 'connection', 'usage_limit', 'refusal'] | None = None
 
 
 class ChatCatalog(Actor):

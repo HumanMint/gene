@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from gene.api import create_app
 from gene.fri_protocol import contract
-from gene.store import CLAUDE_MODELS, CLAUDE_SOFT_LIMIT, Store
+from gene.store import CLAUDE_MODELS, CLAUDE_SOFT_LIMIT, Conflict, Store
 from tests.conftest import request
 from tests.test_api import actor, headers
 from tests.test_fri_agent import setup_agent  # noqa: F401
@@ -69,21 +69,22 @@ def test_provider_settings_are_owner_only_enums(setup_agent):  # noqa: F811
     assert store.status()['claude_chat_model'] == ''
 
 
-def test_claude_ids_are_selectable_and_survive_a_catalog_refresh(setup_agent):  # noqa: F811
+def test_claude_ids_stay_out_of_plan_settings_and_the_plan_catalog(setup_agent):  # noqa: F811
+    # An older Fri or a rolled-back Gene sends chat_model and role models to the plan, so they stay plan ids.
     store, _, agent = setup_agent
     catalog = store.chat_models()
     assert catalog['claude_models'] == list(CLAUDE_MODELS) and catalog['provider'] == 'chatgpt'
-    store.select_chat_model('claude-opus-5-5', 'high', 'owner')
-    agent.update({'attention_model': 'claude-haiku-5-5'}, agent.state()['version'], 'owner')
-    store.update_chat_models(['gpt-6-luna', 'gpt-6.3-sol'])
+    before = store.status()['chat_model']
+    with pytest.raises(Conflict):
+        store.select_chat_model('claude-opus-5-5', 'high', 'owner')
+    with pytest.raises(ValueError):
+        agent.update({'attention_model': 'claude-haiku-5-5'}, agent.state()['version'], 'owner')
+    store.update_chat_models(['gpt-6-luna', 'gpt-6.3-sol', 'claude-opus-5-5'])
     with store.connection() as db:
         assert not db.execute("SELECT 1 FROM chat_models WHERE id LIKE 'claude-%'").fetchone()
-    assert store.status()['chat_model'] == 'claude-opus-5-5'
-    assert agent.state()['config']['attention_model'] == 'claude-haiku-5-5'
-    store.select_chat_model('claude-sonnet-5-5', 'medium', 'owner')
-    agent.update({'summary_model': 'claude-opus-5-5'}, agent.state()['version'], 'owner')
-    with pytest.raises(ValueError):
-        agent.update({'summary_model': 'claude-opus-4'}, agent.state()['version'], 'owner')
+    assert store.status()['chat_model'] == before
+    store.select_chat_model('gpt-6.3-sol', 'high', 'owner')
+    assert store.status()['chat_model'] == 'gpt-6.3-sol'
 
 
 def test_usage_receipts_with_and_without_provider_and_cost(client):
@@ -92,8 +93,8 @@ def test_usage_receipts_with_and_without_provider_and_cost(client):
     for new in (receipt('b', provider='claude', cost_micros=1500), receipt('c', provider='claude', cost_micros=500),
                 receipt('d', model='gpt-6.2-sol', provider='chatgpt', failover='rate_limited')):
         assert client.post('/chat/usage/report', headers=headers('fri'), json=new).status_code == 200
-    for bad in ({'provider': 'openai'}, {'cost_micros': -1}, {'cost_micros': 'lots'}, {'failover': 'x'*41},
-                {'failover': 'Rate Limited!'}):
+    for bad in ({'provider': 'openai'}, {'cost_micros': -1}, {'cost_micros': 'lots'}, {'cost_micros': 10**9+1},
+                {'cost_micros': 2**63}, {'failover': 'x'*41}, {'failover': 'Rate Limited!'}, {'failover': 'other'}):
         assert client.post('/chat/usage/report', headers=headers('fri'), json=receipt('e', **bad)).status_code == 422
     rows = {(r['model'], r['provider']): r for r in client.post('/chat/usage', headers=headers('fri'),
                                                                  json=actor()).json()}
@@ -102,7 +103,7 @@ def test_usage_receipts_with_and_without_provider_and_cost(client):
     plan = rows[('gpt-6.2-sol', 'chatgpt')]
     assert plan['attempts'] == 2 and plan['cost_micros'] is None and plan['unknown_cost_attempts'] == 2
     by_role = client.post('/agent/usage', headers=headers('fri'), json=actor()).json()
-    assert {(r['provider'], r['cost_micros']) for r in by_role} == {('claude', 2000), ('chatgpt', None)}
+    assert sorted((r['provider'], r['cost_micros']) for r in by_role) == [('chatgpt', None), ('claude', 2000)]
     with client.app.state.store.connection() as db:
         assert db.execute('SELECT failover FROM chat_usage_cost WHERE attempt_id=?', ('d'*32,)).fetchone()[0] == \
             'rate_limited'

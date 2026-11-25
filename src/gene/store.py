@@ -28,6 +28,7 @@ WITHDRAWN_SECONDS = 7 * 86400
 CLAUDE_MODELS = ('claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5')
 PROVIDER_SETTINGS = {'model_provider': ('chatgpt', 'claude'),
                      'claude_chat_model': ('', 'claude-opus-5-5', 'claude-sonnet-5-5')}  # '' = the tier map.
+MAX_RECEIPT_COST = 1_000_000_000  # $1,000 per attempt: far above any real call, and keeps every SUM inside int64.
 CLAUDE_SOFT_LIMIT = 90_000_000  # Micro-dollars this UTC month: 90% of the API's own monthly limit, the hard stop.
 MESSAGE_FENCES = 100000  # Fences by message ID alone kept at most, the oldest going first (gene #149).
 WITHDRAWN = 'That message was edited or deleted while Fri was replying.'
@@ -695,7 +696,7 @@ class Store:
     def _cost(provider, cost_micros):
         if provider not in (None, 'chatgpt', 'claude'):
             raise ValueError('Unknown model provider')
-        if cost_micros is not None and (type(cost_micros) is not int or cost_micros < 0):
+        if cost_micros is not None and (type(cost_micros) is not int or not 0 <= cost_micros <= MAX_RECEIPT_COST):
             raise ValueError('Cost must be nonnegative integer micro-dollars or unknown')
         return provider or 'chatgpt'
 
@@ -1830,13 +1831,14 @@ class Store:
             raise ValueError('Invalid subscription model catalog; keeping the previous list')
         with self.connection() as db:
             db.execute('DELETE FROM chat_models')
-            db.executemany('INSERT INTO chat_models VALUES (?)', [(m,) for m in sorted(set(models))])
+            db.executemany('INSERT INTO chat_models VALUES (?)', [(m,) for m in sorted(set(models) - set(CLAUDE_MODELS))])
 
     def select_chat_model(self, model, effort, actor):
         if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
             raise ValueError('Choose a supported reasoning effort')
         with self.connection() as db:
-            if model not in CLAUDE_MODELS and not db.execute('SELECT 1 FROM chat_models WHERE id=?', (model,)).fetchone():
+            # Plan ids only: an older Fri or a rolled-back Gene sends this to the plan. Claude's pick is claude_chat_model.
+            if not db.execute('SELECT 1 FROM chat_models WHERE id=?', (model,)).fetchone():
                 raise Conflict('Refresh the subscription model list and choose an available model')
             db.execute('UPDATE settings SET value=? WHERE key="chat_model"', (model,))
             db.execute('UPDATE settings SET value=? WHERE key="chat_effort"', (effort,))

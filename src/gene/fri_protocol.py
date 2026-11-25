@@ -17,7 +17,8 @@ OPTIONAL = ('saved-answer-ids', 'reply-checks', 'member-profiles', 'requester-no
             'learning-withdrawals',
             'summary-sources', 'summary-rechecks',
             'history-cutoffs',
-            'channel-withdrawals')  # Advertised; a controller without them is still compatible.
+            'channel-withdrawals',
+            'model-provider')  # Advertised; a controller without them is still compatible.
 
 
 def contract():

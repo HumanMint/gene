@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import calendar
 import json
 import re
 import sqlite3
@@ -23,6 +24,11 @@ LOOP_SETTLED_SECONDS = 86400  # A reminder that went out (or didn't) stays visib
 LOOP_UNDERWAY_SECONDS = 3 * 3600  # A game night stays visible while it's probably still on.
 # A withdrawn message's fence: as long as a saved exchange is kept, far longer than any turn holding it still runs.
 WITHDRAWN_SECONDS = 7 * 86400
+# Claude ids Fri may use, beside the plan's catalog (which a refresh replaces, so these are never stored in it).
+CLAUDE_MODELS = ('claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5')
+PROVIDER_SETTINGS = {'model_provider': ('chatgpt', 'claude'),
+                     'claude_chat_model': ('', 'claude-opus-5-5', 'claude-sonnet-5-5')}  # '' = the tier map.
+CLAUDE_SOFT_LIMIT = 90_000_000  # Micro-dollars this UTC month: 90% of the API's own monthly limit, the hard stop.
 MESSAGE_FENCES = 100000  # Fences by message ID alone kept at most, the oldest going first (gene #149).
 WITHDRAWN = 'That message was edited or deleted while Fri was replying.'
 SUMMARY_CHANGED = 'What Fri remembered about you changed while it was replying. Ask again for a fresh reply.'
@@ -90,6 +96,8 @@ class Store:
                 INSERT OR IGNORE INTO settings VALUES ('models_requested_at', '1');
                 INSERT OR IGNORE INTO settings VALUES ('models_refreshed_at', '0');
                 INSERT OR IGNORE INTO settings VALUES ('models_error', '');
+                INSERT OR IGNORE INTO settings VALUES ('model_provider', 'chatgpt');
+                INSERT OR IGNORE INTO settings VALUES ('claude_chat_model', '');
                 CREATE TABLE IF NOT EXISTS models (
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, efforts TEXT NOT NULL,
                     default_effort TEXT NOT NULL
@@ -132,6 +140,14 @@ class Store:
                     attempt_id TEXT PRIMARY KEY, model TEXT NOT NULL, effort TEXT NOT NULL,
                     status TEXT NOT NULL, at REAL NOT NULL, input_tokens INTEGER,
                     cached_input_tokens INTEGER, output_tokens INTEGER, reasoning_output_tokens INTEGER
+                );
+                -- Provider and cost beside chat_usage and usage, never in them: an older Gene after a rollback inserts
+                -- into those positionally, and ignores these. An attempt with no row here was the plan's, cost unknown.
+                CREATE TABLE IF NOT EXISTS chat_usage_cost (
+                    attempt_id TEXT PRIMARY KEY, provider TEXT NOT NULL, cost_micros INTEGER, failover TEXT
+                );
+                CREATE TABLE IF NOT EXISTS usage_cost (
+                    attempt_id TEXT PRIMARY KEY, provider TEXT NOT NULL, cost_micros INTEGER
                 );
                 CREATE TABLE IF NOT EXISTS chat_models (id TEXT PRIMARY KEY);
                 CREATE TABLE IF NOT EXISTS chat_revisions (user_id TEXT PRIMARY KEY, revision INTEGER NOT NULL);
@@ -284,6 +300,30 @@ class Store:
     def _setting(db, key):
         return db.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()[0]
 
+    def _providers(self, db):
+        """The provider Fri's model calls use: the owner's choice, but the plan once this install's Claude spend this
+        UTC month reached CLAUDE_SOFT_LIMIT (the guard, audited once a month when it engages)."""
+        chosen = self._setting(db, 'model_provider')
+        provider = chosen
+        if chosen == 'claude':
+            month = time.strftime('%Y-%m', time.gmtime())
+            start = calendar.timegm(time.strptime(month, '%Y-%m'))
+            spent = sum(db.execute(
+                f'SELECT coalesce(sum(c.cost_micros),0) FROM {cost} c JOIN {table} u ON u.attempt_id=c.attempt_id '
+                f"WHERE c.provider='claude' AND u.{at}>=?", (start,)).fetchone()[0]
+                for cost, table, at in (('chat_usage_cost', 'chat_usage', 'at'), ('usage_cost', 'usage', 'created')))
+            if spent >= CLAUDE_SOFT_LIMIT:
+                provider = 'chatgpt'
+                # One statement, so two readers at once can't both write it.
+                db.execute('INSERT INTO audit(at,actor,action,target,detail) SELECT ?,?,?,?,? WHERE NOT EXISTS '
+                           '(SELECT 1 FROM audit WHERE action=? AND target=?)',
+                           (time.time(), 'controller', 'claude_spend_guard', month,
+                            f'Claude spend {spent} micro-dollars reached the {CLAUDE_SOFT_LIMIT} soft limit',
+                            'claude_spend_guard', month))
+        return {'provider': provider, 'model_provider': chosen,
+                'claude_chat_model': self._setting(db, 'claude_chat_model'),
+                'claude_spend_guard': provider != chosen}
+
     def status(self):
         with self.connection() as db:
             # The controller health check runs even when nobody chats with Fri.
@@ -311,6 +351,7 @@ class Store:
                 'chat_model': self._setting(db, 'chat_model'),
                 'chat_effort': self._setting(db, 'chat_effort'),
                 'auto_repairs_enabled': self._setting(db, 'repair_policy') == 'existing-features-v1',
+                **self._providers(db),
                 'jobs': {r['state']: r['n'] for r in db.execute(
                     'SELECT state, count(*) AS n FROM jobs GROUP BY state')},
             }
@@ -650,47 +691,68 @@ class Store:
             db.execute('INSERT INTO deployment_receipts VALUES (?,?,?)', (job_id, lease, result))
             self._audit(db, 'deployer', state, job_id, detail)
 
-    def add_usage(self, job_id, lease, attempt_id, model, counters):
+    @staticmethod
+    def _cost(provider, cost_micros):
+        if provider not in (None, 'chatgpt', 'claude'):
+            raise ValueError('Unknown model provider')
+        if cost_micros is not None and (type(cost_micros) is not int or cost_micros < 0):
+            raise ValueError('Cost must be nonnegative integer micro-dollars or unknown')
+        return provider or 'chatgpt'
+
+    def add_usage(self, job_id, lease, attempt_id, model, counters, provider=None, cost_micros=None):
         keys = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')
         for key in keys:
             value = counters.get(key)
             if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
                 raise ValueError('Usage counters must be nonnegative integers or unknown')
+        priced = self._cost(provider, cost_micros)
         with self.connection() as db:
             self._leased(db, job_id, lease)
             # Each execution gets an attempt id. Retrying the POST cannot double count it.
             db.execute('INSERT OR IGNORE INTO usage VALUES (?,?,?,?,?,?,?,?,?)',
                        (attempt_id, job_id, model, *(counters.get(k) for k in keys),
                         counters.get('turns', 0), time.time()))
+            if provider or cost_micros is not None:
+                db.execute('INSERT OR IGNORE INTO usage_cost VALUES (?,?,?)', (attempt_id, priced, cost_micros))
 
     def usage(self):
         with self.connection() as db:
-            return [dict(r) for r in db.execute('SELECT model, count(*) AS attempts, '
+            return [dict(r) for r in db.execute('SELECT model, coalesce(c.provider,"chatgpt") AS provider, '
+                'count(*) AS attempts, '
                 'sum(input_tokens) AS input_tokens, sum(cached_input_tokens) AS cached_input_tokens, '
                 'sum(output_tokens) AS output_tokens, '
-                'sum(input_tokens IS NULL OR output_tokens IS NULL) AS unknown_attempts '
-                'FROM usage GROUP BY model')]
+                'sum(input_tokens IS NULL OR output_tokens IS NULL) AS unknown_attempts, '
+                'sum(c.cost_micros) AS cost_micros, sum(c.cost_micros IS NULL) AS unknown_cost_attempts '
+                'FROM usage u LEFT JOIN usage_cost c ON c.attempt_id=u.attempt_id GROUP BY model, 2')]
 
-    def add_chat_usage(self, attempt_id, model, effort, status, counters, role='conversation'):
+    def add_chat_usage(self, attempt_id, model, effort, status, counters, role='conversation', provider=None,
+                       cost_micros=None, failover=None):
         keys = ('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')
         for key in keys:
             value = counters.get(key)
             if value is not None and (type(value) is not int or value < 0):
                 raise ValueError('Usage counters must be nonnegative integers or unknown')
+        priced = self._cost(provider, cost_micros)
         with self.connection() as db:
             # Contains no user IDs or conversation text; clearing history preserves totals.
             db.execute('INSERT OR IGNORE INTO chat_usage VALUES (?,?,?,?,?,?,?,?,?)',
                        (attempt_id, model, effort, status, time.time(), *(counters.get(k) for k in keys)))
             db.execute('INSERT OR IGNORE INTO agent_usage_roles VALUES (?,?)', (attempt_id, role))
+            if provider or cost_micros is not None or failover:
+                db.execute('INSERT OR IGNORE INTO chat_usage_cost VALUES (?,?,?,?)',
+                           (attempt_id, priced, cost_micros, failover and clean(failover, 40)))
 
     def chat_usage(self):
         with self.connection() as db:
-            return [dict(r) for r in db.execute('SELECT model, effort, count(*) AS attempts, '
+            return [dict(r) for r in db.execute('SELECT model, effort, coalesce(c.provider,"chatgpt") AS provider, '
+                'count(*) AS attempts, '
                 'sum(input_tokens) AS input_tokens, sum(cached_input_tokens) AS cached_input_tokens, '
                 'sum(output_tokens) AS output_tokens, sum(reasoning_output_tokens) AS reasoning_output_tokens, '
                 'sum(status != "completed") AS failed_attempts, '
-                'sum(input_tokens IS NULL OR output_tokens IS NULL) AS unknown_attempts '
-                'FROM chat_usage GROUP BY model, effort')]
+                'sum(input_tokens IS NULL OR output_tokens IS NULL) AS unknown_attempts, '
+                'sum(c.cost_micros) AS cost_micros, sum(c.cost_micros IS NULL) AS unknown_cost_attempts '
+                'FROM chat_usage u LEFT JOIN chat_usage_cost c ON c.attempt_id=u.attempt_id '
+                'GROUP BY model, effort, 3')]
 
     def memories(self, guild_id):
         with self.connection() as db:
@@ -833,7 +895,8 @@ class Store:
                     **({'profile_origins': origins} if profiles else {}),
                     **({'note_sources': learned} if sources else {}),
                     **({'member_summary': summary} if summaries else {}),
-                    'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort')}
+                    'model': self._setting(db, 'chat_model'), 'effort': self._setting(db, 'chat_effort'),
+                    **self._providers(db)}
 
     @staticmethod
     def _member_summary(db, guild_id, user_id):
@@ -1759,7 +1822,8 @@ class Store:
         with self.connection() as db:
             return {'selected': self._setting(db, 'chat_model'),
                     'effort': self._setting(db, 'chat_effort'),
-                    'models': [row[0] for row in db.execute('SELECT id FROM chat_models ORDER BY id')]}
+                    'models': [row[0] for row in db.execute('SELECT id FROM chat_models ORDER BY id')],
+                    'claude_models': list(CLAUDE_MODELS), 'provider': self._providers(db)['provider']}
 
     def update_chat_models(self, models):
         if not models or len(models) > 500 or any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', m) for m in models):
@@ -1772,7 +1836,7 @@ class Store:
         if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
             raise ValueError('Choose a supported reasoning effort')
         with self.connection() as db:
-            if not db.execute('SELECT 1 FROM chat_models WHERE id=?', (model,)).fetchone():
+            if model not in CLAUDE_MODELS and not db.execute('SELECT 1 FROM chat_models WHERE id=?', (model,)).fetchone():
                 raise Conflict('Refresh the subscription model list and choose an available model')
             db.execute('UPDATE settings SET value=? WHERE key="chat_model"', (model,))
             db.execute('UPDATE settings SET value=? WHERE key="chat_effort"', (effort,))

@@ -124,6 +124,8 @@ class UsageReport(Lease):
     attempt_id: str = Field(min_length=1, max_length=100)
     model: str = Field(max_length=100)
     counters: dict
+    provider: Literal['chatgpt', 'claude'] | None = None
+    cost_micros: int | None = Field(default=None, ge=0)
 
 
 class ModelSelection(Actor):
@@ -297,6 +299,11 @@ class ChatUsage(BaseModel):
     # Narrows a role for reporting. Older controllers ignore it and count the role, so a receipt
     # queued before a rollback still delivers.
     purpose: Literal['reply_check'] | None = None
+    # Which provider answered, its cost in integer micro-dollars and, on an attempt that handed over to the other
+    # provider, why. An older controller ignores all three (as purpose).
+    provider: Literal['chatgpt', 'claude'] | None = None
+    cost_micros: int | None = Field(default=None, ge=0)
+    failover: str | None = Field(default=None, pattern=r'^[a-z_]{1,40}$')
 
 
 class ChatCatalog(Actor):
@@ -674,7 +681,7 @@ def create_app(settings: Settings | None = None):
     @app.post('/chat/usage/report', dependencies=[auth('fri')])
     def chat_usage_report(body: ChatUsage):
         store.add_chat_usage(body.attempt_id, body.model, body.effort, body.status, body.counters,
-                             body.purpose or body.role)
+                             body.purpose or body.role, body.provider, body.cost_micros, body.failover)
         return {'ok': True}
 
     @app.post('/chat/usage', dependencies=[auth('fri')])
@@ -743,7 +750,8 @@ def create_app(settings: Settings | None = None):
 
     @app.post('/worker/{job_id}/usage', dependencies=[auth('worker')])
     def report_usage(job_id: str, body: UsageReport):
-        store.add_usage(job_id, body.lease, body.attempt_id, body.model, body.counters)
+        store.add_usage(job_id, body.lease, body.attempt_id, body.model, body.counters, body.provider,
+                        body.cost_micros)
         return {'ok': True}
 
     @app.post('/deploy/claim', dependencies=[auth('deploy')])

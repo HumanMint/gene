@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run as root on Hostinger after uploading source and the private lab env file."""
+"""Run as root on the bot host after uploading source and the private lab env file."""
 
 import os
 import shutil
@@ -11,7 +11,7 @@ ROOT = Path('/srv/gene')
 
 def main():
     if os.geteuid() != 0:
-        raise SystemExit('Run this installer with sudo on the intended Hostinger machine')
+        raise SystemExit('Run this installer with sudo on the intended bot host')
     source = ROOT / 'source'
     upload = ROOT / 'upload.env'
     env = dict(line.split('=', 1) for line in upload.read_text().splitlines()

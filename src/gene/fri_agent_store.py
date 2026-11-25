@@ -159,7 +159,7 @@ class AgentStore:
                     'report_pending': bool(db.execute('SELECT 1 FROM agent_reports WHERE delivered=0').fetchone())}
 
     def update(self, changes, version, actor):
-        from .store import PROVIDER_SETTINGS
+        from .store import CLAUDE_MODELS, PROVIDER_SETTINGS
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             if version != self.get(db, 'version', 0):
@@ -179,7 +179,7 @@ class AgentStore:
                     if type(value) is not bool:
                         raise ValueError('Expected a boolean setting')
                 elif key.endswith('_model'):
-                    if not isinstance(value, str) or not db.execute(
+                    if not isinstance(value, str) or value in CLAUDE_MODELS or not db.execute(
                             'SELECT 1 FROM chat_models WHERE id=?', (value,)).fetchone():
                         raise ValueError('Refresh the model catalog and choose an available model')
                 elif key.endswith('_effort'):

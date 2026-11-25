@@ -85,6 +85,15 @@ def test_claude_ids_stay_out_of_plan_settings_and_the_plan_catalog(setup_agent):
     assert store.status()['chat_model'] == before
     store.select_chat_model('gpt-6.3-sol', 'high', 'owner')
     assert store.status()['chat_model'] == 'gpt-6.3-sol'
+    with pytest.raises(ValueError):  # A Claude-only refresh keeps the previous plan list.
+        store.update_chat_models(['claude-opus-5-5'])
+    assert 'gpt-6.3-sol' in store.chat_models()['models']
+    with store.connection() as db:  # A catalog an older Gene saved can still list a Claude id.
+        db.execute("INSERT INTO chat_models VALUES ('claude-opus-5-5')")
+    with pytest.raises(Conflict):
+        store.select_chat_model('claude-opus-5-5', 'high', 'owner')
+    with pytest.raises(ValueError):
+        agent.update({'attention_model': 'claude-opus-5-5'}, agent.state()['version'], 'owner')
 
 
 def test_usage_receipts_with_and_without_provider_and_cost(client):

@@ -1830,15 +1830,19 @@ class Store:
         if not models or len(models) > 500 or any(not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', m) for m in models):
             raise ValueError('Invalid subscription model catalog; keeping the previous list')
         with self.connection() as db:
+            plan = sorted(set(models) - set(CLAUDE_MODELS))
+            if not plan:
+                raise ValueError('Invalid subscription model catalog; keeping the previous list')
             db.execute('DELETE FROM chat_models')
-            db.executemany('INSERT INTO chat_models VALUES (?)', [(m,) for m in sorted(set(models) - set(CLAUDE_MODELS))])
+            db.executemany('INSERT INTO chat_models VALUES (?)', [(m,) for m in plan])
 
     def select_chat_model(self, model, effort, actor):
         if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
             raise ValueError('Choose a supported reasoning effort')
         with self.connection() as db:
             # Plan ids only: an older Fri or a rolled-back Gene sends this to the plan. Claude's pick is claude_chat_model.
-            if not db.execute('SELECT 1 FROM chat_models WHERE id=?', (model,)).fetchone():
+            # A catalog saved before this check could still list one.
+            if model in CLAUDE_MODELS or not db.execute('SELECT 1 FROM chat_models WHERE id=?', (model,)).fetchone():
                 raise Conflict('Refresh the subscription model list and choose an available model')
             db.execute('UPDATE settings SET value=? WHERE key="chat_model"', (model,))
             db.execute('UPDATE settings SET value=? WHERE key="chat_effort"', (effort,))

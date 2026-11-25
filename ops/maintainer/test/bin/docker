@@ -201,6 +201,8 @@ def compose(rest):
     if action != 'up' or rest[:3] != ['-d', '--no-deps', '--force-recreate']:
         refuse('compose '+action+' '+' '.join(rest))
     if project == 'fri':
+        if os.environ.get('MOCK_PORT_BUSY') and '18790' in open(compose_file).read():
+            refuse('bind: address already in use')
         tag = values['FRI_RUNTIME_IMAGE']
         st['containers']['fri-runtime-1'] = {'image': st['images'][resolve(tag)]['id'], 'running': True, 'health': 'healthy'}
         h = json.load(open(ROOT+'/data/fri/fri-health.json'))

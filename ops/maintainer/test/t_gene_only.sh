@@ -3,6 +3,7 @@
 # is checked against the new Gene. Then a rollback, which leaves Fri alone.
 export MOCK_OLD_F=F
 . "$(dirname "$0")/common.sh"
+git -C "$REPO" show "$G":ops/fri-compose.yml > "$BATCH_ROOT/source/ops/fri-compose.yml"
 release
 expect new false up
 [[ ! -e $ST/fri.tar ]] || fail 'fri.tar was uploaded'

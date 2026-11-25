@@ -39,6 +39,8 @@ def installation(tmp_path, previous=True):
     (root/'install.json').write_text(json.dumps({'env_file':str(env), 'data_dir':str(data),
         'auth_dir':str(auth), 'network':'gene_default', 'controller_url':'http://controller:8787',
         'legacy_container':'gene-fri-1'}))
+    (gene/'source/ops').mkdir(parents=True)
+    (gene/'source/ops/fri-compose.yml').write_text('services: {}\n')
     release = FriRelease(root, gene)
     if previous:
         release.env.write_bytes(release.environment('b'*40))
@@ -148,3 +150,67 @@ def test_gene_cog_activation_cannot_change_fri_pin_or_restart_fri(tmp_path):
     deployer.activate('d'*40)
     deployer.compose.assert_called_once_with('up','-d','--no-deps','--force-recreate','red')
     assert release.env.read_bytes()==before
+
+
+@pytest.mark.parametrize('conflict', [False, True])
+def test_port_conflict_recovers_with_previous_compose(tmp_path, conflict):
+    release, store, calls = installation(tmp_path)
+    old = release.gene/'backups/batch/installed-source/ops/fri-compose.yml'
+    old.parent.mkdir(parents=True)
+    old.write_text('services: {}\n')
+    release.previous_compose = old
+    release.compose_file.write_text('ports: ["127.0.0.1:18790:18790"]\n')
+    run = release.run
+    running = ['b'*40]
+
+    def bind(args):
+        if args[:2] == ['docker', 'compose']:
+            if 'stop' in args:
+                running.clear()
+            if 'up' in args:
+                compose = Path(args[args.index('-f')+1]).read_text()
+                if conflict and '18790' in compose:
+                    raise RuntimeError('bind: address already in use')
+                running[:] = [dict(line.split('=', 1) for line in release.env.read_text().splitlines())['FRI_RELEASE_SHA']]
+        return run(args)
+
+    release.run = bind
+    release.healthy = lambda sha, after: running == [sha]
+    if conflict:
+        with pytest.raises(RuntimeError, match='address already in use'):
+            release.deploy('c'*40)
+        assert running == ['b'*40]
+        backup = next((release.root/'backups').iterdir())
+        assert json.loads((backup/'failure.json').read_text())['recovered']
+        assert json.loads(release.record.read_text())['sha'] == 'b'*40
+    else:
+        assert release.deploy('c'*40)['success']
+        assert running == ['c'*40]
+
+
+def test_missing_previous_compose_refuses_before_stop(tmp_path):
+    release, _, calls = installation(tmp_path)
+    release.previous_compose = tmp_path/'missing'
+    with pytest.raises(ValueError, match='Fri was not stopped'):
+        release.deploy('c'*40)
+    assert not any('stop' in call for call in calls)
+
+
+def test_standalone_rollback_uses_saved_compose(tmp_path):
+    release, _, calls = installation(tmp_path)
+    release.deploy('c'*40)
+    record = json.loads(release.record.read_text())
+    saved = Path(record['backup'])/'installed-source/ops/fri-compose.yml'
+    release.compose_file.write_text('ports: ["127.0.0.1:18790:18790"]\n')
+    run = release.run
+
+    def bind(args):
+        if args[:3] == ['docker', 'image', 'inspect']:
+            return 'b'*40
+        if 'up' in args:
+            assert Path(args[args.index('-f')+1]) == saved
+        return run(args)
+
+    release.run = bind
+    release.deploy('b'*40)
+    assert json.loads(release.record.read_text())['compose'] == str(saved)

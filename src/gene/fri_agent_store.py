@@ -143,7 +143,8 @@ class AgentStore:
                        (time.time()-86400, time.time()))
             from .fri_learning_sources import expire
             expire(db, time.time())  # A report's week, delivered or not (gene #250).
-            return {'config': self.config(db), 'version': self.get(db, 'version', 0),
+            # Provider settings sit beside config, not in it: Fri's owner-settings model reads config whole.
+            return {'config': self.config(db), 'version': self.get(db, 'version', 0), **self.store._providers(db),
                     'auto_repairs_enabled': self.store._setting(db, 'repair_policy') == 'existing-features-v1',
                     'learning_schedule': self.learning_schedule(db, time.time()),
                     'started': self.get(db, 'started', 0), 'next_learning': self.get(db, 'next_learning', 0),
@@ -158,15 +159,19 @@ class AgentStore:
                     'report_pending': bool(db.execute('SELECT 1 FROM agent_reports WHERE delivered=0').fetchone())}
 
     def update(self, changes, version, actor):
+        from .store import CLAUDE_MODELS, PROVIDER_SETTINGS
         with self.store.connection() as db:
             db.execute('BEGIN IMMEDIATE')
             if version != self.get(db, 'version', 0):
                 raise ValueError('Settings changed. Request a fresh preview.')
             config = self.config(db)
-            if not changes or set(changes)-set(DEFAULTS):
+            if not changes or set(changes)-set(DEFAULTS)-set(PROVIDER_SETTINGS):
                 raise ValueError('Only the listed behavior settings can be changed')
             for key, value in changes.items():
-                if key in RANGES:
+                if key in PROVIDER_SETTINGS:
+                    if type(value) is not str or value not in PROVIDER_SETTINGS[key]:
+                        raise ValueError(f'{key} must be one of: ' + ', '.join(repr(v) for v in PROVIDER_SETTINGS[key]))
+                elif key in RANGES:
                     low, high = RANGES[key]
                     if type(value) is not int or not low <= value <= high:
                         raise ValueError(f'{key} must be between {low} and {high}')
@@ -174,7 +179,8 @@ class AgentStore:
                     if type(value) is not bool:
                         raise ValueError('Expected a boolean setting')
                 elif key.endswith('_model'):
-                    if not isinstance(value, str) or not db.execute('SELECT 1 FROM chat_models WHERE id=?', (value,)).fetchone():
+                    if not isinstance(value, str) or value in CLAUDE_MODELS or not db.execute(
+                            'SELECT 1 FROM chat_models WHERE id=?', (value,)).fetchone():
                         raise ValueError('Refresh the model catalog and choose an available model')
                 elif key.endswith('_effort'):
                     if value not in ('low', 'medium', 'high'):
@@ -182,7 +188,9 @@ class AgentStore:
                 elif not isinstance(value, str) or len(value) > 1500 or clean(value, 1500) != value:
                     raise ValueError('Behavior notes must be at most 1500 characters without secrets')
             was_checking = config['enabled'] and config['reply_check_enabled']
-            config.update(changes)
+            for key in PROVIDER_SETTINGS.keys() & changes.keys():
+                db.execute('UPDATE settings SET value=? WHERE key=?', (changes[key], key))
+            config.update({key: value for key, value in changes.items() if key not in PROVIDER_SETTINGS})
             if config['cooldown_min_minutes'] > config['cooldown_max_minutes']:
                 raise ValueError('Minimum cooldown cannot exceed maximum')
             self.put(db, 'config', config)
@@ -640,6 +648,9 @@ class AgentStore:
             return [{**dict(r), **marked} for r in db.execute('SELECT coalesce(r.role,"conversation") AS role,u.model,u.effort,'
                 'count(*) AS attempts,sum(u.input_tokens) AS input_tokens,sum(u.output_tokens) AS output_tokens,'
                 'sum(u.input_tokens IS NULL OR u.output_tokens IS NULL) AS unknown_attempts,'
-                'sum(u.reasoning_output_tokens) AS reasoning_tokens,sum(u.cached_input_tokens) AS cached_tokens '
+                'sum(u.reasoning_output_tokens) AS reasoning_tokens,sum(u.cached_input_tokens) AS cached_tokens,'
+                'coalesce(c.provider,"chatgpt") AS provider,sum(c.cost_micros) AS cost_micros,'
+                'sum(c.cost_micros IS NULL) AS unknown_cost_attempts '
                 'FROM chat_usage u LEFT JOIN agent_usage_roles r ON r.attempt_id=u.attempt_id '
-                'WHERE ? IS NULL OR u.at>=? GROUP BY 1,2,3', (since, since))]
+                'LEFT JOIN chat_usage_cost c ON c.attempt_id=u.attempt_id '
+                'WHERE ? IS NULL OR u.at>=? GROUP BY 1,2,3,10', (since, since))]

@@ -121,7 +121,8 @@ def context(store, body):
         return {'pending': None, 'turns': [], 'facts': [], 'revision': row['revision'],
                 'web_research': receipts if profile['enabled'] else [],
                 'personal_memory': {'enabled': profile['enabled'], 'notes': []},
-                'model': store._setting(db, 'chat_model'), 'effort': store._setting(db, 'chat_effort')}
+                'model': store._setting(db, 'chat_model'), 'effort': store._setting(db, 'chat_effort'),
+                **store._providers(db)}
 
 
 def save_turn(store, body):

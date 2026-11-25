@@ -1,9 +1,7 @@
 """Reproduce first, freeze the test, and independently review the exact repair commit."""
 
-import dataclasses
 import json
 import re
-import uuid
 
 from .policy import git, validate_checkout
 from .privacy import clean
@@ -16,7 +14,6 @@ from .repair_policy import (
     validate_repair_checkout,
     validate_repair_commit,
 )
-from .usage import parse_usage
 
 SCHEMA = {'type': 'object', 'properties': {
     'decision': {'type': 'string', 'enum': ['allow', 'manual']},
@@ -47,28 +44,22 @@ class RepairWork:
         self.worker.api.post(f'/worker/{self.job["id"]}/heartbeat', {'lease': self.job['lease'], 'progress': text})
 
     def infer(self, phase, prompt, *, readonly=True):
-        from .worker import agent_summary, run_sandbox
+        from .worker import STAGE_BUDGET, agent_summary, run_agent
         events = self.directory/(phase+'.jsonl')
         schema = self.directory/'repair-schema.json'
         schema.write_text(json.dumps(SCHEMA))
         schema.chmod(0o644)
-        command = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--ephemeral',
-            '--dangerously-bypass-approvals-and-sandbox', '--json', '--color', 'never',
-            '--model', REVIEW_MODEL, '-c', 'model_reasoning_effort="'+REVIEW_EFFORT+'"',
-            '-c', 'web_search="disabled"', '--output-schema', '/repair-schema.json', '-']
         try:
-            run_sandbox(self.root, f'gene-{phase}-{self.job["id"]}', self.worker.image, command,
-                        prompt=BOUNDARY+prompt, auth=self.worker.auth, events=events, readonly=readonly, schema=schema)
+            model = run_agent(self.worker, self.job, f'gene-{phase}-{self.job["id"]}', self.root, events,
+                              BOUNDARY+prompt, model=REVIEW_MODEL, effort=REVIEW_EFFORT, readonly=readonly,
+                              schema=schema, budget=STAGE_BUDGET)[0]
             result = json.loads(agent_summary(events, '{}'))
             if (set(result) != {'decision', 'reason'} or result['decision'] not in ('allow', 'manual') or
                     not isinstance(result['reason'], str) or not 10 <= len(result['reason']) <= 2000):
                 raise ValueError('Repair verifier returned an invalid decision; owner review required')
             result['reason'] = clean(result['reason'], 2000)
-            return {**result, 'model': REVIEW_MODEL, 'effort': REVIEW_EFFORT}
+            return {**result, 'model': model, 'effort': REVIEW_EFFORT}
         finally:
-            usage = parse_usage(events.read_text().splitlines() if events.exists() else [])
-            self.worker.api.post(f'/worker/{self.job["id"]}/usage', {'lease': self.job['lease'],
-                'attempt_id': uuid.uuid4().hex, 'model': REVIEW_MODEL, 'counters': dataclasses.asdict(usage)})
             events.unlink(missing_ok=True)
 
     def verify(self):

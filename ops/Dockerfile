@@ -21,6 +21,9 @@ CMD ["gene-controller"]
 
 FROM node:24-bookworm-slim AS codex
 RUN npm install -g @openai/codex@0.160.1 --ignore-scripts
+# The package's own install script only copies the bundled native binary for this platform into place.
+RUN npm install -g @anthropic-ai/claude-code@2.1.326 --ignore-scripts \
+    && node /usr/local/lib/node_modules/@anthropic-ai/claude-code/install.cjs
 
 FROM dependencies AS worker-dependencies
 # Worker tools and development dependencies must also survive source-only edits.
@@ -32,6 +35,7 @@ RUN printf '%s\n' 'export PATH="/app/.venv/bin:$PATH"' 'export UV_PROJECT_ENVIRO
 COPY --from=codex /usr/local/bin/node /usr/local/bin/node
 COPY --from=codex /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s /usr/local/lib/node_modules/@openai/codex/bin/codex.js /usr/local/bin/codex
+RUN ln -s /usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe /usr/local/bin/claude
 RUN git config --system --add safe.directory /workspace
 
 FROM worker-dependencies AS worker

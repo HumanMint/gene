@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -17,13 +18,25 @@ from .client import ControllerClient
 from .models import discover_models
 from .policy import NoFeatureChanges, git, validate_checkout
 from .privacy import clean
-from .usage import parse_usage
+from .usage import claude_result, cost_micros, parse_usage
 
 LOG = logging.getLogger('gene.worker')
+CLAUDE_TIERS = (('-sol', 'claude-opus-5-5'), ('-terra', 'claude-sonnet-5-5'), ('-luna', 'claude-haiku-5-5'))
+CLAUDE_EFFORTS = ('low', 'medium', 'high', 'xhigh', 'max')
+# The key file is mounted read-only and read by the CLI itself, so it is never in docker args or the process list.
+CLAUDE_SETTINGS = json.dumps({'apiKeyHelper': 'cat /claude/key'})
+# `result.api_error` values another provider could serve; a request problem would fail there too.
+# shortcut: names read from the pinned CLI's stream-json, recheck them when the pin moves.
+FAILOVER = {'rate_limit', 'overloaded', 'server_error', 'billing_error', 'authentication_failed', 'connection_failed'}
+FEATURE_BUDGET, STAGE_BUDGET = 5.0, 2.0  # dollars per feature job / per repair inference stage
 
 
 class SandboxFailure(RuntimeError):
     """A candidate command failed, with bounded, redacted diagnostics."""
+
+
+class NeedsAttention(RuntimeError):
+    """Stop the job for the owner without another inference attempt."""
 
 
 def agent_summary(events, fallback):
@@ -34,14 +47,115 @@ def agent_summary(events, fallback):
             item = event.get('item') or {}
             if event.get('type') == 'item.completed' and item.get('type') == 'agent_message':
                 summary = clean(item.get('text') or summary, 3000)
+            elif event.get('type') == 'result' and not event.get('is_error'):
+                output = event.get('structured_output')
+                summary = clean((json.dumps(output) if output is not None else event.get('result')) or summary, 3000)
         except (ValueError, AttributeError):
             continue
     return summary
 
 
+def claude_ready(worker):
+    key = worker.claude_key
+    return bool(key) and key.is_file() and os.access(key, os.R_OK)
+
+
+def claude_model(model):
+    return next((claude for tier, claude in CLAUDE_TIERS if tier in (model or '')), 'claude-opus-5-5')
+
+
+def tree_state(root: Path):
+    """Digest of the worktree outside .git, to tell whether an inference stage edited anything."""
+    state = hashlib.sha256()
+    for parent, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if not (Path(parent) == root and d == '.git'))
+        for filename in sorted(files):
+            path = Path(parent) / filename
+            data = os.readlink(path).encode() if path.is_symlink() else path.read_bytes() if path.is_file() else b''
+            state.update(str(path.relative_to(root)).encode() + b'\0' + hashlib.sha256(data).digest())
+    return state.hexdigest()
+
+
+def agent_command(provider, model, effort, *, readonly=False, schema: Path | None = None, budget=FEATURE_BUDGET):
+    if provider == 'claude':
+        # No Bash, WebFetch or WebSearch; the trusted wrapper runs tests and lint itself.
+        tools = 'Read,Glob,Grep' if readonly else 'Read,Edit,Write,Glob,Grep'
+        command = ['claude', '-p', '--output-format', 'stream-json', '--verbose', '--model', model,
+                   '--max-turns', '60', '--max-budget-usd', f'{max(budget, 0.01):.2f}',
+                   '--setting-sources', '', '--strict-mcp-config', '--settings', CLAUDE_SETTINGS,
+                   '--tools', tools, '--allowedTools', tools, '--permission-mode', 'dontAsk',
+                   '--no-session-persistence']
+        if effort in CLAUDE_EFFORTS:
+            command += ['--effort', effort]
+        if schema:
+            command += ['--json-schema', schema.read_text()]
+        return command
+    command = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--ephemeral',
+               '--dangerously-bypass-approvals-and-sandbox', '--json', '--color', 'never']
+    if model:
+        command += ['--model', model]
+    if effort:
+        command += ['-c', 'model_reasoning_effort=' + json.dumps(effort)]
+    if schema:
+        command += ['-c', 'web_search="disabled"', '--output-schema', '/repair-schema.json']
+    return command + ['-']
+
+
+def is_failover(result):
+    status = result.get('api_error_status')
+    return result.get('is_error') is True and (
+        result.get('api_error') in FAILOVER or status in (429, 529) or (type(status) is int and status >= 500))
+
+
+def run_agent(worker, job, name, root: Path, events: Path, prompt, *, model, effort, readonly=False,
+              schema: Path | None = None, budget=FEATURE_BUDGET):
+    """One inference stage: Claude when its key file is readable, else Codex. Usage is posted per attempt.
+
+    A Claude stage that fails for an API reason on an untouched worktree runs once more on Codex. Returns
+    the model that answered and the dollars spent (0 when unknown)."""
+    provider = 'claude' if claude_ready(worker) else 'codex'
+    before = tree_state(root)
+    while True:
+        used = claude_model(model) if provider == 'claude' else model
+        events.unlink(missing_ok=True)
+        failure = None
+        try:
+            run_sandbox(root, name, worker.image, agent_command(provider, used, effort, readonly=readonly,
+                        schema=schema, budget=budget), prompt=prompt, provider=provider,
+                        auth=worker.claude_key if provider == 'claude' else worker.auth,
+                        events=events, readonly=readonly, schema=schema if provider == 'codex' else None)
+        except SandboxFailure as exc:
+            failure = exc
+        finally:
+            lines = events.read_text().splitlines() if events.exists() else []
+            report = {'lease': job['lease'], 'attempt_id': uuid.uuid4().hex,
+                      'model': used or 'codex-default', 'counters': dataclasses.asdict(parse_usage(lines))}
+            result = claude_result(lines) if provider == 'claude' else {}
+            if provider == 'claude':
+                report.update(provider='claude', cost_micros=cost_micros(result))
+            worker.api.post(f'/worker/{job["id"]}/usage', report)
+        spent = (report.get('cost_micros') or 0) / 1_000_000
+        if provider != 'claude':
+            if failure:
+                raise failure
+            return used, spent
+        if result.get('subtype') == 'error_max_budget_usd' or spent > budget:
+            raise NeedsAttention(f'The Claude stage reached its ${budget:.2f} spending cap; owner review required.')
+        if failure and is_failover(result):
+            if tree_state(root) != before:
+                raise NeedsAttention('Claude stopped with an API error after editing files; owner review required.')
+            if (worker.auth / 'auth.json').is_file():
+                LOG.info('Retrying %s on Codex after a Claude API error', name)
+                provider = 'codex'
+                continue
+        if failure:
+            raise failure
+        return used, spent
+
+
 def run_sandbox(root: Path, name: str, image: str, command: list[str], *,
                 prompt: str = '', auth: Path | None = None, events: Path | None = None,
-                readonly=False, schema: Path | None = None, allow_failure=False):
+                readonly=False, schema: Path | None = None, allow_failure=False, provider='codex'):
     uid = str(os.environ.get('GENE_SANDBOX_UID', '10001'))
     args = ['docker', 'run', '--rm', '--name', name, '--init', '--cap-drop=ALL',
             '--security-opt=no-new-privileges', '--pids-limit=256', '--memory=2g', '--cpus=1.5',
@@ -51,7 +165,13 @@ def run_sandbox(root: Path, name: str, image: str, command: list[str], *,
             '-e', 'PYTHONPATH=/workspace/src:/workspace',
             '--workdir', '/workspace', '--mount',
             f'type=bind,src={root},dst=/workspace' + ('' if auth and not readonly else ',readonly')]
-    if auth:
+    if auth and provider == 'claude':
+        # The model gets the worktree and its own read-only API key file, never host/Git/Discord credentials.
+        args += ['--mount', f'type=bind,src={root / ".git"},dst=/workspace/.git,readonly',
+                 '--mount', f'type=bind,src={auth},dst=/claude/key,readonly',
+                 '-e', 'CLAUDE_CONFIG_DIR=/tmp/claude', '-e', 'DISABLE_AUTOUPDATER=1',
+                 '-e', 'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1', '-i']
+    elif auth:
         # The model gets the worktree and its dedicated Codex login, never host/Git/Discord credentials.
         args += ['--mount', f'type=bind,src={root / ".git"},dst=/workspace/.git,readonly',
                  '--mount', f'type=bind,src={auth},dst=/codex', '-e', 'CODEX_HOME=/codex', '-i']
@@ -77,6 +197,8 @@ def run_sandbox(root: Path, name: str, image: str, command: list[str], *,
 
 
 class Worker:
+    claude_key: Path | None = None
+
     def __init__(self):
         self.api = ControllerClient('worker')
         self.root = Path(os.getenv('GENE_WORK_DIR', '/srv/gene/work'))
@@ -85,6 +207,9 @@ class Worker:
         if self.repo != 'HumanMint/gene':
             raise ValueError('This private worker is restricted to HumanMint/gene')
         self.auth = Path(os.getenv('GENE_CODEX_HOME', '/srv/gene/codex'))
+        # The worker's own Claude API key; no default, so it never falls back to another service's key.
+        if os.getenv('GENE_CLAUDE_KEY_FILE'):
+            self.claude_key = Path(os.environ['GENE_CLAUDE_KEY_FILE'])
         self.image = os.getenv('GENE_WORKER_IMAGE', 'gene-worker:bootstrap')
         self.last_catalog_attempt = 0.0
 
@@ -114,12 +239,6 @@ class Worker:
             repair = RepairWork(self, job, checkout, directory)
             repair.verify()
         model = job['model']
-        command = ['codex', 'exec', '--ignore-user-config', '--ignore-rules', '--ephemeral',
-                   '--dangerously-bypass-approvals-and-sandbox', '--json', '--color', 'never', '-']
-        if model:
-            command[-1:-1] = ['--model', model]
-        if job.get('effort'):
-            command[-1:-1] = ['-c', 'model_reasoning_effort=' + json.dumps(job['effort'])]
         prompt = (
             'You maintain the private Gene Discord project. Read AGENTS.md. Implement the request '
             'with meaningful tests. Only change cogs/, tests/features/, and docs/features/. Do not '
@@ -137,7 +256,7 @@ class Worker:
             + json.dumps({'request': job['body'], 'source': job['source_url'],
                           'approved_facts': job['memories']}, ensure_ascii=False)
         )
-        feedback = ''
+        feedback, spent = '', 0.0
         if repair:
             prompt += ('\nRestore only the independently verified existing behavior. The regression test '
                        + repair.test_path + ' is frozen and must not be changed. Do not add features, imports, '
@@ -146,17 +265,10 @@ class Worker:
         for attempt in range(3):
             self.api.post(f'/worker/{job_id}/heartbeat', {'lease': lease,
                           'progress': 'Coding' if attempt == 0 else 'Repairing tests'})
-            # Each repair is a fresh inference turn in the same candidate worktree.
-            # Keep token accounting even when the CLI or subsequent checks fail.
-            events.unlink(missing_ok=True)
-            try:
-                run_sandbox(checkout, f'gene-code-{job_id}', self.image, command,
-                            prompt=prompt + feedback, auth=self.auth, events=events)
-            finally:
-                usage = parse_usage(events.read_text().splitlines() if events.exists() else [])
-                self.api.post(f'/worker/{job_id}/usage', {
-                    'lease': lease, 'attempt_id': uuid.uuid4().hex, 'model': model or 'codex-default',
-                    'counters': dataclasses.asdict(usage)})
+            # Each repair is a fresh inference turn in the same candidate worktree; run_agent keeps
+            # token accounting even when the CLI or subsequent checks fail. The dollar cap is per job.
+            spent += run_agent(self, job, f'gene-code-{job_id}', checkout, events, prompt + feedback,
+                               model=model, effort=job.get('effort'), budget=FEATURE_BUDGET - spent)[1]
             self.api.post(f'/worker/{job_id}/heartbeat', {'lease': lease})
             # Scope/credential violations stop the job; only test/lint failures can
             # return to the model for repairs. Publication remains after all checks.
@@ -208,10 +320,11 @@ class Worker:
         events.unlink(missing_ok=True)
 
     def tick(self):
-        if not (self.auth / 'auth.json').is_file():
+        codex = (self.auth / 'auth.json').is_file()
+        if not codex and not claude_ready(self):
             return False
         state = self.api.post('/worker/models/state')
-        if state['refresh_pending'] and time.monotonic() - self.last_catalog_attempt > 60:
+        if codex and state['refresh_pending'] and time.monotonic() - self.last_catalog_attempt > 60:
             self.last_catalog_attempt = time.monotonic()
             try:
                 # v0.160.1 persists a derived catalog here. Invalidate only this cache,
@@ -238,8 +351,9 @@ class Worker:
         except Exception as exc:
             LOG.error('Request %s failed (%s)', job['id'], type(exc).__name__)
             try:
+                outcome = {'outcome': 'needs_attention'} if isinstance(exc, NeedsAttention) else {}
                 self.api.post(f'/worker/{job["id"]}/finish',
-                              {'lease': job['lease'], 'error': clean(str(exc), 1000)})
+                              {'lease': job['lease'], 'error': clean(str(exc), 1000), **outcome})
             except httpx.HTTPStatusError as status:
                 if status.response.status_code != 409:
                     raise

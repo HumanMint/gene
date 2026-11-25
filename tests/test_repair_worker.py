@@ -172,7 +172,7 @@ def test_automatic_scope_rejects_ignored_helpers_and_changed_permissions(tmp_pat
 
 
 def test_independent_verifier_uses_fresh_sol_xhigh_readonly_and_counts_failed_inference(tmp_path,monkeypatch):
-    worker=Mock(auth=tmp_path/'auth',image='image')
+    worker=Mock(auth=tmp_path/'auth',image='image',claude_key=None)
     job={'id':'a'*12,'lease':'lease','base_sha':'b'*40,'repair':{'request_ref':'c'*64}}
     repair=RepairWork(worker,job,tmp_path,tmp_path)
     def run(*args,**kwargs):

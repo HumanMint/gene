@@ -10,6 +10,8 @@ from .reviews import request_reference
 POLICY = 'existing-features-v1'
 ACTOR = 'policy:' + POLICY
 REVIEW_MODEL, REVIEW_EFFORT = 'gpt-6.2-sol', 'xhigh'
+# Evidence from either reviewer counts, so proposals pending under the Codex-only evidence stay valid.
+REVIEWERS = {(REVIEW_MODEL, REVIEW_EFFORT), ('claude-opus-5-5', REVIEW_EFFORT)}
 PROTECTED = {'__init__', 'cog_check', 'interaction_check', 'authorized', 'eligible', 'api',
              'actor', 'health', 'before_health', 'red_delete_data_for_user', 'forgetme',
              'music_command', 'cog_load', 'cog_unload', 'is_private', 'key'}
@@ -40,7 +42,7 @@ def authorized(job, record, proposal):
         re.fullmatch(r'[a-f0-9]{64}', str(evidence.get('regression_hash', ''))) and
         all(evidence.get(k) is True for k in ('baseline_passed', 'base_failed', 'candidate_passed')) and
         all(isinstance(evidence.get(k), dict) and evidence[k].get('decision') == 'allow' and
-            evidence[k].get('model') == REVIEW_MODEL and evidence[k].get('effort') == REVIEW_EFFORT and
+            (evidence[k].get('model'), evidence[k].get('effort')) in REVIEWERS and
             isinstance(evidence[k].get('reason'), str) and 10 <= len(evidence[k]['reason']) <= 2000
             for k in ('verification', 'review')))
 
